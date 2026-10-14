@@ -270,8 +270,10 @@ pub(crate) async fn set_notifications_enabled(
             }
         }
         let _gate = host.notifications.configuration_gate.lock().map_err(|_| "Notification settings unavailable.")?;
-        if host.notifications.configuration.load(Ordering::SeqCst) != generation {
-            return Err("A newer notification preference replaced this request.".into());
+        // Newer requests bump the generation outside the gate; recheck before each slow step and the write.
+        let current = || host.notifications.configuration.load(Ordering::SeqCst) == generation;
+        if !current() {
+            return Err(SUPERSEDED.into());
         }
         // Baseline without the storage lock held; queue_snapshot takes it itself.
         let baseline = if enabled {
@@ -281,25 +283,20 @@ pub(crate) async fn set_notifications_enabled(
         } else {
             vec![]
         };
+        if !current() {
+            return Err(SUPERSEDED.into());
+        }
         let store = host.store.lock().map_err(|_| "Notification storage unavailable.")?;
-        let mut ledger = store.load_notifications()?;
         #[cfg(windows)]
         if enabled {
             let registration = host.notifications.native.as_ref().map_err(Clone::clone)?.registration()?;
             if persisted_ledger(&store)?.profile_id != registration.profile
-                || ledger.profile_id != registration.profile
+                || store.load_notifications()?.profile_id != registration.profile
             {
                 return Err("Notification profile changed before opt-in was saved. Notifications were not enabled.".into());
             }
         }
-        let confirmation = if enabled {
-            ledger.enable(&baseline, now_seconds()?)?
-        } else {
-            ledger.disable();
-            None
-        };
-        store.save_notifications(&ledger)?;
-        Ok(confirmation)
+        save_preference(&store, enabled, &baseline, now_seconds()?, current)
     }).await.map_err(|_| "Notification preference change failed.".to_string())??;
     if confirmation.is_some() {
         Coordinator::pump(&pump);
@@ -331,25 +328,20 @@ pub(crate) async fn set_notification_category(
             .configuration_gate
             .lock()
             .map_err(|_| "Notification settings unavailable.")?;
-        if host
-            .notifications
-            .categories
-            .lock()
-            .map_err(|_| "Notification settings unavailable.")?
-            .get(&category)
-            != Some(&generation)
-        {
-            return Err("A newer notification preference replaced this request.".into());
+        let current = || {
+            host.notifications
+                .categories
+                .lock()
+                .is_ok_and(|generations| generations.get(&category) == Some(&generation))
+        };
+        if !current() {
+            return Err(SUPERSEDED.into());
         }
         let store = host
             .store
             .lock()
             .map_err(|_| "Notification storage unavailable.")?;
-        let mut ledger = store.load_notifications()?;
-        if ledger.set_category(category, enabled)? {
-            store.save_notifications(&ledger)?;
-        }
-        Ok(())
+        save_category(&store, category, enabled, current)
     })
     .await
     .map_err(|_| "Notification preference change failed.".to_string())?

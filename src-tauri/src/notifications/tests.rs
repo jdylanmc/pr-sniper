@@ -710,3 +710,53 @@ fn ledgers_without_type_preferences_load_with_every_type_on() {
     invalid.muted.insert(Category::Test);
     assert!(invalid.validate().is_err());
 }
+
+#[test]
+fn superseded_opt_in_saves_nothing_and_queues_no_confirmation() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    restore(&store).unwrap();
+    let before = std::fs::read(root.path().join("state/notifications.json")).unwrap();
+    let baseline = [queue_frame("a", Category::Ready, "review-a")];
+    // A newer request bumped the generation between the queue snapshot and the save.
+    let generation = std::sync::atomic::AtomicU64::new(2);
+    let current = || generation.load(Ordering::SeqCst) == 1;
+    assert_eq!(
+        save_preference(&store, true, &baseline, 1, current),
+        Err(SUPERSEDED.into())
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("state/notifications.json")).unwrap(),
+        before
+    );
+    let ledger = store.load_notifications().unwrap();
+    assert!(!ledger.enabled);
+    assert!(ledger.notices.is_empty());
+    assert!(ledger.observations.is_empty());
+
+    generation.store(1, Ordering::SeqCst);
+    let id = save_preference(&store, true, &baseline, 2, current)
+        .unwrap()
+        .unwrap();
+    let ledger = store.load_notifications().unwrap();
+    assert!(ledger.enabled);
+    assert_eq!(ledger.next().unwrap().id, id);
+
+    generation.store(3, Ordering::SeqCst);
+    assert_eq!(
+        save_preference(&store, false, &[], 3, current),
+        Err(SUPERSEDED.into())
+    );
+    assert!(store.load_notifications().unwrap().enabled);
+    assert_eq!(
+        save_category(&store, Category::Ready, false, || false),
+        Err(SUPERSEDED.into())
+    );
+    assert!(store.load_notifications().unwrap().muted.is_empty());
+    save_category(&store, Category::Ready, false, || true).unwrap();
+    assert!(store
+        .load_notifications()
+        .unwrap()
+        .muted
+        .contains(&Category::Ready));
+}

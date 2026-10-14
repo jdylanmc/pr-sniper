@@ -697,6 +697,48 @@ pub fn prepare(store: &Store, frames: &[Frame], id: &str, now: i64) -> Result<No
     Ok(notice)
 }
 
+pub(crate) const SUPERSEDED: &str = "A newer notification preference replaced this request.";
+
+/// Saves the opt-in preference only if `current()` still holds once storage is
+/// held, so a superseded request neither persists nor queues a confirmation.
+pub(crate) fn save_preference(
+    store: &Store,
+    enabled: bool,
+    baseline: &[Frame],
+    now: i64,
+    current: impl Fn() -> bool,
+) -> Result<Option<String>, String> {
+    if !current() {
+        return Err(SUPERSEDED.into());
+    }
+    let mut ledger = store.load_notifications()?;
+    let confirmation = if enabled {
+        ledger.enable(baseline, now)?
+    } else {
+        ledger.disable();
+        None
+    };
+    store.save_notifications(&ledger)?;
+    Ok(confirmation)
+}
+
+/// Per-type counterpart of [`save_preference`].
+pub(crate) fn save_category(
+    store: &Store,
+    category: Category,
+    enabled: bool,
+    current: impl Fn() -> bool,
+) -> Result<(), String> {
+    if !current() {
+        return Err(SUPERSEDED.into());
+    }
+    let mut ledger = store.load_notifications()?;
+    if ledger.set_category(category, enabled)? {
+        store.save_notifications(&ledger)?;
+    }
+    Ok(())
+}
+
 pub fn complete(
     store: &Store,
     id: &str,
