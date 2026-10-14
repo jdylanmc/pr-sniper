@@ -392,4 +392,86 @@ test("job details show the captured Voice; legacy jobs show it unavailable", asy
   captured = await show();
   await expect(captured).toContainText("Merlin (unavailable)");
   await expect(captured).not.toContainText("Captured wizard style.");
+  // A teammate's packet never carried its Agent's Voice.
+  review.selection.configuration.authority.primary = false;
+  captured = await show();
+  await expect(captured).toContainText(/Voice\s*None/);
+  await expect(captured).not.toContainText("Merlin (unavailable)");
+  await expect(captured).not.toContainText("Fixed guardrails");
 });
+
+const renamedInPicker = [
+  {
+    kind: "voice",
+    agent: { voice: "Merlin" },
+    from: "Merlin",
+    to: "Wizard",
+    open: "Choose voice",
+    stored: (agent) => agent.voice,
+    save: "Save voice",
+  },
+  {
+    kind: "doctrine",
+    agent: { doctrines: ["code"] },
+    from: "code",
+    to: "code-renamed",
+    open: "Choose doctrines",
+    stored: (agent) => agent.doctrines,
+    save: "Save doctrine",
+  },
+];
+for (const c of renamedInPicker) {
+  test(`renaming the selected ${c.kind} from the Agent picker keeps the Agent savable; real concurrent edits still conflict`, async ({
+    page,
+    store,
+  }) => {
+    await open(page, store, c.agent);
+    let modal = await openAgent(page);
+    await modal.getByRole("button", { name: c.open, exact: true }).click();
+    await modal
+      .getByRole("button", { name: `Edit ${c.kind} ${c.from}`, exact: true })
+      .click();
+    const library = editor(page, `Editing ${c.from}`);
+    await library.getByLabel("Title", { exact: true }).fill(c.to);
+    await library.getByRole("button", { name: c.save, exact: true }).click();
+    await expect(library).toHaveCount(0);
+    await page.locator("[data-panel-back]").click();
+    await modal
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await expect(modal).toHaveCount(0);
+    let agent = (await store("snapshot")).settings.agents[0];
+    expect(c.stored(agent)).toEqual(c.kind === "voice" ? c.to : [c.to]);
+
+    // Rename back through the picker, then another window edits the Agent.
+    modal = await openAgent(page);
+    await modal.getByRole("button", { name: c.open, exact: true }).click();
+    await modal
+      .getByRole("button", { name: `Edit ${c.kind} ${c.to}`, exact: true })
+      .click();
+    const back = editor(page, `Editing ${c.to}`);
+    await back.getByLabel("Title", { exact: true }).fill(c.from);
+    await back.getByRole("button", { name: c.save, exact: true }).click();
+    await expect(back).toHaveCount(0);
+    await page.locator("[data-panel-back]").click();
+    agent = (await store("snapshot")).settings.agents[0];
+    await store("save_resource", {
+      edit: {
+        kind: "agent",
+        id: agent.id,
+        expected: agent,
+        value: { ...agent, prompt: "Changed in another window." },
+      },
+    });
+    await modal
+      .getByRole("button", { name: "Save agent", exact: true })
+      .click();
+    await expect(modal.getByRole("alert")).toContainText(
+      "Resource changed in another window",
+    );
+    await expect(modal).toHaveCount(1);
+    agent = (await store("snapshot")).settings.agents[0];
+    expect(agent.prompt).toBe("Changed in another window.");
+    expect(c.stored(agent)).toEqual(c.kind === "voice" ? c.from : [c.from]);
+  });
+}

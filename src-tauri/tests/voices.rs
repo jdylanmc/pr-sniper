@@ -262,3 +262,45 @@ fn the_job_snapshot_keeps_the_voice_it_started_with() {
     assert!(legacy.configuration.unwrap().voice.is_none());
     assert!(legacy.agent.voice.is_none());
 }
+
+#[test]
+fn teammate_jobs_validate_but_never_capture_the_voice() {
+    const PRIMARY: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const LEAD: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let mut value = legacy();
+    value["agents"][0]["voice"] = json!("Gilfoyle");
+    let lead = json!({
+        "id":LEAD,"name":"Lead","model":"explicit-model",
+        "ai_account":{"provider":"copilot","account_id":"33"},
+        "prompt":"Decide.","signature":"lead"
+    });
+    value["agents"].as_array_mut().unwrap().push(lead);
+    let repository = &mut value["repositories"][0];
+    repository["assignments"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id":PRIMARY,"agent_id":LEAD,
+            "schedule":{"kind":"interval","minutes":7,"timezone":"UTC"},
+            "comment":true,"approve":false
+        }));
+    repository["primary_assignment_id"] = json!(PRIMARY);
+    let mut settings: Settings = serde_json::from_value(value).unwrap();
+    settings.voices = pr_sniper_lib::storage::Settings::default().voices;
+    // A teammate's referenced Voice must still exist.
+    assert!(Selection::resolve(&settings, &job(), ASSIGNMENT)
+        .unwrap_err()
+        .contains("Voice"));
+    let fixture = Fixture::new();
+    settings.voices = fixture.store().load_settings().unwrap().voices;
+    let teammate = Selection::resolve(&settings, &job(), ASSIGNMENT).unwrap();
+    let configuration = teammate.configuration.as_ref().unwrap();
+    assert!(!configuration.authority.primary);
+    assert_eq!(configuration.voice, None);
+    assert_eq!(teammate.agent.voice.as_deref(), Some("Gilfoyle"));
+    // Editing the Voice text does not change the teammate's execution.
+    settings.voices[1].body = "Edited after the job started.".into();
+    settings.voices[1].guardrails = false;
+    let later = Selection::resolve(&settings, &job(), ASSIGNMENT).unwrap();
+    assert!(later.same_execution(&teammate));
+}

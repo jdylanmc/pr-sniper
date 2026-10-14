@@ -1660,6 +1660,27 @@ export async function mountSettings(
     const expected = clone(
       saved.agents?.find((a) => a.id === existing?.id) ?? null,
     );
+    // A pencil rename from this editor commits first and the Store rewrites
+    // this Agent's reference. Apply exactly that rewrite to the baseline so
+    // only genuine concurrent Agent edits still conflict on Save.
+    const renameExpected = (
+      kind: "doctrine" | "voice",
+      from: string,
+      to: string,
+    ) => {
+      if (!expected || from === to) return;
+      const same = (title: string) =>
+        title.trim().toLowerCase() === from.trim().toLowerCase();
+      if (kind === "voice") {
+        if (expected.voice && same(expected.voice)) expected.voice = to;
+        return;
+      }
+      if (expected.doctrine && same(expected.doctrine)) expected.doctrine = to;
+      if (expected.doctrines)
+        expected.doctrines = expected.doctrines.map((title) =>
+          same(title) ? to : title,
+        );
+    };
     const modal = dialog(
       existing ? `Editing ${existing.name}` : "New agent",
       `<form><section class="agent-section"><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
@@ -1801,6 +1822,7 @@ export async function mountSettings(
       const doctrine = doctrines().find((d) => d.title === title);
       if (!doctrine) return;
       editDoctrine(pencil, doctrine, (updated) => {
+        renameExpected("doctrine", title, updated.title);
         const checked = new Set(
           [...list.querySelectorAll<HTMLInputElement>("input:checked")].map(
             (i) => (i.value === title ? updated.title : i.value),
@@ -1856,6 +1878,7 @@ export async function mountSettings(
       const voice = voices().find((v) => v.title === title);
       if (!voice) return;
       editVoice(pencil, voice, (updated) => {
+        renameExpected("voice", title, updated.title);
         const current = selectedVoice();
         voiceList.innerHTML = voiceChoices(
           current === title ? updated.title : current,

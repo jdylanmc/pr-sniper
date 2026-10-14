@@ -36,8 +36,9 @@ pub struct ExecutionConfiguration {
     /// Absent on older jobs; never inferred from a later library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_catalog: Option<crate::storage::DoctrineCatalog>,
-    /// The Agent's Voice with its exact title, body and guard flag. Absent when
-    /// the Agent has none and on jobs that predate Voices; never inferred later.
+    /// The primary Agent's Voice with its exact title, body and guard flag, as
+    /// sent in the packet. Absent for teammates, Agents without a Voice and jobs
+    /// that predate Voices; never inferred later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<Voice>,
 }
@@ -144,6 +145,9 @@ impl Selection {
                     .ok_or("The Agent's Voice is unavailable.")
             })
             .transpose()?;
+        let authority = repository.assignment_authority(assignment);
+        // Only a primary packet carries the Voice; teammates send caveman reports.
+        let voice = voice.filter(|_| authority.primary);
         let doctrine = match doctrines.as_slice() {
             [] => None,
             [single] => Some(single.body.clone()),
@@ -174,7 +178,7 @@ impl Selection {
             preset,
             configuration: Some(ExecutionConfiguration {
                 repository: repository.clone(),
-                authority: repository.assignment_authority(assignment),
+                authority,
                 doctrines,
                 doctrine_catalog: Some(settings.doctrine_catalog()),
                 voice,

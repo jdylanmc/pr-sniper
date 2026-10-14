@@ -430,8 +430,14 @@ export function renderConfiguration(
       if (voice) {
         text(`Voice: ${voice.title}`, voice.body);
         renderFacts(details, [["Fixed guardrails", on(voice.guardrails)]]);
-      } else
-        details.append(agent.voice ? `${agent.voice} (unavailable)` : "None");
+      }
+      // Teammate packets never carry a Voice; a primary's missing capture is legacy.
+      else
+        details.append(
+          agent.voice && selection.configuration.authority.primary
+            ? `${agent.voice} (unavailable)`
+            : "None",
+        );
     } else {
       text("Legacy snapshot", "Not captured");
       if (selection.doctrine)
