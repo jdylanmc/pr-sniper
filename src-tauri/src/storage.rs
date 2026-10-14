@@ -954,6 +954,8 @@ pub struct Store {
     root: PathBuf,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
+    #[cfg(test)]
+    state_reads: std::sync::Mutex<BTreeMap<String, usize>>,
 }
 
 impl Store {
@@ -962,7 +964,14 @@ impl Store {
             root,
             #[cfg(test)]
             failed_state_write: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            state_reads: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_state_reads(&self) -> BTreeMap<String, usize> {
+        std::mem::take(&mut *self.state_reads.lock().unwrap())
     }
 
     #[cfg(test)]
@@ -1021,6 +1030,15 @@ impl Store {
     }
 
     pub(crate) fn read_state(&self, name: &str) -> std::io::Result<Vec<u8>> {
+        #[cfg(test)]
+        {
+            *self
+                .state_reads
+                .lock()
+                .unwrap()
+                .entry(name.to_string())
+                .or_default() += 1;
+        }
         self.read_file("state", name)
     }
 

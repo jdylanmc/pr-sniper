@@ -706,6 +706,25 @@ pub fn views(store: &Store, job: &QueueJob) -> Result<Vec<View>, String> {
     let reviews = store.review_evidence()?;
     let replies = store.load_follow_ups()?;
     let settings = store.load_settings()?;
+    let publications = store.load_publications()?;
+    Ok(views_from_evidence(
+        job,
+        &settings,
+        &ledger,
+        &reviews,
+        &replies,
+        &publications,
+    ))
+}
+
+pub(crate) fn views_from_evidence(
+    job: &QueueJob,
+    settings: &crate::storage::Settings,
+    ledger: &Ledger,
+    reviews: &[crate::review::ReviewRun],
+    replies: &[FollowUp],
+    publications: &[Publication],
+) -> Vec<View> {
     let mut views = Vec::new();
     for record in ledger.records.iter().filter(|r| same_pr(&r.job, job)) {
         let context = &record.context;
@@ -790,11 +809,7 @@ pub fn views(store: &Store, job: &QueueJob) -> Result<Vec<View>, String> {
             reason,
         });
     }
-    for origin in store
-        .load_publications()?
-        .iter()
-        .filter(|p| same_pr(&p.review.job, job))
-    {
+    for origin in publications.iter().filter(|p| same_pr(&p.review.job, job)) {
         if let Some(receipt) = origin
             .receipts
             .last()
@@ -826,5 +841,5 @@ pub fn views(store: &Store, job: &QueueJob) -> Result<Vec<View>, String> {
             }
         }
     }
-    Ok(views)
+    views
 }
