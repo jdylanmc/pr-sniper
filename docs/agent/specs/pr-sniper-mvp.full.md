@@ -39,6 +39,8 @@ On 2026-10-14 the product owner approved removing the Status screen and the
 tray Status item. This amendment withdraws PR-001's status action only.
 Scheduler health is still recorded (PR-006); parked failures surface in Queue >
 Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
+For AC-019 visibility: repository-level poll failures without a queue item
+auto-resume per ADR 0007 and have no manual retry surface.
 The same approval replaces the Diagnostics screen and tray item with one
 Settings **Copy diagnostics** export of the same content-free text; PR-039 is
 met by that export ([ADR 0019](../../adr/0019-bounded-content-free-diagnostics.md)).
