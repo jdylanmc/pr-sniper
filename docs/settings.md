@@ -52,7 +52,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Agent = explicit Copilot account + real model that account returns + ordered list of 0..many Doctrines + prompt + signature. Provider and model are distinct. Single-doctrine selections stay compatible; empty list = none. Bodies compose in selected order, not library order. Missing, unavailable or legacy selections stay visible, never silently replaced. Agent editor shows a reconnect-required row with **Fix**.
 - Prompts, principles and signatures are editable. Never put credentials in doctrines, prompts or config fields.
 - Old Agents without AI account binding stay unconfigured until updated. Disconnecting an AI account keeps dependent Agents and assignments.
-- Renaming a Doctrine updates references atomically. Referenced Doctrines and Agents cannot be deleted until references are repaired.
+- Doctrines and Voices have stable IDs; Agents reference IDs. Renaming changes the title only. Referenced Doctrines and Agents cannot be deleted until references are repaired.
 - Doctrine checklist: filter and scroll by mouse or keyboard, 0..many selected. Filtering keeps hidden selections.
 - Save applies that resource only. Back/Cancel discards that editor's unsaved fields only.
 - Doctrine editor shows sharing users; delete refused while referenced. Unreferenced delete is confirmed and keeps completed review evidence.
@@ -61,7 +61,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 ## Voices
 
-- Library like Doctrines: list drills into an editor; floating **New voice**; trash icon per row; delete refused while an Agent uses it; rename updates Agents.
+- Library like Doctrines: list drills into an editor; floating **New voice**; trash icon per row; delete refused while an Agent uses it; rename changes the title only.
 - Voice = title + style text + **Fixed guardrails** checkbox (default on). Label: "Fixed guardrails: tone only; critique code, never people".
 - Seeds: Caveman, Gilfoyle, Merlin (`src-tauri/voices`, embedded). Added once to a library that never held Voices (`voice_catalog_version` absent); never topped up. Deleted seeds and an empty library survive restart.
 - Agent editor: **Voice** row drills into None + library (radio). Default None. Missing selection stays visible as unavailable until changed.

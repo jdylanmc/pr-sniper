@@ -81,10 +81,12 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     let mut settings = store.load_settings().unwrap();
     settings.doctrines = vec![
         crate::storage::Doctrine {
+            id: String::new(),
             title: "code".into(),
             body: "Old code principles.".into(),
         },
         crate::storage::Doctrine {
+            id: String::new(),
             title: "domain".into(),
             body: "Obsolete domain principles.".into(),
         },
@@ -108,6 +110,10 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
         .as_object_mut()
         .unwrap()
         .remove("doctrine_catalog_version");
+    // Pre-catalog files referenced doctrines by title.
+    let agent = legacy["agents"][0].as_object_mut().unwrap();
+    agent.remove("doctrine_ids");
+    agent.insert("doctrines".into(), serde_json::json!(["domain", "code"]));
     std::fs::write(
         root.path().join("config/settings.json"),
         serde_json::to_vec(&legacy).unwrap(),
@@ -115,7 +121,19 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     .unwrap();
     let resolved = store.load_settings().unwrap();
     assert_eq!(resolved.doctrines.len(), 10);
-    assert_eq!(resolved.agents[0].doctrine_titles(), ["code"]);
+    let titles: Vec<_> = resolved.agents[0]
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            &resolved
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .unwrap()
+                .title
+        })
+        .collect();
+    assert_eq!(titles, ["code"]);
     assert_eq!(std::fs::read(&evidence_path).unwrap(), evidence);
     let retained = store.load_reviews().unwrap().remove(0);
     assert_eq!(retained.selection, actual.selection);

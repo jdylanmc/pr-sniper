@@ -15,6 +15,7 @@ import {
   openPermissions,
   assignmentBack,
   chooseTimeZone,
+  agentDoctrineTitles,
 } from "./navigation.mjs";
 
 for (const [scenario, expression, timezone] of [
@@ -222,10 +223,8 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await modal.locator("input[name=doctrine][value=First]").check();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Second",
-    "First",
-  ]);
+  expect(await agentDoctrineTitles(store)).toEqual(["Second", "First"]);
+  const before = (await store("snapshot")).settings.agents[0];
   await section(page, "Doctrines");
   await page
     .locator(".doctrine-card")
@@ -238,10 +237,9 @@ test("legacy single doctrines become ordered selections, rename preserves refere
     .getByRole("button", { name: "Save doctrine", exact: true })
     .click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Second",
-    "Renamed",
-  ]);
+  expect(await agentDoctrineTitles(store)).toEqual(["Second", "Renamed"]);
+  // References are ids: the rename did not rewrite the Agent.
+  expect((await store("snapshot")).settings.agents[0]).toEqual(before);
   await page
     .locator(".doctrine-card")
     .first()
@@ -256,7 +254,7 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await page.reload();
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([]);
+  expect(await agentDoctrineTitles(store)).toEqual([]);
 });
 
 test("primary and independent opt-ins are reachable without scoped polling or legacy permission escalation", async ({

@@ -53,11 +53,11 @@ Saved review configuration: prompt, signature, ordered zero-or-more **Doctrines*
 _Avoid_: Bot, reviewer, development agent
 
 **Doctrine**:
-Shared, editable plain-text review principle selected per Agent. Referenced Doctrine cannot be deleted; rename updates references. Edits and deletions, even an empty library, survive restart; the library is never topped up. Holds no credentials.
+Shared, editable plain-text review principle: ID, title, body. Agents reference it by ID, in their own order; rename changes the title only, never Agents. Titles unique (case-insensitive). Referenced Doctrine cannot be deleted; a reference with no entry shows as unavailable until removed. Edits and deletions, even an empty library, survive restart; the library is never topped up. Holds no credentials.
 _Avoid_: Skill, prompt snippet
 
 **Voice**:
-Shared, editable plain-text writing style selected per Agent (zero or one; default none). Same library rules as **Doctrine**: referenced Voice cannot be deleted; rename updates references; edits and deletions, even an empty library, survive restart; seeds added once, never topped up. Holds no credentials. Tone only for the Primary Agent's human-facing text (comments, replies, exit body); reports and agent-to-agent text stay caveman. Fixed guardrails (default on) add the host's guard. Never changes rules, tools, permissions, gates or exits. See [ADR 0022](docs/adr/0022-voices.md).
+Shared, editable plain-text writing style: ID, title, body and Fixed guardrails flag, selected per Agent by ID (zero or one; default none). Same library rules as **Doctrine**: referenced Voice cannot be deleted; rename never touches Agents; edits and deletions, even an empty library, survive restart; seeds added once, never topped up. Holds no credentials. Tone only for the Primary Agent's human-facing text (comments, replies, exit body); reports and agent-to-agent text stay caveman. Fixed guardrails (default on) add the host's guard. Never changes rules, tools, permissions, gates or exits. See [ADR 0022](docs/adr/0022-voices.md).
 _Avoid_: Persona, tone prompt
 
 **Primary Agent**:

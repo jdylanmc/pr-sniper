@@ -41,7 +41,19 @@ async function accountFixture(page) {
 
 async function open(page, store, agent = {}) {
   const settings = (await store("snapshot")).settings;
-  settings.agents = [{ ...fixtureAgent, doctrines: [], ...agent }];
+  // Fixtures name references by title: Doctrine titles migrate on save; the
+  // Voice title is looked up here.
+  const { voice, ...rest } = agent;
+  settings.agents = [
+    {
+      ...fixtureAgent,
+      doctrines: [],
+      ...rest,
+      ...(voice
+        ? { voice_id: settings.voices.find((v) => v.title === voice).id }
+        : {}),
+    },
+  ];
   await store("seed_settings", settings);
   await accountFixture(page);
   await page.goto("/");
@@ -66,6 +78,20 @@ const openAgent = async (page, name = fixtureAgent.name) => {
 test.use({ viewport: { width: 408, height: 744 } });
 
 const voices = async (store) => (await store("snapshot")).settings.voices;
+/** The first Agent's references by id, resolved to library titles. */
+const refs = async (store) => {
+  const settings = (await store("snapshot")).settings;
+  const agent = settings.agents[0];
+  return {
+    agent,
+    voice: settings.voices.find((v) => v.id === agent.voice_id)?.title,
+    doctrines: (agent.doctrine_ids ?? []).map(
+      (id) => settings.doctrines.find((d) => d.id === id)?.title ?? id,
+    ),
+  };
+};
+const uuid =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 for (const width of [408, 320]) {
   test(`Voices library drills in, adds with the floating pill and persists the guard at ${width}px`, async ({
@@ -133,7 +159,10 @@ for (const width of [408, 320]) {
       .getByRole("button", { name: "Save voice", exact: true })
       .click();
     await expect(modal).toHaveCount(0);
-    expect((await voices(store)).at(-1)).toEqual({
+    const created = (await voices(store)).at(-1);
+    expect(created.id).toMatch(uuid);
+    expect(created).toEqual({
+      id: created.id,
       title: "Pirate",
       body: "Arr.",
       guardrails: false,
@@ -167,12 +196,13 @@ test("edit keeps focus on the renamed row and seeds stay deleted after restart",
 }) => {
   await open(page, store);
   await section(page, "Voices");
+  const merlin = (await voices(store)).find((v) => v.title === "Merlin");
   const modal = await openVoice(page, "Merlin");
   await modal.getByLabel("Title", { exact: true }).fill("Wizard");
   await modal.getByRole("button", { name: "Save voice", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await expect(
-    page.locator('[data-focus-key="voice:Wizard:edit"]'),
+    page.locator(`[data-focus-key="voice:${merlin.id}:edit"]`),
   ).toBeFocused();
 
   await card(page, "voice", "Gilfoyle").locator("[data-remove]").click();
@@ -222,7 +252,8 @@ test("Agent Voice drills in with None by default, renames follow and in-use dele
   ).toBeFocused();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].voice).toBe("Gilfoyle");
+  const chosen = await refs(store);
+  expect(chosen.voice).toBe("Gilfoyle");
 
   await section(page, "Voices");
   await expect(
@@ -243,7 +274,9 @@ test("Agent Voice drills in with None by default, renames follow and in-use dele
   await voice.getByRole("button", { name: "Save voice", exact: true }).click();
   await expect(voice).toHaveCount(0);
   const saved = (await store("snapshot")).settings;
-  expect(saved.agents[0].voice).toBe("Sysadmin");
+  // Rename changes the title only; the Agent keeps the same id.
+  expect(saved.agents[0]).toEqual(chosen.agent);
+  expect((await refs(store)).voice).toBe("Sysadmin");
   expect(saved.voices.map((v) => v.title)).toEqual([
     "Caveman",
     "Sysadmin",
@@ -262,7 +295,7 @@ test("Agent Voice drills in with None by default, renames follow and in-use dele
   await page.locator("[data-panel-back]").click();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].voice).toBeUndefined();
+  expect((await store("snapshot")).settings.agents[0].voice_id).toBeUndefined();
   await section(page, "Voices");
   voice = await openVoice(page, "Sysadmin");
   await voice
@@ -291,24 +324,20 @@ test("an unavailable Voice selection stays visible until explicitly replaced", a
     };
   });
   await open(page, store, { voice: "Merlin" });
+  const gone = `${(await store("snapshot")).settings.agents[0].voice_id} (unavailable)`;
   const modal = await openAgent(page);
-  await expect(modal.locator("[data-voice-summary]")).toHaveText(
-    "Merlin (unavailable)",
-  );
+  await expect(modal.locator("[data-voice-summary]")).toHaveText(gone);
   await modal
     .getByRole("button", { name: "Choose voice", exact: true })
     .click();
-  const missing = modal.getByRole("radio", {
-    name: "Merlin (unavailable)",
-    exact: true,
-  });
+  const missing = modal.getByRole("radio", { name: gone, exact: true });
   await expect(missing).toBeChecked();
   await expect(missing).toBeDisabled();
   await expect(modal.locator("[data-voice-choice]")).toHaveText([
     "None",
     "Caveman",
     "Gilfoyle",
-    "Merlin (unavailable)",
+    gone,
   ]);
   await modal.getByRole("radio", { name: "Caveman", exact: true }).check();
   await expect(modal.locator("[data-voice-summary]")).toHaveText("Caveman");
@@ -347,7 +376,8 @@ test("job details show the captured Voice; legacy jobs show it unavailable", asy
   const fixture = await queueFixture(store);
   const review = fixture.review(9);
   const settings = (await store("snapshot")).settings;
-  review.selection.agent.voice = "Merlin";
+  const merlin = "8f14e45f-ceea-4e67-a3f5-1d2c3b4a5f6e";
+  review.selection.agent.voice_id = merlin;
   review.selection.configuration = {
     repository: settings.repositories.find(
       (r) => r.id === review.job.configuration_id,
@@ -361,6 +391,7 @@ test("job details show the captured Voice; legacy jobs show it unavailable", asy
     },
     doctrines: [],
     voice: {
+      id: merlin,
       title: "Merlin",
       body: "Captured wizard style.",
       guardrails: false,
@@ -390,13 +421,13 @@ test("job details show the captured Voice; legacy jobs show it unavailable", asy
   await expect(captured).toContainText(/Fixed guardrails\s*No/);
   delete review.selection.configuration.voice;
   captured = await show();
-  await expect(captured).toContainText("Merlin (unavailable)");
+  await expect(captured).toContainText(`${merlin} (unavailable)`);
   await expect(captured).not.toContainText("Captured wizard style.");
   // A teammate's packet never carried its Agent's Voice.
   review.selection.configuration.authority.primary = false;
   captured = await show();
   await expect(captured).toContainText(/Voice\s*None/);
-  await expect(captured).not.toContainText("Merlin (unavailable)");
+  await expect(captured).not.toContainText(`${merlin} (unavailable)`);
   await expect(captured).not.toContainText("Fixed guardrails");
 });
 
@@ -407,7 +438,7 @@ const renamedInPicker = [
     from: "Merlin",
     to: "Wizard",
     open: "Choose voice",
-    stored: (agent) => agent.voice,
+    stored: (r) => r.voice,
     save: "Save voice",
   },
   {
@@ -416,7 +447,7 @@ const renamedInPicker = [
     from: "code",
     to: "code-renamed",
     open: "Choose doctrines",
-    stored: (agent) => agent.doctrines,
+    stored: (r) => r.doctrines,
     save: "Save doctrine",
   },
 ];
@@ -440,8 +471,8 @@ for (const c of renamedInPicker) {
       .getByRole("button", { name: "Save agent", exact: true })
       .click();
     await expect(modal).toHaveCount(0);
-    let agent = (await store("snapshot")).settings.agents[0];
-    expect(c.stored(agent)).toEqual(c.kind === "voice" ? c.to : [c.to]);
+    const before = await refs(store);
+    expect(c.stored(before)).toEqual(c.kind === "voice" ? c.to : [c.to]);
 
     // Rename back through the picker, then another window edits the Agent.
     modal = await openAgent(page);
@@ -454,7 +485,9 @@ for (const c of renamedInPicker) {
     await back.getByRole("button", { name: c.save, exact: true }).click();
     await expect(back).toHaveCount(0);
     await page.locator("[data-panel-back]").click();
-    agent = (await store("snapshot")).settings.agents[0];
+    let agent = (await store("snapshot")).settings.agents[0];
+    // The renames never rewrote the Agent.
+    expect(agent).toEqual(before.agent);
     await store("save_resource", {
       edit: {
         kind: "agent",
@@ -470,8 +503,108 @@ for (const c of renamedInPicker) {
       "Resource changed in another window",
     );
     await expect(modal).toHaveCount(1);
-    agent = (await store("snapshot")).settings.agents[0];
-    expect(agent.prompt).toBe("Changed in another window.");
-    expect(c.stored(agent)).toEqual(c.kind === "voice" ? c.from : [c.from]);
+    const after = await refs(store);
+    expect(after.agent.prompt).toBe("Changed in another window.");
+    expect(c.stored(after)).toEqual(c.kind === "voice" ? c.from : [c.from]);
   });
 }
+
+const renameInPicker = async (page, modal, kind, from, to) => {
+  await modal
+    .getByRole("button", { name: `Edit ${kind} ${from}`, exact: true })
+    .click();
+  const library = editor(page, `Editing ${from}`);
+  await library.getByLabel("Title", { exact: true }).fill(to);
+  await library
+    .getByRole("button", { name: `Save ${kind}`, exact: true })
+    .click();
+  await expect(library).toHaveCount(0);
+  await page.locator("[data-panel-back]").click();
+};
+const saveAgent = async (store, modal) => {
+  await modal.getByRole("button", { name: "Save agent", exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  return refs(store);
+};
+
+test("a pencil rename of a non-last doctrine keeps the Agent's doctrine order", async ({
+  page,
+  store,
+}) => {
+  await open(page, store, { doctrines: ["code", "data", "testing"] });
+  const modal = await openAgent(page);
+  await modal
+    .getByRole("button", { name: "Choose doctrines", exact: true })
+    .click();
+  await renameInPicker(page, modal, "doctrine", "data", "zz-data");
+  const saved = await saveAgent(store, modal);
+  expect(saved.doctrines).toEqual(["code", "zz-data", "testing"]);
+});
+
+test("case-only pencil renames keep the new casing for legacy doctrine and Voice", async ({
+  page,
+  store,
+}) => {
+  const settings = await open(page, store, { voice: "Merlin" });
+  // Legacy single-doctrine Agent: no `doctrines` list.
+  settings.agents[0] = {
+    ...settings.agents[0],
+    doctrine: "code",
+  };
+  delete settings.agents[0].doctrines;
+  await store("seed_settings", settings);
+  await page.reload();
+  await tab(page, "Settings").click();
+  const modal = await openAgent(page);
+  await modal
+    .getByRole("button", { name: "Choose doctrines", exact: true })
+    .click();
+  await renameInPicker(page, modal, "doctrine", "code", "Code");
+  await modal
+    .getByRole("button", { name: "Choose voice", exact: true })
+    .click();
+  await renameInPicker(page, modal, "voice", "Merlin", "merlin");
+  const saved = await saveAgent(store, modal);
+  expect(saved.doctrines).toEqual(["Code"]);
+  expect(saved.agent.doctrine).toBeUndefined();
+  expect(saved.agent.doctrines).toBeUndefined();
+  expect(saved.voice).toBe("merlin");
+});
+
+test("an unmatched legacy doctrine title stays as a visible unavailable reference until removed", async ({
+  page,
+  store,
+}) => {
+  // Seeding migrates titles to ids; "Gone" has no entry and is kept as is.
+  await open(page, store, { doctrines: ["code", "Gone"] });
+  expect((await refs(store)).doctrines).toEqual(["code", "Gone"]);
+  const modal = await openAgent(page);
+  await expect(modal.locator("[data-doctrine-summary]")).toHaveText(
+    "2 selected",
+  );
+  await modal
+    .getByRole("button", { name: "Choose doctrines", exact: true })
+    .click();
+  const gone = modal.getByRole("checkbox", {
+    name: "Gone (unavailable)",
+    exact: true,
+  });
+  await expect(gone).toBeChecked();
+  await expect(
+    modal.getByRole("button", { name: "Edit doctrine Gone (unavailable)" }),
+  ).toHaveCount(0);
+  await page.locator("[data-panel-back]").click();
+  await modal.locator("textarea[name=prompt]").fill("Kept reference.");
+  let saved = await saveAgent(store, modal);
+  expect(saved.doctrines).toEqual(["code", "Gone"]);
+  const again = await openAgent(page);
+  await again
+    .getByRole("button", { name: "Choose doctrines", exact: true })
+    .click();
+  await again
+    .getByRole("checkbox", { name: "Gone (unavailable)", exact: true })
+    .uncheck();
+  await page.locator("[data-panel-back]").click();
+  saved = await saveAgent(store, again);
+  expect(saved.doctrines).toEqual(["code"]);
+});

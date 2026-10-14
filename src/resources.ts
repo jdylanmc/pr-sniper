@@ -44,13 +44,13 @@ export type ResourceEdit =
   | { kind: "agent"; id: string; expected: Agent | null; value: Agent | null }
   | {
       kind: "doctrine";
-      title: string;
+      id: string;
       expected: Doctrine | null;
       value: Doctrine | null;
     }
   | {
       kind: "voice";
-      title: string;
+      id: string;
       expected: Voice | null;
       value: Voice | null;
     }
@@ -157,7 +157,8 @@ export interface ReviewSelection {
   };
 }
 
-/** Update only the committed resource and its rename references. Other draft
+/** Update only the committed resource (library entries by id; Agents are
+ * never rewritten by a rename). Other draft
  * values and their compare-and-save baselines deliberately stay untouched. */
 export function acceptResource(
   settings: Settings,
@@ -189,40 +190,18 @@ export function acceptResource(
     } else if (index >= 0) settings.repositories.splice(index, 1);
     else if (value) settings.repositories.push(value);
   } else if (edit.kind === "voice") {
-    const key = (title: string) => title.trim().toLowerCase();
-    const value = committed.voices?.find(
-      (v) => key(v.title) === key(edit.value?.title ?? edit.title),
-    );
-    const index = (settings.voices ??= []).findIndex(
-      (v) => key(v.title) === key(edit.title),
-    );
+    // By id: a rename never touches Agents, which reference the id.
+    const value = committed.voices?.find((v) => v.id === edit.id);
+    const index = (settings.voices ??= []).findIndex((v) => v.id === edit.id);
     if (index >= 0) settings.voices.splice(index, 1, ...(value ? [value] : []));
     else if (value) settings.voices.push(value);
-    if (edit.value)
-      for (const agent of settings.agents ?? [])
-        if (agent.voice && key(agent.voice) === key(edit.title))
-          agent.voice = edit.value.title;
   } else {
-    const key = (title: string) => title.trim().toLowerCase();
-    const value = committed.doctrines?.find(
-      (d) => key(d.title) === key(edit.value?.title ?? edit.title),
-    );
+    const value = committed.doctrines?.find((d) => d.id === edit.id);
     const index = (settings.doctrines ??= []).findIndex(
-      (d) => key(d.title) === key(edit.title),
+      (d) => d.id === edit.id,
     );
     if (index >= 0)
       settings.doctrines.splice(index, 1, ...(value ? [value] : []));
     else if (value) settings.doctrines.push(value);
-    if (edit.value) {
-      const title = edit.value.title;
-      for (const agent of settings.agents ?? []) {
-        if (agent.doctrine && key(agent.doctrine) === key(edit.title))
-          agent.doctrine = title;
-        if (agent.doctrines)
-          agent.doctrines = agent.doctrines.map((d) =>
-            key(d) === key(edit.title) ? title : d,
-          );
-      }
-    }
   }
 }

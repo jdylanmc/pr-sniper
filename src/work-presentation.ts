@@ -434,8 +434,8 @@ export function renderConfiguration(
       // Teammate packets never carry a Voice; a primary's missing capture is legacy.
       else
         details.append(
-          agent.voice && selection.configuration.authority.primary
-            ? `${agent.voice} (unavailable)`
+          agent.voice_id && selection.configuration.authority.primary
+            ? `${agent.voice_id} (unavailable)`
             : "None",
         );
     } else {

@@ -41,6 +41,7 @@ pub fn doctrines() -> Vec<Doctrine> {
     ]
     .into_iter()
     .map(|(title, source)| Doctrine {
+        id: uuid::Uuid::new_v4().to_string(),
         title: title.into(),
         body: body("doctrine", source),
     })
@@ -48,10 +49,12 @@ pub fn doctrines() -> Vec<Doctrine> {
 }
 
 /// Seeded once into a library that has never held Voices; never topped up.
+/// Fresh UUIDs per call: seeding is gated by catalog versions, not ids.
 pub fn voices() -> Vec<Voice> {
     sources!["voices", "voice": "caveman", "gilfoyle", "merlin"]
         .into_iter()
         .map(|(slug, source)| Voice {
+            id: uuid::Uuid::new_v4().to_string(),
             title: slug[..1].to_uppercase() + &slug[1..],
             body: body("voice", source),
             guardrails: true,

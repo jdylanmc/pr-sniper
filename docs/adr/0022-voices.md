@@ -8,9 +8,9 @@ Owner request (2026-10-14): Agents may speak in a configured style. Voices are o
 
 ## Decision
 
-- **Library.** `Settings.voices`: shared, title-keyed, plain text, like Doctrines. Same storage helpers (`replace_entry`, `library_titles`). Compare-and-save edit `ResourceEdit::Voice`. Referenced Voice cannot be deleted; rename updates Agents. No credentials.
+- **Library.** `Settings.voices`: shared `{id, title, body, guardrails}`, like Doctrines. Same storage helpers (`replace_entry`, `library_ids`). Compare-and-save edit `ResourceEdit::Voice` by id. Referenced Voice cannot be deleted; rename changes the title only. No credentials.
 - **Seeds.** Caveman, Gilfoyle, Merlin (`src-tauri/voices/*.voice.md`, embedded). Seeded once into files without `voice_catalog_version` and into fresh stores. Never topped up: deleted seeds and an empty library survive restart.
-- **Cardinality.** `Agent.voice`: zero or one title, default none. Agents saved before Voices load with none. Missing selection stays visible; save rejects it until repaired.
+- **Cardinality.** `Agent.voice_id`: zero or one id, default none. Agents saved before Voices load with none. A missing id stays visible as unavailable; a save may keep it but never add one.
 - **Guardrails.** `Voice.guardrails`, default on (seeds, new Voices, entries without the field). On: host adds the fixed guard. Off: only the Voice body.
 - **Packet.** Schema 5. A `## Voice` section after Directive, before Exits, only for a primary whose Agent has a Voice. Teammates get none: their only output is a caveman `submit_report`.
 
@@ -22,6 +22,16 @@ Owner request (2026-10-14): Agents may speak in a configured style. Voices are o
 
 - **Host rules stay.** Rules, `<untrusted>` fencing, exit gates, tool sets and host-owned writes are unchanged whatever the Voice says or whether guardrails are off.
 - **Evidence.** `ExecutionConfiguration.voice` snapshots title, body and guard flag at job start, for primaries only (what the packet carries). A teammate's Voice is validated but not captured; its job details show none. Never rewritten by later edits. Legacy jobs: none, never rebuilt.
+
+## Library entries are ID-keyed (Doctrines too)
+
+Owner decision (2026-10-14): Doctrines and Voices are prompt blurbs with an ID and a title.
+
+- `Doctrine {id, title, body}`, `Voice {id, title, body, guardrails}`. `id`: UUID v4 at creation, seeding or migration; never changed. Titles stay unique (case-insensitive) for display.
+- Agents reference by id: `doctrine_ids` (ordered), `voice_id`. Rename edits the entry only; no Agent rewrite. Delete refused while any Agent holds the id.
+- Dangling references persist and show as unavailable (never dropped or remapped). Agent saves may keep them, not add them. A job with one cannot start.
+- Migration on load (and on whole-settings saves): ids for id-less entries; legacy `doctrine`/`doctrines` titles to ids (trimmed, case-insensitive; list supersedes single as before). Unmatched title stays as its own reference (shows as unavailable with that title). Idempotent; written once. Pre-catalog reconciliation still runs first on titles. See [Local data](../local-data.md).
+- Job snapshots record `{id, title, body}`; older evidence keeps its title-only shape and is never rebuilt. Packet text unchanged (titles and bodies; ids internal), so no schema bump.
 
 ## Consequences
 

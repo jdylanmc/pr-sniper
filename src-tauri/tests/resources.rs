@@ -13,7 +13,7 @@ const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const ASSIGNMENT: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 fn settings() -> Settings {
-    serde_json::from_value(json!({
+    let mut settings: Settings = serde_json::from_value(json!({
         "launch_at_login": false,
         "doctrines": [
             {"title":"Correctness","body":"Trace state transitions."},
@@ -35,7 +35,24 @@ fn settings() -> Settings {
             }]
         }]
     }))
-    .unwrap()
+    .unwrap();
+    // Pre-id shape in, current shape out (ids, Agent references by id).
+    settings.migrate_library_ids();
+    settings
+}
+
+fn titles(settings: &Settings, agent: usize) -> Vec<String> {
+    settings.agents[agent]
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            settings
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .map_or_else(|| format!("{id} (unavailable)"), |d| d.title.clone())
+        })
+        .collect()
 }
 
 fn job() -> QueueJob {
@@ -427,37 +444,48 @@ fn validation_and_failed_writes_preserve_the_last_valid_bytes() {
 }
 
 #[test]
-fn doctrine_rename_preserves_all_references_and_deletion_requires_repair() {
+fn doctrine_rename_changes_only_the_title_and_deletion_requires_repair() {
     let fixture = Fixture::new();
     let store = fixture.store();
     let mut original = settings();
-    original.agents[0].doctrines = Some(vec!["correctness".into(), "Boundaries".into()]);
+    let correctness = original.doctrines[0].clone();
+    let boundaries = original.doctrines[1].clone();
+    original.agents[0].doctrine_ids = vec![correctness.id.clone(), boundaries.id.clone()];
     store.save_settings(&original).unwrap();
-    let doctrine = original.doctrines[0].clone();
+    let agent_json = serde_json::to_value(&original.agents[0]).unwrap();
     assert!(store
         .save_resource(ResourceEdit::Doctrine {
-            title: doctrine.title.clone(),
-            expected: Some(doctrine.clone()),
+            id: correctness.id.clone(),
+            expected: Some(correctness.clone()),
             value: None,
         })
         .unwrap_err()
         .contains("used by an Agent"));
-    let mut renamed = doctrine.clone();
+    let mut renamed = correctness.clone();
     renamed.title = "State".into();
     renamed.body = "Edited library text.".into();
     let saved = store
         .save_resource(ResourceEdit::Doctrine {
-            title: doctrine.title.clone(),
-            expected: Some(doctrine),
+            id: correctness.id.clone(),
+            expected: Some(correctness.clone()),
             value: Some(renamed),
         })
         .unwrap();
-    assert_eq!(saved.agents[0].doctrine.as_deref(), Some("State"));
-    assert_eq!(
-        saved.agents[0].doctrine_titles(),
-        vec!["State", "Boundaries"]
-    );
+    // Agents reference ids: the rename never rewrites them.
+    assert_eq!(serde_json::to_value(&saved.agents[0]).unwrap(), agent_json);
+    assert_eq!(titles(&saved, 0), ["State", "Boundaries"]);
+    assert_eq!(saved.doctrines[0].id, correctness.id);
     assert_eq!(saved.repositories, original.repositories);
+    let mut moved = saved.doctrines[0].clone();
+    moved.id = uuid_like();
+    assert!(store
+        .save_resource(ResourceEdit::Doctrine {
+            id: correctness.id.clone(),
+            expected: Some(saved.doctrines[0].clone()),
+            value: Some(moved),
+        })
+        .unwrap_err()
+        .contains("stable identity"));
     assert!(store
         .save_resource(ResourceEdit::Agent {
             id: AGENT.into(),
@@ -483,7 +511,7 @@ fn doctrine_rename_preserves_all_references_and_deletion_requires_repair() {
     for doctrine in saved.doctrines {
         store
             .save_resource(ResourceEdit::Doctrine {
-                title: doctrine.title.clone(),
+                id: doctrine.id.clone(),
                 expected: Some(doctrine),
                 value: None,
             })
@@ -494,17 +522,27 @@ fn doctrine_rename_preserves_all_references_and_deletion_requires_repair() {
     assert!(reopened.agents.is_empty());
 }
 
+fn uuid_like() -> String {
+    "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f".into()
+}
+
 #[test]
 fn zero_one_many_doctrines_preserve_selection_order_and_legacy_loading() {
     let mut settings = settings();
     let resolve = |settings: &Settings| Selection::resolve(settings, &job(), ASSIGNMENT).unwrap();
+    // The legacy single title migrated to its id.
+    assert_eq!(titles(&settings, 0), ["Correctness"]);
     assert_eq!(
         resolve(&settings).doctrine.as_deref(),
         Some("Trace state transitions.")
     );
-    settings.agents[0].doctrines = Some(vec![]);
+    settings.agents[0].doctrine_ids = vec![];
     assert_eq!(resolve(&settings).doctrine, None);
-    settings.agents[0].doctrines = Some(vec!["Boundaries".into(), "Correctness".into()]);
+    let (correctness, boundaries) = (
+        settings.doctrines[0].id.clone(),
+        settings.doctrines[1].id.clone(),
+    );
+    settings.agents[0].doctrine_ids = vec![boundaries.clone(), correctness.clone()];
     let first = resolve(&settings);
     settings.doctrines.reverse();
     let reordered = resolve(&settings);
@@ -515,14 +553,17 @@ fn zero_one_many_doctrines_preserve_selection_order_and_legacy_loading() {
         first.configuration.as_ref().unwrap().doctrine_catalog
     );
     assert_eq!(first.doctrine.as_deref(), Some("## Boundaries\n\nKeep authority explicit.\n\n## Correctness\n\nTrace state transitions."));
+    let captured = &first.configuration.unwrap().doctrines[0];
     assert_eq!(
-        first.configuration.unwrap().doctrines[0].title,
-        "Boundaries"
+        (captured.id.as_str(), captured.title.as_str()),
+        (boundaries.as_str(), "Boundaries")
     );
-    settings.agents[0].doctrines = Some(vec!["Correctness".into(), " correctness ".into()]);
+    settings.agents[0].doctrine_ids = vec![correctness.clone(), correctness];
     assert!(settings.validate().is_err());
-    settings.agents[0].doctrines = Some(vec!["Missing".into()]);
-    assert!(settings.validate().is_err());
+    // A dangling reference stays visible; it cannot run.
+    settings.agents[0].doctrine_ids = vec!["Missing".into()];
+    settings.validate().unwrap();
+    assert!(Selection::resolve(&settings, &job(), ASSIGNMENT).is_err());
 }
 
 #[test]
@@ -686,7 +727,7 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
     doctrine.body = "Changed after execution.".into();
     store
         .save_resource(ResourceEdit::Doctrine {
-            title: doctrine.title.clone(),
+            id: doctrine.id.clone(),
             expected: Some(saved.doctrines[0].clone()),
             value: Some(doctrine),
         })

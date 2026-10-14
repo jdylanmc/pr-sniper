@@ -19,15 +19,18 @@ export interface WatchedIdentity {
   id: string;
   login: string;
 }
-/** A named review principle. Its title is also its slug -- there is no
- * separate id. Plain text, ~500 words recommended, never enforced. */
+/** A review principle: stable id, display title and plain-text body
+ * (~500 words recommended, never enforced). Agents reference the id. The id is
+ * absent only on job evidence recorded before ids. */
 export interface Doctrine {
+  id: string;
   title: string;
   body: string;
 }
-/** A named writing style for human-facing text. Title is the identity, like
- * a Doctrine. `guardrails` adds the host's fixed tone guard; default on. */
+/** A writing style for human-facing text: stable id, title, body.
+ * `guardrails` adds the host's fixed tone guard; default on. */
 export interface Voice {
+  id: string;
   title: string;
   body: string;
   guardrails: boolean;
@@ -40,9 +43,12 @@ export interface Agent {
   model: string;
   intelligence?: AgentIntelligence;
   ai_account?: AiAccount;
+  /** Legacy title references; only in job evidence recorded before ids. */
   doctrine?: string;
   doctrines?: string[];
-  voice?: string;
+  /** Ordered Doctrine ids; an id missing from the library is unavailable. */
+  doctrine_ids?: string[];
+  voice_id?: string;
   prompt: string;
   signature: string;
 }
@@ -108,8 +114,13 @@ export function defaultTools(
   return tools;
 }
 
-export const doctrineTitles = (agent: Agent): string[] =>
-  agent.doctrines ?? (agent.doctrine ? [agent.doctrine] : []);
+export const doctrineIds = (agent: Agent): string[] => agent.doctrine_ids ?? [];
+
+/** Agent-ordered Doctrine titles; a dangling reference shows as unavailable. */
+export const doctrineTitles = (agent: Agent, library: Doctrine[]): string[] =>
+  doctrineIds(agent).map(
+    (id) => library.find((d) => d.id === id)?.title ?? `${id} (unavailable)`,
+  );
 
 export function effectivePolicy(
   defaults: Policy,

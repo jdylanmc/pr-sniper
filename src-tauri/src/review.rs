@@ -31,7 +31,8 @@ pub struct Selection {
 pub struct ExecutionConfiguration {
     pub repository: Repository,
     pub authority: AssignmentAuthority,
-    /// In Agent-selected order, with the exact saved title and full body.
+    /// In Agent-selected order, with the exact saved id, title and full body
+    /// (no id on jobs that predate Doctrine ids).
     pub doctrines: Vec<Doctrine>,
     /// Absent on older jobs; never inferred from a later library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,25 +123,25 @@ impl Selection {
             );
         }
         let doctrines = agent
-            .doctrine_titles()
-            .into_iter()
-            .map(|title| {
+            .doctrine_ids
+            .iter()
+            .map(|id| {
                 settings
                     .doctrines
                     .iter()
-                    .find(|d| d.title.trim().to_lowercase() == title.trim().to_lowercase())
+                    .find(|d| &d.id == id)
                     .cloned()
                     .ok_or("The Agent's doctrine is unavailable.")
             })
             .collect::<Result<Vec<_>, _>>()?;
         let voice = agent
-            .voice
+            .voice_id
             .as_ref()
-            .map(|title| {
+            .map(|id| {
                 settings
                     .voices
                     .iter()
-                    .find(|v| v.title.trim().to_lowercase() == title.trim().to_lowercase())
+                    .find(|v| &v.id == id)
                     .cloned()
                     .ok_or("The Agent's Voice is unavailable.")
             })

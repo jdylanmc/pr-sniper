@@ -23,7 +23,7 @@ fn job() -> QueueJob {
 }
 
 fn settings() -> Settings {
-    serde_json::from_value(json!({
+    let mut settings: Settings = serde_json::from_value(json!({
         "launch_at_login":false,
         "repositories":[{
             "id":"repo","provider":"github","name":"example/repo","enabled":true,
@@ -37,7 +37,9 @@ fn settings() -> Settings {
             "prompt":"Look for correctness defects.","signature":"machine"
         }],
         "doctrines":[{"title":"Correctness","body":"Trace state transitions."}]
-    })).unwrap()
+    })).unwrap();
+    settings.migrate_library_ids();
+    settings
 }
 
 fn pull() -> PullRequest {

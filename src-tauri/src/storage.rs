@@ -150,21 +150,26 @@ impl Default for Settings {
     }
 }
 
-/// A named review principle. `title` is both the display label and the
-/// identity (its slug) -- there is no separate id field. Plain text body,
-/// ~500 words recommended but never enforced.
+/// A review principle: stable `id` (UUID v4, never changed), display
+/// `title` and plain-text `body` (~500 words recommended, never enforced).
+/// Agents reference it by id. `id` is empty only on pre-id settings (migrated
+/// on load) and pre-id job evidence (kept as recorded).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Doctrine {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     pub body: String,
 }
 
-/// A named writing style for text an Agent writes for humans. Like a
-/// Doctrine, `title` is the identity. Plain text body.
+/// A writing style for text an Agent writes for humans: stable `id`, `title`,
+/// plain-text `body` and the fixed-guard flag. Agents reference it by id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Voice {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     pub body: String,
     /// The host adds its fixed tone guard to the packet. Default on.
@@ -176,13 +181,21 @@ fn guardrails_default() -> bool {
     true
 }
 
-/// A shared, title-keyed library entry (Doctrine, Voice).
+/// A shared, id-keyed library entry (Doctrine, Voice).
 trait LibraryEntry: Clone + PartialEq {
+    fn id(&self) -> &str;
+    fn id_mut(&mut self) -> &mut String;
     fn title(&self) -> &str;
     fn body(&self) -> &str;
 }
 
 impl LibraryEntry for Doctrine {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn id_mut(&mut self) -> &mut String {
+        &mut self.id
+    }
     fn title(&self) -> &str {
         &self.title
     }
@@ -192,6 +205,12 @@ impl LibraryEntry for Doctrine {
 }
 
 impl LibraryEntry for Voice {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn id_mut(&mut self) -> &mut String {
+        &mut self.id
+    }
     fn title(&self) -> &str {
         &self.title
     }
@@ -204,32 +223,41 @@ fn same_title(left: &str, right: &str) -> bool {
     left.trim().to_lowercase() == right.trim().to_lowercase()
 }
 
-/// Lower-cased titles; rejects empty or repeated titles and unsafe text.
-fn library_titles<T: LibraryEntry>(entries: &[T], plural: &str) -> Result<HashSet<String>, String> {
+/// Library ids. Rejects invalid or repeated ids, empty or repeated
+/// (case-insensitive) titles and unsafe text.
+fn library_ids<T: LibraryEntry>(entries: &[T], plural: &str) -> Result<HashSet<String>, String> {
+    let mut ids = HashSet::new();
     let mut titles = HashSet::new();
     for entry in entries {
+        if uuid::Uuid::parse_str(entry.id()).is_err() || !ids.insert(entry.id().to_string()) {
+            return Err(format!("{plural} need a unique stable identity."));
+        }
         if entry.title().trim().is_empty() || !titles.insert(entry.title().trim().to_lowercase()) {
             return Err(format!("{plural} need a unique, nonempty title."));
         }
         crate::policy::validate_configuration_text(entry.title())?;
         crate::policy::validate_configuration_text(entry.body())?;
     }
-    Ok(titles)
+    Ok(ids)
 }
 
-/// Compare-and-save one library entry. Callers rename references after success.
+/// Compare-and-save one library entry by id. A rename is a title change only:
+/// Agents reference the id and are never rewritten.
 fn replace_entry<T: LibraryEntry>(
     library: &mut Vec<T>,
-    title: &str,
+    id: &str,
     expected: Option<&T>,
     value: Option<T>,
     referenced: bool,
     noun: &str,
     conflict: &str,
 ) -> Result<(), String> {
-    let index = library.iter().position(|e| same_title(e.title(), title));
+    let index = library.iter().position(|e| e.id() == id);
     if index.map(|i| &library[i]) != expected {
         return Err(conflict.into());
+    }
+    if value.as_ref().is_some_and(|v| v.id() != id) {
+        return Err(format!("A {noun}'s stable identity cannot be changed."));
     }
     let in_use =
         "is used by an Agent. Remove or replace its references explicitly before deleting it.";
@@ -253,6 +281,16 @@ fn replace_entry<T: LibraryEntry>(
     }
 }
 
+/// Give every id-less library entry a fresh UUID v4. True when any changed.
+fn assign_ids<T: LibraryEntry>(entries: &mut [T]) -> bool {
+    let mut changed = false;
+    for entry in entries.iter_mut().filter(|e| e.id().is_empty()) {
+        *entry.id_mut() = uuid::Uuid::new_v4().to_string();
+        changed = true;
+    }
+    changed
+}
+
 /// A reusable review profile: model + ordered doctrines + optional Voice +
 /// prompt + signature. Referenced by id from repository assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,14 +304,20 @@ pub struct Agent {
     pub intelligence: Option<AgentIntelligence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_account: Option<AiAccount>,
+    /// Legacy title references (single, then ordered list). Converted to
+    /// `doctrine_ids` on load; kept only in recorded job evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine: Option<String>,
-    /// When present, including an empty list, supersedes the legacy single selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrines: Option<Vec<String>>,
-    /// Zero or one Voice title. Absent on Agents that predate Voices.
+    /// Ordered Doctrine ids. A reference with no library entry is unavailable
+    /// and stays until the user removes it; migrated unmatched titles keep
+    /// their title as the reference.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doctrine_ids: Vec<String>,
+    /// Zero or one Voice id. Absent on Agents that predate Voices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<String>,
+    pub voice_id: Option<String>,
     pub prompt: String,
     pub signature: String,
 }
@@ -401,6 +445,8 @@ pub struct GlobalPreferences {
 
 /// Compare-and-save only the addressed resource. None means create/delete,
 /// not an instruction to replace the rest of the Settings window.
+// A short-lived command value, one per save; boxing would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceEdit {
@@ -410,12 +456,12 @@ pub enum ResourceEdit {
         value: Option<Agent>,
     },
     Doctrine {
-        title: String,
+        id: String,
         expected: Option<Doctrine>,
         value: Option<Doctrine>,
     },
     Voice {
-        title: String,
+        id: String,
         expected: Option<Voice>,
         value: Option<Voice>,
     },
@@ -536,10 +582,23 @@ impl RepositoryAuthorization {
 impl Settings {
     pub fn doctrine_catalog(&self) -> DoctrineCatalog {
         use sha2::{Digest, Sha256};
+        // Title and body only, as before ids: stable across id assignment.
+        #[derive(Serialize)]
+        struct Content<'a> {
+            title: &'a str,
+            body: &'a str,
+        }
         let revision = |doctrines: &[Doctrine]| {
+            let content: Vec<_> = doctrines
+                .iter()
+                .map(|d| Content {
+                    title: &d.title,
+                    body: &d.body,
+                })
+                .collect();
             format!(
                 "{:x}",
-                Sha256::digest(serde_json::to_vec(doctrines).expect("Doctrine strings serialize"))
+                Sha256::digest(serde_json::to_vec(&content).expect("Doctrine strings serialize"))
             )
         };
         DoctrineCatalog {
@@ -707,8 +766,8 @@ impl Settings {
             Ok(())
         };
         validate_preset(&self.default_review_preset)?;
-        let doctrine_titles = library_titles(&self.doctrines, "Doctrines")?;
-        let voice_titles = library_titles(&self.voices, "Voices")?;
+        library_ids(&self.doctrines, "Doctrines")?;
+        library_ids(&self.voices, "Voices")?;
         let mut agent_ids = HashSet::new();
         let mut agent_names = HashSet::new();
         for agent in &self.agents {
@@ -724,21 +783,22 @@ impl Settings {
                         .into(),
                 );
             }
-            let mut selected = HashSet::new();
-            for title in agent.doctrine_titles() {
-                let key = title.trim().to_lowercase();
-                if !doctrine_titles.contains(&key) || !selected.insert(key) {
-                    return Err("Selected doctrines must exist and must not repeat. Repair the Agent's doctrine references before saving.".into());
-                }
+            // Unavailable references may persist (shown, never dropped); see
+            // `Store::validate_resource` for the rule that they cannot be added.
+            if agent.doctrine.is_some() || agent.doctrines.is_some() {
+                return Err("Agent doctrine references must use ids.".into());
             }
+            let mut selected = HashSet::new();
             if agent
-                .voice
-                .as_ref()
-                .is_some_and(|title| !voice_titles.contains(&title.trim().to_lowercase()))
+                .doctrine_ids
+                .iter()
+                .any(|id| id.trim().is_empty() || !selected.insert(id))
+                || agent
+                    .voice_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty())
             {
-                return Err(
-                    "The selected Voice must exist. Repair the Agent's Voice before saving.".into(),
-                );
+                return Err("Selected doctrines must not repeat. Repair the Agent's doctrine references before saving.".into());
             }
             crate::policy::validate_configuration_text(&agent.name)?;
             crate::policy::validate_configuration_text(&agent.model)?;
@@ -927,11 +987,58 @@ fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<
 }
 
 impl Agent {
-    pub fn doctrine_titles(&self) -> Vec<&str> {
+    /// Legacy title references in selection order.
+    fn legacy_doctrine_titles(&self) -> Vec<&str> {
         match &self.doctrines {
             Some(titles) => titles.iter().map(String::as_str).collect(),
             None => self.doctrine.iter().map(String::as_str).collect(),
         }
+    }
+
+    /// References missing from the library: unavailable, never dropped.
+    pub fn unavailable_references(&self, settings: &Settings) -> Vec<&str> {
+        let doctrines = self
+            .doctrine_ids
+            .iter()
+            .filter(|id| !settings.doctrines.iter().any(|d| &d.id == *id));
+        let voice = self
+            .voice_id
+            .iter()
+            .filter(|id| !settings.voices.iter().any(|v| &v.id == *id));
+        doctrines.chain(voice).map(String::as_str).collect()
+    }
+}
+
+impl Settings {
+    /// Idempotent: ids for id-less library entries, then legacy Agent title
+    /// references to ids (trimmed, case-insensitive). An unmatched title stays
+    /// as its own reference, so it shows as unavailable. True when changed.
+    pub fn migrate_library_ids(&mut self) -> bool {
+        let mut changed = assign_ids(&mut self.doctrines) | assign_ids(&mut self.voices);
+        for agent in &mut self.agents {
+            if agent.doctrine.is_none() && agent.doctrines.is_none() {
+                continue;
+            }
+            let mut ids: Vec<String> = Vec::new();
+            for title in agent.legacy_doctrine_titles() {
+                let id = self
+                    .doctrines
+                    .iter()
+                    .find(|d| same_title(&d.title, title))
+                    .map_or_else(|| title.to_string(), |d| d.id.clone());
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            // A legacy list never mixes with ids; ids written earlier win.
+            if agent.doctrine_ids.is_empty() {
+                agent.doctrine_ids = ids;
+            }
+            agent.doctrine = None;
+            agent.doctrines = None;
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -1234,6 +1341,19 @@ impl Store {
                 if value.as_ref().is_some_and(|a| a.id != id) {
                     return Err("An Agent's stable identity cannot be changed.".into());
                 }
+                // Keeping an unavailable reference is allowed; adding one is not.
+                if let Some(value) = &value {
+                    let kept = current
+                        .map(|a| a.unavailable_references(&settings))
+                        .unwrap_or_default();
+                    if value
+                        .unavailable_references(&settings)
+                        .iter()
+                        .any(|id| !kept.contains(id))
+                    {
+                        return Err("Selected doctrines and Voice must exist. Choose saved library entries.".into());
+                    }
+                }
                 if value.is_none()
                     && settings
                         .repositories
@@ -1253,65 +1373,39 @@ impl Store {
                 }
             }
             ResourceEdit::Doctrine {
-                title,
+                id,
                 expected,
                 value,
             } => {
-                let matches = |value: &str| same_title(value, &title);
-                let referenced = settings
-                    .agents
-                    .iter()
-                    .any(|a| a.doctrine_titles().iter().any(|title| matches(title)));
-                let renamed = value.as_ref().map(|v| v.title.clone());
+                let referenced = settings.agents.iter().any(|a| a.doctrine_ids.contains(&id));
                 replace_entry(
                     &mut settings.doctrines,
-                    &title,
+                    &id,
                     expected.as_ref(),
                     value,
                     referenced,
                     "doctrine",
                     conflict,
                 )?;
-                if let Some(renamed) = renamed {
-                    for agent in &mut settings.agents {
-                        if let Some(titles) = &mut agent.doctrines {
-                            for title in titles.iter_mut().filter(|title| matches(title)) {
-                                *title = renamed.clone();
-                            }
-                        }
-                        if agent.doctrine.as_ref().is_some_and(|title| matches(title)) {
-                            agent.doctrine = Some(renamed.clone());
-                        }
-                    }
-                }
             }
             ResourceEdit::Voice {
-                title,
+                id,
                 expected,
                 value,
             } => {
-                let matches = |value: &str| same_title(value, &title);
                 let referenced = settings
                     .agents
                     .iter()
-                    .any(|a| a.voice.as_deref().is_some_and(matches));
-                let renamed = value.as_ref().map(|v| v.title.clone());
+                    .any(|a| a.voice_id.as_ref() == Some(&id));
                 replace_entry(
                     &mut settings.voices,
-                    &title,
+                    &id,
                     expected.as_ref(),
                     value,
                     referenced,
                     "voice",
                     conflict,
                 )?;
-                if let Some(renamed) = renamed {
-                    for agent in &mut settings.agents {
-                        if agent.voice.as_deref().is_some_and(matches) {
-                            agent.voice = Some(renamed.clone());
-                        }
-                    }
-                }
             }
             ResourceEdit::Repository {
                 id,
@@ -1481,6 +1575,8 @@ impl Store {
         mut settings: Settings,
         expected: &Settings,
     ) -> Result<Settings, String> {
+        // Whole-settings saves may carry pre-id library shapes.
+        settings.migrate_library_ids();
         let current = self.load_settings()?;
         if &current != expected {
             return Err("Settings changed in another window. Reload Settings before saving; your draft has not been written.".into());
@@ -1581,7 +1677,14 @@ impl Store {
                     removed_references += 1;
                 }
             }
-            if settings.doctrines != canonical || removed_references > 0 {
+            let content = |d: &Doctrine| (d.title.clone(), d.body.clone());
+            if !settings
+                .doctrines
+                .iter()
+                .map(content)
+                .eq(canonical.iter().map(content))
+                || removed_references > 0
+            {
                 settings.doctrine_reset = Some(DoctrineReset {
                     previous_count: settings.doctrines.len(),
                     removed_references,
@@ -1628,12 +1731,15 @@ impl Store {
         // Files without repositories to migrate are left byte-for-byte alone;
         // every later save stamps the version.
         let migrated_admission = migrate_admission && migrate_admission_rules(&mut settings);
+        // After the pre-alpha reconciliation, which still reads legacy titles.
+        let migrated_ids = settings.migrate_library_ids();
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
         if migrated
             || reconcile_doctrines
             || seed_voices
+            || migrated_ids
             || reconciled_permissions
             || migrated_admission
         {
@@ -1643,6 +1749,10 @@ impl Store {
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        // Callers may still hand in pre-id shapes (fixtures, imports).
+        let mut settings = settings.clone();
+        settings.migrate_library_ids();
+        let settings = &settings;
         settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;

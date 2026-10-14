@@ -287,7 +287,7 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
   const saved = (await store("snapshot")).settings;
   expect(saved.agents[0]).toEqual({
     ...fixtureAgent,
-    doctrines: ["api-renamed"],
+    doctrine_ids: [saved.doctrines.find((d) => d.title === "api-renamed").id],
   });
   expect(saved.presets).toEqual(settings.presets);
   expect(await page.evaluate(() => window.doctrineExecuted)).toBeUndefined();

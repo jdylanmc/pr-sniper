@@ -38,7 +38,7 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
 } from "./repositories";
-import { defaultTools, doctrineTitles } from "./policy";
+import { defaultTools, doctrineIds } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
@@ -1026,12 +1026,9 @@ export async function mountSettings(
   // ---------------------------------------------------------------- Doctrines
 
   const doctrineUsers = (doctrine: Doctrine) =>
-    agents().filter((agent) =>
-      doctrineTitles(agent).some(
-        (title) =>
-          title.trim().toLowerCase() === doctrine.title.trim().toLowerCase(),
-      ),
-    );
+    agents().filter((agent) => doctrineIds(agent).includes(doctrine.id));
+  const savedDoctrine = (id?: string) =>
+    clone(saved.doctrines?.find((d) => d.id === id) ?? null);
   const agentRepositories = (agent: Agent) =>
     repositories().filter((repository) =>
       (repository.assignments ?? []).some(
@@ -1293,7 +1290,7 @@ export async function mountSettings(
       row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${countLabel(doctrineUsers(doctrine).length, "Agent", "Agents")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
-          `doctrine:${doctrine.title}:${action}`;
+          `doctrine:${doctrine.id}:${action}`;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
         editDoctrine(event.currentTarget as HTMLButtonElement, doctrine);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
@@ -1317,9 +1314,8 @@ export async function mountSettings(
         try {
           await commitResource({
             kind: "doctrine",
-            title: doctrine.title,
-            expected:
-              saved.doctrines?.find((d) => d.title === doctrine.title) ?? null,
+            id: doctrine.id,
+            expected: savedDoctrine(doctrine.id),
             value: null,
           });
           render();
@@ -1352,10 +1348,8 @@ export async function mountSettings(
         ? {
             edit: {
               kind: "doctrine",
-              title: existing.title,
-              expected:
-                saved.doctrines?.find((d) => d.title === existing.title) ??
-                null,
+              id: existing.id,
+              expected: savedDoctrine(existing.id),
               value: null,
             },
             blocked: users.length ? "In use by an Agent" : "",
@@ -1378,23 +1372,27 @@ export async function mountSettings(
         if (
           doctrines().some(
             (d) =>
-              d !== existing && d.title.toLowerCase() === title.toLowerCase(),
+              d.id !== existing?.id &&
+              d.title.trim().toLowerCase() === title.toLowerCase(),
           )
         )
           throw "Title already used";
+        const value: Doctrine = {
+          id: existing?.id ?? newIdentity(),
+          title,
+          body: body.value,
+        };
         await commitResource(
           {
             kind: "doctrine",
-            title: existing?.title ?? title,
-            expected:
-              saved.doctrines?.find((d) => d.title === existing?.title) ?? null,
-            value: { title, body: body.value },
+            id: value.id,
+            expected: savedDoctrine(existing?.id),
+            value,
           },
           modal,
         );
-        if (existing) opener.dataset.focusKey = `doctrine:${title}:edit`;
         modal.close();
-        if (onDone) onDone({ title, body: body.value });
+        if (onDone) onDone(value);
         else render();
       } catch (cause) {
         alert.textContent = typeof cause === "string" ? cause : reason(cause);
@@ -1407,14 +1405,10 @@ export async function mountSettings(
 
   const plural = (count: number, noun: string) =>
     `${count} ${noun}${count === 1 ? "" : "s"}`;
-  const sameVoice = (left: string, right: string) =>
-    left.trim().toLowerCase() === right.trim().toLowerCase();
   const voiceUsers = (voice: Voice) =>
-    agents().filter(
-      (agent) => !!agent.voice && sameVoice(agent.voice, voice.title),
-    );
-  const savedVoice = (title?: string) =>
-    clone(saved.voices?.find((v) => v.title === title) ?? null);
+    agents().filter((agent) => agent.voice_id === voice.id);
+  const savedVoice = (id?: string) =>
+    clone(saved.voices?.find((v) => v.id === id) ?? null);
   const guardrailsLabel =
     "Fixed guardrails: tone only; critique code, never people";
 
@@ -1427,7 +1421,7 @@ export async function mountSettings(
       row.innerHTML = `<span class="resource-symbol">${icon("voices")}</span><div class="resource-copy"><h3>${escape(voice.title)}</h3><p class="resource-preview">${escape(voice.body)}</p><p class="word-count">${plural(words(voice.body), "word")} / ${plural(voiceUsers(voice).length, "Agent")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
-          `voice:${voice.title}:${action}`;
+          `voice:${voice.id}:${action}`;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
         editVoice(event.currentTarget as HTMLButtonElement, voice);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
@@ -1450,8 +1444,8 @@ export async function mountSettings(
         try {
           await commitResource({
             kind: "voice",
-            title: voice.title,
-            expected: savedVoice(voice.title),
+            id: voice.id,
+            expected: savedVoice(voice.id),
             value: null,
           });
           render();
@@ -1484,8 +1478,8 @@ export async function mountSettings(
         ? {
             edit: {
               kind: "voice",
-              title: existing.title,
-              expected: savedVoice(existing.title),
+              id: existing.id,
+              expected: savedVoice(existing.id),
               value: null,
             },
             blocked: users.length ? "In use by an Agent" : "",
@@ -1504,6 +1498,7 @@ export async function mountSettings(
         .querySelector<HTMLInputElement>("[name=title]")!
         .value.trim();
       const value: Voice = {
+        id: existing?.id ?? newIdentity(),
         title,
         body: body.value,
         guardrails:
@@ -1511,18 +1506,23 @@ export async function mountSettings(
       };
       try {
         if (!title || !body.value.trim()) throw "Title and style required";
-        if (voices().some((v) => v !== existing && sameVoice(v.title, title)))
+        if (
+          voices().some(
+            (v) =>
+              v.id !== existing?.id &&
+              v.title.trim().toLowerCase() === title.toLowerCase(),
+          )
+        )
           throw "Title already used";
         await commitResource(
           {
             kind: "voice",
-            title: existing?.title ?? title,
-            expected: savedVoice(existing?.title),
+            id: value.id,
+            expected: savedVoice(existing?.id),
             value,
           },
           modal,
         );
-        if (existing) opener.dataset.focusKey = `voice:${title}:edit`;
         modal.close();
         if (onDone) onDone(value);
         else render();
@@ -1633,23 +1633,38 @@ export async function mountSettings(
   const defaultSignature = (name: string, model: string) =>
     `\u{1F52B} pr-sniper(${slug(name, "agent")}:${slug(model, "model")})`;
   const voiceChoice = (
-    value: string,
+    id: string,
     label: string,
     checked: boolean,
     available = true,
   ) =>
-    `<div data-voice-choice ${available ? "" : "data-unavailable"}><label><input type="radio" name="voice" value="${escape(value)}" ${checked ? "checked" : ""} ${available ? "" : "disabled"} /><span>${escape(label)}</span></label>${value && available ? `<button type="button" data-edit-voice="${escape(value)}" aria-label="Edit voice ${escape(value)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`;
+    `<div data-voice-choice ${available ? "" : "data-unavailable"}><label><input type="radio" name="voice" value="${escape(id)}" ${checked ? "checked" : ""} ${available ? "" : "disabled"} /><span>${escape(label)}</span></label>${id && available ? `<button type="button" data-edit-voice="${escape(id)}" aria-label="Edit voice ${escape(label)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`;
   /** None first, then the library; a missing selection stays visible. */
   const voiceChoices = (selected: string) =>
     voiceChoice("", "None", !selected) +
     voices()
-      .map((v) => voiceChoice(v.title, v.title, sameVoice(v.title, selected)))
+      .map((v) => voiceChoice(v.id, v.title, v.id === selected))
       .join("") +
-    (selected && !voices().some((v) => sameVoice(v.title, selected))
+    (selected && !voices().some((v) => v.id === selected)
       ? voiceChoice(selected, `${selected} (unavailable)`, true, false)
       : "");
-  const doctrineChoice = (title: string, checked: boolean) =>
-    `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(title)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span><button type="button" data-edit-doctrine="${escape(title)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button></label>`;
+  /** `value` is the title (filtering); `data-doctrine-id` is the reference. */
+  const doctrineChoice = (
+    id: string,
+    title: string,
+    checked: boolean,
+    available = true,
+  ) =>
+    `<label data-doctrine-choice ${available ? "" : "data-unavailable"}><input type="checkbox" name="doctrine" value="${escape(title)}" data-doctrine-id="${escape(id)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span>${available ? `<button type="button" data-edit-doctrine="${escape(id)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button>` : ""}</label>`;
+  /** Library order, then the Agent's unavailable references (kept checked). */
+  const doctrineChoices = (selected: string[]) =>
+    doctrines()
+      .map((d) => doctrineChoice(d.id, d.title, selected.includes(d.id)))
+      .join("") +
+    selected
+      .filter((id) => !doctrines().some((d) => d.id === id))
+      .map((id) => doctrineChoice(id, `${id} (unavailable)`, true, false))
+      .join("");
 
   function editAgent(
     opener: HTMLElement,
@@ -1660,27 +1675,6 @@ export async function mountSettings(
     const expected = clone(
       saved.agents?.find((a) => a.id === existing?.id) ?? null,
     );
-    // A pencil rename from this editor commits first and the Store rewrites
-    // this Agent's reference. Apply exactly that rewrite to the baseline so
-    // only genuine concurrent Agent edits still conflict on Save.
-    const renameExpected = (
-      kind: "doctrine" | "voice",
-      from: string,
-      to: string,
-    ) => {
-      if (!expected || from === to) return;
-      const same = (title: string) =>
-        title.trim().toLowerCase() === from.trim().toLowerCase();
-      if (kind === "voice") {
-        if (expected.voice && same(expected.voice)) expected.voice = to;
-        return;
-      }
-      if (expected.doctrine && same(expected.doctrine)) expected.doctrine = to;
-      if (expected.doctrines)
-        expected.doctrines = expected.doctrines.map((title) =>
-          same(title) ? to : title,
-        );
-    };
     const modal = dialog(
       existing ? `Editing ${existing.name}` : "New agent",
       `<form><section class="agent-section"><label>Name<input name="name" required maxlength="80" value="${escape(existing?.name ?? "")}" placeholder="e.g. The Nitpicker" /></label>
@@ -1691,19 +1685,8 @@ export async function mountSettings(
         <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
         <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
         <p data-intelligence-status aria-live="polite"></p></section>
-        <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrines()
-          .map((d) =>
-            doctrineChoice(
-              d.title,
-              !!existing &&
-                doctrineTitles(existing).some(
-                  (t) =>
-                    t.trim().toLowerCase() === d.title.trim().toLowerCase(),
-                ),
-            ),
-          )
-          .join("")}</div><p data-no-doctrines hidden></p></fieldset>
-        <button type="button" class="doctrine-row" data-open-voices aria-label="Choose voice"><span>Voice</span><span class="doctrine-summary" data-voice-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-voices"><legend class="sr-only">Voice</legend><div class="voice-choices" role="radiogroup" aria-label="Available voices">${voiceChoices(existing?.voice ?? "")}</div></fieldset>
+        <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrineChoices(existing ? doctrineIds(existing) : [])}</div><p data-no-doctrines hidden></p></fieldset>
+        <button type="button" class="doctrine-row" data-open-voices aria-label="Choose voice"><span>Voice</span><span class="doctrine-summary" data-voice-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-voices"><legend class="sr-only">Voice</legend><div class="voice-choices" role="radiogroup" aria-label="Available voices">${voiceChoices(existing?.voice_id ?? "")}</div></fieldset>
         <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
         <p class="resource-impact">${assigned.length ? `Shared by ${countLabel(assigned.length, "repository", "repositories")}: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
@@ -1766,6 +1749,10 @@ export async function mountSettings(
       "[data-doctrine-filter]",
     )!;
     const list = modal.querySelector<HTMLElement>(".doctrine-choices")!;
+    const checkedDoctrines = () =>
+      [
+        ...list.querySelectorAll<HTMLInputElement>("[name=doctrine]:checked"),
+      ].map((input) => input.dataset.doctrineId!);
     let choices = [
       ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
     ];
@@ -1818,19 +1805,12 @@ export async function mountSettings(
         "[data-edit-doctrine]",
       );
       if (!pencil) return;
-      const title = pencil.dataset.editDoctrine!;
-      const doctrine = doctrines().find((d) => d.title === title);
+      const doctrine = doctrines().find(
+        (d) => d.id === pencil.dataset.editDoctrine,
+      );
       if (!doctrine) return;
-      editDoctrine(pencil, doctrine, (updated) => {
-        renameExpected("doctrine", title, updated.title);
-        const checked = new Set(
-          [...list.querySelectorAll<HTMLInputElement>("input:checked")].map(
-            (i) => (i.value === title ? updated.title : i.value),
-          ),
-        );
-        list.innerHTML = doctrines()
-          .map((d) => doctrineChoice(d.title, checked.has(d.title)))
-          .join("");
+      editDoctrine(pencil, doctrine, () => {
+        list.innerHTML = doctrineChoices(checkedDoctrines());
         choices = [
           ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
         ];
@@ -1843,12 +1823,10 @@ export async function mountSettings(
     const selectedVoice = () =>
       voiceList.querySelector<HTMLInputElement>("input:checked")?.value ?? "";
     const updateVoice = () => {
-      const value = selectedVoice();
-      modal.querySelector("[data-voice-summary]")!.textContent = !value
+      const id = selectedVoice();
+      modal.querySelector("[data-voice-summary]")!.textContent = !id
         ? "None"
-        : voices().some((v) => sameVoice(v.title, value))
-          ? value
-          : `${value} (unavailable)`;
+        : (voices().find((v) => v.id === id)?.title ?? `${id} (unavailable)`);
     };
     voiceList.addEventListener("change", updateVoice);
     updateVoice();
@@ -1874,15 +1852,10 @@ export async function mountSettings(
       );
       if (!pencil) return;
       event.preventDefault();
-      const title = pencil.dataset.editVoice!;
-      const voice = voices().find((v) => v.title === title);
+      const voice = voices().find((v) => v.id === pencil.dataset.editVoice);
       if (!voice) return;
-      editVoice(pencil, voice, (updated) => {
-        renameExpected("voice", title, updated.title);
-        const current = selectedVoice();
-        voiceList.innerHTML = voiceChoices(
-          current === title ? updated.title : current,
-        );
+      editVoice(pencil, voice, () => {
+        voiceList.innerHTML = voiceChoices(selectedVoice());
         updateVoice();
       });
     });
@@ -2229,19 +2202,12 @@ export async function mountSettings(
         .value.trim();
       const model =
         modal.querySelector<HTMLSelectElement>("[name=model]")!.value;
-      const selectedDoctrines = [
-        ...modal.querySelectorAll<HTMLInputElement>("[name=doctrine]:checked"),
-      ].map((input) => input.value);
-      const previousTitles = existing ? doctrineTitles(existing) : [];
-      const sameTitle = (a: string, b: string) =>
-        a.trim().toLowerCase() === b.trim().toLowerCase();
-      const selectedTitles = [
-        ...previousTitles.filter((title) =>
-          selectedDoctrines.some((d) => sameTitle(d, title)),
-        ),
-        ...selectedDoctrines.filter(
-          (title) => !previousTitles.some((d) => sameTitle(d, title)),
-        ),
+      // Agent-selected order by stable id: kept ones first, then additions.
+      const checked = checkedDoctrines();
+      const previous = existing ? doctrineIds(existing) : [];
+      const doctrineSelection = [
+        ...previous.filter((id) => checked.includes(id)),
+        ...checked.filter((id) => !previous.includes(id)),
       ];
       const voice = selectedVoice();
       const prompt =
@@ -2298,14 +2264,10 @@ export async function mountSettings(
             : {}),
           prompt,
           signature,
-          ...(existing &&
-          existing.doctrines === undefined &&
-          JSON.stringify(selectedTitles) === JSON.stringify(previousTitles)
-            ? existing.doctrine
-              ? { doctrine: existing.doctrine }
-              : {}
-            : { doctrines: selectedTitles }),
-          ...(voice ? { voice } : {}),
+          ...(doctrineSelection.length
+            ? { doctrine_ids: doctrineSelection }
+            : {}),
+          ...(voice ? { voice_id: voice } : {}),
         };
         await commitResource(
           {

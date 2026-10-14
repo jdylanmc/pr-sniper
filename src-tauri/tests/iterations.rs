@@ -456,6 +456,7 @@ fn running_primary_review() -> (Fixture, Store, ReviewRun) {
     }]))
     .unwrap();
     settings.repositories[0].review_preset = Some(settings.presets[0].id.clone());
+    settings.migrate_library_ids();
     store
         .save_preferences(settings, &store.load_settings().unwrap())
         .unwrap();
@@ -492,7 +493,7 @@ fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
             sibling.prompt = "A different sibling lens.".into();
             sibling.model = "another-model".into();
             sibling.ai_account.as_mut().unwrap().account_id = "44".into();
-            sibling.doctrines = Some(vec!["Boundaries".into()]);
+            sibling.doctrine_ids = vec![settings.doctrines[1].id.clone()];
             store
                 .save_resource(ResourceEdit::Agent {
                     id: sibling.id.clone(),
@@ -605,8 +606,8 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
                 settings.repositories[0].assignments[0].agent_id = settings.agents[1].id.clone();
             }
             "doctrine body" => settings.doctrines[0].body = "Changed own doctrine.".into(),
-            "doctrine order" => settings.agents[0].doctrines.as_mut().unwrap().reverse(),
-            "doctrine selection" => settings.agents[0].doctrines = Some(vec![]),
+            "doctrine order" => settings.agents[0].doctrine_ids.reverse(),
+            "doctrine selection" => settings.agents[0].doctrine_ids = vec![],
             "preset body" => settings.presets[0].body = "Changed preset instructions.".into(),
             "repository prompt" => {
                 settings.repositories[0].review_preset = None;

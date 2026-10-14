@@ -831,11 +831,15 @@ test("automation read recovery preserves pending pause and rejection across unre
   await expect(page.locator("#global-capacity")).toHaveValue("31");
   const settings = (await store("snapshot")).settings;
   expect(settings.capacity).toBe(4);
-  expect(settings.doctrines).toContainEqual({
+  const library = settings.doctrines.map(({ title, body }) => ({
+    title,
+    body,
+  }));
+  expect(library).toContainEqual({
     title: "Pending pause",
     body: "A separate saved resource.",
   });
-  expect(settings.doctrines).toContainEqual({
+  expect(library).toContainEqual({
     title: "Rejected pause",
     body: "Another separate resource.",
   });
