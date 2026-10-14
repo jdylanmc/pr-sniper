@@ -8,6 +8,7 @@ import {
   closeDialog,
   editAgent,
   section,
+  chooseTimeZone,
 } from "./navigation.mjs";
 
 test("a settings conflict keeps the draft until explicit discard and reload", async ({
@@ -58,7 +59,7 @@ test("global schedule helper matches the displayed and saved draft", async ({
   await section(page, "Preferences");
   await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
   await expect(page.locator("#global-cron")).toHaveValue("0 9 * * MON-FRI");
-  await page.locator("#global-timezone").fill("Europe/London");
+  await chooseTimeZone(page, "Europe/London");
   await saveChanges(page);
   expect((await store("snapshot")).settings.defaults.schedule).toEqual({
     kind: "cron",

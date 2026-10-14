@@ -1,7 +1,12 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
-import { newDoctrine, section, seedAgent } from "./navigation.mjs";
+import {
+  newDoctrine,
+  section,
+  seedAgent,
+  chooseTimeZone,
+} from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { clipboardWrites, recordClipboard } from "./diagnostics-copy.mjs";
 import { target } from "./paths.mjs";
@@ -165,7 +170,7 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
   ).toHaveCount(0);
   await capture(page, browserName, "saved-preferences");
   await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
-  await page.locator("#global-timezone").fill("America/New_York");
+  await chooseTimeZone(page, "America/New_York");
   await expect(page.locator("#automatic-review-start")).toHaveCount(0);
   for (const capacity of [1, 20, 4294967295]) {
     await page.locator("#global-capacity").fill(String(capacity));
@@ -239,6 +244,74 @@ for (const width of [408, 320]) {
   });
 }
 
+for (const width of [408, 320]) {
+  test(`Time zone is a dedicated full-width dropdown of host zones at ${width}px`, async ({
+    page,
+    store,
+  }) => {
+    await page.setViewportSize({ width, height: 744 });
+    await ready(page, store, true);
+    const select = page.locator("#global-timezone");
+    await expect(select).toHaveJSProperty("tagName", "SELECT");
+    await expect(select).toHaveValue("UTC");
+    await expect(select.locator("option")).not.toHaveCount(1);
+    const zones = await store("time_zones");
+    const options = await select
+      .locator("option")
+      .evaluateAll((all) => all.map((option) => option.value));
+    const system = await page.evaluate(
+      () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    expect([...options].sort()).toEqual([...zones].sort());
+    if (zones.includes(system)) expect(options[0]).toBe(system);
+    expect(options.slice(zones.includes(system) ? 1 : 0)).toEqual(
+      zones.filter((zone) => zone !== system),
+    );
+    await expect(page.locator("#save-status")).toHaveText("All changes saved");
+    const rows = await page.evaluate(() =>
+      ["#global-cron", "#cron-helper", "#global-timezone"].map((id) => {
+        const label = document.querySelector(id).closest("label");
+        const rect = label.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, width: rect.width };
+      }),
+    );
+    const [cron, helper, zone] = rows;
+    expect(zone.top).toBeGreaterThanOrEqual(helper.bottom - 0.5);
+    expect(helper.top).toBeGreaterThanOrEqual(cron.bottom - 0.5);
+    expect(zone.width).toBeCloseTo(cron.width, 0);
+  });
+}
+
+test("a saved time zone the host does not list stays selected and visibly unavailable", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      const value = await original(command, args);
+      return command === "time_zones"
+        ? value.filter((zone) => zone !== "UTC")
+        : value;
+    };
+  });
+  await ready(page, store, true);
+  const select = page.locator("#global-timezone");
+  await expect(select.locator("option")).not.toHaveCount(1);
+  await expect(select).toHaveValue("UTC");
+  await expect(select).toHaveAttribute("aria-invalid", "true");
+  await expect(select.locator("option").first()).toHaveText(
+    "UTC (unavailable)",
+  );
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  await chooseTimeZone(page, "Asia/Tokyo");
+  await expect(select).not.toHaveAttribute("aria-invalid");
+  await savePreferences(page);
+  expect((await store("snapshot")).settings.defaults.schedule.timezone).toBe(
+    "Asia/Tokyo",
+  );
+});
+
 test("invalid capacity keeps each rejected draft and the previous configuration bytes", async ({
   page,
   store,
@@ -301,7 +374,7 @@ test("failed preference and pause writes keep committed state and exact drafts",
   await ready(page, store, true);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await page.locator("#global-cron").fill("5 * * * *");
-  await page.locator("#global-timezone").fill("Pacific/Auckland");
+  await chooseTimeZone(page, "Pacific/Auckland");
   await page.locator("#global-capacity").fill("33");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
   await mkdir(join(dataRoot, "config/settings.json.tmp"));
@@ -351,7 +424,7 @@ test("startup, notification and pause commit independently while newer keyboard 
   await expect(page.locator("#login")).toBeDisabled();
   await expect(page.locator("#login-status")).toHaveText("Updating");
   await page.locator("#global-timezone").focus();
-  await page.locator("#global-timezone").fill("Europe/Paris");
+  await chooseTimeZone(page, "Europe/Paris");
   held.release();
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#login-status")).toContainText(
@@ -965,7 +1038,7 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
   const scroll = await page.locator("#content").boundingBox();
   expect(field.y).toBeGreaterThanOrEqual(scroll.y);
   expect(field.y + field.height).toBeLessThanOrEqual(scroll.y + scroll.height);
-  await page.locator("#global-timezone").fill("Asia/Tokyo");
+  await chooseTimeZone(page, "Asia/Tokyo");
   await page.keyboard.press("Escape");
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator(".panel-shell")).toHaveAttribute(

@@ -464,6 +464,7 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         | "fixture_setup_review"
         | "fixture_setup_preview"
         | "fixture_apply_setup" => setup_fixture(store, &request),
+        "time_zones" => Ok(json!(pr_sniper_lib::policy::time_zones())),
         "diagnostics" => serde_json::to_value(store.diagnostics()?)
             .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {

@@ -245,3 +245,36 @@ impl PolicyOverrides {
         }
     }
 }
+
+/// Every IANA zone `Schedule::validate` accepts, in alphabetical order.
+pub fn time_zones() -> Vec<&'static str> {
+    let mut zones: Vec<_> = chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(|zone| zone.name())
+        .collect();
+    zones.sort_unstable();
+    zones
+}
+
+#[cfg(test)]
+mod time_zone_tests {
+    use super::{time_zones, Schedule};
+
+    #[test]
+    fn time_zones_are_sorted_unique_and_each_validates() {
+        let zones = time_zones();
+        assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
+        for zone in ["UTC", "America/New_York", "Asia/Tokyo", "Pacific/Auckland"] {
+            assert!(zones.contains(&zone), "{zone}");
+        }
+        assert!(!zones.contains(&"Mars/Olympus_Mons"));
+        for zone in zones {
+            Schedule::Cron {
+                expression: "*/15 * * * *".into(),
+                timezone: zone.into(),
+            }
+            .validate()
+            .unwrap();
+        }
+    }
+}

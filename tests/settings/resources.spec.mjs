@@ -14,6 +14,7 @@ import {
   withPermissions,
   openPermissions,
   assignmentBack,
+  chooseTimeZone,
 } from "./navigation.mjs";
 
 for (const [scenario, expression, timezone] of [
@@ -45,7 +46,7 @@ for (const [scenario, expression, timezone] of [
     await page.goto("/?view=settings");
     await section(page, "Preferences");
     await page.locator("#global-cron").fill(expression);
-    await page.locator("#global-timezone").fill(timezone);
+    await chooseTimeZone(page, timezone);
     await saveAssignment(page, await assignment(page, "fixture/schedules"));
     let saved = (await store("saved_resources")).settings;
     expect(saved.defaults).toEqual(settings.defaults);
@@ -364,7 +365,7 @@ test("global cron helper and capacity save through the shared readiness surface 
   await expect(page.locator("#global-cron")).toHaveValue("*/15 * * * *");
   await expect(page.locator("#global-capacity")).toHaveValue("4");
   await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
-  await page.locator("#global-timezone").fill("America/New_York");
+  await chooseTimeZone(page, "America/New_York");
   await page.locator("#global-capacity").fill("6");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })

@@ -4120,6 +4120,11 @@ mod tray_tests {
 }
 
 #[tauri::command]
+fn time_zones() -> Vec<&'static str> {
+    policy::time_zones()
+}
+
+#[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
     panel::show(&app, Some(panel::Route::tab(panel::Tab::Settings)))
         .await
@@ -4297,6 +4302,7 @@ pub fn run() {
             copilot::cancel_copilot_models,
             diagnostics,
             open_settings,
+            time_zones,
             open_queue_destination,
             open_queue_item,
             panel::panel_snapshot,

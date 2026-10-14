@@ -7,6 +7,7 @@ import {
   editAgent,
   startupPreference,
   section,
+  chooseTimeZone,
 } from "./navigation.mjs";
 
 test("invalid global time zone reports an error without replacing valid settings", async ({
@@ -20,7 +21,7 @@ test("invalid global time zone reports an error without replacing valid settings
   const before = await readFile(path);
   await page.goto("/?view=settings");
   await section(page, "Preferences");
-  await page.locator("#global-timezone").fill("Mars/Olympus_Mons");
+  await chooseTimeZone(page, "Mars/Olympus_Mons");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();

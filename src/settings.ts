@@ -257,6 +257,35 @@ const toolRows: Record<
 };
 const icon = (key: keyof typeof iconPaths) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[key]}</svg>`;
+let timeZoneList: Promise<string[]> | undefined;
+const timeZones = () =>
+  (timeZoneList ??= invoke<string[]>("time_zones").catch((cause) => {
+    timeZoneList = undefined;
+    throw cause;
+  }));
+// The host zone leads the backend's alphabetical list; a saved zone the host
+// no longer accepts stays selected and visibly unavailable.
+function fillTimeZones(
+  select: HTMLSelectElement,
+  zones: string[],
+  selected: string,
+) {
+  const system = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const ordered = zones.includes(system)
+    ? [system, ...zones.filter((zone) => zone !== system)]
+    : zones;
+  const options = ordered.map((zone) => new Option(zone, zone));
+  const known = zones.includes(selected);
+  if (!known) {
+    const missing = new Option(`${selected} (unavailable)`, selected);
+    missing.dataset.unavailable = "true";
+    options.unshift(missing);
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+  if (known) select.removeAttribute("aria-invalid");
+  else select.setAttribute("aria-invalid", "true");
+}
 const escape = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -3791,7 +3820,7 @@ export async function mountSettings(
       <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
       <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
       <label>Schedule helper<select id="cron-helper"><option value="">Custom</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
-      <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
+      <label>Time zone<select id="global-timezone"><option value="${escape(schedule.timezone)}">${escape(schedule.timezone)}</option></select></label>
       </div></fieldset></div>
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
       <div class="settings-group" id="notification-settings"></div>
@@ -3810,7 +3839,16 @@ export async function mountSettings(
     };
     syncHelper();
     const timezone =
-      content.querySelector<HTMLInputElement>("#global-timezone")!;
+      content.querySelector<HTMLSelectElement>("#global-timezone")!;
+    void timeZones().then(
+      (zones) => {
+        if (timezone.isConnected)
+          fillTimeZones(timezone, zones, draft.defaults.schedule.timezone);
+      },
+      (cause) => {
+        if (timezone.isConnected) showError(reason(cause));
+      },
+    );
     const updateSchedule = () => {
       draft.defaults.schedule = {
         kind: "cron",
@@ -3821,8 +3859,11 @@ export async function mountSettings(
       changed();
     };
     cron.oninput = updateSchedule;
-    timezone.oninput = () => {
+    timezone.onchange = () => {
       draft.defaults.schedule.timezone = timezone.value;
+      if (timezone.selectedOptions[0]?.dataset.unavailable)
+        timezone.setAttribute("aria-invalid", "true");
+      else timezone.removeAttribute("aria-invalid");
       changed();
     };
     content.querySelector<HTMLSelectElement>("#cron-helper")!.onchange = (

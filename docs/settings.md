@@ -63,7 +63,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Saved: one global cron + timezone, machine AI capacity, comment-publication defaults.
 - Immediate (native, outside Save/Reset): notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
 - AI capacity: integer `1..4294967295`, default 4. Shared by normal, final-primary, reply and mention work. Admitted jobs drain independent of polling.
-- Cron helper shows the exact expression. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
+- Cron helper shows the exact expression. Time zone: own row, dropdown of host IANA zones (`time_zones`, the list `Schedule::validate` accepts); host zone first. A saved zone missing from the list stays selected, marked unavailable. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
 - Native controls keep pending/rejected ops across saves.
 - Startup shows the saved request, separate from actual registration. Unknown registration or notification authorization is never shown as enabled.
 - macOS startup status validates the owned plist and current executable. macOS Login Items may still disable it. App start only inspects; never enables, disables or reapplies.
