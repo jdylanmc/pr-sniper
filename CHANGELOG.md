@@ -9,6 +9,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 - Per-type notification switches appear under Notifications while it is on;
   every type starts on.
+- Settings › Preferences **Copy diagnostics** copies the content-free
+  diagnostic export to the clipboard.
+
+### Changed
+
+- Time zone is a dedicated dropdown of host time zones; new profiles start in
+  the system time zone, falling back to UTC.
+- Settings home groups into General (Accounts, Repositories, Preferences) and
+  Review behavior (Agents, Doctrines); collections render as single lists.
 
 ### Fixed
 
@@ -17,10 +26,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   smaller screens.
 - Turning notifications on no longer sends alerts for events that already
   existed or happened while off; it sends one confirmation instead.
+- Preferences heading no longer hides under the header band, and AI capacity
+  matches the other fields.
+- The in-app Changelog uses the shared page header and renders bold and code.
+- Counts use the singular for one item, such as "1 repository".
 
 ### Removed
 
 - Settings test-notification destination and Send test notification controls.
+- The Status and Diagnostics screens and their tray items; Check Now stays in
+  the tray and failures stay in Queue › Needs attention.
+- The Settings Global pause card; use the header Monitoring switch.
+- The duplicate Concurrent reviews Settings entry; AI capacity stays in
+  Preferences.
 
 ## 0.3.1 - 2026-10-14
 
