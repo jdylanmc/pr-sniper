@@ -11,6 +11,28 @@ const genieButton = document.querySelector("#genie-button");
 const pageTitle = document.querySelector("#page-title");
 const backButton = document.querySelector("#back-button");
 const toast = document.querySelector("#toast");
+const themeKey = "pr-sniper.vnext.theme";
+const themes = { light: "Light", dark: "Dark", os: "OS" };
+const systemDark = matchMedia("(prefers-color-scheme: dark)");
+let theme = (() => {
+  const requested = new URLSearchParams(location.search).get("theme");
+  if (requested in themes) return requested;
+  try {
+    const saved = localStorage.getItem(themeKey);
+    if (saved in themes) return saved;
+  } catch {
+    // Blocked storage keeps the Light default.
+  }
+  return "light";
+})();
+function applyTheme() {
+  document.documentElement.dataset.theme =
+    theme === "dark" || (theme === "os" && systemDark.matches)
+      ? "dark"
+      : "light";
+}
+systemDark.addEventListener("change", applyTheme);
+applyTheme();
 let state = Demo.seed();
 let savedRaw = null;
 let storageBlocked = false;
@@ -1412,7 +1434,16 @@ function preferencesPage() {
       "A saved preference only. No operating-system login item is changed.",
     ],
   };
-  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}</div><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
+  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}</div><div class="form-group"><label class="preference-row"><span><strong>Theme</strong></span><select data-theme-select aria-label="Theme">${Object.entries(
+    themes,
+  )
+    .map(
+      ([value, label]) =>
+        `<option value="${value}" ${value === theme ? "selected" : ""}>${label}</option>`,
+    )
+    .join(
+      "",
+    )}</select></label></div><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
     labels,
   )
     .map(
@@ -1460,10 +1491,8 @@ const changelogSource = `# Changelog
 
 // Escape first, then mark up **bold** and `code`; never raw HTML.
 const inlineMarkdown = (text) =>
-  esc(text).replace(
-    /\*\*([^*]+)\*\*|`([^`]+)`/g,
-    (_match, bold, code) =>
-      bold === undefined ? `<code>${code}</code>` : `<strong>${bold}</strong>`,
+  esc(text).replace(/\*\*([^*]+)\*\*|`([^`]+)`/g, (_match, bold, code) =>
+    bold === undefined ? `<code>${code}</code>` : `<strong>${bold}</strong>`,
   );
 
 function changelogPage() {
@@ -1920,6 +1949,16 @@ stage.addEventListener("input", (event) => {
   }
 });
 stage.addEventListener("change", (event) => {
+  if (event.target.matches("[data-theme-select]")) {
+    theme = event.target.value;
+    try {
+      localStorage.setItem(themeKey, theme);
+    } catch {
+      // The choice still applies for this page.
+    }
+    applyTheme();
+    return;
+  }
   if (event.target.id === "repository-owner") {
     route().owner = event.target.value;
     route().query = "";

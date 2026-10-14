@@ -62,6 +62,8 @@ Reconciled with the shipped panel UI: icon-first, minimal prose.
   The repository editor is headed by the repository name and holds a Monitor
   switch, Reviewer requests, Agents on this repository, People you watch, and a
   collapsed _Repository_ disclosure of plain action rows.
+- **Theme:** Preferences > Theme (Light, Dark, OS) applies at once to the
+  popover only; `?theme=dark` previews Dark.
 
 ## Visual evidence
 
