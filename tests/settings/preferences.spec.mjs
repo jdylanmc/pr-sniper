@@ -195,6 +195,50 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
   await capture(page, browserName, "global-schedule");
 });
 
+for (const width of [408, 320]) {
+  test(`Preferences top card overlaps the band with no occluded heading and uniform fields at ${width}px`, async ({
+    page,
+    store,
+  }) => {
+    await page.setViewportSize({ width, height: 744 });
+    await ready(page, store, true);
+    const layout = await page.evaluate(() => {
+      const box = (element) => element.getBoundingClientRect();
+      const band = box(document.querySelector(".panel-context"));
+      const view = document.querySelector(".preferences-view");
+      const card = view.firstElementChild;
+      const headings = [...view.querySelectorAll("h2")]
+        .map(box)
+        .filter((rect) => rect.top < band.bottom && rect.bottom > band.top);
+      const labels = [...view.querySelectorAll(".preferences-saved label")].map(
+        (label) => ({
+          text: label.firstChild.textContent.trim(),
+          font: getComputedStyle(label).fontSize,
+          weight: getComputedStyle(label).fontWeight,
+          field: box(label.querySelector("input, select")).height,
+        }),
+      );
+      return {
+        overlap: band.bottom - box(card).top,
+        cardIsGroup: card.classList.contains("settings-group"),
+        occluded: headings.length,
+        labels,
+      };
+    });
+    expect(layout.cardIsGroup).toBe(true);
+    expect(layout.overlap).toBeCloseTo(23, 0);
+    expect(layout.occluded).toBe(0);
+    expect(layout.labels.map((label) => label.text)).toEqual([
+      "AI capacity",
+      "Cron expression",
+      "Schedule helper",
+      "Time zone",
+    ]);
+    for (const key of ["font", "weight", "field"])
+      expect(new Set(layout.labels.map((label) => label[key])).size).toBe(1);
+  });
+}
+
 test("invalid capacity keeps each rejected draft and the previous configuration bytes", async ({
   page,
   store,
