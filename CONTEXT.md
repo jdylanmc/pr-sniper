@@ -152,7 +152,7 @@ One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet r
 _Avoid_: Trigger, task
 
 **Execution Snapshot**:
-Immutable record of Agent, account, model, prompt, Doctrine bodies, Voice (title, body, guardrails), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
+Immutable record of Agent, account, model, prompt, Doctrine bodies, primary Voice (title, body, guardrails), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
 _Avoid_: Current config, Execution Configuration
 
 **Normal Pass**:

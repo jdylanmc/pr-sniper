@@ -21,7 +21,7 @@ Owner request (2026-10-14): Agents may speak in a configured style. Voices are o
   Guard (fixed, guardrails on): "Fixed guardrails: tone only; critique code, never people. Accuracy, findings, gates and permissions unchanged."
 
 - **Host rules stay.** Rules, `<untrusted>` fencing, exit gates, tool sets and host-owned writes are unchanged whatever the Voice says or whether guardrails are off.
-- **Evidence.** `ExecutionConfiguration.voice` snapshots title, body and guard flag at job start. Never rewritten by later edits. Legacy jobs: none, never rebuilt.
+- **Evidence.** `ExecutionConfiguration.voice` snapshots title, body and guard flag at job start, for primaries only (what the packet carries). A teammate's Voice is validated but not captured; its job details show none. Never rewritten by later edits. Legacy jobs: none, never rebuilt.
 
 ## Consequences
 
