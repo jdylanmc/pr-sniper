@@ -460,6 +460,18 @@ pub struct Failure {
     pub retry_after_seconds: Option<i64>,
     /// Provider that signalled a rate limit; meaningful only for `RateLimited`.
     pub origin: crate::backpressure::Origin,
+    /// When a `Superseded` attempt may run again; `None` retries shortly (a local
+    /// race such as a teammate report landing). Boxed to keep `Failure` small.
+    pub resume: Option<Box<Resume>>,
+}
+
+/// When a superseded attempt may run again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resume {
+    /// After a poll observes the PR: only the provider state can change the outcome.
+    NextPoll,
+    /// After a poll observes a base other than the one an AI attempt reviewed.
+    NewBase(String),
 }
 
 impl Failure {
@@ -481,6 +493,7 @@ impl Failure {
             message: message.into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
+            resume: None,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -497,6 +510,7 @@ impl Failure {
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
+            resume: None,
         }
     }
     pub fn schema() -> Self {
@@ -524,9 +538,15 @@ impl Failure {
     /// A stale Iteration or assignment is superseded; other rejections need a human.
     pub fn policy(rejection: monitoring::PolicyRejection) -> Self {
         if rejection.superseded() {
-            Self::superseded(rejection.message())
+            Self::superseded(rejection.message()).after(Resume::NextPoll)
         } else {
             Self::permanent(rejection.message())
+        }
+    }
+    pub fn after(self, resume: Resume) -> Self {
+        Self {
+            resume: Some(Box::new(resume)),
+            ..self
         }
     }
     /// A result or write discarded because the PR state moved: retried through the budget.
@@ -561,6 +581,7 @@ impl Failure {
                 message,
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
+                resume: Default::default(),
             }
         }
     }
@@ -576,7 +597,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, resume: None }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -599,6 +620,7 @@ impl Failure {
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
+            resume: None,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
@@ -632,6 +654,7 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
+                resume: None,
             },
             MonitoringError::Backpressure {
                 origin,
@@ -643,6 +666,7 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin,
+                resume: None,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }

@@ -1150,6 +1150,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 message: "Reply outcome is unresolved; no replacement reply will be posted.".into(),
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Github,
+                resume: Default::default(),
             });
         }
         let gate = env.gate(run, &current)?;

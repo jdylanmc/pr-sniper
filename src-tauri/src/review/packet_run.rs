@@ -88,9 +88,10 @@ where
         .map_err(Failure::from)?;
     observation.write_capability = write_capability;
     if observation.head != context.pull.head_sha || observation.base != context.pull.base_sha {
-        return Err(Failure::superseded(
-            "The PR state moved before the packet was built.",
-        ));
+        return Err(
+            Failure::superseded("The PR state moved before the packet was built.")
+                .after(super::Resume::NextPoll),
+        );
     }
     let base = gate_input(run, Facts::from_observation(&observation))?;
     let exits = gates::offered(&base);

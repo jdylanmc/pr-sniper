@@ -309,10 +309,145 @@ fn a_different_pull_request_identity_still_fails() {
     assert_eq!(error.kind, OperationFailure::Permanent);
 }
 
+/// Operation ids the coordinator actually starts (each start runs full setup).
+fn dispatched(store: &Store, now: i64) -> Vec<String> {
+    crate::capacity::Coordinator::default()
+        .dispatch(store, now)
+        .unwrap()
+        .dispatched
+        .into_iter()
+        .map(|crate::capacity::Dispatch::Review(run, _)| run.operation.id)
+        .collect()
+}
+
+fn failed_poll(monitor: &mut Monitor, store: &Store, at: i64) {
+    let ticket = monitor.prepare_checks(store, at, true).unwrap().remove(0);
+    assert!(monitor
+        .finish(
+            store,
+            ticket,
+            Err(crate::github::ConnectionError::Network),
+            at + 1,
+        )
+        .is_err());
+}
+
+fn reason(store: &Store, key: &str, now: i64) -> Option<String> {
+    crate::capacity::candidates(store, now)
+        .unwrap()
+        .into_iter()
+        .find(|w| w.key.id == key)
+        .unwrap()
+        .reason
+}
+
 #[test]
-fn a_base_move_before_the_run_supersedes_and_after_it_tosses() {
-    assert_eq!(base_changed(false).kind, OperationFailure::Superseded);
-    assert_eq!(base_changed(true).kind, OperationFailure::Tossed);
+fn the_snapshot_gate_rejects_an_unadmitted_draft_before_any_setup() {
+    for review_drafts in [false, true] {
+        let (_root, store, mut monitor) = configured(review_drafts);
+        scan(&mut monitor, &store, vec![pull('a')], NOW);
+        let job = store.load_queue().unwrap().remove(0);
+        let settings = store.load_settings().unwrap();
+        let snapshot = crate::github::state::PrSnapshot {
+            state: "OPEN".into(),
+            head: job.head_sha.clone(),
+            draft: true,
+            ..Default::default()
+        };
+        let gate = snapshot_gate(&settings, &job, &snapshot);
+        if review_drafts {
+            gate.unwrap();
+        } else {
+            let error = gate.unwrap_err();
+            assert_eq!(error.kind, OperationFailure::Superseded);
+            assert_eq!(
+                error.resume.as_deref(),
+                Some(&crate::review::Resume::NextPoll)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_superseded_draft_run_waits_for_a_poll_never_a_timer_and_retires_on_ineligible() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let mut draft = pull('a');
+    draft.draft = true;
+    let settings = store.load_settings().unwrap();
+    let error = pull_gate(&settings, &run.job, &draft).unwrap_err();
+    complete(&store, &run.operation.id, Err(error), NOW + 3).unwrap();
+
+    // No timer re-dispatch: every start would rebuild context, packet and session.
+    for later in [NOW + 33, NOW + 300, NOW + 86_400] {
+        assert!(!dispatched(&store, later).contains(&run.operation.id));
+        assert_eq!(
+            reason(&store, &run.key, later).as_deref(),
+            Some(crate::capacity::WAITING_FOR_POLL)
+        );
+    }
+    // A failing poll observes nothing: still no re-dispatch, no loop.
+    failed_poll(&mut monitor, &store, NOW + 100);
+    for later in [NOW + 140, NOW + 300, NOW + 86_400] {
+        assert!(!dispatched(&store, later).contains(&run.operation.id));
+    }
+    // The poll that observes the draft retires the entry; the run never restarts.
+    scan(&mut monitor, &store, vec![draft], NOW + 400);
+    assert_eq!(
+        store
+            .load_queue()
+            .unwrap()
+            .iter()
+            .find(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+            .unwrap()
+            .waiting,
+        crate::monitoring::WAITING_INELIGIBLE
+    );
+    for later in [NOW + 440, NOW + 86_400] {
+        assert!(!dispatched(&store, later).contains(&run.operation.id));
+    }
+    let stale = stored(&store, &run.operation.id);
+    assert_eq!(stale.operation.attempt_count, 0);
+    assert!(!stale.operation.parked());
+    assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn a_base_move_after_the_ai_run_requeues_once_per_new_base_and_never_parks() {
+    let (_root, store, mut monitor) = configured(false);
+    let mut current = pull('a');
+    scan(&mut monitor, &store, vec![current.clone()], NOW);
+    let first = dispatch(&store, TEAMMATE, NOW + 2);
+    let id = first.operation.id.clone();
+    let mut ai_runs = 1;
+    let mut at = NOW + 10;
+    for next_base in ['e', 'd', 'c', 'b'] {
+        let reviewed = current.base_sha.clone();
+        complete(&store, &id, Err(base_changed(Some(&reviewed))), at).unwrap();
+        let waiting = stored(&store, &id);
+        assert_eq!(waiting.operation.state, OperationState::Queued);
+        assert_eq!(waiting.operation.attempt_count, 0);
+        assert!(!waiting.operation.parked());
+        assert_quiet(&store, &monitor);
+        // No poll yet, or a poll that still sees the reviewed base: no AI attempt.
+        assert!(!dispatched(&store, at + 60).contains(&id));
+        scan(&mut monitor, &store, vec![current.clone()], at + 100);
+        assert!(!dispatched(&store, at + 160).contains(&id));
+        failed_poll(&mut monitor, &store, at + 200);
+        assert!(!dispatched(&store, at + 260).contains(&id));
+        // A poll that observes a new base earns exactly one attempt.
+        current.base_sha = next_base.to_string().repeat(40);
+        scan(&mut monitor, &store, vec![current.clone()], at + 300);
+        let started = dispatched(&store, at + 360);
+        assert_eq!(started.iter().filter(|s| **s == id).count(), 1);
+        ai_runs += 1;
+        assert_eq!(stored(&store, &id).operation.attempt_count, 1);
+        assert!(!dispatched(&store, at + 361).contains(&id));
+        at += 1_000;
+    }
+    assert_eq!(ai_runs, 5, "one AI attempt per distinct base");
+    assert!(store.load_publications().unwrap().is_empty());
 }
 
 #[test]

@@ -44,6 +44,7 @@ fn failure(kind: OperationFailure, retry_after_seconds: Option<i64>) -> Failure 
         message: "Failed".into(),
         retry_after_seconds,
         origin: Origin::Github,
+        resume: Default::default(),
     }
 }
 

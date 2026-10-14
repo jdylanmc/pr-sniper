@@ -145,6 +145,33 @@ pub struct JobOperation {
     /// Lens hash an automatic re-review of a discarded batch ran under; the once-per-lens marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rereview_lens: Option<String>,
+    /// A superseded run waits for a poll that observed its PR after this, not a timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<Supersession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Supersession {
+    pub at: i64,
+    /// Base an AI attempt reviewed before it moved: the next attempt needs a poll
+    /// that observed another base, so each base gets at most one AI attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+}
+
+impl Supersession {
+    /// A successful poll observed the PR after supersession (and, for a moved
+    /// base, observed a different base). Without one the run never re-dispatches.
+    pub fn cleared(&self, job: &QueueJob, tracked: &[TrackedPullRequest]) -> bool {
+        tracked
+            .iter()
+            .any(|t| t.matches(job) && t.observed_at > self.at)
+            && self
+                .base
+                .as_ref()
+                .is_none_or(|base| job.observed_base_sha.as_ref() != Some(base))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3127,6 +3154,7 @@ fn start_poll_operation(
         triggering_external_comment_id: None,
         confirmed_receipt: None,
         rereview_lens: None,
+        superseded: None,
     });
 }
 
@@ -3161,8 +3189,10 @@ impl JobOperation {
     }
 
     /// The state moved before the run could read it: not a failure, no attempt spent.
-    /// Retried shortly; the next heartbeat retargets or retires the work.
-    pub fn requeue_superseded(&mut self, now: i64) {
+    /// Retried shortly, or with `wait` only after a poll; the next heartbeat
+    /// retargets or retires the work.
+    pub fn requeue_superseded(&mut self, now: i64, wait: Option<Supersession>) {
+        self.superseded = wait;
         if self.ai_attempt.is_some() {
             self.restore_budget();
         } else if self.state == OperationState::Running {
@@ -3233,6 +3263,7 @@ impl JobOperation {
         self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
+        self.superseded = None;
     }
 
     fn schedule_resume(&mut self, now: i64) {
@@ -3351,6 +3382,7 @@ impl JobOperation {
         self.state = OperationState::Running;
         self.next_attempt_at = None;
         self.backpressure_until = None;
+        self.superseded = None;
         Ok(())
     }
 
@@ -3382,6 +3414,7 @@ impl JobOperation {
             triggering_external_comment_id: None,
             confirmed_receipt: None,
             rereview_lens: None,
+            superseded: None,
         }
     }
 }

@@ -1534,6 +1534,7 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         message: "Provider read rate limited.".into(),
         retry_after_seconds: Some(60),
         origin: crate::backpressure::Origin::Github,
+        resume: Default::default(),
     };
     let network = Failure {
         kind: monitoring::OperationFailure::Network,

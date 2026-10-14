@@ -139,11 +139,15 @@ fn due(operation: &JobOperation, now: i64) -> bool {
     ) && operation.next_attempt_at.is_some_and(|n| n <= now)
 }
 
+/// A superseded run waits for its repository's next successful poll, never a timer.
+pub const WAITING_FOR_POLL: &str = "Waiting for the next poll.";
+
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
     let gates = store.load_backpressure()?;
     let reviews = review::host::candidates(store)?;
     let repositories = store.load_settings()?.repositories;
+    let tracked = store.load_queue_state()?.tracked;
     let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
         .iter()
         .filter(|c| {
@@ -191,6 +195,16 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                             .clone()
                             .unwrap_or_else(|| "Manual retry required.".into()),
                     )
+                }
+                Some(run)
+                    if run.operation.state != OperationState::Running
+                        && run
+                            .operation
+                            .superseded
+                            .as_ref()
+                            .is_some_and(|s| !s.cleared(&candidate.job, &tracked)) =>
+                {
+                    Some(WAITING_FOR_POLL.into())
                 }
                 Some(run)
                     if run.operation.state != OperationState::Running
