@@ -1179,9 +1179,18 @@ impl Monitor {
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
         let configured = configured_schedules(&settings);
+        let parked = if check_now {
+            ParkedPolls::CheckNow
+        } else if self.state.global_scan.as_ref().is_some_and(|scan| {
+            scan.pending.is_empty() && scan.next_run > 0 && now >= scan.next_run
+        }) {
+            ParkedPolls::ScheduledScan
+        } else {
+            ParkedPolls::Keep
+        };
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
-        self.synchronize_health(&configured, accounts, now);
+        self.synchronize_health_with(&configured, accounts, now, parked);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
             self.state = previous;
             self.leases = previous_leases;
@@ -1543,6 +1552,16 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) {
+        self.synchronize_health_with(configured, accounts, now, ParkedPolls::Keep);
+    }
+
+    fn synchronize_health_with(
+        &mut self,
+        configured: &[ConfiguredSchedule],
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+        parked: ParkedPolls,
+    ) {
         let schedule = configured.first().map(|c| &c.schedule);
         let any_enabled = configured.iter().any(|configuration| configuration.enabled);
         let valid_global_cron = schedule.is_some_and(|schedule| {
@@ -1802,6 +1821,31 @@ impl Monitor {
                         .insert(operation.id.clone(), operation);
                 }
             }
+            // Parked repository polls never outlive a scheduled scan (credentials
+            // wait for a reconnect); Check Now retries any of them.
+            let restart = !health.in_flight
+                && health.operation.as_ref().is_some_and(|operation| {
+                    operation.parked()
+                        && match parked {
+                            ParkedPolls::Keep => false,
+                            ParkedPolls::ScheduledScan => {
+                                operation.failure != Some(OperationFailure::Credentials)
+                            }
+                            ParkedPolls::CheckNow => true,
+                        }
+                });
+            if restart {
+                if let Some(operation) = health.operation.as_mut() {
+                    self.state
+                        .operations
+                        .insert(operation.id.clone(), operation.clone());
+                    operation.id = uuid::Uuid::new_v4().to_string();
+                    operation.requeue_fresh(now);
+                }
+                health.last_failure = None;
+                health.last_error = None;
+                join_running_scan(&mut self.state.global_scan, &configuration.health_key);
+            }
             if health
                 .operation
                 .as_ref()
@@ -1811,20 +1855,27 @@ impl Monitor {
                 health.schedule_available = false;
                 continue;
             }
-            if health.operation.as_ref().is_some_and(|operation| {
+            if let Some(operation) = health.operation.as_mut().filter(|operation| {
                 matches!(
                     operation.state,
                     OperationState::Queued | OperationState::Interrupted
                 ) && now >= operation.retry_deadline
             }) {
-                if let Some(operation) = health.operation.as_mut() {
+                // An interrupted poll was cut off by quit or restart, not by the
+                // provider: it starts again with a fresh window.
+                if operation.state == OperationState::Interrupted {
+                    operation.requeue_fresh(now);
+                    health.last_failure = None;
+                    health.last_error = None;
+                    join_running_scan(&mut self.state.global_scan, &configuration.health_key);
+                } else {
                     operation.state = OperationState::ManualRetry;
                     operation.next_attempt_at = None;
                     operation.failure = Some(OperationFailure::Permanent);
+                    health.next_run = 0;
+                    health.schedule_available = false;
+                    continue;
                 }
-                health.next_run = 0;
-                health.schedule_available = false;
-                continue;
             }
             if let Some(next_attempt) = health.operation.as_ref().and_then(|operation| {
                 matches!(
@@ -1855,11 +1906,10 @@ impl Monitor {
                 health.last_failure = None;
             }
         }
-        let has_schedulable_repository = self
-            .state
-            .health
-            .values()
-            .any(|health| health.enabled && health.schedule_available);
+        // A parked poll still needs the next scheduled scan to recover it.
+        let has_schedulable_repository = self.state.health.values().any(|health| {
+            health.enabled && (health.schedule_available || awaits_scheduled_scan(health))
+        });
         if let Some(scan) = &mut self.state.global_scan {
             if has_schedulable_repository {
                 if scan.next_run == 0 {
@@ -3045,6 +3095,31 @@ fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &Pol
         && configuration.provider_repository_id.as_deref() == Some(&ticket.provider_repository_id)
         && configuration.policy == ticket.policy
         && configuration.trigger_policy.as_deref() == Some(&ticket.trigger_policy)
+}
+
+fn awaits_scheduled_scan(health: &ScheduleHealth) -> bool {
+    !configuration_failure(health.last_failure.as_deref())
+        && health.operation.as_ref().is_some_and(|operation| {
+            operation.parked() && operation.failure != Some(OperationFailure::Credentials)
+        })
+}
+
+/// Whether this check may restart parked repository polls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParkedPolls {
+    Keep,
+    ScheduledScan,
+    CheckNow,
+}
+
+/// A requeued poll joins a scan already in progress; an idle scan picks it up
+/// when it starts, so joining it would only delay the other repositories.
+fn join_running_scan(scan: &mut Option<GlobalScan>, health_key: &str) {
+    if let Some(scan) = scan.as_mut().filter(|scan| !scan.pending.is_empty()) {
+        if !scan.pending.iter().any(|key| key == health_key) {
+            scan.pending.push(health_key.into());
+        }
+    }
 }
 
 fn unavailable_health(health: &mut ScheduleHealth, failure: &str) {

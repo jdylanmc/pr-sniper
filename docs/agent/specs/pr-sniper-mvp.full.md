@@ -37,10 +37,13 @@ their starting filter. This amendment changes detection admission only.
 
 On 2026-10-14 the product owner approved removing the Status screen and the
 tray Status item. This amendment withdraws PR-001's status action only.
-Scheduler health is still recorded (PR-006); parked failures surface in Queue >
-Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
-For AC-019 visibility: repository-level poll failures without a queue item
-auto-resume per ADR 0007 and have no manual retry surface.
+Scheduler health is still recorded (PR-006); queue-item failures surface in
+Queue > Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
+For AC-019 and PR-043, repository polls (no queue item) recover without a
+retry surface: a poll interrupted by quit or restart starts a fresh attempt
+window instead of parking on its expired deadline; a parked poll is requeued
+on the next scheduled scan (at most once per scan; credential failures wait
+for reconnect) and by Check Now.
 The same approval replaces the Diagnostics screen and tray item with one
 Settings **Copy diagnostics** export of the same content-free text; PR-039 is
 met by that export ([ADR 0019](../../adr/0019-bounded-content-free-diagnostics.md)).

@@ -1631,8 +1631,9 @@ fn interrupted_poll_recovers_with_the_same_budget_and_identity() {
 }
 
 #[test]
-fn interrupted_poll_past_its_deadline_requires_manual_retry() {
+fn interrupted_poll_past_its_deadline_requeues_as_a_fresh_poll() {
     let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
     let mut monitor = Monitor::restore(&store).unwrap();
     assert_eq!(
         monitor
@@ -1643,18 +1644,194 @@ fn interrupted_poll_past_its_deadline_requires_manual_retry() {
     );
     drop(monitor);
 
+    // Quit or reboot mid-poll, relaunch after the retry window: not a failure.
     let mut restored = Monitor::restore(&store).unwrap();
-    assert!(restored
-        .prepare_checks(&store, 1_800_000_901, false)
-        .unwrap()
-        .is_empty());
+    restored
+        .synchronize_configuration(&store, &accounts, 1_800_000_901)
+        .unwrap();
     let health = &restored.snapshot()[0];
     let operation = health.operation.as_ref().unwrap();
-    assert_eq!(operation.state, OperationState::ManualRetry);
-    assert_eq!(operation.failure, Some(OperationFailure::Permanent));
-    assert_eq!(operation.attempt_count, 1);
-    assert_eq!(health.next_run, 0);
-    assert!(!health.schedule_available);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.retry_deadline, 1_800_001_801);
+    assert!(health.schedule_available);
+    assert_eq!(
+        restored
+            .prepare_checks(&store, 1_800_000_902, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+fn fail_poll(
+    monitor: &mut Monitor,
+    store: &Store,
+    at: i64,
+    check_now: bool,
+    error: ConnectionError,
+) -> String {
+    let mut tickets = monitor.prepare_checks(store, at, check_now).unwrap();
+    assert_eq!(tickets.len(), 1, "one poll at {at}");
+    let id = monitor.snapshot()[0].operation.as_ref().unwrap().id.clone();
+    let _ = monitor.finish(store, tickets.remove(0), Err(error), at + 1);
+    id
+}
+
+fn poll_operation(monitor: &Monitor) -> pr_sniper_lib::monitoring::JobOperation {
+    monitor.snapshot()[0].operation.clone().unwrap()
+}
+
+#[test]
+fn parked_permanent_poll_requeues_once_per_scheduled_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let rejected = || ConnectionError::ProviderRejectedStatus(422);
+    let first = fail_poll(&mut monitor, &store, 1_800_000_000, true, rejected());
+    assert_eq!(
+        poll_operation(&monitor).failure,
+        Some(OperationFailure::Permanent)
+    );
+    assert!(poll_operation(&monitor).parked());
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_100, false)
+        .unwrap()
+        .is_empty());
+
+    // The next scheduled scan starts a fresh poll; it does not stay parked.
+    let second = fail_poll(&mut monitor, &store, 1_800_000_900, false, rejected());
+    assert_ne!(second, first);
+    assert!(poll_operation(&monitor).parked());
+    for at in [1_800_000_902, 1_800_001_000, 1_800_001_799] {
+        assert!(
+            monitor
+                .prepare_checks(&store, at, false)
+                .unwrap()
+                .is_empty(),
+            "at most one retry per scan ({at})"
+        );
+    }
+    fail_poll(&mut monitor, &store, 1_800_001_800, false, rejected());
+}
+
+#[test]
+fn exhausted_cooldown_poll_requeues_on_the_next_scheduled_scan() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+    for attempt in 1..=3 {
+        fail_poll(
+            &mut monitor,
+            &store,
+            now,
+            attempt == 1,
+            ConnectionError::Network,
+        );
+        if attempt < 3 {
+            now = poll_operation(&monitor).next_attempt_at.unwrap();
+        }
+    }
+    assert_eq!(poll_operation(&monitor).state, OperationState::ManualRetry);
+    let mut state = store.load_monitoring_state().unwrap();
+    let operation = state
+        .health
+        .values_mut()
+        .next()
+        .unwrap()
+        .operation
+        .as_mut()
+        .unwrap();
+    operation.resume_cycle = 5;
+    operation.resume_at = None;
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(monitor.auto_resume(&store, &accounts, now + 10).unwrap(), 0);
+    assert!(monitor
+        .prepare_checks(&store, now + 10, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_900, false)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(poll_operation(&monitor).state, OperationState::Running);
+}
+
+#[test]
+fn check_now_retries_any_parked_repository_poll() {
+    for error in [
+        ConnectionError::ProviderRejectedStatus(422),
+        ConnectionError::MissingScope,
+        ConnectionError::MissingReadPermission,
+    ] {
+        let (_root, store) = store();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let parked = fail_poll(&mut monitor, &store, 1_800_000_000, true, error);
+        assert!(poll_operation(&monitor).parked());
+        let tickets = monitor.prepare_checks(&store, 1_800_000_010, true).unwrap();
+        assert_eq!(tickets.len(), 1);
+        let operation = poll_operation(&monitor);
+        assert_ne!(operation.id, parked);
+        assert_eq!(operation.state, OperationState::Running);
+        assert_eq!(operation.attempt_count, 1);
+    }
+}
+
+#[test]
+fn credential_poll_failure_waits_for_reconnect_not_the_scheduled_scan() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::MissingScope,
+    );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_900, false)
+        .unwrap()
+        .is_empty());
+    let operation = poll_operation(&monitor);
+    assert!(operation.parked());
+    assert_eq!(operation.failure, Some(OperationFailure::Credentials));
+    // A connected account (first tick or a reconnect) resumes it.
+    assert_eq!(
+        monitor
+            .auto_resume(&store, &accounts, 1_800_000_901)
+            .unwrap(),
+        1
+    );
+    assert_eq!(poll_operation(&monitor).state, OperationState::Queued);
+}
+
+#[test]
+fn rate_limit_deferral_spends_no_attempt_across_a_scheduled_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let id = fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::RateLimitedAfter(1_800),
+    );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_900, false)
+        .unwrap()
+        .is_empty());
+    let operation = poll_operation(&monitor);
+    assert_eq!(operation.id, id);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.backpressure_until, Some(1_800_001_801));
 }
 
 #[test]

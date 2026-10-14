@@ -5,12 +5,12 @@ Reference for scheduled detection, admission rules, the read-only GitHub connect
 ## Schedule
 
 - One global cron expression + timezone. One read per account/repo binding per run. Set in Settings > Preferences.
-- **Check Now** (tray menu) runs an immediate scan. **Pause automation** halts polling.
-- Schedule suspends when no repo is schedulable; resumes at the next occurrence.
-- Poll operation persists before the read. Restart keeps it. Interruption past its deadline needs **Retry**.
-- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately.
+- **Check Now** (tray menu) runs an immediate scan and retries any parked repository poll. The header **Monitoring** switch halts polling.
+- Schedule suspends when no repo is schedulable (a parked poll still counts); resumes at the next occurrence.
+- Poll operation persists before the read. Restart keeps it. Interruption past its deadline restarts with a fresh window, never parks.
+- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately. A parked poll is requeued on the next scheduled scan (once per scan); credential failures wait for reconnect.
 - Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else 30s x2^n (cap 15m); no attempt spent, no failure shown. Other repos on the same account wait too (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
-- Schedule health keeps pending/success/failure per account/repo read. Surfaced in Status.
+- Schedule health keeps pending/success/failure per account/repo read in `monitoring_snapshot`; no Status screen.
 - Detection never clones, executes repo code, mutates GitHub or publishes.
 
 ## Admission
