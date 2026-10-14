@@ -44,7 +44,66 @@ pub struct ExecutionConfiguration {
     pub voice: Option<Voice>,
 }
 
+/// Case-folded title and exact body: what a library entry contributes to a run.
+/// Ids and title references are representations, not inputs.
+fn entry_lens(title: &str, body: &str) -> (String, String) {
+    (title.trim().to_lowercase(), body.to_string())
+}
+
 impl Selection {
+    /// The Agent without its library references, which [`Self::doctrine_lens`]
+    /// and the captured Voice compare by content. Pre-id evidence (title
+    /// references) and current settings (id references) then compare equal
+    /// when nothing real changed.
+    fn agent_lens(&self) -> Agent {
+        let mut agent = self.agent.clone();
+        agent.doctrine = None;
+        agent.doctrines = None;
+        agent.doctrine_ids = Vec::new();
+        agent.voice_id = None;
+        agent
+    }
+
+    /// Ordered resolved Doctrines when captured; else the composed legacy text.
+    fn doctrine_lens(&self) -> Result<Vec<(String, String)>, Option<&String>> {
+        match &self.configuration {
+            Some(configuration) => Ok(configuration
+                .doctrines
+                .iter()
+                .map(|d| entry_lens(&d.title, &d.body))
+                .collect()),
+            None => Err(self.doctrine.as_ref()),
+        }
+    }
+
+    fn same_doctrines(&self, other: &Self) -> bool {
+        match (self.doctrine_lens(), other.doctrine_lens()) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => self.doctrine == other.doctrine,
+        }
+    }
+
+    fn voice_lens(&self) -> Option<(String, String, bool)> {
+        self.configuration
+            .as_ref()
+            .and_then(|c| c.voice.as_ref())
+            .map(|v| {
+                let (title, body) = entry_lens(&v.title, &v.body);
+                (title, body, v.guardrails)
+            })
+    }
+
+    /// The reviewed lens: Agent, Doctrines, Voice, preset and prompt, compared
+    /// on normalized content so a storage upgrade is never a change.
+    pub fn same_lens(&self, other: &Self) -> bool {
+        self.agent_lens() == other.agent_lens()
+            && self.same_doctrines(other)
+            && self.voice_lens() == other.voice_lens()
+            && self.preset == other.preset
+            && self.policy.prompt == other.policy.prompt
+            && self.policy.adapter == other.policy.adapter
+    }
+
     /// Compare execution inputs and effective authority, not sibling assignment archives.
     /// Callers must still revalidate the job, account and permission gates.
     pub fn same_execution(&self, other: &Self) -> bool {
@@ -52,9 +111,9 @@ impl Selection {
         let mut policy = self.policy.clone();
         policy.automatic_agent_start = other.policy.automatic_agent_start;
         policy.automatic_comment_publication = other.policy.automatic_comment_publication;
-        self.agent == other.agent
+        self.agent_lens() == other.agent_lens()
             && policy == other.policy
-            && self.doctrine == other.doctrine
+            && self.same_doctrines(other)
             && self.preset == other.preset
             && match (&self.configuration, &other.configuration) {
                 (Some(left), Some(right)) => {
@@ -66,8 +125,7 @@ impl Selection {
                         b.overrides.automatic_comment_publication;
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
-                    left.doctrines == right.doctrines
-                        && left.voice == right.voice
+                    self.voice_lens() == other.voice_lens()
                         && a.id == b.id
                         && a.provider == b.provider
                         && a.name == b.name
