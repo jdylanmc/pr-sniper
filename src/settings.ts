@@ -886,15 +886,19 @@ export async function mountSettings(
       key: "accounts" | "agents" | "repositories" | "doctrines" | "preferences",
       value = "",
     ) => overviewRow(key, value, key === "preferences" ? "home" : key);
+    // Group headings sit inside their cards so the first card, not a heading,
+    // overlaps the title band.
     content.innerHTML = `<div class="settings-overview">
-      <nav aria-label="Review setup" class="settings-home-group">
+      <nav aria-labelledby="settings-group-general" class="settings-home-group" data-settings-group="general">
+        <h2 class="settings-home-heading" id="settings-group-general">General</h2>
         ${row("accounts", "Reading...")}
-        ${row("agents", String(saved.agents?.length ?? 0))}
         ${row("repositories", String(saved.repositories?.length ?? 0))}
-        ${row("doctrines", String(saved.doctrines?.length ?? 0))}
-      </nav>
-      <nav aria-label="Application preferences" class="settings-home-group">
         ${row("preferences")}
+      </nav>
+      <nav aria-labelledby="settings-group-behavior" class="settings-home-group" data-settings-group="behavior">
+        <h2 class="settings-home-heading" id="settings-group-behavior">Review behavior</h2>
+        ${row("agents", String(saved.agents?.length ?? 0))}
+        ${row("doctrines", String(saved.doctrines?.length ?? 0))}
       </nav>
       ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}
     </div>`;

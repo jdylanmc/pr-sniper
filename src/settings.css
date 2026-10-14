@@ -54,6 +54,13 @@
   font-weight: 400;
   line-height: normal;
 }
+.settings-window .settings-home-heading {
+  margin: 0;
+  padding: 10px 12px 2px;
+  font-size: 11px;
+  font-weight: 650;
+  color: #52647b;
+}
 .settings-window .settings-home-row + .settings-home-row {
   border-top: 1px solid #edf1f4;
 }

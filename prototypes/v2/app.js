@@ -708,13 +708,16 @@ function settingsRow(title, subtitle, value, symbol, page) {
 
 function settingsPage() {
   return `<div class="page-scroll" data-scroll="settings">
-    <div class="settings-list">
+    <nav class="settings-list" aria-labelledby="settings-group-general"><h2 class="settings-list-heading" id="settings-group-general">General</h2>
       ${settingsRow("Accounts", "GitHub and Copilot, kept separate", `${state.accounts.filter((account) => account.connected).length} connected`, "people", "accounts")}
-      ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
       ${settingsRow("Repositories", "Assignments, people, and schedules", state.repos.length, "folder", "repos")}
+      ${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}
+      ${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}
+    </nav>
+    <nav class="settings-list" aria-labelledby="settings-group-behavior"><h2 class="settings-list-heading" id="settings-group-behavior">Review behavior</h2>
+      ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
       ${settingsRow("Doctrines", "The principles behind each review", state.doctrines.length, "book", "doctrines")}
-    </div>
-    <div class="settings-list">${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}</div>
+    </nav>
     <p class="section-note">Changes stay in this browser. No real accounts, credentials, or application settings are read or changed.</p>
   </div>`;
 }

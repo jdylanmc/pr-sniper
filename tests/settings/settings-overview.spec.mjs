@@ -208,15 +208,16 @@ test("grouped overview uses saved counts and all five destinations return focus 
   await tab(page, "Settings").click();
   await expect(page.locator(".settings-overview")).toBeVisible();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
-  await expect(
-    page.getByRole("navigation", { name: "Review setup", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("navigation", {
-      name: "Application preferences",
-      exact: true,
-    }),
-  ).toBeVisible();
+  for (const [group, rows] of [
+    ["General", ["Accounts", "Repositories", "Preferences"]],
+    ["Review behavior", ["Agents", "Doctrines"]],
+  ]) {
+    const nav = page.getByRole("navigation", { name: group, exact: true });
+    await expect(nav.getByRole("heading", { level: 2 })).toHaveText(group);
+    await expect(nav.locator(".settings-home-row")).toHaveText(
+      rows.map((name) => new RegExp(`^${name}`)),
+    );
+  }
   await expect(
     page.getByLabel("Settings section", { exact: true }),
   ).toHaveCount(0);
@@ -290,6 +291,65 @@ test("grouped overview uses saved counts and all five destinations return focus 
     .click();
   await expect(row(page, "Agents")).toBeFocused();
 });
+
+for (const width of [408, 320]) {
+  test(`Settings home groups lead with a card and keep keyboard order visual at ${width}px`, async ({
+    page,
+    store,
+  }) => {
+    await queueFixture(store);
+    await page.setViewportSize({ width, height: 744 });
+    await page.goto("/");
+    await tab(page, "Settings").click();
+    await expect(page.locator(".settings-overview")).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const band = document
+        .querySelector(".panel-context")
+        .getBoundingClientRect();
+      const overview = document.querySelector(".settings-overview");
+      const groups = [...overview.querySelectorAll(".settings-home-group")];
+      return {
+        firstIsGroup: overview.firstElementChild === groups[0],
+        overlap: band.bottom - groups[0].getBoundingClientRect().top,
+        // A heading over the band must sit on its white card, never bare.
+        bare: [...overview.querySelectorAll("h2")].filter((heading) => {
+          const rect = heading.getBoundingClientRect();
+          const card = heading
+            .closest(".settings-home-group")
+            ?.getBoundingClientRect();
+          return (
+            rect.top < band.bottom &&
+            (!card || rect.top < card.top || rect.bottom > card.bottom)
+          );
+        }).length,
+        stacked:
+          groups[1].getBoundingClientRect().top >=
+          groups[0].getBoundingClientRect().bottom,
+      };
+    });
+    expect(layout.firstIsGroup).toBe(true);
+    expect(layout.overlap).toBeCloseTo(23, 0);
+    expect(layout.bare).toBe(0);
+    expect(layout.stacked).toBe(true);
+    const order = [
+      "Accounts",
+      "Repositories",
+      "Preferences",
+      "Agents",
+      "Doctrines",
+    ];
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await row(page, order[0]).focus();
+    for (const name of order.slice(1)) {
+      await page.keyboard.press(nextKey);
+      await expect(row(page, name)).toBeFocused();
+    }
+  });
+}
 
 test("overview retains preference and repository drafts without claiming them in saved summaries", async ({
   page,
