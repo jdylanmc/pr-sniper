@@ -714,7 +714,7 @@ function settingsPage() {
       ${settingsRow("Repositories", "Assignments, people, and schedules", state.repos.length, "folder", "repos")}
       ${settingsRow("Doctrines", "The principles behind each review", state.doctrines.length, "book", "doctrines")}
     </div>
-    <div class="settings-list">${settingsRow("Concurrent reviews", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}</div>
+    <div class="settings-list">${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}</div>
     <p class="section-note">Changes stay in this browser. No real accounts, credentials, or application settings are read or changed.</p>
   </div>`;
 }
@@ -1370,7 +1370,7 @@ function preferencesPage() {
       "A saved preference only. No operating-system login item is changed.",
     ],
   };
-  return `<div class="page-scroll" data-scroll="preferences"><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
+  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}</div><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
     labels,
   )
     .map(

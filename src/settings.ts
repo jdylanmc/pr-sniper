@@ -96,7 +96,6 @@ type Section =
   | "copilot"
   | "github"
   | "repositories"
-  | "capacity"
   | "doctrines"
   | "agents"
   | "preferences";
@@ -129,7 +128,6 @@ const sections: Record<Section, string> = {
   copilot: "GitHub Copilot",
   github: "GitHub",
   repositories: "Repositories",
-  capacity: "Concurrent reviews",
   doctrines: "Doctrines",
   agents: "Agents",
   preferences: "Preferences",
@@ -164,7 +162,6 @@ const iconPaths = {
   accounts:
     '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a6 6 0 0 1 3 4v3"/>',
   repositories: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
-  capacity: '<path d="M2 12h5l3-9 4 18 3-9h5"/>',
   integrations:
     '<circle cx="8" cy="8" r="3.4"/><circle cx="17" cy="17" r="3.4"/><path d="M10.4 10.4 14.6 14.6"/>',
   doctrines:
@@ -777,10 +774,7 @@ export async function mountSettings(
         : section === "agents" || section === "doctrines"
           ? section
           : "";
-    app.toggleAttribute(
-      "data-preferences",
-      section === "preferences" || section === "capacity",
-    );
+    app.toggleAttribute("data-preferences", section === "preferences");
     app
       .querySelectorAll<HTMLButtonElement>("[data-section]")
       .forEach((button) => {
@@ -806,8 +800,7 @@ export async function mountSettings(
         if (awaitingAgentAccess && document.activeElement === focusAfterRender)
           restoreFocus();
       });
-    if (section === "preferences" || section === "capacity")
-      renderPreferences();
+    if (section === "preferences") renderPreferences();
     changed();
     content.scrollTop = scroll;
     restoreFocus();
@@ -823,10 +816,7 @@ export async function mountSettings(
     homeOpener = next;
     navigate(next);
     content.scrollTop = 0;
-    (next === "capacity"
-      ? content.querySelector<HTMLElement>("#global-capacity")
-      : settingsHeading.querySelector<HTMLElement>("h1")
-    )?.focus();
+    settingsHeading.querySelector<HTMLElement>("h1")?.focus();
   }
   settingsBack.onclick = () => {
     if (busy) return;
@@ -864,13 +854,7 @@ export async function mountSettings(
   }
   function renderHome() {
     const row = (
-      key:
-        | "accounts"
-        | "agents"
-        | "repositories"
-        | "doctrines"
-        | "capacity"
-        | "preferences",
+      key: "accounts" | "agents" | "repositories" | "doctrines" | "preferences",
       value = "",
     ) => overviewRow(key, value, key === "preferences" ? "home" : key);
     content.innerHTML = `<div class="settings-overview">
@@ -881,7 +865,6 @@ export async function mountSettings(
         ${row("doctrines", String(saved.doctrines?.length ?? 0))}
       </nav>
       <nav aria-label="Application preferences" class="settings-home-group">
-        ${row("capacity", String(saved.capacity))}
         ${row("preferences")}
       </nav>
       ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}

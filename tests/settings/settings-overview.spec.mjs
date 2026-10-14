@@ -198,7 +198,7 @@ test("provider summaries isolate failed reads and retain an available retry rout
   ).toBeVisible();
 });
 
-test("grouped overview uses saved counts and all six destinations return focus and scroll", async ({
+test("grouped overview uses saved counts and all five destinations return focus and scroll", async ({
   page,
   store,
 }, testInfo) => {
@@ -226,7 +226,6 @@ test("grouped overview uses saved counts and all six destinations return focus a
     agents: String(saved.agents.length),
     repositories: String(saved.repositories.length),
     doctrines: String(saved.doctrines.length),
-    capacity: String(saved.capacity),
   })) {
     await expect(page.locator(`[data-settings-count="${key}"]`)).toHaveText(
       value,
@@ -249,7 +248,6 @@ test("grouped overview uses saved counts and all six destinations return focus a
       "Doctrines",
       page.getByRole("button", { name: "New doctrine", exact: true }),
     ],
-    ["Concurrent reviews", page.getByLabel("AI capacity", { exact: true })],
     ["Preferences", page.getByLabel("Cron expression", { exact: true })],
   ]) {
     await row(page, name).scrollIntoViewIfNeeded();
@@ -307,9 +305,8 @@ test("overview retains preference and repository drafts without claiming them in
     .getByLabel("Cron expression", { exact: true })
     .fill("*/23 * * * *");
   await back(page).click();
-  await expect(page.locator('[data-settings-count="capacity"]')).toHaveText(
-    String(saved.capacity),
-  );
+  await expect(page.locator('[data-settings-count="capacity"]')).toHaveCount(0);
+  await expect(row(page, "Concurrent reviews")).toHaveCount(0);
   await section(page, "Repositories");
   await page
     .locator("[data-repository]")
@@ -337,10 +334,8 @@ test("overview retains preference and repository drafts without claiming them in
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
   await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
+  expect((await store("snapshot")).settings.capacity).toBe(7);
   await back(page).click();
-  await expect(page.locator('[data-settings-count="capacity"]')).toHaveText(
-    "7",
-  );
   await section(page, "Repositories");
   await page
     .locator("[data-repository]")
