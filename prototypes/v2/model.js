@@ -153,11 +153,33 @@
     Object.fromEntries(
       notificationTypeKeys.map((key) => [key, saved[key] !== false]),
     );
+  const voiceSeeds = () => [
+    {
+      id: "caveman",
+      name: "Caveman",
+      body: "Short words. Short sentences. No filler. Problem, then fix.",
+      guardrails: true,
+    },
+    {
+      id: "gilfoyle",
+      name: "Gilfoyle",
+      body: "Deadpan, sardonic, unimpressed. Scorn the code, never the person.",
+      guardrails: true,
+    },
+    {
+      id: "merlin",
+      name: "Merlin",
+      body: "Mystical, whimsical, a little absent-minded. Still names the exact fix.",
+      guardrails: true,
+    },
+  ];
   // Deterministic upgrade of the pre-admission repository shape.
   const migrate = (state) => {
     if (state?.preferences && state.preferences.notificationTypes === undefined)
       state.preferences.notificationTypes = notificationTypes();
     if (!state || !Array.isArray(state.repos)) return state;
+    // Saved demos from before Voices: seed once, never top up.
+    state.voices ??= voiceSeeds();
     state.repos = state.repos.map((repo) => {
       if (!repo || repo.admission !== undefined) return repo;
       const { watched, reviewerRequests, ...rest } = repo;
@@ -363,6 +385,7 @@
           body: "Consider keyboard access, focus, labels, contrast, and reduced motion.",
         },
       ],
+      voices: voiceSeeds(),
       agents: names.map((name, index) => ({
         id: `agent-${index}`,
         name,
@@ -676,7 +699,14 @@
       ),
       "Invalid saved preferences.",
     );
-    for (const key of ["accounts", "agents", "repos", "doctrines", "reviews"]) {
+    for (const key of [
+      "accounts",
+      "agents",
+      "repos",
+      "doctrines",
+      "voices",
+      "reviews",
+    ]) {
       requireValue(Array.isArray(state[key]), `Invalid saved ${key}.`);
       requireValue(
         state[key].every(
@@ -724,6 +754,14 @@
         "Doctrine name and principles are required.",
       ),
     );
+    state.voices.forEach((item) =>
+      requireValue(
+        text(item.name) &&
+          text(item.body) &&
+          typeof item.guardrails === "boolean",
+        "Voice name and style are required.",
+      ),
+    );
     state.agents.forEach((item) => {
       requireValue(
         text(item.name) && text(item.prompt) && models.includes(item.model),
@@ -750,6 +788,11 @@
             state.doctrines.some((doctrine) => doctrine.id === id),
           ),
         "An attached doctrine is missing.",
+      );
+      requireValue(
+        !item.voiceId ||
+          state.voices.some((voice) => voice.id === item.voiceId),
+        "The selected voice is missing.",
       );
     });
     state.repos.forEach((item) => {
@@ -1321,6 +1364,24 @@
           .forEach(requeue);
         break;
       }
+      case "save-voice": {
+        const voice = {
+          ...payload.voice,
+          id: payload.voice.id || uid("voice"),
+        };
+        const index = state.voices.findIndex((item) => item.id === voice.id);
+        if (index < 0) state.voices.push(voice);
+        else state.voices[index] = voice;
+        break;
+      }
+      case "delete-voice":
+        requireValue(
+          !state.agents.some((agent) => agent.voiceId === payload.id),
+          "Remove this voice from its agents before deleting it.",
+        );
+        find(state.voices, payload.id, "Voice");
+        state.voices = state.voices.filter((item) => item.id !== payload.id);
+        break;
       case "delete-doctrine":
         requireValue(
           !state.agents.some((agent) => agent.doctrineIds.includes(payload.id)),

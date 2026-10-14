@@ -9,7 +9,7 @@ use crate::{
     github::ConnectionError,
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
-    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store},
+    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store, Voice},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +36,10 @@ pub struct ExecutionConfiguration {
     /// Absent on older jobs; never inferred from a later library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_catalog: Option<crate::storage::DoctrineCatalog>,
+    /// The Agent's Voice with its exact title, body and guard flag. Absent when
+    /// the Agent has none and on jobs that predate Voices; never inferred later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Voice>,
 }
 
 impl Selection {
@@ -61,6 +65,7 @@ impl Selection {
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
                     left.doctrines == right.doctrines
+                        && left.voice == right.voice
                         && a.id == b.id
                         && a.provider == b.provider
                         && a.name == b.name
@@ -127,6 +132,18 @@ impl Selection {
                     .ok_or("The Agent's doctrine is unavailable.")
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let voice = agent
+            .voice
+            .as_ref()
+            .map(|title| {
+                settings
+                    .voices
+                    .iter()
+                    .find(|v| v.title.trim().to_lowercase() == title.trim().to_lowercase())
+                    .cloned()
+                    .ok_or("The Agent's Voice is unavailable.")
+            })
+            .transpose()?;
         let doctrine = match doctrines.as_slice() {
             [] => None,
             [single] => Some(single.body.clone()),
@@ -160,6 +177,7 @@ impl Selection {
                 authority: repository.assignment_authority(assignment),
                 doctrines,
                 doctrine_catalog: Some(settings.doctrine_catalog()),
+                voice,
             }),
         })
     }

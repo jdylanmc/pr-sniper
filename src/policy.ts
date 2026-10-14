@@ -25,8 +25,15 @@ export interface Doctrine {
   title: string;
   body: string;
 }
-/** A reusable review profile: model + ordered doctrines + prompt +
- * signature. Agents are referenced by id from repository assignments. */
+/** A named writing style for human-facing text. Title is the identity, like
+ * a Doctrine. `guardrails` adds the host's fixed tone guard; default on. */
+export interface Voice {
+  title: string;
+  body: string;
+  guardrails: boolean;
+}
+/** A reusable review profile: model + ordered doctrines + optional Voice +
+ * prompt + signature. Agents are referenced by id from repository assignments. */
 export interface Agent {
   id: string;
   name: string;
@@ -35,6 +42,7 @@ export interface Agent {
   ai_account?: AiAccount;
   doctrine?: string;
   doctrines?: string[];
+  voice?: string;
   prompt: string;
   signature: string;
 }

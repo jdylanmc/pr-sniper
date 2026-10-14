@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
+import type { Agent, Doctrine, Policy, Voice, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
 
 export interface Settings {
@@ -10,10 +10,12 @@ export interface Settings {
   repositories?: Repository[];
   root_folder?: string;
   doctrines?: Doctrine[];
+  voices?: Voice[];
   agents?: Agent[];
   presets?: { id: string; name: string; body: string }[];
   default_review_preset?: string;
   doctrine_catalog_version?: number;
+  voice_catalog_version?: number;
   admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
 }
@@ -45,6 +47,12 @@ export type ResourceEdit =
       title: string;
       expected: Doctrine | null;
       value: Doctrine | null;
+    }
+  | {
+      kind: "voice";
+      title: string;
+      expected: Voice | null;
+      value: Voice | null;
     }
   | {
       kind: "repository";
@@ -145,6 +153,7 @@ export interface ReviewSelection {
     authority: AssignmentAuthority;
     doctrines: Doctrine[];
     doctrine_catalog?: DoctrineCatalog;
+    voice?: Voice;
   };
 }
 
@@ -179,6 +188,20 @@ export function acceptResource(
       Object.assign(current, value);
     } else if (index >= 0) settings.repositories.splice(index, 1);
     else if (value) settings.repositories.push(value);
+  } else if (edit.kind === "voice") {
+    const key = (title: string) => title.trim().toLowerCase();
+    const value = committed.voices?.find(
+      (v) => key(v.title) === key(edit.value?.title ?? edit.title),
+    );
+    const index = (settings.voices ??= []).findIndex(
+      (v) => key(v.title) === key(edit.title),
+    );
+    if (index >= 0) settings.voices.splice(index, 1, ...(value ? [value] : []));
+    else if (value) settings.voices.push(value);
+    if (edit.value)
+      for (const agent of settings.agents ?? [])
+        if (agent.voice && key(agent.voice) === key(edit.title))
+          agent.voice = edit.value.title;
   } else {
     const key = (title: string) => title.trim().toLowerCase();
     const value = committed.doctrines?.find(

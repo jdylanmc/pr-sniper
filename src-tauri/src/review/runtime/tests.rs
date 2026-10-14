@@ -47,6 +47,7 @@ fn selection() -> Selection {
             }),
             doctrine: Some("Correctness".into()),
             doctrines: None,
+            voice: None,
             prompt: "Look for defects.".into(),
             signature: "machine".into(),
         },

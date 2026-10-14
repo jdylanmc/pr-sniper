@@ -3097,7 +3097,8 @@ input.switch:focus-visible {
   margin: 0;
   padding-left: 16px;
 }
-.agent-doctrines {
+.agent-doctrines,
+.agent-voices {
   display: grid;
   gap: 12px;
 }
@@ -3134,6 +3135,12 @@ input.switch:focus-visible {
   margin: 0;
   accent-color: #327e84;
   flex: none;
+}
+.voice-guardrails {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
 }
 .doctrine-choice .icon-button {
   width: 32px;

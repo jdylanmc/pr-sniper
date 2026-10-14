@@ -27,6 +27,7 @@ import type {
   Doctrine,
   Assignment,
   PacketTool,
+  Voice,
   WatchedIdentity,
 } from "./policy";
 import {
@@ -98,6 +99,7 @@ type Section =
   | "github"
   | "repositories"
   | "doctrines"
+  | "voices"
   | "agents"
   | "preferences";
 
@@ -130,6 +132,7 @@ const sections: Record<Section, string> = {
   github: "GitHub",
   repositories: "Repositories",
   doctrines: "Doctrines",
+  voices: "Voices",
   agents: "Agents",
   preferences: "Preferences",
 };
@@ -165,6 +168,8 @@ const iconPaths = {
   repositories: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
   integrations:
     '<circle cx="8" cy="8" r="3.4"/><circle cx="17" cy="17" r="3.4"/><path d="M10.4 10.4 14.6 14.6"/>',
+  voices:
+    '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/>',
   doctrines:
     '<path d="M12 5c-2-1.3-5-1.6-7-1v14c2-.6 5-.3 7 1 2-1.3 5-1.6 7-1V4c-2-.6-5-.3-7 1Z"/><path d="M12 5v14"/>',
   agents:
@@ -392,9 +397,14 @@ export async function mountSettings(
     app.className = "settings-window";
   }
   const legacySections = Object.entries(sections).filter(([key]) =>
-    ["accounts", "repositories", "agents", "doctrines", "preferences"].includes(
-      key,
-    ),
+    [
+      "accounts",
+      "repositories",
+      "agents",
+      "doctrines",
+      "voices",
+      "preferences",
+    ].includes(key),
   );
   app.innerHTML = `${
     options.embedded
@@ -537,6 +547,7 @@ export async function mountSettings(
   };
   const repositories = () => draft.repositories ?? [];
   const doctrines = () => draft.doctrines ?? [];
+  const voices = () => draft.voices ?? [];
   const agents = () => draft.agents ?? [];
   function restoreControl(
     opener: HTMLElement,
@@ -597,7 +608,12 @@ export async function mountSettings(
     retainRepositoryDraft = false,
   ) {
     if (busy) throw "Busy";
-    if (catalogConflict && (edit.kind === "agent" || edit.kind === "doctrine"))
+    if (
+      catalogConflict &&
+      (edit.kind === "agent" ||
+        edit.kind === "doctrine" ||
+        edit.kind === "voice")
+    )
       throw "Resource changed in another window";
     busy = true;
     const currentDraft =
@@ -628,10 +644,16 @@ export async function mountSettings(
         result.settings.agents ?? [],
       );
       for (const settings of [saved, draft]) {
-        if (catalogConflict && edit.kind === "doctrine") continue;
+        if (
+          catalogConflict &&
+          (edit.kind === "doctrine" || edit.kind === "voice")
+        )
+          continue;
         acceptResource(settings, clone(result.settings), edit);
-        if (!catalogConflict)
+        if (!catalogConflict) {
           settings.doctrines = clone(result.settings.doctrines ?? []);
+          settings.voices = clone(result.settings.voices ?? []);
+        }
       }
       if (retained && edit.kind === "repository") {
         const committed = draft.repositories?.find((r) => r.id === edit.id);
@@ -789,7 +811,9 @@ export async function mountSettings(
       (!!options.embedded &&
         (section === "home" ||
           accountOverview ||
-          ["copilot", "github", "agents", "doctrines"].includes(section)));
+          ["copilot", "github", "agents", "doctrines", "voices"].includes(
+            section,
+          )));
     settingsHeading.hidden = section === "home";
     if (options.embedded)
       app.dispatchEvent(
@@ -803,7 +827,9 @@ export async function mountSettings(
     app.dataset.resourceLibrary =
       section === "repositories"
         ? "repositories"
-        : section === "agents" || section === "doctrines"
+        : section === "agents" ||
+            section === "doctrines" ||
+            section === "voices"
           ? section
           : "";
     app.toggleAttribute("data-preferences", section === "preferences");
@@ -827,6 +853,7 @@ export async function mountSettings(
     if (section === "copilot" || section === "github") renderAccounts();
     if (section === "repositories") renderRepositories();
     if (section === "doctrines") renderDoctrines();
+    if (section === "voices") renderVoices();
     if (section === "agents")
       renderAgents(() => {
         if (awaitingAgentAccess && document.activeElement === focusAfterRender)
@@ -886,7 +913,13 @@ export async function mountSettings(
   }
   function renderHome() {
     const row = (
-      key: "accounts" | "agents" | "repositories" | "doctrines" | "preferences",
+      key:
+        | "accounts"
+        | "agents"
+        | "repositories"
+        | "doctrines"
+        | "voices"
+        | "preferences",
       value = "",
     ) => overviewRow(key, value, key === "preferences" ? "home" : key);
     // Group headings sit inside their cards so the first card, not a heading,
@@ -902,6 +935,7 @@ export async function mountSettings(
         <h2 class="settings-home-heading" id="settings-group-behavior">Review behavior</h2>
         ${row("agents", String(saved.agents?.length ?? 0))}
         ${row("doctrines", String(saved.doctrines?.length ?? 0))}
+        ${row("voices", String(saved.voices?.length ?? 0))}
       </nav>
       ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}
     </div>`;
@@ -1243,7 +1277,10 @@ export async function mountSettings(
       }
     };
   }
-  const resourceActions = (kind: "agent" | "doctrine", existing: boolean) =>
+  const resourceActions = (
+    kind: "agent" | "doctrine" | "voice",
+    existing: boolean,
+  ) =>
     `<p role="alert" hidden></p><div class="resource-actions"><button class="primary">Save ${kind}</button><button type="button" data-cancel-resource>Cancel</button></div>
     ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
 
@@ -1366,6 +1403,136 @@ export async function mountSettings(
     };
   }
 
+  // ------------------------------------------------------------------- Voices
+
+  const plural = (count: number, noun: string) =>
+    `${count} ${noun}${count === 1 ? "" : "s"}`;
+  const sameVoice = (left: string, right: string) =>
+    left.trim().toLowerCase() === right.trim().toLowerCase();
+  const voiceUsers = (voice: Voice) =>
+    agents().filter(
+      (agent) => !!agent.voice && sameVoice(agent.voice, voice.title),
+    );
+  const savedVoice = (title?: string) =>
+    clone(saved.voices?.find((v) => v.title === title) ?? null);
+  const guardrailsLabel =
+    "Fixed guardrails: tone only; critique code, never people";
+
+  function renderVoices() {
+    content.innerHTML = `<div class="voice-list resource-library"></div><div class="section-actions resource-toolbar voice-footer"><button class="primary" id="new-voice">New voice</button></div>`;
+    const list = content.querySelector(".voice-list")!;
+    for (const voice of voices()) {
+      const row = document.createElement("article");
+      row.className = "voice-card resource-card";
+      row.innerHTML = `<span class="resource-symbol">${icon("voices")}</span><div class="resource-copy"><h3>${escape(voice.title)}</h3><p class="resource-preview">${escape(voice.body)}</p><p class="word-count">${plural(words(voice.body), "word")} / ${plural(voiceUsers(voice).length, "Agent")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      for (const action of ["edit", "remove"])
+        row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
+          `voice:${voice.title}:${action}`;
+      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
+        editVoice(event.currentTarget as HTMLButtonElement, voice);
+      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
+        event,
+      ) => {
+        const opener = event.currentTarget as HTMLButtonElement;
+        if (voiceUsers(voice).length) {
+          showError("In use by an Agent");
+          return;
+        }
+        if (
+          !(await confirmDialog(
+            "Delete this voice?",
+            `Delete "${escape(voice.title)}"?`,
+            "Delete voice",
+            opener,
+          ))
+        )
+          return;
+        try {
+          await commitResource({
+            kind: "voice",
+            title: voice.title,
+            expected: savedVoice(voice.title),
+            value: null,
+          });
+          render();
+        } catch (cause) {
+          showError(reason(cause));
+        }
+      };
+      list.append(row);
+    }
+    content.querySelector<HTMLButtonElement>("#new-voice")!.onclick = (event) =>
+      editVoice(event.currentTarget as HTMLButtonElement);
+  }
+
+  function editVoice(
+    opener: HTMLElement,
+    existing?: Voice,
+    onDone?: (saved: Voice) => void,
+  ) {
+    const users = existing ? voiceUsers(existing) : [];
+    const modal = dialog(
+      existing ? `Editing ${existing.title}` : "New voice",
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. Caveman" /></label><label>Style<textarea name="body" rows="8" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${plural(words(existing?.body ?? ""), "word")}</p>
+      <label class="voice-guardrails"><input type="checkbox" name="guardrails" ${existing?.guardrails === false ? "" : "checked"} /><span>${guardrailsLabel}</span></label>
+      <p class="resource-impact">${users.length ? `Shared by ${plural(users.length, "Agent")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("voice", !!existing)}</form>`,
+      opener,
+    );
+    resourceEditor(
+      modal,
+      existing
+        ? {
+            edit: {
+              kind: "voice",
+              title: existing.title,
+              expected: savedVoice(existing.title),
+              value: null,
+            },
+            blocked: users.length ? "In use by an Agent" : "",
+          }
+        : undefined,
+    );
+    const body = modal.querySelector<HTMLTextAreaElement>("[name=body]")!;
+    const count = modal.querySelector<HTMLElement>("[data-count]")!;
+    body.oninput = () => {
+      count.textContent = plural(words(body.value), "word");
+    };
+    modal.querySelector("form")!.onsubmit = async (event) => {
+      event.preventDefault();
+      const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+      const title = modal
+        .querySelector<HTMLInputElement>("[name=title]")!
+        .value.trim();
+      const value: Voice = {
+        title,
+        body: body.value,
+        guardrails:
+          modal.querySelector<HTMLInputElement>("[name=guardrails]")!.checked,
+      };
+      try {
+        if (!title || !body.value.trim()) throw "Title and style required";
+        if (voices().some((v) => v !== existing && sameVoice(v.title, title)))
+          throw "Title already used";
+        await commitResource(
+          {
+            kind: "voice",
+            title: existing?.title ?? title,
+            expected: savedVoice(existing?.title),
+            value,
+          },
+          modal,
+        );
+        if (existing) opener.dataset.focusKey = `voice:${title}:edit`;
+        modal.close();
+        if (onDone) onDone(value);
+        else render();
+      } catch (cause) {
+        alert.textContent = typeof cause === "string" ? cause : reason(cause);
+        alert.hidden = false;
+      }
+    };
+  }
+
   // -------------------------------------------------------------------- Agents
 
   function renderAgents(onReady: () => void) {
@@ -1465,6 +1632,22 @@ export async function mountSettings(
       .replace(/^-+|-+$/g, "") || fallback;
   const defaultSignature = (name: string, model: string) =>
     `\u{1F52B} pr-sniper(${slug(name, "agent")}:${slug(model, "model")})`;
+  const voiceChoice = (
+    value: string,
+    label: string,
+    checked: boolean,
+    available = true,
+  ) =>
+    `<div data-voice-choice ${available ? "" : "data-unavailable"}><label><input type="radio" name="voice" value="${escape(value)}" ${checked ? "checked" : ""} ${available ? "" : "disabled"} /><span>${escape(label)}</span></label>${value && available ? `<button type="button" data-edit-voice="${escape(value)}" aria-label="Edit voice ${escape(value)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`;
+  /** None first, then the library; a missing selection stays visible. */
+  const voiceChoices = (selected: string) =>
+    voiceChoice("", "None", !selected) +
+    voices()
+      .map((v) => voiceChoice(v.title, v.title, sameVoice(v.title, selected)))
+      .join("") +
+    (selected && !voices().some((v) => sameVoice(v.title, selected))
+      ? voiceChoice(selected, `${selected} (unavailable)`, true, false)
+      : "");
   const doctrineChoice = (title: string, checked: boolean) =>
     `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(title)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span><button type="button" data-edit-doctrine="${escape(title)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button></label>`;
 
@@ -1499,6 +1682,7 @@ export async function mountSettings(
             ),
           )
           .join("")}</div><p data-no-doctrines hidden></p></fieldset>
+        <button type="button" class="doctrine-row" data-open-voices aria-label="Choose voice"><span>Voice</span><span class="doctrine-summary" data-voice-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-voices"><legend class="sr-only">Voice</legend><div class="voice-choices" role="radiogroup" aria-label="Available voices">${voiceChoices(existing?.voice ?? "")}</div></fieldset>
         <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
         <p class="resource-impact">${assigned.length ? `Shared by ${countLabel(assigned.length, "repository", "repositories")}: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
@@ -1629,6 +1813,54 @@ export async function mountSettings(
           ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
         ];
         updateChoices();
+      });
+    });
+    const voiceList = modal.querySelector<HTMLElement>(".voice-choices")!;
+    const voiceRow =
+      modal.querySelector<HTMLButtonElement>("[data-open-voices]")!;
+    const selectedVoice = () =>
+      voiceList.querySelector<HTMLInputElement>("input:checked")?.value ?? "";
+    const updateVoice = () => {
+      const value = selectedVoice();
+      modal.querySelector("[data-voice-summary]")!.textContent = !value
+        ? "None"
+        : voices().some((v) => sameVoice(v.title, value))
+          ? value
+          : `${value} (unavailable)`;
+    };
+    voiceList.addEventListener("change", updateVoice);
+    updateVoice();
+    const closeVoices = () => {
+      delete agentForm.dataset.view;
+      dropEditor((e) => e.modal === modal && e.title === "Voice");
+      voiceRow.focus({ preventScroll: true });
+    };
+    voiceRow.onclick = () => {
+      agentForm.dataset.view = "voices";
+      if (options.embedded) {
+        editorStack.push({ modal, title: "Voice", back: closeVoices });
+        announceEditor();
+      }
+      (
+        voiceList.querySelector<HTMLInputElement>("input:checked") ??
+        voiceList.querySelector<HTMLInputElement>("input")
+      )?.focus({ preventScroll: true });
+    };
+    voiceList.addEventListener("click", (event) => {
+      const pencil = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-edit-voice]",
+      );
+      if (!pencil) return;
+      event.preventDefault();
+      const title = pencil.dataset.editVoice!;
+      const voice = voices().find((v) => v.title === title);
+      if (!voice) return;
+      editVoice(pencil, voice, (updated) => {
+        const current = selectedVoice();
+        voiceList.innerHTML = voiceChoices(
+          current === title ? updated.title : current,
+        );
+        updateVoice();
       });
     });
     const accountSelect =
@@ -1988,6 +2220,7 @@ export async function mountSettings(
           (title) => !previousTitles.some((d) => sameTitle(d, title)),
         ),
       ];
+      const voice = selectedVoice();
       const prompt =
         modal.querySelector<HTMLTextAreaElement>("[name=prompt]")!.value;
       const signature = modal
@@ -2049,6 +2282,7 @@ export async function mountSettings(
               ? { doctrine: existing.doctrine }
               : {}
             : { doctrines: selectedTitles }),
+          ...(voice ? { voice } : {}),
         };
         await commitResource(
           {
@@ -4029,6 +4263,8 @@ export async function mountSettings(
         for (const settings of [saved, draft]) {
           settings.agents = clone(state.settings.agents ?? []);
           settings.doctrines = clone(state.settings.doctrines ?? []);
+          settings.voices = clone(state.settings.voices ?? []);
+          settings.voice_catalog_version = state.settings.voice_catalog_version;
           settings.doctrine_catalog_version =
             state.settings.doctrine_catalog_version;
           settings.doctrine_reset = state.settings.doctrine_reset

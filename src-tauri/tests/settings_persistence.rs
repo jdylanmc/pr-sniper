@@ -206,6 +206,8 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
             "launch_at_login": true,
             "doctrines": [],
             "doctrine_catalog_version": 1,
+            "voices": [],
+            "voice_catalog_version": 1,
             "capacity": 4,
             "admission_migration_version": 1,
             "defaults": {

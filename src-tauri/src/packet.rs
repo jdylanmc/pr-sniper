@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -113,6 +113,8 @@ pub struct Directive {
     pub repository_prompt: String,
     pub preset: Option<String>,
     pub signature: String,
+    /// The Agent's Voice for human-facing text. Primary packets only.
+    pub voice: Option<crate::storage::Voice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

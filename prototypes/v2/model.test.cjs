@@ -1148,3 +1148,37 @@ test("notification types default on, migrate older saves and validate", () => {
   assert.equal(muted.preferences.notificationTypes.failure, false);
   assert.equal(muted.preferences.notificationTypes.ready, true);
 });
+
+test("voices seed once, save the guard flag and cannot disappear while used", () => {
+  let state = M.seed();
+  assert.deepEqual(
+    plain(state.voices.map((voice) => [voice.name, voice.guardrails])),
+    [
+      ["Caveman", true],
+      ["Gilfoyle", true],
+      ["Merlin", true],
+    ],
+  );
+  state = M.update(state, "save-voice", {
+    voice: { name: "Pirate", body: "Arr.", guardrails: false },
+  });
+  const pirate = state.voices.at(-1);
+  assert.equal(pirate.guardrails, false);
+  state = M.update(state, "save-agent", {
+    agent: { ...plain(state.agents[0]), voiceId: pirate.id },
+  });
+  assert.throws(
+    () => M.update(state, "delete-voice", { id: pirate.id }),
+    /Remove this voice/,
+  );
+  state = M.update(state, "save-agent", {
+    agent: { ...plain(state.agents[0]), voiceId: "" },
+  });
+  for (const voice of plain(state.voices))
+    state = M.update(state, "delete-voice", { id: voice.id });
+  assert.deepEqual(plain(state.voices), []);
+  assert.deepEqual(plain(M.migrate(plain(state)).voices), []);
+  const legacy = plain(M.seed());
+  delete legacy.voices;
+  assert.equal(M.migrate(legacy).voices.length, 3);
+});

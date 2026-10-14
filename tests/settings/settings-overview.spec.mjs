@@ -227,6 +227,7 @@ test("grouped overview uses saved counts and all five destinations return focus 
     agents: String(saved.agents.length),
     repositories: String(saved.repositories.length),
     doctrines: String(saved.doctrines.length),
+    voices: String(saved.voices.length),
   })) {
     await expect(page.locator(`[data-settings-count="${key}"]`)).toHaveText(
       value,
@@ -249,6 +250,7 @@ test("grouped overview uses saved counts and all five destinations return focus 
       "Doctrines",
       page.getByRole("button", { name: "New doctrine", exact: true }),
     ],
+    ["Voices", page.getByRole("button", { name: "New voice", exact: true })],
     ["Preferences", page.getByLabel("Cron expression", { exact: true })],
   ]) {
     await row(page, name).scrollIntoViewIfNeeded();

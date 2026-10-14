@@ -1,13 +1,13 @@
 # Settings
 
-Reference for Settings navigation, accounts, repositories, assignments, Agents, Doctrines, Preferences and the onboarding Genie.
+Reference for Settings navigation, accounts, repositories, assignments, Agents, Doctrines, Voices, Preferences and the onboarding Genie.
 
 ## Layout
 
 - Overview: saved resource counts and a Genie icon by the title.
-- Two grouped cards. **General**: **Accounts**, **Repositories**, **Preferences** (AI capacity lives there). **Review behavior**: **Agents**, **Doctrines**.
+- Two grouped cards. **General**: **Accounts**, **Repositories**, **Preferences** (AI capacity lives there). **Review behavior**: **Agents**, **Doctrines**, **Voices**.
 - Back restores the row and scroll. Back never saves or resets other drafts.
-- Collections (Agents, Doctrines) are one grouped list: `.resource-library` card, hairline-separated `.resource-card` rows. Counts are singular-aware.
+- Collections (Agents, Doctrines, Voices) are one grouped list: `.resource-library` card, hairline-separated `.resource-card` rows. Counts are singular-aware.
 - Resource editors keep Save/Cancel. No global save bar. Lists have no save bar.
 - Reset discards remaining unsaved edits, not successful resource saves. Controls and dialog dismissal are locked during saves.
 - Dialogs keep focus, `Escape`/Close and background isolation without native dialog APIs.
@@ -58,6 +58,14 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Doctrine editor shows sharing users; delete refused while referenced. Unreferenced delete is confirmed and keeps completed review evidence.
 - Fresh config persists ten bundled Doctrines on first load, before any Settings tab is visited. Catalog `src-tauri/doctrines` (embedded; no download at runtime) is independent of `.agents/skills/doctrine`. Defaults target 250 words, 500-word ceiling; ceiling does not bind user text.
 - Edits, additions and deletions (even deleting the whole library) survive restart. Libraries are never topped up or replaced. Legacy settings without a doctrine field stay empty; next save writes an explicit empty list.
+
+## Voices
+
+- Library like Doctrines: list drills into an editor; floating **New voice**; trash icon per row; delete refused while an Agent uses it; rename updates Agents.
+- Voice = title + style text + **Fixed guardrails** checkbox (default on). Label: "Fixed guardrails: tone only; critique code, never people".
+- Seeds: Caveman, Gilfoyle, Merlin (`src-tauri/voices`, embedded). Added once to a library that never held Voices (`voice_catalog_version` absent); never topped up. Deleted seeds and an empty library survive restart.
+- Agent editor: **Voice** row drills into None + library (radio). Default None. Missing selection stays visible as unavailable until changed.
+- Affects only primary text for humans. Packet rules: [ADR 0022](adr/0022-voices.md).
 
 ## Preferences
 

@@ -256,7 +256,7 @@ function navigate(page, id, keepEdits = false) {
 
 function goBack() {
   const picker = stage.lastElementChild?.querySelector(
-    '.agent-form[data-view="doctrines"]',
+    '.agent-form:is([data-view="doctrines"], [data-view="voices"])',
   );
   if (picker) {
     setAgentView(picker, "");
@@ -717,6 +717,7 @@ function settingsPage() {
     <nav class="settings-list" aria-labelledby="settings-group-behavior"><h2 class="settings-list-heading" id="settings-group-behavior">Review behavior</h2>
       ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
       ${settingsRow("Doctrines", "The principles behind each review", state.doctrines.length, "book", "doctrines")}
+      ${settingsRow("Voices", "How agents sound to people", state.voices.length, "spark", "voices")}
     </nav>
     <p class="section-note">Changes stay in this browser. No real accounts, credentials, or application settings are read or changed.</p>
   </div>`;
@@ -724,8 +725,11 @@ function settingsPage() {
 
 function collectionPage(kind) {
   if (kind === "repos") return repositoriesPage();
-  const editor = kind === "agents" ? "agent" : "doctrine";
-  const label = kind === "agents" ? "New agent" : "New doctrine";
+  const editor =
+    kind === "agents" ? "agent" : kind === "voices" ? "voice" : "doctrine";
+  const label = `New ${editor}`;
+  const symbol =
+    kind === "agents" ? "crosshair" : kind === "voices" ? "spark" : "book";
   const warning = (item) => {
     if (kind !== "agents") return "";
     if (!item.accountId || !item.prompt?.trim()) return "Unconfigured";
@@ -739,11 +743,13 @@ function collectionPage(kind) {
     const detail =
       kind === "agents"
         ? `${item.model} / ${countLabel(state.repos.filter((repo) => repo.agentIds.includes(item.id)).length, "repository", "repositories")}`
-        : `${item.body.trim().split(/\s+/).length} words`;
+        : kind === "voices"
+          ? `${countLabel(item.body.trim().split(/\s+/).length, "word", "words")} / ${countLabel(state.agents.filter((agent) => agent.voiceId === item.id).length, "agent", "agents")}`
+          : `${item.body.trim().split(/\s+/).length} words`;
     const problem = warning(item);
-    return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(kind === "agents" ? "crosshair" : "book")}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
+    return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(symbol)}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
   });
-  return `<div class="page-scroll has-fab" data-scroll="${kind}">${cards.length ? `<div class="configuration-list">${cards.join("")}</div>` : quietEmpty(kind === "agents" ? "crosshair" : "book", `No ${kind} yet`)}</div>
+  return `<div class="page-scroll has-fab" data-scroll="${kind}">${cards.length ? `<div class="configuration-list">${cards.join("")}</div>` : quietEmpty(symbol, `No ${kind} yet`)}</div>
     <button type="button" class="floating-pill" data-page="${editor}">${icon("plus")}${label}</button>`;
 }
 
@@ -886,6 +892,7 @@ function agentEditor(id) {
     model: "",
     prompt: "Review this pull request for correctness, risk, and readability.",
     doctrineIds: [],
+    voiceId: "",
     completion: "human",
     comment: false,
   };
@@ -922,6 +929,7 @@ function agentEditor(id) {
       </section>
       <section class="group-card">
         <button type="button" class="kv-row kv-link" data-action="open-doctrines" aria-label="Choose doctrines"><span>Doctrines</span><span class="kv-value" data-doctrine-summary>${agent.doctrineIds.length} selected</span>${icon("chevron")}</button>
+        <button type="button" class="kv-row kv-link" data-action="open-voices" aria-label="Choose voice"><span>Voice</span><span class="kv-value" data-voice-summary>${esc(state.voices.find((voice) => voice.id === agent.voiceId)?.name ?? "None")}</span>${icon("chevron")}</button>
         <div class="prompt-block"><div class="prompt-head"><span>Prompt</span><button type="button" class="icon-button info-tip" data-action="prompt-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button></div>
           <div class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips" hidden><strong>Tokens</strong><span class="tip-note">Click to insert. Replaced when the review runs.</span><span class="token-list">${tokens}</span><strong>Tips</strong><ul><li>Open with a role and goal.</li><li>Say what to flag, what to ignore, and the severity bar.</li><li>Ask for file, line and a suggested fix.</li></ul></div>
           <textarea name="prompt" aria-label="Prompt" required rows="4">${esc(agent.prompt)}</textarea></div>
@@ -943,6 +951,17 @@ function agentEditor(id) {
           )
           .join("") || quietEmpty("book", "No doctrines yet")
       }</div>
+    </div>
+    <div class="agent-voices" hidden>
+      <div class="group-card doctrine-choices" role="radiogroup" aria-label="Available voices">${[
+        { id: "", name: "None" },
+        ...state.voices,
+      ]
+        .map(
+          (voice) =>
+            `<div class="doctrine-choice" data-voice-choice><label><input type="radio" name="voiceId" value="${esc(voice.id)}" ${checked((agent.voiceId ?? "") === voice.id)} /><span>${esc(voice.name)}</span></label>${voice.id ? `<button type="button" class="icon-button" data-action="edit-voice" data-id="${esc(voice.id)}" aria-label="Edit voice ${esc(voice.name)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`,
+        )
+        .join("")}</div>
     </div></form></div>`;
 }
 
@@ -1144,19 +1163,26 @@ function addAdmissionValue(form, value) {
 
 function setAgentView(form, view) {
   form.dataset.view = view;
-  form.querySelector(".agent-main").hidden = view === "doctrines";
+  const opener = form.dataset.opener || "open-doctrines";
+  if (view) form.dataset.opener = `open-${view}`;
+  form.querySelector(".agent-main").hidden = !!view;
   form.querySelector(".agent-doctrines").hidden = view !== "doctrines";
+  form.querySelector(".agent-voices").hidden = view !== "voices";
   const saved = state.agents.find((agent) => agent.id === form.dataset.id);
   pageTitle.textContent =
     view === "doctrines"
       ? "Doctrines"
-      : saved
-        ? `Editing ${saved.name}`
-        : "New agent";
+      : view === "voices"
+        ? "Voice"
+        : saved
+          ? `Editing ${saved.name}`
+          : "New agent";
   if (!form.isConnected) return;
   (view === "doctrines"
     ? form.querySelector("#doctrine-filter")
-    : form.querySelector('[data-action="open-doctrines"]')
+    : view === "voices"
+      ? form.querySelector('[name="voiceId"]:checked')
+      : form.querySelector(`[data-action="${opener}"]`)
   ).focus({ preventScroll: true });
 }
 
@@ -1207,6 +1233,7 @@ function captureDraft() {
           doctrineIds: [
             ...form.querySelectorAll('[name="doctrineIds"]:checked'),
           ].map((item) => item.value),
+          voiceId: form.querySelector('[name="voiceId"]:checked')?.value ?? "",
         }
       : {
           name: text("name"),
@@ -1247,6 +1274,15 @@ function doctrineEditor(id) {
     body: "",
   };
   return `<div class="page-scroll" data-scroll="doctrine-editor"><form data-form="doctrine" data-id="${esc(id ?? "")}" class="editor-form">${field("Doctrine name", input("name", item.name))}${field("Review principles", `<textarea name="body" rows="10" required>${esc(item.body)}</textarea>`)}${editorFooter("doctrine", id)}</form></div>`;
+}
+
+function voiceEditor(id) {
+  const item = state.voices.find((voice) => voice.id === id) ?? {
+    name: "",
+    body: "",
+    guardrails: true,
+  };
+  return `<div class="page-scroll" data-scroll="voice-editor"><form data-form="voice" data-id="${esc(id ?? "")}" class="editor-form">${field("Voice name", input("name", item.name))}${field("Style", `<textarea name="body" rows="8" required>${esc(item.body)}</textarea>`)}<label class="voice-guardrails"><input type="checkbox" name="guardrails" ${checked(item.guardrails)} /><span>Fixed guardrails: tone only; critique code, never people</span></label>${editorFooter("voice", id)}</form></div>`;
 }
 
 function accountsPage() {
@@ -1471,6 +1507,8 @@ function render(direction = 0, focus = false) {
     "repo-url": "Add by URL",
     doctrines: "Doctrines",
     doctrine: "Doctrine",
+    voices: "Voices",
+    voice: "Voice",
     accounts: "Accounts",
     "add-account": "Add account",
     "account-signin": "Sign in",
@@ -1491,10 +1529,14 @@ function render(direction = 0, focus = false) {
     pageTitle.textContent = record(state.doctrines)
       ? `Editing ${record(state.doctrines).name}`
       : "New doctrine";
+  else if (current.page === "voice")
+    pageTitle.textContent = record(state.voices)
+      ? `Editing ${record(state.voices).name}`
+      : "New voice";
   else if (current.page === "repo")
     pageTitle.textContent = record(state.repos)?.name ?? "New repository";
   popover.dataset.editor = String(
-    ["agent", "repo", "doctrine"].includes(current.page),
+    ["agent", "repo", "doctrine", "voice"].includes(current.page),
   );
   let html;
   switch (current.page) {
@@ -1522,6 +1564,7 @@ function render(direction = 0, focus = false) {
     case "agents":
     case "repos":
     case "doctrines":
+    case "voices":
       html = collectionPage(current.page);
       break;
     case "agent":
@@ -1538,6 +1581,9 @@ function render(direction = 0, focus = false) {
       break;
     case "doctrine":
       html = doctrineEditor(current.id);
+      break;
+    case "voice":
+      html = voiceEditor(current.id);
       break;
     case "accounts":
       html = accountsPage();
@@ -1589,7 +1635,8 @@ function render(direction = 0, focus = false) {
     initRepoForm(next.querySelector('[data-form="repo"]'));
   if (current.page === "agent") {
     const form = next.querySelector('[data-form="agent"]');
-    if (current.draft?.view === "doctrines") setAgentView(form, "doctrines");
+    if (["doctrines", "voices"].includes(current.draft?.view))
+      setAgentView(form, current.draft.view);
     form.dataset.view ||= "";
   }
   if (previous) {
@@ -1600,6 +1647,8 @@ function render(direction = 0, focus = false) {
   growPrompt(next);
   if (current.page === "agent" && current.draft?.view === "doctrines")
     pageTitle.textContent = "Doctrines";
+  if (current.page === "agent" && current.draft?.view === "voices")
+    pageTitle.textContent = "Voice";
   if (current.page === "repo") {
     const repoForm = next.querySelector('[data-form="repo"]');
     if (repoForm._route.length) {
@@ -1670,6 +1719,7 @@ function readForm(form) {
             signature: value("signature"),
             prompt: value("prompt"),
             doctrineIds: all("doctrineIds"),
+            voiceId: value("voiceId"),
             completion: value("completion"),
             comment: bool("comment"),
           },
@@ -1710,6 +1760,18 @@ function readForm(form) {
       return [
         "save-doctrine",
         { doctrine: { id, name: value("name"), body: value("body") } },
+      ];
+    case "voice":
+      return [
+        "save-voice",
+        {
+          voice: {
+            id,
+            name: value("name"),
+            body: value("body"),
+            guardrails: bool("guardrails"),
+          },
+        },
       ];
     case "capacity":
       return ["capacity", { limit: Number(value("limit")) }];
@@ -1793,6 +1855,7 @@ stage.addEventListener("submit", (event) => {
       "agent",
       "repo",
       "doctrine",
+      "voice",
       "capacity",
       "preferences",
     ].includes(form.dataset.form);
@@ -1866,6 +1929,12 @@ stage.addEventListener("change", (event) => {
       .closest("form")
       .querySelector('button[type="submit"]').disabled =
       !event.target.checked || !Demo.setupStatus(state).ready;
+  }
+  if (event.target.name === "voiceId") {
+    const form = event.target.closest("form");
+    form.querySelector("[data-voice-summary]").textContent =
+      state.voices.find((voice) => voice.id === event.target.value)?.name ??
+      "None";
   }
   if (event.target.name === "doctrineIds") {
     const form = event.target.closest("form");
@@ -2011,7 +2080,8 @@ popover.addEventListener("click", (event) => {
       return;
     if (perform(action, { id }, "Prototype configuration deleted.", false)) {
       dirty = false;
-      if (["agent", "repo", "doctrine"].includes(route().page)) goBack();
+      if (["agent", "repo", "doctrine", "voice"].includes(route().page))
+        goBack();
       else render();
     }
     return;
@@ -2051,6 +2121,7 @@ popover.addEventListener("click", (event) => {
   const form = button.closest("form");
   const editorActions = {
     "open-doctrines": () => setAgentView(form, "doctrines"),
+    "open-voices": () => setAgentView(form, "voices"),
     "prompt-tip": () => {
       const tip = form.querySelector(".tip-body");
       tip.hidden = !tip.hidden;
@@ -2080,6 +2151,10 @@ popover.addEventListener("click", (event) => {
     "edit-doctrine": () => {
       captureDraft();
       navigate("doctrine", id, true);
+    },
+    "edit-voice": () => {
+      captureDraft();
+      navigate("voice", id, true);
     },
     "assign-agent": () => {
       const picker = form.querySelector('[data-picker="agents"]');

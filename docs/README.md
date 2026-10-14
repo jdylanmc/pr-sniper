@@ -4,18 +4,18 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 
 ## Reference
 
-| Doc                                        | Purpose                                                                          |
-| ------------------------------------------ | -------------------------------------------------------------------------------- |
-| [panel-and-tray.md](panel-and-tray.md)     | Tray menu, retained panel, navigation state, Queue/Running/Reviewed tabs         |
-| [settings.md](settings.md)                 | Settings UI: accounts, repos, assignments, Agents, Doctrines, Preferences, Genie |
-| [review-queue.md](review-queue.md)         | Queue states, retry/park, local Agent reviews, notifications (macOS)             |
-| [review-packet.md](review-packet.md)       | Proposed: the one packet each agent run receives                                 |
-| [polling.md](polling.md)                   | Schedule, admission filters, lifecycle reads, GitHub connection and PR reads     |
-| [provider-writes.md](provider-writes.md)   | Publication, thread/mention replies, Approve and Merge mechanics                 |
-| [active-results.md](active-results.md)     | `result_page` / `result_detail` API, summary index, terminal cleanup             |
-| [local-data.md](local-data.md)             | Data root, state files, atomic replace, recovery, retention journal              |
-| [diagnostics.md](diagnostics.md)           | Retained logs, attempt records, caps, redaction                                  |
-| [copilot-settings.md](copilot-settings.md) | Copilot accounts, returned model catalogs, per-Agent models                      |
+| Doc                                        | Purpose                                                                                  |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| [panel-and-tray.md](panel-and-tray.md)     | Tray menu, retained panel, navigation state, Queue/Running/Reviewed tabs                 |
+| [settings.md](settings.md)                 | Settings UI: accounts, repos, assignments, Agents, Doctrines, Voices, Preferences, Genie |
+| [review-queue.md](review-queue.md)         | Queue states, retry/park, local Agent reviews, notifications (macOS)                     |
+| [review-packet.md](review-packet.md)       | Proposed: the one packet each agent run receives                                         |
+| [polling.md](polling.md)                   | Schedule, admission filters, lifecycle reads, GitHub connection and PR reads             |
+| [provider-writes.md](provider-writes.md)   | Publication, thread/mention replies, Approve and Merge mechanics                         |
+| [active-results.md](active-results.md)     | `result_page` / `result_detail` API, summary index, terminal cleanup                     |
+| [local-data.md](local-data.md)             | Data root, state files, atomic replace, recovery, retention journal                      |
+| [diagnostics.md](diagnostics.md)           | Retained logs, attempt records, caps, redaction                                          |
+| [copilot-settings.md](copilot-settings.md) | Copilot accounts, returned model catalogs, per-Agent models                              |
 
 ## Platform and release
 

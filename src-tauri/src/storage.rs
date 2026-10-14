@@ -75,6 +75,12 @@ pub struct Settings {
     pub doctrine_catalog_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_reset: Option<DoctrineReset>,
+    // Same library semantics as `doctrines`. Files without the version predate
+    // Voices and are seeded once on load; an emptied library stays empty.
+    #[serde(default)]
+    pub voices: Vec<Voice>,
+    #[serde(default = "voice_catalog_version")]
+    pub voice_catalog_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_notice: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -98,6 +104,10 @@ fn default_capacity() -> u32 {
 }
 
 fn doctrine_catalog_version() -> u32 {
+    1
+}
+
+fn voice_catalog_version() -> u32 {
     1
 }
 
@@ -130,6 +140,8 @@ impl Default for Settings {
             doctrines: Vec::new(),
             doctrine_catalog_version: doctrine_catalog_version(),
             doctrine_reset: None,
+            voices: Vec::new(),
+            voice_catalog_version: voice_catalog_version(),
             capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
@@ -148,8 +160,101 @@ pub struct Doctrine {
     pub body: String,
 }
 
-/// A reusable review profile: model + ordered doctrines + prompt +
-/// signature. Referenced by id from repository assignments.
+/// A named writing style for text an Agent writes for humans. Like a
+/// Doctrine, `title` is the identity. Plain text body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Voice {
+    pub title: String,
+    pub body: String,
+    /// The host adds its fixed tone guard to the packet. Default on.
+    #[serde(default = "guardrails_default")]
+    pub guardrails: bool,
+}
+
+fn guardrails_default() -> bool {
+    true
+}
+
+/// A shared, title-keyed library entry (Doctrine, Voice).
+trait LibraryEntry: Clone + PartialEq {
+    fn title(&self) -> &str;
+    fn body(&self) -> &str;
+}
+
+impl LibraryEntry for Doctrine {
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+impl LibraryEntry for Voice {
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+fn same_title(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
+}
+
+/// Lower-cased titles; rejects empty or repeated titles and unsafe text.
+fn library_titles<T: LibraryEntry>(entries: &[T], plural: &str) -> Result<HashSet<String>, String> {
+    let mut titles = HashSet::new();
+    for entry in entries {
+        if entry.title().trim().is_empty() || !titles.insert(entry.title().trim().to_lowercase()) {
+            return Err(format!("{plural} need a unique, nonempty title."));
+        }
+        crate::policy::validate_configuration_text(entry.title())?;
+        crate::policy::validate_configuration_text(entry.body())?;
+    }
+    Ok(titles)
+}
+
+/// Compare-and-save one library entry. Callers rename references after success.
+fn replace_entry<T: LibraryEntry>(
+    library: &mut Vec<T>,
+    title: &str,
+    expected: Option<&T>,
+    value: Option<T>,
+    referenced: bool,
+    noun: &str,
+    conflict: &str,
+) -> Result<(), String> {
+    let index = library.iter().position(|e| same_title(e.title(), title));
+    if index.map(|i| &library[i]) != expected {
+        return Err(conflict.into());
+    }
+    let in_use =
+        "is used by an Agent. Remove or replace its references explicitly before deleting it.";
+    match (index, value) {
+        (None, None) => Err(format!(
+            "This {noun} is not saved. Cancel its draft instead."
+        )),
+        (Some(_), None) if referenced => Err(format!("This {noun} {in_use}")),
+        (Some(index), None) => {
+            library.remove(index);
+            Ok(())
+        }
+        (Some(index), Some(value)) => {
+            library[index] = value;
+            Ok(())
+        }
+        (None, Some(value)) => {
+            library.push(value);
+            Ok(())
+        }
+    }
+}
+
+/// A reusable review profile: model + ordered doctrines + optional Voice +
+/// prompt + signature. Referenced by id from repository assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Agent {
@@ -166,6 +271,9 @@ pub struct Agent {
     /// When present, including an empty list, supersedes the legacy single selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrines: Option<Vec<String>>,
+    /// Zero or one Voice title. Absent on Agents that predate Voices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
     pub prompt: String,
     pub signature: String,
 }
@@ -306,6 +414,11 @@ pub enum ResourceEdit {
         expected: Option<Doctrine>,
         value: Option<Doctrine>,
     },
+    Voice {
+        title: String,
+        expected: Option<Voice>,
+        value: Option<Voice>,
+    },
     Repository {
         id: String,
         expected: Option<Box<Repository>>,
@@ -431,7 +544,7 @@ impl Settings {
         };
         DoctrineCatalog {
             source: "config/settings.json; defaults: src-tauri/doctrines".into(),
-            source_revision: revision(&crate::doctrine_seeds::doctrines()),
+            source_revision: revision(&crate::seeds::doctrines()),
             effective_revision: revision(&self.doctrines),
             count: self.doctrines.len(),
         }
@@ -555,6 +668,12 @@ impl Settings {
                     .into(),
             );
         }
+        if self.voice_catalog_version != voice_catalog_version() {
+            return Err(
+                "Unsupported voice catalog version. Use a compatible application before saving."
+                    .into(),
+            );
+        }
         self.defaults.validate()?;
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
@@ -588,16 +707,8 @@ impl Settings {
             Ok(())
         };
         validate_preset(&self.default_review_preset)?;
-        let mut doctrine_titles = HashSet::new();
-        for doctrine in &self.doctrines {
-            if doctrine.title.trim().is_empty()
-                || !doctrine_titles.insert(doctrine.title.trim().to_lowercase())
-            {
-                return Err("Doctrines need a unique, nonempty title.".into());
-            }
-            crate::policy::validate_configuration_text(&doctrine.title)?;
-            crate::policy::validate_configuration_text(&doctrine.body)?;
-        }
+        let doctrine_titles = library_titles(&self.doctrines, "Doctrines")?;
+        let voice_titles = library_titles(&self.voices, "Voices")?;
         let mut agent_ids = HashSet::new();
         let mut agent_names = HashSet::new();
         for agent in &self.agents {
@@ -619,6 +730,15 @@ impl Settings {
                 if !doctrine_titles.contains(&key) || !selected.insert(key) {
                     return Err("Selected doctrines must exist and must not repeat. Repair the Agent's doctrine references before saving.".into());
                 }
+            }
+            if agent
+                .voice
+                .as_ref()
+                .is_some_and(|title| !voice_titles.contains(&title.trim().to_lowercase()))
+            {
+                return Err(
+                    "The selected Voice must exist. Repair the Agent's Voice before saving.".into(),
+                );
             }
             crate::policy::validate_configuration_text(&agent.name)?;
             crate::policy::validate_configuration_text(&agent.model)?;
@@ -1137,42 +1257,60 @@ impl Store {
                 expected,
                 value,
             } => {
-                let matches =
-                    |value: &str| value.trim().to_lowercase() == title.trim().to_lowercase();
-                let current = settings.doctrines.iter().find(|d| matches(&d.title));
-                if current != expected.as_ref() {
-                    return Err(conflict.into());
-                }
-                if current.is_none() && value.is_none() {
-                    return Err("This doctrine is not saved. Cancel its draft instead.".into());
-                }
+                let matches = |value: &str| same_title(value, &title);
                 let referenced = settings
                     .agents
                     .iter()
                     .any(|a| a.doctrine_titles().iter().any(|title| matches(title)));
-                if value.is_none() && referenced {
-                    return Err("This doctrine is used by an Agent. Remove or replace its references explicitly before deleting it.".into());
-                }
-                if let Some(value) = &value {
+                let renamed = value.as_ref().map(|v| v.title.clone());
+                replace_entry(
+                    &mut settings.doctrines,
+                    &title,
+                    expected.as_ref(),
+                    value,
+                    referenced,
+                    "doctrine",
+                    conflict,
+                )?;
+                if let Some(renamed) = renamed {
                     for agent in &mut settings.agents {
                         if let Some(titles) = &mut agent.doctrines {
                             for title in titles.iter_mut().filter(|title| matches(title)) {
-                                *title = value.title.clone();
+                                *title = renamed.clone();
                             }
                         }
                         if agent.doctrine.as_ref().is_some_and(|title| matches(title)) {
-                            agent.doctrine = Some(value.title.clone());
+                            agent.doctrine = Some(renamed.clone());
                         }
                     }
                 }
-                if let Some(index) = settings.doctrines.iter().position(|d| matches(&d.title)) {
-                    if let Some(value) = value {
-                        settings.doctrines[index] = value;
-                    } else {
-                        settings.doctrines.remove(index);
+            }
+            ResourceEdit::Voice {
+                title,
+                expected,
+                value,
+            } => {
+                let matches = |value: &str| same_title(value, &title);
+                let referenced = settings
+                    .agents
+                    .iter()
+                    .any(|a| a.voice.as_deref().is_some_and(matches));
+                let renamed = value.as_ref().map(|v| v.title.clone());
+                replace_entry(
+                    &mut settings.voices,
+                    &title,
+                    expected.as_ref(),
+                    value,
+                    referenced,
+                    "voice",
+                    conflict,
+                )?;
+                if let Some(renamed) = renamed {
+                    for agent in &mut settings.agents {
+                        if agent.voice.as_deref().is_some_and(matches) {
+                            agent.voice = Some(renamed.clone());
+                        }
                     }
-                } else if let Some(value) = value {
-                    settings.doctrines.push(value);
                 }
             }
             ResourceEdit::Repository {
@@ -1376,7 +1514,8 @@ impl Store {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 let mut settings = Settings {
-                    doctrines: crate::doctrine_seeds::doctrines(),
+                    doctrines: crate::seeds::doctrines(),
+                    voices: crate::seeds::voices(),
                     ..Settings::default()
                 };
                 match &mut settings.defaults.schedule {
@@ -1399,6 +1538,8 @@ impl Store {
             doctrine_catalog_version: Option<u32>,
             #[serde(default)]
             admission_migration_version: Option<u32>,
+            #[serde(default)]
+            voice_catalog_version: Option<u32>,
         }
         // API-created settings default to the current version; only unversioned
         // on-disk pre-alpha settings need the one-time reconciliation.
@@ -1406,8 +1547,21 @@ impl Store {
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
         let reconcile_doctrines = saved_version.doctrine_catalog_version.is_none();
         let migrate_admission = saved_version.admission_migration_version.is_none();
+        // One-time seed for files that predate Voices; never a top-up.
+        let seed_voices = saved_version.voice_catalog_version.is_none();
+        if seed_voices {
+            for seed in crate::seeds::voices() {
+                if !settings
+                    .voices
+                    .iter()
+                    .any(|v| same_title(&v.title, &seed.title))
+                {
+                    settings.voices.push(seed);
+                }
+            }
+        }
         if reconcile_doctrines {
-            let canonical = crate::doctrine_seeds::doctrines();
+            let canonical = crate::seeds::doctrines();
             let mut removed_references = 0;
             let valid = |title: &str| {
                 canonical
@@ -1477,7 +1631,12 @@ impl Store {
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
-        if migrated || reconcile_doctrines || reconciled_permissions || migrated_admission {
+        if migrated
+            || reconcile_doctrines
+            || seed_voices
+            || reconciled_permissions
+            || migrated_admission
+        {
             self.write_settings(&settings)?;
         }
         Ok(settings)

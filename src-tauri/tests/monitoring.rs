@@ -2342,6 +2342,7 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        voice: None,
         prompt: "review".into(),
         signature: "sig-a".into(),
     });
@@ -2353,6 +2354,7 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        voice: None,
         prompt: "review".into(),
         signature: "sig-b".into(),
     });
@@ -3100,6 +3102,7 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            voice: None,
             prompt: "review".into(),
             signature: "sig-a".into(),
         },
@@ -3111,6 +3114,7 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            voice: None,
             prompt: "review".into(),
             signature: "sig-b".into(),
         },
@@ -3183,6 +3187,7 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        voice: None,
         prompt: "review".into(),
         signature: "sig".into(),
     });
@@ -3336,6 +3341,7 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            voice: None,
             prompt: "review".into(),
             signature: "sig".into(),
         })

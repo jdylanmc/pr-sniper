@@ -232,8 +232,10 @@ fn versioned_custom_empty_and_missing_libraries_are_not_reseeded() {
         let fixture = Fixture::new();
         let path = fixture.path().join("config/settings.json");
         fs::create_dir(path.parent().unwrap()).unwrap();
-        let original =
-            format!(r#"{{"launch_at_login":true,"doctrine_catalog_version":1{library}}}"#);
+        // Voice-versioned too, so loading has no unrelated one-time Voice seed to write.
+        let original = format!(
+            r#"{{"launch_at_login":true,"doctrine_catalog_version":1,"voice_catalog_version":1{library}}}"#
+        );
         fs::write(&path, &original).unwrap();
         let settings = fixture.store().load_settings().unwrap();
         assert!(settings.launch_at_login);

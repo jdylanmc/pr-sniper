@@ -49,12 +49,16 @@ _Avoid_: Connected account
 ### Agents and grants
 
 **Agent**:
-Saved review configuration: prompt, signature, ordered zero-or-more **Doctrines**, one **Copilot AI Account** and model. No count cap; **AI Capacity** limits concurrent work, not Agents. Missing, unavailable or legacy selections stay visible, never silently replaced. Referenced Agent cannot be deleted. Holds no permissions; grants live on repository assignments.
+Saved review configuration: prompt, signature, ordered zero-or-more **Doctrines**, zero-or-one **Voice**, one **Copilot AI Account** and model. No count cap; **AI Capacity** limits concurrent work, not Agents. Missing, unavailable or legacy selections stay visible, never silently replaced. Referenced Agent cannot be deleted. Holds no permissions; grants live on repository assignments.
 _Avoid_: Bot, reviewer, development agent
 
 **Doctrine**:
 Shared, editable plain-text review principle selected per Agent. Referenced Doctrine cannot be deleted; rename updates references. Edits and deletions, even an empty library, survive restart; the library is never topped up. Holds no credentials.
 _Avoid_: Skill, prompt snippet
+
+**Voice**:
+Shared, editable plain-text writing style selected per Agent (zero or one; default none). Same library rules as **Doctrine**: referenced Voice cannot be deleted; rename updates references; edits and deletions, even an empty library, survive restart; seeds added once, never topped up. Holds no credentials. Tone only for the Primary Agent's human-facing text (comments, replies, exit body); reports and agent-to-agent text stay caveman. Fixed guardrails (default on) add the host's guard. Never changes rules, tools, permissions, gates or exits. See [ADR 0022](docs/adr/0022-voices.md).
+_Avoid_: Persona, tone prompt
 
 **Primary Agent**:
 The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. Runs last, after every teammate report for the same PR state; its packet has the Teammate reports section. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
@@ -65,7 +69,7 @@ Packet tool ids an assignment may use: investigation tools plus exits. Every run
 _Avoid_: Skills, plugins
 
 **Packet**:
-The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
+The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Voice (primary with a Voice), Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
 _Avoid_: Prompt
 
 **Exit**:
@@ -148,7 +152,7 @@ One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet r
 _Avoid_: Trigger, task
 
 **Execution Snapshot**:
-Immutable record of Agent, account, model, prompt, Doctrine bodies, repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
+Immutable record of Agent, account, model, prompt, Doctrine bodies, Voice (title, body, guardrails), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
 _Avoid_: Current config, Execution Configuration
 
 **Normal Pass**:

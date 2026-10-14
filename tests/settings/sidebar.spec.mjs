@@ -33,6 +33,7 @@ test("Settings separates Accounts and Repositories without prototype or retired 
     "Accounts",
     "Repositories",
     "Doctrines",
+    "Voices",
     "Agents",
     "Preferences",
   ]);
@@ -352,6 +353,7 @@ for (const viewport of [
     for (const title of [
       "Repositories",
       "Doctrines",
+      "Voices",
       "Agents",
       "Preferences",
     ]) {

@@ -169,6 +169,12 @@ where
             ),
             preset: run.selection.preset.clone(),
             signature: agent.signature.clone(),
+            // Teammates only write caveman reports for the primary: no Voice.
+            voice: if base.primary {
+                config.voice.clone()
+            } else {
+                None
+            },
         },
         teammates: if base.primary { teammates } else { vec![] },
         conversation: conversation.clone(),

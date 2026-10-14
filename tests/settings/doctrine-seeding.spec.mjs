@@ -821,9 +821,11 @@ for (const [name, doctrines] of [
   }) => {
     const config = join(dataRoot, "config");
     await mkdir(config);
+    // Voice-versioned too: no unrelated one-time Voice seed write on load.
     const original = JSON.stringify({
       launch_at_login: false,
       doctrine_catalog_version: 1,
+      voice_catalog_version: 1,
       doctrines,
     });
     await writeFile(join(config, "settings.json"), original);

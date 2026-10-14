@@ -423,6 +423,15 @@ export function renderConfiguration(
         details.append("None selected");
       for (const doctrine of selection.configuration.doctrines)
         text(`Doctrine: ${doctrine.title}`, doctrine.body);
+      const voice = selection.configuration.voice;
+      const voiceHeading = document.createElement("h4");
+      voiceHeading.textContent = "Voice";
+      details.append(voiceHeading);
+      if (voice) {
+        text(`Voice: ${voice.title}`, voice.body);
+        renderFacts(details, [["Fixed guardrails", on(voice.guardrails)]]);
+      } else
+        details.append(agent.voice ? `${agent.voice} (unavailable)` : "None");
     } else {
       text("Legacy snapshot", "Not captured");
       if (selection.doctrine)
