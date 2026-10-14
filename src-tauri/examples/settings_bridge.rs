@@ -1,4 +1,4 @@
-use pr_sniper_lib::storage::{Settings, Store};
+use pr_sniper_lib::storage::{Settings, Store, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
@@ -582,6 +582,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                     .as_bool()
                     .ok_or("Pause flag required.")?,
             })?;
+            Ok(Value::Null)
+        }
+        "save_theme" => {
+            let theme: Theme = serde_json::from_value(request.args["theme"].clone())
+                .map_err(|_| "Unsupported theme.".to_string())?;
+            store.save_theme(theme)?;
             Ok(Value::Null)
         }
         "seed_settings" => {

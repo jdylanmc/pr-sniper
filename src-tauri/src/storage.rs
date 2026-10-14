@@ -93,6 +93,25 @@ pub struct Settings {
     /// get the one-time migration on load; programmatic settings are current.
     #[serde(default = "admission_migration_version")]
     pub admission_migration_version: u32,
+    /// Omitted when Light so default files stay readable by earlier versions.
+    #[serde(default, skip_serializing_if = "Theme::is_light")]
+    pub theme: Theme,
+}
+
+/// Panel appearance. `Os` follows the current system light/dark appearance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+    Os,
+}
+
+impl Theme {
+    fn is_light(&self) -> bool {
+        *self == Theme::Light
+    }
 }
 
 pub const ADMISSION_MIGRATION_VERSION: u32 = 1;
@@ -149,6 +168,7 @@ impl Default for Settings {
             capacity: default_capacity(),
             rubber_duck: DuckLimits::default(),
             admission_migration_version: admission_migration_version(),
+            theme: Theme::Light,
         }
     }
 }
@@ -1843,6 +1863,12 @@ impl Store {
             self.write_settings(&settings)?;
         }
         Ok(settings)
+    }
+
+    pub fn save_theme(&self, theme: Theme) -> Result<(), String> {
+        let mut settings = self.load_settings()?;
+        settings.theme = theme;
+        self.save_settings(&settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {

@@ -1,6 +1,6 @@
 use pr_sniper_lib::{
     policy::PolicyOverrides,
-    storage::{ProviderId, Repository, Settings, Store},
+    storage::{ProviderId, Repository, Settings, Store, Theme},
 };
 use std::fs;
 
@@ -503,4 +503,68 @@ fn only_a_brand_new_profile_takes_the_initial_time_zone() {
     assert_eq!(zone(&Store::new(existing.path().into())), "UTC");
     let later = Store::new(existing.path().into()).with_initial_time_zone("Asia/Tokyo".into());
     assert_eq!(zone(&later), "UTC");
+}
+
+#[test]
+fn theme_round_trips_and_light_keeps_the_previous_file_format() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let path = fixture.path().join("config/settings.json");
+    store
+        .save_settings(&Settings {
+            launch_at_login: true,
+            ..Settings::default()
+        })
+        .unwrap();
+
+    for (theme, persisted) in [
+        (Theme::Dark, Some("dark")),
+        (Theme::Os, Some("os")),
+        (Theme::Light, None),
+    ] {
+        store.save_theme(theme).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value.get("theme").and_then(|v| v.as_str()), persisted);
+        let reopened = Store::new(fixture.path().to_path_buf())
+            .load_settings()
+            .unwrap();
+        assert_eq!(reopened.theme, theme);
+        assert!(reopened.launch_at_login, "theme saves keep other settings");
+    }
+}
+
+#[test]
+fn settings_saved_before_themes_load_as_light() {
+    let fixture = Fixture::new();
+    let config = fixture.path().join("config");
+    fs::create_dir(&config).unwrap();
+    fs::write(
+        config.join("settings.json"),
+        br#"{"launch_at_login":false,"doctrines":[],"doctrine_catalog_version":1,"capacity":4,"admission_migration_version":1}"#,
+    )
+    .unwrap();
+
+    let settings = fixture.store().load_settings().unwrap();
+
+    assert_eq!(settings.theme, Theme::Light);
+}
+
+#[test]
+fn invalid_theme_values_are_rejected() {
+    let fixture = Fixture::new();
+    let config = fixture.path().join("config");
+    fs::create_dir(&config).unwrap();
+    for value in [r#""Dark""#, r#""system""#, r#""""#, "1", "null", "{}"] {
+        let path = config.join("settings.json");
+        let original = format!(r#"{{"launch_at_login":false,"doctrines":[],"theme":{value}}}"#);
+        fs::write(&path, &original).unwrap();
+
+        assert!(
+            fixture.store().load_settings().is_err(),
+            "theme {value} must be rejected"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(serde_json::from_str::<Theme>(value).is_err());
+    }
 }

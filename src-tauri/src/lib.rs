@@ -3587,6 +3587,14 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_theme(host: State<'_, Host>, theme: storage::Theme) -> Result<(), String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    store.save_theme(theme)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn save_defaults(
     host: State<'_, Host>,
     policy: serde_json::Value,
@@ -4283,6 +4291,7 @@ pub fn run() {
             resolve_provider_repository,
             admit_explicit_pull_request,
             save_login,
+            save_theme,
             save_defaults,
             save_repository_policy,
             verify_provider_connection,
