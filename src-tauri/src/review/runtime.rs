@@ -845,13 +845,15 @@ pub(crate) fn run<T: Transport + Send + Sync + 'static, K: Task>(
                 std::mem::replace(&mut setup.launch, DuckLaunch::Pending)
             {
                 setup.launch = DuckLaunch::Options {
-                    options: crate::copilot::runtime::options(
-                        program.clone(),
-                        directory.path(),
-                        pair.access_token(),
-                        std::env::vars_os().map(|(k, _)| k),
-                    )
-                    .map_err(|error| Failure::permanent(error).duck_setup())?,
+                    options: Box::new(
+                        crate::copilot::runtime::options(
+                            program.clone(),
+                            directory.path(),
+                            pair.access_token(),
+                            std::env::vars_os().map(|(k, _)| k),
+                        )
+                        .map_err(|error| Failure::permanent(error).duck_setup())?,
+                    ),
                     identity,
                 };
             }

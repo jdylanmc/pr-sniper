@@ -78,7 +78,7 @@ fn duck(root: &Path, scenario: &str, limits: DuckLimits, gated: bool) -> Duck {
                     id: "44".into(),
                     login: "review-account".into(),
                 },
-                options: options(root, scenario),
+                options: Box::new(options(root, scenario)),
             },
             rate_limited: Arc::new(move |after| sink.lock().unwrap().push(after)),
             gated: Arc::new(move || gated),

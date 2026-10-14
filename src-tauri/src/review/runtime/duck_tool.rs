@@ -58,7 +58,7 @@ pub(crate) enum DuckLaunch {
     },
     Options {
         identity: Identity,
-        options: ClientOptions,
+        options: Box<ClientOptions>,
     },
 }
 
@@ -104,7 +104,7 @@ impl DuckEngine {
             return Err(Failure::permanent("Rubber duck runtime was not prepared.").duck_setup());
         };
         let client = operation
-            .wait(Client::start(options))
+            .wait(Client::start(*options))
             .await
             .map_err(Failure::operation)
             .and_then(|result| result.map_err(Failure::sdk))
