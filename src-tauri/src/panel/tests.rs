@@ -2,6 +2,130 @@ use super::*;
 use crate::storage::Store;
 use serde_json::json;
 
+fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+fn point(x: f64, y: f64) -> Rect {
+    rect(x, y, 1.0, 1.0)
+}
+
+fn contained(frame: Rect, work: Rect) {
+    assert!(frame.x >= work.x && frame.y >= work.y);
+    assert!(frame.x + frame.width <= work.x + work.width);
+    assert!(frame.y + frame.height <= work.y + work.height);
+}
+
+#[test]
+fn removed_display_regression_keeps_the_whole_panel_on_an_attached_screen() {
+    let attached = Screen {
+        bounds: rect(0.0, 0.0, 1728.0, 1117.0),
+        work: rect(0.0, 33.0, 1728.0, 994.0),
+        scale: 1.0,
+    };
+    let stale_tray = rect(3200.0, -445.0, 24.0, 24.0);
+    let (frame, warning) =
+        resolve_placement(&[attached], None, Some(stale_tray), point(1110.0, 40.0)).unwrap();
+    contained(frame, attached.work);
+    assert!(warning);
+}
+
+#[test]
+fn every_open_reselects_current_displays_after_docking_and_removal() {
+    let laptop = Screen {
+        bounds: rect(0.0, 0.0, 1728.0, 1117.0),
+        work: rect(0.0, 33.0, 1728.0, 994.0),
+        scale: 1.0,
+    };
+    let dock = Screen {
+        bounds: rect(1728.0, -445.0, 2560.0, 1440.0),
+        work: rect(1728.0, -412.0, 2560.0, 1350.0),
+        scale: 1.0,
+    };
+    let old_tray = rect(3200.0, -445.0, 24.0, 24.0);
+    let (before, _) = resolve_placement(
+        &[laptop, dock],
+        Some(old_tray),
+        Some(old_tray),
+        point(3205.0, -440.0),
+    )
+    .unwrap();
+    contained(before, dock.work);
+    // Both a delayed tray click and the queried icon can name a removed screen.
+    // The old path fell back to the retained window's monitor here.
+    let (after, warning) = resolve_placement(
+        &[laptop],
+        Some(old_tray),
+        Some(old_tray),
+        point(1110.0, 40.0),
+    )
+    .unwrap();
+    contained(after, laptop.work);
+    assert!(warning);
+    let tray = rect(1085.0, 35.0, 63.0, 19.0);
+    let (reopened, warning) =
+        resolve_placement(&[laptop], None, Some(tray), point(200.0, 600.0)).unwrap();
+    contained(reopened, laptop.work);
+    assert!(!warning);
+    assert_eq!(reopened.x, 912.5);
+    assert_eq!(reopened.y, 62.0);
+    // A fresh click on the dock after reattachment must not reuse the laptop.
+    let (redocked, _) = resolve_placement(
+        &[laptop, dock],
+        Some(old_tray),
+        Some(tray),
+        point(10.0, 10.0),
+    )
+    .unwrap();
+    contained(redocked, dock.work);
+}
+
+#[test]
+fn clicked_screen_wins_over_other_tray_and_pointer_and_small_work_areas_fit() {
+    for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
+        let primary = Screen {
+            bounds: rect(0.0, 0.0, 1920.0, 1080.0),
+            work: rect(0.0, 32.0, 1920.0, 1000.0),
+            scale: 1.0,
+        };
+        let clicked = Screen {
+            bounds: rect(-640.0, -300.0, 640.0, 360.0),
+            work: rect(-640.0, -270.0, 640.0, 300.0),
+            scale,
+        };
+        let (frame, warning) = resolve_placement(
+            &[primary, clicked],
+            Some(point(-200.0, -285.0)),
+            Some(rect(1500.0, 0.0, 24.0, 24.0)),
+            point(1700.0, 800.0),
+        )
+        .unwrap();
+        contained(frame, clicked.work);
+        assert!(warning);
+        assert!(frame.height < 744.0 * scale);
+        let (no_tray, warning) =
+            resolve_placement(&[primary, clicked], None, None, point(-200.0, -285.0)).unwrap();
+        contained(no_tray, clicked.work);
+        assert!(warning);
+        let (no_pointer_display, warning) =
+            resolve_placement(&[primary], None, None, point(9000.0, -9000.0)).unwrap();
+        contained(no_pointer_display, primary.work);
+        assert!(warning);
+    }
+    assert!(resolve_placement(&[], None, None, point(0.0, 0.0)).is_err());
+    let invalid = Screen {
+        bounds: rect(0.0, 0.0, 100.0, 100.0),
+        work: rect(0.0, 0.0, f64::NAN, 100.0),
+        scale: 1.0,
+    };
+    assert!(resolve_placement(&[invalid], None, None, point(1.0, 1.0)).is_err());
+}
+
 #[test]
 fn physical_placement_clamps_all_tray_edges_and_mixed_dpi_negative_monitors() {
     for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {

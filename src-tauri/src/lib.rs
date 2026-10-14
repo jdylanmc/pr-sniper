@@ -4434,12 +4434,15 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state,
+                        position,
                         ..
                     } = event
                     {
-                        if let Err(error) =
-                            panel::tray(tray.app_handle(), button_state == MouseButtonState::Down)
-                        {
+                        if let Err(error) = panel::tray(
+                            tray.app_handle(),
+                            button_state == MouseButtonState::Down,
+                            position,
+                        ) {
                             report(tray.app_handle(), error);
                         }
                     }

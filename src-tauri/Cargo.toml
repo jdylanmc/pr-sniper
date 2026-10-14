@@ -45,6 +45,7 @@ windows-core = "=0.62.2"
 plist = "=1.10.1"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSBundle", "NSString", "NSError"] }
 objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSScreen", "NSEvent", "NSWindow", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSResponder"] }
 block2 = "=0.6.2"
 objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
