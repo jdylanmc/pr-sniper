@@ -202,10 +202,10 @@ func menuItem(_ application: AXUIElement, _ title: String) -> AXUIElement? {
 func choose(_ application: AXUIElement, _ title: String) throws {
     try click(center(trayItem(application)), right: true)
     try waitFor("secondary tray menu") { menuItem(application, "Quit PR Sniper") != nil }
-    for required in ["Review Queue", "Settings", "Diagnostics", "Check Now", "Close Panel", "Quit PR Sniper"] {
+    for required in ["Review Queue", "Settings", "Check Now", "Close Panel", "Quit PR Sniper"] {
         try require(menuItem(application, required) != nil, "Missing secondary tray entry: \(required)")
     }
-    for removed in ["Status"] {
+    for removed in ["Status", "Diagnostics"] {
         try require(menuItem(application, removed) == nil, "Removed secondary tray entry present: \(removed)")
     }
     try press(menuItem(application, title)!, title)
@@ -592,7 +592,7 @@ func run() throws {
     try retainedDraft()
     print("PASS tray toggle, Escape, custom Close, native CloseRequested and outside dismissal keep PID \(pid)")
 
-    for entry in ["Settings", "Diagnostics", "Review Queue"] {
+    for entry in ["Settings", "Review Queue"] {
         try choose(application, entry)
         try waitFor("secondary route \(entry)") { visibleWindows(pid).count == 1 }
         try singlePanel()

@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { captureInspector, nativeCapacity, expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { target } from "./paths.mjs";
+import { section } from "./navigation.mjs";
+import { clipboardWrites, recordClipboard } from "./diagnostics-copy.mjs";
 
 const tab = (page, name) =>
   page
@@ -13,7 +15,7 @@ const screenshots = join(target, "visual-correction-1");
 test.use({ viewport: { width: 408, height: 744 } });
 
 for (const failUtility of [false, true]) {
-  test(`monitor polling survives delayed ${failUtility ? "failed" : "successful"} Diagnostics`, async ({
+  test(`monitor polling survives a delayed ${failUtility ? "failed" : "successful"} Copy diagnostics`, async ({
     page,
     store,
     ipc,
@@ -30,26 +32,33 @@ for (const failUtility of [false, true]) {
         return original(command, args);
       };
     }, failUtility);
+    await recordClipboard(page);
     await page.goto("/");
-    await expect(
-      page.getByRole("button", { name: "Status", exact: true }),
-    ).toHaveCount(0);
+    for (const name of ["Status", "Diagnostics"])
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+        0,
+      );
+    await tab(page, "Settings").click();
+    await section(page, "Preferences");
+    await page.evaluate(() => window.__settingsIdle());
+    const copy = page.getByRole("button", { name: "Copy diagnostics" });
     const held = ipc.holdNext("snapshot");
-    await page
-      .getByRole("button", { name: "Diagnostics", exact: true })
-      .click();
+    await copy.click();
     await held.arrived;
-    await expect(page.locator("#check-now")).toHaveCount(0);
     await page.clock.runFor(5100);
     held.release();
+    await expect(copy).toHaveAttribute(
+      "data-state",
+      failUtility ? "failed" : "copied",
+    );
     if (failUtility)
-      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+      await expect(page.locator("#error")).toHaveAttribute(
         "title",
         "Synthetic utility read failure",
       );
     else
-      await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-        /\n\nNo events$/,
+      expect((await clipboardWrites(page)).at(-1)).toMatch(
+        /\n\nNo events\n\nRecorded job Intelligence\n/,
       );
     await tab(page, "Queue").click();
     await page.evaluate(() => window.__settingsIdle());

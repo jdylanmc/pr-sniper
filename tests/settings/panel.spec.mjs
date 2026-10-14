@@ -275,11 +275,15 @@ test("native notification identity, legacy entry commands and missing routes nev
   });
   await invoke(page, "open_settings");
   await expect(heading(page)).toHaveText("Settings");
-  await invoke(page, "open_diagnostics");
-  await expect(heading(page)).toHaveText("Diagnostics");
-  await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-    /\n\nNo events$/,
+  await expect(invoke(page, "open_diagnostics")).rejects.toThrow(
+    /Unsupported settings test command/,
   );
+  await expect(
+    invoke(page, "panel_navigate", {
+      route: { tab: "settings", detail: { type: "diagnostics" } },
+    }),
+  ).rejects.toThrow(/Invalid panel route/);
+  await expect(heading(page)).toHaveText("Settings");
   const { id } = (await store("observe_notifications")).notices.find(
     (n) => n.event.destination.kind === "queue_item",
   );

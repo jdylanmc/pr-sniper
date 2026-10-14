@@ -68,7 +68,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Startup shows the saved request, separate from actual registration. Unknown registration or notification authorization is never shown as enabled.
 - macOS startup status validates the owned plist and current executable. macOS Login Items may still disable it. App start only inspects; never enables, disables or reapplies.
 - Windows startup: [windows-development.md](windows-development.md), [ADR-0006](adr/0006-windows-tray-startup.md).
-- Links to Diagnostics. Notifications: [review-queue.md](review-queue.md#notifications).
+- **Copy diagnostics** (content-free export to clipboard). Notifications: [review-queue.md](review-queue.md#notifications).
 
 ## Onboarding Genie
 

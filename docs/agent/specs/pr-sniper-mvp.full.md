@@ -39,6 +39,9 @@ On 2026-10-14 the product owner approved removing the Status screen and the
 tray Status item. This amendment withdraws PR-001's status action only.
 Scheduler health is still recorded (PR-006); parked failures surface in Queue >
 Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
+The same approval replaces the Diagnostics screen and tray item with one
+Settings **Copy diagnostics** export of the same content-free text; PR-039 is
+met by that export ([ADR 0019](../../adr/0019-bounded-content-free-diagnostics.md)).
 
 ## Problem and Users
 
@@ -120,7 +123,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-036 [AC-017]: The MVP shall never submit a provider `APPROVE` event.
 - PR-037 [AC-018]: Local persistence shall contain repository configuration, schedules, poll cursors, jobs, state transitions, pending-review identities, publication receipts, retry budgets, and notification deduplication records.
 - PR-038 [AC-018]: Provider/account-scoped access and refresh credentials shall use authentication-generation-specific, account-addressed operating-system secure-storage records plus a non-secret account registry; prompts, child-process arguments, ordinary configuration, logs and UI payloads shall not contain provider secrets. Explicit isolated test launches shall use a unique test-owned secure-storage namespace and never fall back to production credentials.
-- PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings.
+- PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings through a content-free clipboard export (amended 2026-10-14; no Diagnostics screen).
 - PR-040 [AC-019]: Automatic retry shall apply only to provider rate limits, transient network or transport failures, provider server failures, transient checkout fetch or input/output failures, and agent launch, timeout, or temporary-exit failures before any provider mutation.
 - PR-041 [AC-019]: Authentication, permission, configuration, cancellation, schema-validation, stale-revision, ineligibility, and explicit-provider-rejection failures shall require correction or human action and shall not consume automatic retries.
 - PR-042 [AC-019]: Each persisted job-operation identity shall receive one budget whose initial attempt starts a 15-minute deadline and permits at most three retries; provider timing takes precedence and otherwise exponential backoff with jitter applies.

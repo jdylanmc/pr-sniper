@@ -80,7 +80,7 @@ test("Settings separates Accounts and Repositories without prototype or retired 
   expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(
     page.getByRole("button", {
-      name: "Open redacted diagnostics",
+      name: "Copy diagnostics",
       exact: true,
     }),
   ).toBeVisible();

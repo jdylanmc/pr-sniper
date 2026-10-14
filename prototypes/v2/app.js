@@ -1379,11 +1379,11 @@ function preferencesPage() {
     )
     .join(
       "",
-    )}</div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
+    )}</div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
 }
 
-function diagnosticsPage() {
-  return `<div class="page-scroll" data-scroll="diagnostics"><section class="detail-section"><dl class="context-list"><dt>Storage</dt><dd>${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}</dd><dt>Schema</dt><dd>v${state.version}</dd><dt>Review packets</dt><dd>${state.reviews.length}</dd><dt>Network operations</dt><dd>None</dd></dl></section></div>`;
+function diagnosticsText() {
+  return `Storage: ${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}\nSchema: v${state.version}\nReview packets: ${state.reviews.length}\nNetwork operations: None\n`;
 }
 
 const changelogSource = `# Changelog
@@ -1454,7 +1454,6 @@ function render(direction = 0, focus = false) {
     repo: "Repository",
     copilot: "GitHub Copilot",
     github: "GitHub",
-    diagnostics: "Diagnostics",
     changelog: "Changelog",
     "repo-browser": "Browse",
     "repo-url": "Add by URL",
@@ -1540,9 +1539,6 @@ function render(direction = 0, focus = false) {
     case "copilot":
     case "github":
       html = accountKindPage(current.page);
-      break;
-    case "diagnostics":
-      html = diagnosticsPage();
       break;
     case "changelog":
       html = changelogPage();
@@ -2010,6 +2006,17 @@ popover.addEventListener("click", (event) => {
   }
   if (action === "account") {
     perform("account", { id }, "Account disconnected.");
+    return;
+  }
+  if (action === "copy-diagnostics") {
+    const done = (ok) => {
+      button.dataset.state = ok ? "copied" : "failed";
+      button.querySelector("svg").outerHTML = icon(ok ? "check" : "copy");
+    };
+    navigator.clipboard.writeText(diagnosticsText()).then(
+      () => done(true),
+      () => done(false),
+    );
     return;
   }
   if (action === "changelog") {

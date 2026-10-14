@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
 import { newDoctrine, section, seedAgent } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { clipboardWrites, recordClipboard } from "./diagnostics-copy.mjs";
 import { target } from "./paths.mjs";
 
 test.use({ viewport: { width: 408, height: 744 } });
@@ -855,7 +856,7 @@ test("unavailable stored preferences are not replaced and recovery stays reachab
   expect((await store("snapshot")).settings).toEqual(before);
 });
 
-test("Diagnostics never exposes settings content and Back restores the exact opener with the draft", async ({
+test("Copy diagnostics exports content-free text in place without disturbing the draft or focus", async ({
   page,
   store,
   browserName,
@@ -864,23 +865,27 @@ test("Diagnostics never exposes settings content and Back restores the exact ope
   const state = (await store("snapshot")).settings;
   state.agents[0].prompt = "SYNTHETIC_PRIVATE_PROMPT_NOT_A_CREDENTIAL";
   await store("seed_settings", state);
+  await recordClipboard(page);
   await ready(page, store, true);
   await page.locator("#global-capacity").fill("19");
   await expect(page.locator("#preferences-status")).toHaveCount(0);
+  await expect(page.locator("#diagnostics")).toHaveCount(0);
+  const copy = page.getByRole("button", {
+    name: "Copy diagnostics",
+    exact: true,
+  });
+  await copy.focus();
+  await page.keyboard.press("Enter");
+  await expect(copy).toHaveAttribute("data-state", "copied");
+  const [text] = await clipboardWrites(page);
+  expect(text).toMatch(/^PR Sniper \S+ \u00b7 Isolated\n\n/);
+  expect(text).toContain("Recorded job Intelligence\n");
+  expect(text).not.toContain("SYNTHETIC_PRIVATE_PROMPT_NOT_A_CREDENTIAL");
+  expect(text).not.toMatch(/gh[opsu]_|github_pat_|Bearer |refresh_token/);
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Preferences");
+  await expect(copy).toBeFocused();
   await expect(page.locator("#global-capacity")).toHaveValue("19");
-  await page.locator("#diagnostics").click();
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("[data-panel-heading]")).toHaveText("Diagnostics");
-  await expect(page.locator('[data-panel-view="utility"] pre')).toBeVisible();
-  await expect(page.locator('[data-panel-view="utility"]')).not.toContainText(
-    "SYNTHETIC_PRIVATE_PROMPT_NOT_A_CREDENTIAL",
-  );
-  await capture(page, browserName, "redacted-diagnostics");
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#global-capacity")).toHaveValue("19");
-  await expect(page.locator("#diagnostics")).toBeFocused();
-  await expect(page.locator("#global-capacity")).toBeVisible();
+  await capture(page, browserName, "copy-diagnostics");
 });
 
 test("compact keyboard navigation, reduced motion and hide/reopen retain the exact draft controls", async ({
@@ -929,14 +934,7 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
       .evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
   await capture(page, browserName, "320x300-keyboard");
-  await page.locator("#diagnostics").focus();
-  await expect(page.locator("#diagnostics")).toBeInViewport();
-  await page.keyboard.press("Enter");
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(
-    page.getByRole("button", { name: "Back", exact: true }),
-  ).toBeInViewport();
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await page.evaluate(() => window.__settingsIdle());
+  await page.locator("#copy-diagnostics").focus();
+  await expect(page.locator("#copy-diagnostics")).toBeInViewport();
   await expect(cron).toHaveValue("9 11 * * MON-FRI");
 });

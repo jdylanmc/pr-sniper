@@ -13,6 +13,7 @@ Diagnostics help operators but can leak PR content, tokens, or grow forever.
 - HTTPS credentials go in a sensitive header. Redirects disabled.
 - Logging failure is isolated. Never alters review or publication.
 - Typed seam: `storage::diagnostics::{Attempt,Record,Event}`.
+- Read surface (2026-10-14): Settings > Preferences **Copy diagnostics** copies host log, doctrine catalog and recorded job Intelligence as text. No Diagnostics screen.
 
 ## Consequences
 

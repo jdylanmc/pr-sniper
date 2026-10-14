@@ -4068,7 +4068,6 @@ const TRAY_MENU: &[(&str, &str)] = &[
     ("queue", "Review Queue"),
     ("check", "Check Now"),
     ("settings", "Settings"),
-    ("diagnostics", "Diagnostics"),
     ("close-panel", "Close Panel"),
 ];
 /// Below the separator; the only exit.
@@ -4077,7 +4076,6 @@ const TRAY_QUIT: (&str, &str) = ("quit", "Quit PR Sniper");
 /// Panel destination for a navigating tray item; other items act directly.
 fn tray_route(id: &str) -> Option<panel::Route> {
     match id {
-        "diagnostics" => Some(panel::Route::diagnostics()),
         "queue" => Some(panel::Route::tab(panel::Tab::Queue)),
         "settings" => Some(panel::Route::tab(panel::Tab::Settings)),
         _ => None,
@@ -4096,7 +4094,6 @@ mod tray_tests {
                 ("queue", "Review Queue"),
                 ("check", "Check Now"),
                 ("settings", "Settings"),
-                ("diagnostics", "Diagnostics"),
                 ("close-panel", "Close Panel"),
             ]
         );
@@ -4104,11 +4101,13 @@ mod tray_tests {
     }
 
     #[test]
-    fn removed_status_entry_has_no_tray_route() {
-        assert!(TRAY_MENU
-            .iter()
-            .all(|(id, label)| *id != "status" && *label != "Status"));
-        assert_eq!(tray_route("status"), None);
+    fn removed_status_and_diagnostics_entries_have_no_tray_route() {
+        for (removed_id, removed_label) in [("status", "Status"), ("diagnostics", "Diagnostics")] {
+            assert!(TRAY_MENU
+                .iter()
+                .all(|(id, label)| *id != removed_id && *label != removed_label));
+            assert_eq!(tray_route(removed_id), None);
+        }
         assert_eq!(
             tray_route("queue"),
             Some(panel::Route::tab(panel::Tab::Queue))
@@ -4118,13 +4117,6 @@ mod tray_tests {
             Some(panel::Route::tab(panel::Tab::Settings))
         );
     }
-}
-
-#[tauri::command]
-async fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    panel::show(&app, Some(panel::Route::diagnostics()))
-        .await
-        .map(|_| ())
 }
 
 #[tauri::command]
@@ -4304,7 +4296,6 @@ pub fn run() {
             copilot::list_copilot_models,
             copilot::cancel_copilot_models,
             diagnostics,
-            open_diagnostics,
             open_settings,
             open_queue_destination,
             open_queue_item,

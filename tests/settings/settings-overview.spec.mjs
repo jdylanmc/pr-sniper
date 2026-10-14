@@ -495,7 +495,7 @@ test("Accounts retains the mounted sign-in flow and reports actual connected and
 });
 
 for (const metadata of ["native", "missing", "rejected"]) {
-  test(`footer ${metadata} version remains inline across every tab with working utility controls`, async ({
+  test(`footer ${metadata} version remains inline across every tab and retries from the version link`, async ({
     page,
     store,
     ipc,
@@ -538,13 +538,8 @@ for (const metadata of ["native", "missing", "rejected"]) {
     await expect(page.locator("[data-panel-heading]")).toHaveText("Changelog");
     await expect(version).toHaveText(`v${nativeVersion}`);
     await page.keyboard.press("Enter");
-    await page.locator("[data-panel-diagnostics]").click();
-    await expect(page.locator("[data-panel-heading]")).toHaveText(
-      "Diagnostics",
-    );
-    await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-      /\nNo events$/,
-    );
+    await expect(page.locator("[data-panel-diagnostics]")).toHaveCount(0);
+    await expect(page.locator(".panel-footer > *")).toHaveCount(1);
     await expect(version).toHaveText(`v${nativeVersion}`);
     await expect(version).toBeVisible();
   });
@@ -606,10 +601,7 @@ for (const size of [
       await page.locator(".panel-footer").evaluate((element, value) => {
         element.style.zoom = value;
       }, zoom);
-      for (const selector of [
-        "[data-panel-diagnostics]",
-        "[data-panel-version]",
-      ]) {
+      for (const selector of ["[data-panel-version]"]) {
         const element = page.locator(selector);
         await expect(element).toBeInViewport({ ratio: 1 });
         expect(

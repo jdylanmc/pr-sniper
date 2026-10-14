@@ -51,6 +51,7 @@ import {
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
+import { copyDiagnostics } from "./diagnostics";
 import { mountAutomation, type AutomationSnapshot } from "./automation";
 
 interface ConfiguredRepository extends Repository {
@@ -157,6 +158,8 @@ const iconPaths = {
   up: '<path d="m6 14 6-6 6 6"/>',
   down: '<path d="m6 10 6 6 6-6"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+  check: '<path d="m5 12 5 5 9-10"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
   accounts:
     '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a6 6 0 0 1 3 4v3"/>',
@@ -3813,7 +3816,7 @@ export async function mountSettings(
       <div class="settings-group" id="automation-settings"></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="diagnostics" type="button">Open redacted diagnostics</button>
+      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
     const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
@@ -3930,15 +3933,19 @@ export async function mountSettings(
         if (errors.length) showError(errors.join("\n"));
       }
     };
-    content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick = async (
-      event,
-    ) => {
-      (event.currentTarget as HTMLButtonElement).focus({ preventScroll: true });
-      try {
-        await invoke("open_diagnostics");
-      } catch {
-        showError("Failed");
-      }
+    const copy = content.querySelector<HTMLButtonElement>("#copy-diagnostics")!;
+    copy.onclick = async () => {
+      if (copy.getAttribute("aria-busy") === "true") return;
+      copy.setAttribute("aria-busy", "true");
+      delete copy.dataset.state;
+      const outcome = await copyDiagnostics();
+      copy.removeAttribute("aria-busy");
+      if (!copy.isConnected) return;
+      copy.dataset.state = outcome.ok ? "copied" : "failed";
+      copy.querySelector("svg")!.outerHTML = icon(
+        outcome.ok ? "check" : "copy",
+      );
+      if (!outcome.ok) showError(outcome.error);
     };
   }
 

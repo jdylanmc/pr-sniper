@@ -713,10 +713,12 @@ for (const scenario of [
         path: testInfo.outputPath(`${scenario.name}-reading-error.png`),
       });
       await expect(page.locator("[data-panel-error]")).toBeInViewport();
-      // Recover through an ordinary pinned utility, not a forced interaction.
-      await page.getByRole("button", { name: "Status", exact: true }).click();
-      await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
-      await page.getByRole("button", { name: "Back", exact: true }).click();
+      // Recover through ordinary pinned navigation, not a forced interaction.
+      await tab(page, "Running").click();
+      await expect(page.locator("[data-panel-heading]")).toHaveText(
+        "Work queue",
+      );
+      await tab(page, "Queue").click();
       await page.evaluate(() => {
         window.__queueReadFailure = false;
       });
@@ -764,12 +766,8 @@ for (const scenario of [
         .locator(".panel-content")
         .evaluate((element) => element.scrollTop),
     ).toBe(scroll);
-    await page
-      .getByRole("button", { name: "Diagnostics", exact: true })
-      .click();
-    await expect(page.locator("[data-panel-heading]")).toHaveText(
-      "Diagnostics",
-    );
+    await tab(page, "Running").click();
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Work queue");
     expect(
       await page
         .locator(".panel-content")

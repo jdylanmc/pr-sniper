@@ -496,7 +496,6 @@ pub fn detail(store: &Store, destination: Detail) -> Result<DetailResult, String
                     .map_err(|_| "Cannot encode mention detail.")?
             }
         }
-        _ => return Err("Result detail requires an exact PR iteration or job.".into()),
     };
     Ok(match evidence {
         Some(evidence) => DetailResult::Available {

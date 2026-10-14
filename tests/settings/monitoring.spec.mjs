@@ -8,8 +8,7 @@ test("Review Queue surfaces render no schedule recovery or Check Now controls", 
   store,
 }) => {
   await queueFixture(store);
-  const snapshot = await store("monitoring_snapshot");
-  expect(snapshot.health.length).toBeGreaterThan(0);
+  expect((await store("monitoring_snapshot")).items.length).toBeGreaterThan(0);
   for (const path of ["/?view=queue", "/"]) {
     await page.goto(path);
     await page.evaluate(() => window.__settingsIdle?.());

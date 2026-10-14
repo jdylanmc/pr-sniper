@@ -224,12 +224,13 @@ test("persisted notice phases stay in the ledger without a rendered history surf
   ledger.notices[1].error = "No callback; do not repeat.";
   ledger.notices[2].phase = "permission_denied";
   await store("seed_notifications", ledger);
-  expect(
+  const persisted = new Map(
     (await store("notification_snapshot")).notices.map((notice) => [
-      notice.phase,
-      notice.error,
+      notice.id,
+      [notice.phase, notice.error],
     ]),
-  ).toEqual([
+  );
+  expect(ledger.notices.map((notice) => persisted.get(notice.id))).toEqual([
     ["accepted_unconfirmed", null],
     ["outcome_unknown", "No callback; do not repeat."],
     ["permission_denied", null],

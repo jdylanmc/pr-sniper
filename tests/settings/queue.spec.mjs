@@ -13,11 +13,7 @@ async function captureDestinations(page) {
         window.__destinations.push({ args, url });
         return;
       }
-      if (
-        ["open_settings", "open_diagnostics", "publish_review"].includes(
-          command,
-        )
-      ) {
+      if (["open_settings", "publish_review"].includes(command)) {
         window.__queueActions.push({ command, args });
         return;
       }

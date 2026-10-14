@@ -3871,3 +3871,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.preferences-view .copy-diagnostics {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.preferences-view .copy-diagnostics svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.preferences-view .copy-diagnostics[data-state="copied"] svg {
+  color: #327c84;
+}

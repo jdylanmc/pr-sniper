@@ -4,8 +4,8 @@ Reference ([ADR-0019](adr/0019-bounded-content-free-diagnostics.md)) for retaine
 
 ## Files and limits
 
-- `state/diagnostics.jsonl`: timestamped, fixed-schema host events. 256 KiB plus one rotated file (`diagnostics.previous.jsonl`). Settings > Preferences opens the in-app reader. No filesystem or shell access.
-- `state/attempts.jsonl`, rotated to `attempts.1.jsonl` .. `attempts.3.jsonl`. 1 MiB each (`src-tauri/src/storage/diagnostics.rs`). Both Diagnostics surfaces read retained generations.
+- `state/diagnostics.jsonl`: timestamped, fixed-schema host events. 256 KiB plus one rotated file (`diagnostics.previous.jsonl`). Settings > Preferences **Copy diagnostics** puts the content-free export on the clipboard. No filesystem or shell access.
+- `state/attempts.jsonl`, rotated to `attempts.1.jsonl` .. `attempts.3.jsonl`. 1 MiB each (`src-tauri/src/storage/diagnostics.rs`). The export reads retained generations.
 - Record cap 128 KiB. 128 paths per collection, with full and omitted counts. Oldest generations expire. Not an archive.
 - Metadata over 256 serialized bytes, control characters or credential patterns become opaque SHA-256 labels. Session summaries keep the first 128 events plus errors, abort, idle.
 

@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
+import { copyDiagnostics, recordClipboard } from "./diagnostics-copy.mjs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -162,18 +163,16 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
   });
   expect(reconciled.doctrines).toEqual(canonical);
   const audit = "Doctrine reset: 23 replaced; 1 references removed.";
-  await page.goto("/?view=diagnostics");
-  await expect(page.locator("#log")).toContainText(audit);
-  await expect(page.locator("#log")).toContainText(catalog.source);
-  await expect(page.locator("#log")).toContainText(catalog.effective_revision);
+  await recordClipboard(page);
+  await page.goto("/?view=settings");
+  let log = await copyDiagnostics(page);
+  expect(log).toContain(audit);
+  expect(log).toContain(catalog.source);
+  expect(log).toContain(catalog.effective_revision);
   await page.goto("/");
-  await page.locator("[data-panel-diagnostics]").click();
-  await expect(page.locator('[data-panel-view="utility"] pre')).toContainText(
-    catalog.effective_revision,
-  );
-  await expect(page.locator('[data-panel-view="utility"] pre')).toContainText(
-    audit,
-  );
+  log = await copyDiagnostics(page, { panel: true });
+  expect(log).toContain(catalog.effective_revision);
+  expect(log).toContain(audit);
   await page.goto("/?view=settings");
   await section(page, "Doctrines");
   await newDoctrine(page, "later-edit", "Preserve this later addition.");
@@ -187,9 +186,10 @@ test("stale 23-entry saved catalog is reset before the shared Agent selector ope
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
   await expect(page.locator("[data-doctrine-reset]")).toHaveCount(0);
   expect(await diskSettings(dataRoot)).toEqual(laterSettings);
-  await page.goto("/?view=diagnostics");
-  await expect(page.locator("#log")).toContainText(audit);
-  await expect(page.locator("#log")).toContainText("11 doctrines");
+  await page.goto("/?view=settings");
+  log = await copyDiagnostics(page);
+  expect(log).toContain(audit);
+  expect(log).toContain("11 doctrines");
 });
 
 for (const width of [408, 320]) {

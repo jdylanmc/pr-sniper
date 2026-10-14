@@ -224,7 +224,6 @@ fn panel_dispatch(
                 .map_err(|_| "Invalid panel route.")?,
         ),
         "open_settings" => Some(Route::tab(Tab::Settings)),
-        "open_diagnostics" => Some(Route::diagnostics()),
         "open_queue_item" => Some(Route::item(
             request.args["itemId"]
                 .as_str()
@@ -846,7 +845,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | "panel_navigate"
                 | "hide_panel"
                 | "open_settings"
-                | "open_diagnostics"
                 | "open_queue_item"
                 | "fixture_show_panel"
         ) {

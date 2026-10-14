@@ -240,16 +240,8 @@ export function renderFacts(root: HTMLElement, entries: [string, string][]) {
   root.append(list);
 }
 
-export function renderIntelligenceDiagnostics(
-  root: HTMLElement,
-  snapshot: MonitoringSnapshot,
-) {
-  const details = document.createElement("details");
-  details.dataset.intelligenceDiagnostics = "true";
-  const summary = document.createElement("summary");
-  summary.textContent = "Recorded job Intelligence";
-  details.append(summary);
-  let count = 0;
+export function intelligenceDiagnostics(snapshot: MonitoringSnapshot): string {
+  const jobs: string[] = [];
   const seen = new Set<string>();
   const append = (
     id: string,
@@ -262,11 +254,7 @@ export function renderIntelligenceDiagnostics(
   ) => {
     if (seen.has(id)) return;
     seen.add(id);
-    count++;
-    const heading = document.createElement("h4");
-    heading.textContent = `Job ${id}`;
-    details.append(heading);
-    renderFacts(details, [
+    const facts: [string, string][] = [
       ["Requested model", selection.agent.model],
       [
         "Requested reasoning effort",
@@ -284,7 +272,13 @@ export function renderIntelligenceDiagnostics(
       ["Actual model", result?.model ?? "Not recorded"],
       ["Session", result?.session_id ?? "Not recorded"],
       ["Actual Intelligence", actualIntelligence(result?.intelligence)],
-    ]);
+    ];
+    jobs.push(
+      [
+        `Job ${id}`,
+        ...facts.map(([label, value]) => `${label}: ${value}`),
+      ].join("\n"),
+    );
   };
   for (const candidate of snapshot.reviews ?? []) {
     if (candidate.run)
@@ -306,8 +300,7 @@ export function renderIntelligenceDiagnostics(
     if (execution)
       append(execution.operation.id, execution.selection, execution.result);
   }
-  if (!count) details.append("None");
-  root.append(details);
+  return `Recorded job Intelligence\n${jobs.length ? jobs.join("\n\n") : "None"}`;
 }
 
 export function renderConfiguration(

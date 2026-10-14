@@ -6,6 +6,10 @@ import {
   withPermissions,
 } from "./navigation.mjs";
 import { createHash } from "node:crypto";
+import { copyDiagnostics, recordClipboard } from "./diagnostics-copy.mjs";
+
+const intelligenceSection = (text) =>
+  text.slice(text.indexOf("Recorded job Intelligence")).trimEnd();
 
 const kv = (root, label) => root.locator(`dt:text-is("${label}") + dd`);
 
@@ -300,59 +304,42 @@ for (const surface of ["standalone", "panel"]) {
         expect(stored.execution).toEqual(capturedExecution);
         expect(stored.execution.selection).toEqual(final.execution.selection);
       } else expect(stored).toBeNull();
-      if (surface === "panel")
-        await store("panel_navigate", {
-          route: { tab: "running", detail: { type: "diagnostics" } },
-        });
-      await page.goto(surface === "panel" ? "/" : "/?view=diagnostics");
-      const diagnostics = page.locator("[data-intelligence-diagnostics]");
-      await diagnostics.locator("summary").click();
-      await expect(diagnostics).not.toContainText("later-final-model");
+      await recordClipboard(page);
+      await page.goto(surface === "panel" ? "/" : "/?view=settings");
+      const diagnostics = intelligenceSection(
+        await copyDiagnostics(page, { panel: surface === "panel" }),
+      );
+      expect(diagnostics).not.toContain("later-final-model");
       if (state === "absent") {
-        await expect(diagnostics).toHaveText("Recorded job IntelligenceNone");
-        await expect(diagnostics.locator("h4")).toHaveCount(0);
+        expect(diagnostics).toBe("Recorded job Intelligence\nNone");
         return;
       }
-      await expect(diagnostics).not.toHaveText("Recorded job IntelligenceNone");
-      await expect(diagnostics.locator("h4")).toHaveText([
+      expect(diagnostics).not.toBe("Recorded job Intelligence\nNone");
+      expect(diagnostics.match(/^Job .+$/gm)).toEqual([
         "Job final-operation-128",
       ]);
-      await expect(diagnostics).toContainText(
-        "Requested modelconfigured-model",
-      );
+      expect(diagnostics).toContain("Requested model: configured-model");
       if (state === "legacy") {
-        await expect(diagnostics).toContainText(
-          "Requested reasoning effortNot recorded",
+        expect(diagnostics).toContain(
+          "Requested reasoning effort: Not recorded",
         );
-        await expect(diagnostics).toContainText(
-          "Requested context windowNot recorded",
-        );
-        await expect(diagnostics).toContainText(
-          "Actual IntelligenceNot recorded",
-        );
+        expect(diagnostics).toContain("Requested context window: Not recorded");
+        expect(diagnostics).toContain("Actual Intelligence: Not recorded");
       } else {
-        await expect(diagnostics).toContainText(
-          "Requested reasoning efforthigh",
-        );
-        await expect(diagnostics).toContainText(
-          "Requested context windowlong_context",
-        );
+        expect(diagnostics).toContain("Requested reasoning effort: high");
+        expect(diagnostics).toContain("Requested context window: long_context");
       }
       if (final.execution.result) {
-        await expect(diagnostics).toContainText(
-          "Sessionactual-final-session-128",
-        );
-        await expect(diagnostics).toContainText("Actual modelconfigured-model");
+        expect(diagnostics).toContain("Session: actual-final-session-128");
+        expect(diagnostics).toContain("Actual model: configured-model");
         if (state === "completed")
-          await expect(diagnostics).toContainText(
-            "Actual IntelligenceEffort: high; context: long_context",
+          expect(diagnostics).toContain(
+            "Actual Intelligence: Effort: high; context: long_context",
           );
       } else {
-        await expect(diagnostics).toContainText("Actual modelNot recorded");
-        await expect(diagnostics).toContainText("SessionNot recorded");
-        await expect(diagnostics).toContainText(
-          "Actual IntelligenceNot recorded",
-        );
+        expect(diagnostics).toContain("Actual model: Not recorded");
+        expect(diagnostics).toContain("Session: Not recorded");
+        expect(diagnostics).toContain("Actual Intelligence: Not recorded");
       }
       if (state === "completed") {
         await store("panel_navigate", {
@@ -377,7 +364,7 @@ for (const surface of ["standalone", "panel"]) {
   }
 }
 
-test("Diagnostics preserves normal, reply and mention order and deduplicates recorded execution projections", async ({
+test("Copy diagnostics preserves normal, reply and mention order and deduplicates recorded execution projections", async ({
   page,
   store,
 }) => {
@@ -416,10 +403,10 @@ test("Diagnostics preserves normal, reply and mention order and deduplicates rec
       return value;
     };
   });
-  await page.goto("/?view=diagnostics");
-  const diagnostics = page.locator("[data-intelligence-diagnostics]");
-  await diagnostics.locator("summary").click();
-  await expect(diagnostics.locator("h4")).toHaveText([
+  await recordClipboard(page);
+  await page.goto("/?view=settings");
+  const diagnostics = intelligenceSection(await copyDiagnostics(page));
+  expect(diagnostics.match(/^Job .+$/gm)).toEqual([
     `Job ${normalId}`,
     "Job reply-order",
     "Job mention-order",
@@ -430,7 +417,7 @@ test("Diagnostics preserves normal, reply and mention order and deduplicates rec
     "mention-session-order",
     "final-session-order",
   ])
-    await expect(diagnostics).toContainText(session);
+    expect(diagnostics).toContain(session);
   await expect((await store("monitoring_snapshot")).reviews).toHaveLength(
     snapshot.reviews.length,
   );

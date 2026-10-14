@@ -27,7 +27,6 @@ pub enum Tab {
 pub enum Detail {
     Item { item_id: String },
     Job { kind: Kind, id: String },
-    Diagnostics,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,12 +44,6 @@ impl Route {
         Self {
             tab: Tab::Queue,
             detail: Some(Detail::Item { item_id: id }),
-        }
-    }
-    pub fn diagnostics() -> Self {
-        Self {
-            tab: Tab::Settings,
-            detail: Some(Detail::Diagnostics),
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -157,9 +150,6 @@ pub fn missing(store: &Store, route: &Route) -> Result<Option<String>, String> {
     let Some(detail) = &route.detail else {
         return Ok(None);
     };
-    if matches!(detail, Detail::Diagnostics) {
-        return Ok(None);
-    }
     if let Some(message) = crate::retention::cleaned(store, detail)? {
         return Ok(Some(message.into()));
     }
@@ -200,7 +190,6 @@ pub fn missing(store: &Store, route: &Route) -> Result<Option<String>, String> {
                 .and_then(|s| s.final_review.as_ref())
                 .is_some_and(|f| f.id == *id)
         }),
-        _ => true,
     };
     Ok((!available).then(|| "This exact saved destination is not available in the current evidence view. No other PR, iteration or job was selected.".into()))
 }
