@@ -409,8 +409,31 @@ fn remote_gate(
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
     let settings = store.load_settings().map_err(Failure::permanent)?;
-    monitoring::review_policy(&settings, &run.job, Some(&pull)).map_err(Failure::permanent)?;
+    pull_gate(&settings, &run.job, &pull)?;
     Ok(pull)
+}
+
+/// A moved head, closed or unadmitted PR, or changed assignment supersedes the
+/// attempt: no budget spent, no park. The next scan retargets or retires it.
+pub(crate) fn pull_gate(
+    settings: &crate::storage::Settings,
+    job: &QueueJob,
+    pull: &crate::github::metadata::PullRequest,
+) -> Result<(), Failure> {
+    monitoring::check_review_policy(settings, job, Some(pull))
+        .map(|_| ())
+        .map_err(Failure::policy)
+}
+
+/// A new base is a new revision. Before the run it supersedes for free; after
+/// it the result is tossed through the bounded budget, so a busy base cannot
+/// buy unbounded AI runs.
+pub(crate) fn base_changed(after_review: bool) -> Failure {
+    if after_review {
+        Failure::tossed("Pull request base changed during review; result is stale.")
+    } else {
+        Failure::superseded("Pull request base changed; review context is stale.")
+    }
 }
 
 pub(crate) async fn execute(
@@ -612,9 +635,7 @@ async fn execute_attempt(
     let before_send: runtime::Gate = Arc::new(move || {
         let pull = remote_gate(&remote_app, &remote_run)?;
         if pull.base_sha != send_base {
-            return Err(Failure::permanent(
-                "Pull request base changed; review context is stale.",
-            ));
+            return Err(base_changed(false));
         }
         Ok(())
     });
@@ -644,9 +665,7 @@ async fn execute_attempt(
         .await
         .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
     if pull.base_sha != expected_base {
-        return Err(Failure::permanent(
-            "Pull request base changed during review; result is stale.",
-        ));
+        return Err(base_changed(true));
     }
     // A local-only exit writes nothing, so the state it read must still be the state.
     if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
@@ -755,5 +774,7 @@ pub(crate) async fn cancel_review(
     .map_err(|_| "Review cancellation could not finish.".to_string())?
 }
 
+#[cfg(test)]
+mod stale_revision_tests;
 #[cfg(test)]
 mod tests;

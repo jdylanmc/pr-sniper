@@ -3552,15 +3552,65 @@ fn trigger_policy(
     .map_err(|_| ConnectionError::Configuration)
 }
 
+/// Why work may no longer run for its exact Iteration and assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyRejection {
+    RepositoryRemoved,
+    ConfigurationChanged,
+    /// The assignment was removed or now names another Agent. The next global
+    /// scan retires this entry and queues the current configuration.
+    AssignmentChanged,
+    /// A new head, closure, merge, unadmitted draft or lost admission. The next
+    /// poll retires this entry and queues an eligible new revision.
+    RevisionChanged,
+    /// A scan already retired this entry: superseded, closed, merged or out of scope.
+    Retired,
+    /// The provider returned a different pull request or repository identity.
+    IdentityChanged,
+}
+
+impl PolicyRejection {
+    /// The attempt is stale rather than failed: the next scan retargets or retires it.
+    pub fn superseded(self) -> bool {
+        matches!(
+            self,
+            Self::AssignmentChanged | Self::RevisionChanged | Self::Retired
+        )
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RepositoryRemoved => "Repository was removed.",
+            Self::ConfigurationChanged | Self::Retired => {
+                "Review eligibility or repository configuration changed."
+            }
+            Self::AssignmentChanged => {
+                "This Agent assignment was removed or replaced; wait for the next global scan."
+            }
+            Self::RevisionChanged | Self::IdentityChanged => {
+                "Pull request revision or eligibility changed; wait for the next poll."
+            }
+        }
+    }
+}
+
 pub fn review_policy(
     settings: &Settings,
     job: &QueueJob,
     pull: Option<&PullRequest>,
 ) -> Result<Policy, String> {
+    check_review_policy(settings, job, pull).map_err(|rejection| rejection.message().into())
+}
+
+pub fn check_review_policy(
+    settings: &Settings,
+    job: &QueueJob,
+    pull: Option<&PullRequest>,
+) -> Result<Policy, PolicyRejection> {
     let configuration = configured_schedules(settings)
         .into_iter()
         .find(|c| c.repository_id == job.configuration_id)
-        .ok_or("Repository was removed.")?;
+        .ok_or(PolicyRejection::RepositoryRemoved)?;
     if !configuration.enabled
         || !configuration.provider_supported
         || configuration.name != job.repository_name
@@ -3568,28 +3618,39 @@ pub fn review_policy(
         || configuration.provider_repository_id.as_deref() != Some(&job.repository_id)
         || (job.work.is_none()
             && configuration.trigger_policy.as_deref() != Some(&job.trigger_policy))
-        || !actionable(job)
     {
-        return Err("Review eligibility or repository configuration changed.".into());
+        return Err(PolicyRejection::ConfigurationChanged);
+    }
+    if !actionable(job) {
+        return Err(match job.waiting.as_str() {
+            WAITING_SUPERSEDED
+            | WAITING_CLOSED
+            | WAITING_MERGED
+            | WAITING_INELIGIBLE
+            | WAITING_NO_LONGER_CURRENT
+            | WAITING_SCOPE_EXCLUDED
+            | WAITING_ASSIGNMENT_REMOVED => PolicyRejection::Retired,
+            _ => PolicyRejection::ConfigurationChanged,
+        });
     }
     if let Some(work) = &job.work {
         if !configuration.assignments.iter().any(|a| {
             Some(a.assignment_id.as_str()) == job.assignment_id.as_deref()
                 && a.agent_id == work.agent_id
         }) {
-            return Err(
-                "This Agent assignment was removed or replaced; wait for the next global scan."
-                    .into(),
-            );
+            return Err(PolicyRejection::AssignmentChanged);
         }
     }
     if let Some(pull) = pull {
         if pull.id != job.pull_request_id
             || pull.number != job.number
-            || pull.head_sha != job.head_sha
             || pull.base_repository_id != job.repository_id
+        {
+            return Err(PolicyRejection::IdentityChanged);
+        }
+        if pull.head_sha != job.head_sha
             || pull.state != Lifecycle::Open
-            || pull.draft
+            || (pull.draft && !configuration.review_drafts)
             || (job.work.is_none()
                 && !eligibility(
                     &configuration.watched_authors,
@@ -3600,9 +3661,7 @@ pub fn review_policy(
                 )
                 .admitted)
         {
-            return Err(
-                "Pull request revision or eligibility changed; wait for the next poll.".into(),
-            );
+            return Err(PolicyRejection::RevisionChanged);
         }
     }
     Ok(configuration.policy)

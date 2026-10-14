@@ -229,8 +229,12 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         .iter()
         .find(|j| run.matches_job(j))
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
-    let current =
-        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
+    let current = Selection::resolve(&settings, job, &run.assignment_id).map_err(|error| {
+        match monitoring::check_review_policy(&settings, job, None) {
+            Err(rejection) if rejection.superseded() => Failure::policy(rejection),
+            _ => Failure::permanent(error),
+        }
+    })?;
     if !current.same_execution(&run.selection) {
         return Err(Failure::permanent(
             "Agent configuration changed; explicitly retry.",
@@ -247,6 +251,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut changed = false;
     for review in &mut reviews {
         if retire_legacy(review) {
+            changed = true;
+            continue;
+        }
+        if recover_parked_supersession(review) {
             changed = true;
             continue;
         }
@@ -268,6 +276,30 @@ pub fn restore(store: &Store) -> Result<(), String> {
         store.save_reviews(&reviews)?;
     }
     Ok(())
+}
+
+/// Builds before typed supersession parked a stale Iteration or assignment as a
+/// permanent failure. No typed cause was stored, so the exact retired texts
+/// identify those records; requeue them with a fresh budget so the queue
+/// retargets or retires them like any superseded attempt.
+fn recover_parked_supersession(run: &mut ReviewRun) -> bool {
+    const PARKED: [monitoring::PolicyRejection; 2] = [
+        monitoring::PolicyRejection::RevisionChanged,
+        monitoring::PolicyRejection::AssignmentChanged,
+    ];
+    if run.operation.state != OperationState::Failed
+        || run.operation.failure != Some(OperationFailure::Permanent)
+        || !PARKED
+            .iter()
+            .any(|rejection| run.error.as_deref() == Some(rejection.message()))
+    {
+        return false;
+    }
+    run.operation.requeue_fresh(0);
+    run.result = None;
+    run.error = None;
+    run.phase = "Waiting for current PR state".into();
+    true
 }
 
 /// The legacy review path is removed: unfinished legacy work is cancelled, never run.
@@ -487,6 +519,14 @@ impl Failure {
         Self {
             kind: OperationFailure::Superseded,
             ..Self::permanent(message)
+        }
+    }
+    /// A stale Iteration or assignment is superseded; other rejections need a human.
+    pub fn policy(rejection: monitoring::PolicyRejection) -> Self {
+        if rejection.superseded() {
+            Self::superseded(rejection.message())
+        } else {
+            Self::permanent(rejection.message())
         }
     }
     /// A result or write discarded because the PR state moved: retried through the budget.
