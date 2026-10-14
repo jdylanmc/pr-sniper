@@ -605,3 +605,108 @@ fn legacy_queued_notices_are_not_sent_when_enabling() {
     assert_eq!(old.phase, Phase::NotSent);
     assert_eq!(ledger.next().unwrap().event.category, Category::Test);
 }
+
+#[test]
+fn muted_types_never_notify_and_unmuting_does_not_replay() {
+    let mut ledger = Ledger::default();
+    ledger.enable(&[], 1).unwrap();
+    assert!(ledger.set_category(Category::Ready, false).unwrap());
+    assert!(!ledger.set_category(Category::Ready, false).unwrap());
+    let frames = [
+        queue_frame("a", Category::Ready, "review-a"),
+        queue_frame("b", Category::Failure, "failure-b"),
+    ];
+    ledger.observe(&frames, 2).unwrap();
+    let sent: Vec<_> = events(&ledger).iter().map(|n| n.source.clone()).collect();
+    assert_eq!(sent, ["queue:b"], "other types keep notifying");
+    assert!(ledger.set_category(Category::Ready, true).unwrap());
+    assert!(!ledger.set_category(Category::Ready, true).unwrap());
+    assert!(!ledger.observe(&frames, 3).unwrap());
+    assert_eq!(events(&ledger).len(), 1, "existing Ready is not replayed");
+    let next = [
+        queue_frame("a", Category::Ready, "review-a2"),
+        queue_frame("b", Category::Failure, "failure-b"),
+    ];
+    ledger.observe(&next, 4).unwrap();
+    let ready: Vec<_> = events(&ledger)
+        .into_iter()
+        .filter(|n| n.event.category == Category::Ready)
+        .collect();
+    assert_eq!(ready.len(), 1);
+    assert!(ledger.current(ready[0]));
+}
+
+#[test]
+fn muting_drops_only_that_types_unsent_notices() {
+    let mut ledger = Ledger::default();
+    ledger.enable(&[], 1).unwrap();
+    let frames = [
+        queue_frame("a", Category::Ready, "review-a"),
+        queue_frame("b", Category::Failure, "failure-b"),
+    ];
+    ledger.observe(&frames, 2).unwrap();
+    ledger.set_category(Category::Failure, false).unwrap();
+    let failure = ledger
+        .notices
+        .iter()
+        .find(|n| n.event.category == Category::Failure)
+        .unwrap();
+    assert_eq!(failure.phase, Phase::NotSent);
+    assert_eq!(
+        failure.error.as_deref(),
+        Some("This notification type was turned off before this was sent.")
+    );
+    let ready = ledger
+        .notices
+        .iter()
+        .find(|n| n.event.category == Category::Ready)
+        .unwrap();
+    assert_eq!(ready.phase, Phase::Queued);
+    assert!(ledger.current(ready));
+    assert!(ledger.set_category(Category::Test, false).is_err());
+    assert!(ledger.set_category(Category::Test, true).is_err());
+}
+
+#[test]
+fn mute_racing_a_send_stops_before_native_submission() {
+    let (_root, store) = store();
+    let id = admit(&store, &[frame(Category::Ready, "review")]);
+    let mut ledger = store.load_notifications().unwrap();
+    ledger.muted.insert(Category::Ready);
+    store.save_notifications(&ledger).unwrap();
+    assert_eq!(
+        prepare(&store, &[frame(Category::Ready, "review")], &id, 101)
+            .unwrap()
+            .phase,
+        Phase::NotSent
+    );
+}
+
+#[test]
+fn ledgers_without_type_preferences_load_with_every_type_on() {
+    let (root, store) = store();
+    let path = root.path().join("state/notifications.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(value.as_object_mut().unwrap().remove("muted").is_some());
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let ledger = store.load_notifications().unwrap();
+    assert!(ledger.muted.is_empty());
+    let snapshot = snapshot(&store, Err("fixture".into())).unwrap();
+    assert_eq!(
+        snapshot
+            .categories
+            .iter()
+            .map(|c| (c.category, c.enabled))
+            .collect::<Vec<_>>(),
+        Category::SELECTABLE.map(|c| (c, true))
+    );
+    let mut ledger = ledger;
+    ledger.set_category(Category::Merged, false).unwrap();
+    store.save_notifications(&ledger).unwrap();
+    let reloaded = Store::new(root.path().into()).load_notifications().unwrap();
+    assert_eq!(reloaded.muted, BTreeSet::from([Category::Merged]));
+    let mut invalid = reloaded;
+    invalid.muted.insert(Category::Test);
+    assert!(invalid.validate().is_err());
+}

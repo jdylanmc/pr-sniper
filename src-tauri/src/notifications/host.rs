@@ -20,6 +20,7 @@ pub(crate) struct Coordinator {
     native: Result<Native, String>,
     pub(crate) active: AtomicBool,
     configuration: AtomicU64,
+    categories: Mutex<BTreeMap<Category, u64>>,
     configuration_gate: Mutex<()>,
 }
 
@@ -32,6 +33,7 @@ impl Coordinator {
             native: Native::new(app, _store, _root),
             active: AtomicBool::new(false),
             configuration: AtomicU64::new(0),
+            categories: Mutex::new(BTreeMap::new()),
             configuration_gate: Mutex::new(()),
         }
     }
@@ -175,12 +177,19 @@ pub struct NoticeView {
 }
 
 #[derive(Serialize)]
+pub struct CategoryState {
+    pub category: Category,
+    pub enabled: bool,
+}
+
+#[derive(Serialize)]
 pub struct Snapshot {
     pub platform: &'static str,
     pub enabled: bool,
     pub permission: Option<Permission>,
     pub error: Option<String>,
     pub notices: Vec<NoticeView>,
+    pub categories: Vec<CategoryState>,
 }
 
 pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Snapshot, String> {
@@ -208,6 +217,13 @@ pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Sna
                 title: notice.event.category.title(),
                 body: notice.event.category.body(),
                 notice,
+            })
+            .collect(),
+        categories: Category::SELECTABLE
+            .into_iter()
+            .map(|category| CategoryState {
+                category,
+                enabled: !ledger.muted.contains(&category),
             })
             .collect(),
     })
@@ -289,6 +305,54 @@ pub(crate) async fn set_notifications_enabled(
         Coordinator::pump(&pump);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn set_notification_category(
+    app: tauri::AppHandle,
+    category: Category,
+    enabled: bool,
+) -> Result<(), String> {
+    let generation = {
+        let host = app.state::<Host>();
+        let mut generations = host
+            .notifications
+            .categories
+            .lock()
+            .map_err(|_| "Notification settings unavailable.")?;
+        let generation = generations.entry(category).or_default();
+        *generation += 1;
+        *generation
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let _gate = host
+            .notifications
+            .configuration_gate
+            .lock()
+            .map_err(|_| "Notification settings unavailable.")?;
+        if host
+            .notifications
+            .categories
+            .lock()
+            .map_err(|_| "Notification settings unavailable.")?
+            .get(&category)
+            != Some(&generation)
+        {
+            return Err("A newer notification preference replaced this request.".into());
+        }
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| "Notification storage unavailable.")?;
+        let mut ledger = store.load_notifications()?;
+        if ledger.set_category(category, enabled)? {
+            store.save_notifications(&ledger)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Notification preference change failed.".to_string())?
 }
 
 pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {

@@ -2128,6 +2128,23 @@
   min-height: 32px;
   font-size: 12px;
 }
+.preferences-view .notification-types {
+  padding: 0 0 0 14px;
+}
+.preferences-view .notification-types[hidden] {
+  display: none;
+}
+.preferences-view .notification-types legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.preferences-view .notification-types .setting-row {
+  padding: 6px 0;
+  font-size: 12px;
+}
 .preferences-view [data-automation-status],
 .preferences-view #notification-permission {
   padding: 8px 10px;

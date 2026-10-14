@@ -1124,3 +1124,27 @@ test("detection and trust honor admission rules", () => {
   state = M.update(state, "detect");
   assert(state.reviews.some((review) => review.number >= 500));
 });
+
+test("notification types default on, migrate older saves and validate", () => {
+  const state = plain(M.seed());
+  assert.deepEqual(
+    Object.keys(state.preferences.notificationTypes),
+    plain(M.notificationTypeKeys),
+  );
+  assert.ok(Object.values(state.preferences.notificationTypes).every(Boolean));
+  delete state.preferences.notificationTypes;
+  assert.throws(() => M.validate(plain(state)), /Invalid saved preferences/);
+  const migrated = M.validate(M.migrate(plain(state)));
+  assert.equal(migrated.preferences.notificationTypes.failure, true);
+  const muted = M.update(migrated, "preferences", {
+    preferences: {
+      ...migrated.preferences,
+      notificationTypes: {
+        ...migrated.preferences.notificationTypes,
+        failure: false,
+      },
+    },
+  });
+  assert.equal(muted.preferences.notificationTypes.failure, false);
+  assert.equal(muted.preferences.notificationTypes.ready, true);
+});

@@ -115,7 +115,7 @@ Machine-wide count of concurrent AI job slots, positive integer, default 4. Shar
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
-Global cron, time zone, **AI Capacity** and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in, launch at login; apply natively, not by Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
+Global cron, time zone, **AI Capacity** and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login; apply natively, not by Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
 _Avoid_: Startup checkbox as effective state
 
 ### Reviews and iterations

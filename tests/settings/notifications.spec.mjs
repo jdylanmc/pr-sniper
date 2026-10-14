@@ -4,6 +4,16 @@ import { expect, test } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 
+const types = [
+  ["confirmation", "Confirmation"],
+  ["human_input", "Needs input"],
+  ["ready", "Ready"],
+  ["failure", "Failures"],
+  ["approved", "Approved"],
+  ["merged", "Merged"],
+  ["final_review_cleared", "Final review cleared"],
+];
+
 test("notification opt-in is immediate, independent and confirms once without replaying existing events", async ({
   page,
   store,
@@ -57,6 +67,126 @@ test("re-enabling skips events from while off and never sends stale unsent notic
   expect(again.notices).toHaveLength(5);
   const queued = again.notices.filter((n) => n.phase === "queued");
   expect(queued.map((n) => n.event.category)).toEqual(["test"]);
+});
+
+test("notification types appear only while on, persist and keep keyboard focus", async ({
+  page,
+  store,
+}) => {
+  await page.goto("/?view=settings");
+  await section(page, "Preferences");
+  const enabled = page.getByRole("switch", {
+    name: "Notifications",
+    exact: true,
+  });
+  const group = page.getByRole("group", { name: "Notification types" });
+  await expect(enabled).toBeEnabled();
+  await expect(group).toBeHidden();
+  await enabled.check();
+  await expect(group).toBeVisible();
+  for (const [, label] of types)
+    await expect(
+      group.getByRole("switch", { name: label, exact: true }),
+    ).toBeChecked();
+  expect((await store("notification_snapshot")).categories).toEqual(
+    types.map(([category]) => ({ category, enabled: true })),
+  );
+  const failures = group.getByRole("switch", { name: "Failures", exact: true });
+  await failures.focus();
+  await page.keyboard.press("Space");
+  await expect
+    .poll(async () =>
+      (await store("notification_snapshot")).categories.find(
+        (c) => c.category === "failure",
+      ),
+    )
+    .toEqual({ category: "failure", enabled: false });
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(failures).not.toBeChecked();
+  await expect(failures).toBeEnabled();
+  await expect(failures).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(failures).not.toBeChecked();
+  await expect(failures).toBeFocused();
+  await expect(group.getByRole("switch", { name: "Ready" })).toBeChecked();
+  await page.reload();
+  await section(page, "Preferences");
+  await expect(failures).not.toBeChecked();
+  await expect(group.getByRole("switch", { name: "Merged" })).toBeChecked();
+  await enabled.uncheck();
+  await expect(group).toBeHidden();
+  await expect
+    .poll(async () => (await store("notification_snapshot")).categories)
+    .toContainEqual({ category: "failure", enabled: false });
+});
+
+for (const width of [408, 320])
+  test(`notification types fit the ${width}px panel without overflow`, async ({
+    page,
+    store,
+  }) => {
+    await store("set_notifications_enabled", { enabled: true });
+    await page.setViewportSize({ width, height: 744 });
+    await page.goto("/?view=settings");
+    await section(page, "Preferences");
+    const group = page.locator("#notification-types");
+    await expect(group).toBeVisible();
+    const card = await page.locator("#notification-settings").boundingBox();
+    for (const [category] of types) {
+      const toggle = await page
+        .locator(`#notification-type-${category}`)
+        .boundingBox();
+      expect(toggle.x).toBeGreaterThanOrEqual(card.x);
+      expect(toggle.x + toggle.width).toBeLessThanOrEqual(card.x + card.width);
+    }
+    expect(
+      await group.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  });
+
+test("a muted type creates no notices and turning it on does not replay its events", async ({
+  store,
+}) => {
+  await store("set_notifications_enabled", { enabled: true });
+  await store("set_notification_category", {
+    category: "failure",
+    enabled: false,
+  });
+  await queueFixture(store);
+  const muted = await store("observe_notifications");
+  expect(muted.notices.map((n) => n.event.category).sort()).toEqual([
+    "human_input",
+    "ready",
+    "test",
+  ]);
+  await store("set_notification_category", {
+    category: "failure",
+    enabled: true,
+  });
+  const unmuted = await store("observe_notifications");
+  expect(unmuted.notices.map((n) => n.id)).toEqual(
+    muted.notices.map((n) => n.id),
+  );
+  await store("set_notification_category", {
+    category: "ready",
+    enabled: false,
+  });
+  const ready = (await store("notification_snapshot")).notices.find(
+    (n) => n.event.category === "ready",
+  );
+  expect(ready.phase).toBe("not_sent");
+  expect(ready.error).toMatch(/type was turned off/);
+  await expect(
+    store("set_notification_category", { category: "test", enabled: false }),
+  ).rejects.toMatch(/cannot be changed/);
 });
 
 test("native projection ignores author waits and deduplicates every repeated poll and restart", async ({

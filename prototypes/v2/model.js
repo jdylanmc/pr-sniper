@@ -139,8 +139,24 @@
       ...(pathKind(kind) ? { paths: [] } : {}),
     })),
   });
+  const notificationTypeKeys = [
+    "confirmation",
+    "human_input",
+    "ready",
+    "failure",
+    "approved",
+    "merged",
+    "final_review_cleared",
+  ];
+  // Every type defaults on, including for saved states that predate types.
+  const notificationTypes = (saved = {}) =>
+    Object.fromEntries(
+      notificationTypeKeys.map((key) => [key, saved[key] !== false]),
+    );
   // Deterministic upgrade of the pre-admission repository shape.
   const migrate = (state) => {
+    if (state?.preferences && state.preferences.notificationTypes === undefined)
+      state.preferences.notificationTypes = notificationTypes();
     if (!state || !Array.isArray(state.repos)) return state;
     state.repos = state.repos.map((repo) => {
       if (!repo || repo.admission !== undefined) return repo;
@@ -305,6 +321,7 @@
         automaticComments: false,
         notifications: false,
         launchAtLogin: false,
+        notificationTypes: notificationTypes(),
       },
       forgotten: [],
       accounts: [
@@ -652,6 +669,13 @@
         typeof state.preferences?.[key] === "boolean",
         "Invalid saved preferences.",
       );
+    requireValue(
+      notificationTypeKeys.every(
+        (key) =>
+          typeof state.preferences.notificationTypes?.[key] === "boolean",
+      ),
+      "Invalid saved preferences.",
+    );
     for (const key of ["accounts", "agents", "repos", "doctrines", "reviews"]) {
       requireValue(Array.isArray(state[key]), `Invalid saved ${key}.`);
       requireValue(
@@ -1318,6 +1342,7 @@
     seed,
     fresh,
     migrate,
+    notificationTypeKeys,
     admits,
     globMatches,
     pathProblem,

@@ -700,6 +700,18 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_notifications(&ledger)?;
             Ok(Value::Null)
         }
+        "set_notification_category" => {
+            let category = serde_json::from_value(request.args["category"].clone())
+                .map_err(|_| "Notification type required.")?;
+            let enabled = request.args["enabled"]
+                .as_bool()
+                .ok_or("Enabled flag required.")?;
+            let mut ledger = store.load_notifications()?;
+            if ledger.set_category(category, enabled)? {
+                store.save_notifications(&ledger)?;
+            }
+            Ok(Value::Null)
+        }
         "seed_notifications" => {
             let ledger = serde_json::from_value(request.args)
                 .map_err(|_| "Invalid notification fixture.")?;

@@ -2288,7 +2288,26 @@ button:disabled {
   gap: 15px;
   padding: 13px 0;
 }
-.preference-row + .preference-row {
+.preference-row + .preference-row,
+.notification-types + .preference-row {
+  border-top: 1px solid #e0e8ee;
+}
+.notification-types {
+  margin: 0;
+  padding: 0 0 0 15px;
+  border: 0;
+}
+.notification-types[hidden] {
+  display: none;
+}
+.notification-types legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.notification-types .preference-row {
   border-top: 1px solid #e0e8ee;
 }
 .preference-row > span {

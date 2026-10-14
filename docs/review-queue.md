@@ -62,6 +62,7 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 
 - Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Opt-in is from now forward: states that exist at opt-in, or arose while off, never notify. Turning on sends one confirmation (opens Settings).
 - Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
+- Types: while on, each type has its own switch (default on, including older profiles). A type turned back on never replays what happened while it was off.
 - Click opens the exact saved queue item, or Settings for a scheduling/account failure with no PR.
 - Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.

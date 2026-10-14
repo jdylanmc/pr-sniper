@@ -1332,6 +1332,25 @@ function capacityPage() {
     <p class="inline-warning">Lowering the limit stops surplus sample reviews, discards their partial work, and puts them back in the queue.</p><button class="primary-action wide" type="submit">Save review limit</button></form></div>`;
 }
 
+const notificationTypeLabels = {
+  confirmation: "Confirmation",
+  human_input: "Needs input",
+  ready: "Ready",
+  failure: "Failures",
+  approved: "Approved",
+  merged: "Merged",
+  final_review_cleared: "Final review cleared",
+};
+
+function notificationTypeRows() {
+  return `<fieldset class="notification-types" data-notification-types ${state.preferences.notifications ? "" : "hidden"}><legend>Notification types</legend>${Demo.notificationTypeKeys
+    .map(
+      (key) =>
+        `<label class="preference-row"><span><strong>${notificationTypeLabels[key]}</strong></span><input type="checkbox" class="switch" name="type-${key}" ${checked(state.preferences.notificationTypes[key])} /></label>`,
+    )
+    .join("")}</fieldset>`;
+}
+
 function preferencesPage() {
   const labels = {
     automaticStart: [
@@ -1356,7 +1375,7 @@ function preferencesPage() {
   )
     .map(
       ([key, [label, description]]) =>
-        `<label class="preference-row" title="${esc(description)}"><span><strong>${label}</strong></span><input type="checkbox" class="switch" name="${key}" ${checked(state.preferences[key])} /></label>`,
+        `<label class="preference-row" title="${esc(description)}"><span><strong>${label}</strong></span><input type="checkbox" class="switch" name="${key}" ${checked(state.preferences[key])} /></label>${key === "notifications" ? notificationTypeRows() : ""}`,
     )
     .join(
       "",
@@ -1699,9 +1718,21 @@ function readForm(form) {
       return [
         "preferences",
         {
-          preferences: Object.fromEntries(
-            Object.keys(state.preferences).map((key) => [key, bool(key)]),
-          ),
+          preferences: {
+            ...Object.fromEntries(
+              Object.keys(state.preferences)
+                .filter((key) => key !== "notificationTypes")
+                .map((key) => [key, bool(key)]),
+            ),
+            notificationTypes: bool("notifications")
+              ? Object.fromEntries(
+                  Demo.notificationTypeKeys.map((key) => [
+                    key,
+                    bool(`type-${key}`),
+                  ]),
+                )
+              : { ...state.preferences.notificationTypes },
+          },
         },
       ];
     case "complete":
@@ -1821,6 +1852,15 @@ stage.addEventListener("change", (event) => {
     render();
     stage.querySelector("#repository-owner").focus();
     return;
+  }
+  if (
+    event.target.name === "notifications" &&
+    event.target.closest('[data-form="preferences"]')
+  ) {
+    event.target
+      .closest("form")
+      .querySelector("[data-notification-types]").hidden =
+      !event.target.checked;
   }
   if (event.target.name === "confirmSetup") {
     event.target

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Confirmation,
@@ -51,6 +51,17 @@ impl Category {
             Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
         }
     }
+
+    /// Event categories a user can turn off; `Test` confirms opt-in and always sends.
+    pub const SELECTABLE: [Self; 7] = [
+        Self::Confirmation,
+        Self::HumanInput,
+        Self::Ready,
+        Self::Failure,
+        Self::Approved,
+        Self::Merged,
+        Self::FinalReviewCleared,
+    ];
 
     fn priority(self) -> u8 {
         match self {
@@ -300,6 +311,9 @@ pub struct Observation {
 pub struct Ledger {
     pub profile_id: String,
     pub enabled: bool,
+    /// Turned-off categories; absent in older files, so every category defaults on.
+    #[serde(default)]
+    pub muted: BTreeSet<Category>,
     pub observations: BTreeMap<String, Observation>,
     pub notices: Vec<Notice>,
 }
@@ -313,6 +327,7 @@ impl Default for Ledger {
         Self {
             profile_id: uuid::Uuid::new_v4().to_string(),
             enabled: false,
+            muted: BTreeSet::new(),
             observations: BTreeMap::new(),
             notices: vec![],
         }
@@ -329,6 +344,9 @@ impl Ledger {
         {
             return Err("Notification identities are invalid; no notices were sent.".into());
         }
+        if self.muted.contains(&Category::Test) {
+            return Err("Notification preferences are invalid; no notices were sent.".into());
+        }
         let unique: BTreeSet<_> = self.notices.iter().map(|n| &n.id).collect();
         if unique.len() != self.notices.len() {
             return Err("Duplicate notification identities; no notices were sent.".into());
@@ -343,7 +361,8 @@ impl Ledger {
         self.record(frames, now, true)
     }
 
-    /// Tracks every source's current event; `notify: false` records a silent baseline.
+    /// Tracks every source's current event. Muted categories still advance the
+    /// baseline, so turning one back on never replays what happened while off.
     fn record(&mut self, frames: &[Frame], now: i64, notify: bool) -> Result<bool, String> {
         let mut changed = false;
         let mut sources = BTreeSet::new();
@@ -363,7 +382,7 @@ impl Ledger {
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
-                if !notify {
+                if !notify || self.muted.contains(&event.category) {
                     continue;
                 }
                 self.notices.push(Notice {
@@ -419,6 +438,25 @@ impl Ledger {
             "Notifications were turned off before this was sent.",
         );
         true
+    }
+
+    /// Returns whether the preference changed. Turning a category off drops its
+    /// unsent notices; turning it on relies on the continuously kept baseline.
+    pub fn set_category(&mut self, category: Category, enabled: bool) -> Result<bool, String> {
+        if !Category::SELECTABLE.contains(&category) {
+            return Err("This notification type cannot be changed.".into());
+        }
+        if enabled {
+            return Ok(self.muted.remove(&category));
+        }
+        if !self.muted.insert(category) {
+            return Ok(false);
+        }
+        self.drop_queued(
+            |notice| notice.event.category == category,
+            "This notification type was turned off before this was sent.",
+        );
+        Ok(true)
     }
 
     fn drop_queued(&mut self, matches: impl Fn(&Notice) -> bool, reason: &str) {
@@ -491,6 +529,7 @@ impl Ledger {
 
     pub fn current(&self, notice: &Notice) -> bool {
         self.enabled
+            && !self.muted.contains(&notice.event.category)
             && (notice.event.category == Category::Test
                 || self.observations.get(&notice.source).is_some_and(|o| {
                     o.fingerprint.as_ref() == Some(&notice.fingerprint)

@@ -76,6 +76,7 @@ test("Settings separates Accounts and Repositories without prototype or retired 
   await expect(
     page.getByRole("button", { name: "Send test notification" }),
   ).toHaveCount(0);
+  await expect(page.locator("#notification-types")).toBeHidden();
   expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(
     page.getByRole("button", {

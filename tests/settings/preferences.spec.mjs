@@ -475,7 +475,7 @@ test("denied and unreadable native notifications stay explicit without saving pr
     "Unavailable",
   );
   await expect(page.locator("#notification-enabled")).toBeDisabled();
-  await expect(page.locator("#notification-test")).toHaveCount(0);
+  await expect(page.locator("#notification-types")).toBeHidden();
   await expect(page.locator("#notification-permission")).toHaveText(
     "Unavailable",
   );

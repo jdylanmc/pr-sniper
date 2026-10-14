@@ -56,8 +56,10 @@ not prove OS banner presentation or the notification-center callback.
    An unrelated or missing-profile request must never open a substitute item.
    A valid saved notification whose exact destination is now unavailable must
    open the explicit missing-destination state, not a first/last queue item.
-5. Turn notifications off, seed a transition, turn them on: only the
-   confirmation appears. Wait through at least two scheduler ticks. Unchanged source state must not
+5. Turn one type off below the main switch, seed a transition of that type,
+   then turn it back on: neither step may notify. Turn notifications off, seed a
+   transition, turn them on: only the confirmation appears. Wait through at
+   least two scheduler ticks. Unchanged source state must not
    add requests. Restart the test process with the same profile and Keychain
    namespace, then repeat the count and exact-destination checks.
 6. Verify the confirmation's Settings destination as well. Inspect notification history:
