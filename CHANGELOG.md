@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Keep the retained panel visible after display changes: recompute each opening
+  against current work areas, prefer the clicked tray display and resize to fit
+  smaller screens.
+
 ## 0.3.1 - 2026-10-14
 
 ### Fixed
