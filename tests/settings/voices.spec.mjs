@@ -354,6 +354,14 @@ test("an unavailable Voice selection stays visible until explicitly replaced", a
   const missing = modal.getByRole("radio", { name: gone, exact: true });
   await expect(missing).toBeChecked();
   await expect(missing).toBeDisabled();
+  // Focus lands on the first enabled radio, not the disabled selection.
+  const none = modal.getByRole("radio", { name: "None", exact: true });
+  await expect(none).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    modal.getByRole("radio", { name: "Caveman", exact: true }),
+  ).toBeFocused();
+  await expect(modal.locator('form[data-view="voices"]')).toBeVisible();
   await expect(modal.locator("[data-voice-choice]")).toHaveText([
     "None",
     "Caveman",

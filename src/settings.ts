@@ -1839,9 +1839,11 @@ export async function mountSettings(
         editorStack.push({ modal, title: "Voice", back: closeVoices });
         announceEditor();
       }
+      // A disabled (unavailable) selection cannot take focus.
       (
-        voiceList.querySelector<HTMLInputElement>("input:checked") ??
-        voiceList.querySelector<HTMLInputElement>("input")
+        voiceList.querySelector<HTMLInputElement>(
+          "input:checked:not(:disabled)",
+        ) ?? voiceList.querySelector<HTMLInputElement>("input:not(:disabled)")
       )?.focus({ preventScroll: true });
     };
     voiceList.addEventListener("click", (event) => {
