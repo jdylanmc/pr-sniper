@@ -1855,27 +1855,17 @@ impl Monitor {
                 health.schedule_available = false;
                 continue;
             }
+            // A waiting poll whose window ran out before it could run (quit,
+            // sleep, or an account-wide rate limit) failed nothing: it gets a
+            // fresh window and keeps its last cause. Failures park in `finish`.
             if let Some(operation) = health.operation.as_mut().filter(|operation| {
                 matches!(
                     operation.state,
                     OperationState::Queued | OperationState::Interrupted
                 ) && now >= operation.retry_deadline
             }) {
-                // An interrupted poll was cut off by quit or restart, not by the
-                // provider: it starts again with a fresh window.
-                if operation.state == OperationState::Interrupted {
-                    operation.requeue_fresh(now);
-                    health.last_failure = None;
-                    health.last_error = None;
-                    join_running_scan(&mut self.state.global_scan, &configuration.health_key);
-                } else {
-                    operation.state = OperationState::ManualRetry;
-                    operation.next_attempt_at = None;
-                    operation.failure = Some(OperationFailure::Permanent);
-                    health.next_run = 0;
-                    health.schedule_available = false;
-                    continue;
-                }
+                operation.restart_window(now);
+                join_running_scan(&mut self.state.global_scan, &configuration.health_key);
             }
             if let Some(next_attempt) = health.operation.as_ref().and_then(|operation| {
                 matches!(
@@ -2090,6 +2080,19 @@ impl Monitor {
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
+            let account_gate = gates.until(&crate::backpressure::Scope::github(account_id), now);
+            // A rate-limited account is a wait for every poll on it, not a
+            // failure: the retry window stays open past the wait.
+            if let (Some(until), Some(operation)) = (account_gate, health.operation.as_mut()) {
+                if matches!(
+                    operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) {
+                    operation.retry_deadline = operation
+                        .retry_deadline
+                        .max(until.saturating_add(RETRY_WINDOW_SECONDS));
+                }
+            }
             let retry_waiting = health.operation.as_ref().is_some_and(|o| {
                 matches!(
                     o.state,
@@ -2105,9 +2108,7 @@ impl Monitor {
                     .as_ref()
                     .is_some_and(|scan| scan.pending.contains(&configuration.health_key))
                 || retry_waiting
-                || gates
-                    .until(&crate::backpressure::Scope::github(account_id), now)
-                    .is_some()
+                || account_gate.is_some()
                 || checking_repositories.contains(repository_id)
             {
                 continue;
@@ -3293,6 +3294,17 @@ impl JobOperation {
         if self.parked() {
             self.schedule_resume(now);
         }
+    }
+
+    /// Fresh attempt window for a waiting poll; its cause and any rate-limit
+    /// wait are kept.
+    pub(crate) fn restart_window(&mut self, now: i64) {
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(self.next_attempt_at.map_or(now, |next| next.max(now)));
+        self.interruption = None;
     }
 
     /// Fresh attempt window with no failure history carried over.

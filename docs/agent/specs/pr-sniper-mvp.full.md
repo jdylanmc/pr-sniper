@@ -40,8 +40,9 @@ tray Status item. This amendment withdraws PR-001's status action only.
 Scheduler health is still recorded (PR-006); queue-item failures surface in
 Queue > Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
 For AC-019 and PR-043, repository polls (no queue item) recover without a
-retry surface: a poll interrupted by quit or restart starts a fresh attempt
-window instead of parking on its expired deadline; a parked poll is requeued
+retry surface: a poll that was waiting or interrupted when its window ran
+out (quit, sleep, account rate limit) starts a fresh attempt window instead
+of parking on its expired deadline; a parked poll is requeued
 on the next scheduled scan (at most once per scan; credential failures wait
 for reconnect) and by Check Now.
 The same approval replaces the Diagnostics screen and tray item with one

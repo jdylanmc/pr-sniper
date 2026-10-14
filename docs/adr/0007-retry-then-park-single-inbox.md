@@ -24,7 +24,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Restart-safe. No silent retry loops.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
 - Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.
-- Repository polls (no queue item, no retry UI since 2026-10-14): a poll interrupted by quit/restart restarts with a fresh window and never parks on its expired deadline. A parked poll is requeued on the next scheduled scan (one retry per scan; Credentials wait for reconnect) and by Check Now (any parked poll). The scan keeps its schedule while a poll is parked.
+- Repository polls (no queue item, no retry UI since 2026-10-14): a poll that was waiting or interrupted when its window ran out (quit, sleep, account rate limit) restarts with a fresh window, keeps its cause and never parks on the deadline alone. A parked poll is requeued on the next scheduled scan (one retry per scan; Credentials wait for reconnect) and by Check Now (any parked poll). A parked poll keeps the scan schedule alive, except a credential-parked poll, which waits for reconnect.
 - Auto-resume covers review runs, repository poll operations and publication operations (same cooldowns; resume reconciles the original batch, never reposts). Legacy follow-up/primary-final operations are cancelled on startup ([ADR 0021](0021-review-packet.md)).
 - Completed reviews stay Ready despite config drift or disabled repo.
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.

@@ -1835,6 +1835,169 @@ fn rate_limit_deferral_spends_no_attempt_across_a_scheduled_scan() {
 }
 
 #[test]
+fn queued_poll_relaunched_after_its_deadline_keeps_its_cause_and_runs_in_the_due_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::Network,
+    );
+    let waiting = poll_operation(&monitor);
+    assert_eq!(waiting.state, OperationState::Queued);
+    assert_eq!(waiting.retry_deadline, 1_800_000_900);
+    drop(monitor);
+
+    // Quit while the retry delay was pending; relaunch after the window.
+    let mut restored = Monitor::restore(&store).unwrap();
+    let tickets = restored
+        .prepare_checks(&store, 1_800_000_901, false)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    let operation = poll_operation(&restored);
+    assert_eq!(operation.id, waiting.id);
+    assert_eq!(operation.state, OperationState::Running);
+    assert_eq!(operation.attempt_count, 1);
+    assert_eq!(operation.failure, Some(OperationFailure::Network));
+    assert_eq!(operation.retry_deadline, 1_800_001_801);
+}
+
+fn second_repository(store: &Store, account_id: &str) {
+    let mut settings = store.load_settings().unwrap();
+    let mut second = repository(true);
+    second.id = "00000000-0000-4000-8000-000000000002".into();
+    second.name = "example/other".into();
+    second.provider_account_id = Some(account_id.into());
+    second.provider_repository_id = Some("101".into());
+    second.assignments = settings.repositories[0].assignments.clone();
+    settings.repositories.push(second);
+    set_settings(store, &settings);
+    activate_repository(
+        store,
+        "00000000-0000-4000-8000-000000000002",
+        0,
+        BTreeMap::new(),
+    );
+}
+
+fn operation_for(monitor: &Monitor, name: &str) -> pr_sniper_lib::monitoring::JobOperation {
+    monitor
+        .snapshot()
+        .into_iter()
+        .find(|health| health.name == name)
+        .and_then(|health| health.operation)
+        .unwrap()
+}
+
+#[test]
+fn a_sibling_rate_limit_never_expires_a_waiting_poll_to_permanent() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    assert_eq!(tickets.len(), 2);
+    for ticket in tickets {
+        let error = if ticket.name == REPOSITORY_NAME {
+            ConnectionError::RateLimitedAfter(1_800)
+        } else {
+            ConnectionError::Network
+        };
+        let _ = monitor.finish(&store, ticket, Err(error), 1_800_000_001);
+    }
+    for at in [1_800_000_100, 1_800_000_901, 1_800_001_500, 1_800_001_800] {
+        assert!(
+            monitor
+                .prepare_checks(&store, at, false)
+                .unwrap()
+                .is_empty(),
+            "account still rate-limited at {at}"
+        );
+        let waiting = operation_for(&monitor, "example/other");
+        assert_eq!(waiting.state, OperationState::Queued, "at {at}");
+        assert_eq!(waiting.failure, Some(OperationFailure::Network));
+    }
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_001_801, false)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_saved_stopped_scan_restarts_and_recovers_parked_polls_at_the_next_occurrence() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::ProviderRejectedStatus(422),
+    );
+    drop(monitor);
+    // State written by the build that stopped the scan once all were parked.
+    let mut state = store.load_monitoring_state().unwrap();
+    state.global_scan.as_mut().unwrap().next_run = 0;
+    store.save_monitoring_state(&state).unwrap();
+
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_100, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .global_scan
+            .unwrap()
+            .next_run,
+        1_800_000_900
+    );
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_900, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn parked_polls_across_repositories_retry_once_per_scan() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut at = 1_800_000_000;
+    for scan in 0..3 {
+        let tickets = monitor.prepare_checks(&store, at, scan == 0).unwrap();
+        assert_eq!(tickets.len(), 2, "scan {scan}");
+        for ticket in tickets {
+            let _ = monitor.finish(
+                &store,
+                ticket,
+                Err(ConnectionError::ProviderRejectedStatus(422)),
+                at + 1,
+            );
+        }
+        for later in [at + 2, at + 450, at + 899] {
+            assert!(
+                monitor
+                    .prepare_checks(&store, later, false)
+                    .unwrap()
+                    .is_empty(),
+                "scan {scan} at {later}"
+            );
+        }
+        at += 900;
+    }
+}
+
+#[test]
 fn transient_poll_failures_park_after_three_failed_attempts_and_manual_retry_resets_budget() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
