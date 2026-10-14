@@ -79,9 +79,15 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
     meta(&mut out, input, packet_id, with_time);
     out.push_str("\n## Rules\n");
     let can_read_logs = input.tools.iter().any(|t| t == "read_check_log");
-    for (index, rule) in rules::rules(input.role, !input.teammates.is_empty(), can_read_logs)
-        .iter()
-        .enumerate()
+    let can_duck = input.tools.iter().any(|t| t == crate::review::duck::TOOL);
+    for (index, rule) in rules::rules(
+        input.role,
+        !input.teammates.is_empty(),
+        can_read_logs,
+        can_duck,
+    )
+    .iter()
+    .enumerate()
     {
         let _ = writeln!(out, "{}. {rule}", index + 1);
     }
@@ -116,13 +122,14 @@ fn meta(out: &mut String, input: &PacketInput, packet_id: &str, with_time: bool)
         match input.role {
             Role::Primary => "primary",
             Role::Teammate => "teammate",
+            Role::Duck => "rubber_duck",
         }
     );
     let _ = writeln!(out, "{}", rules::INTRO);
     let _ = writeln!(out, "tools: {}", input.tools.join(", "));
 }
 
-fn pull_request(out: &mut String, input: &PacketInput) {
+pub(super) fn pull_request(out: &mut String, input: &PacketInput) {
     let pr = &input.pr;
     out.push_str("\n## Pull request\n");
     out.push_str(&fence("pull_request.title", &pr.title));
@@ -248,7 +255,7 @@ fn conversation(out: &mut String, input: &PacketInput) {
     }
 }
 
-fn files(out: &mut String, input: &PacketInput) {
+pub(super) fn files(out: &mut String, input: &PacketInput) {
     out.push_str("\n## Files\n");
     let _ = writeln!(out, "changed_files: {}", input.files.len());
     out.push_str("Read with read_changes (patch, before, after) and read_source. Paged, up to 32000 bytes per chunk. The host records what you read; reading is never enforced.\n");
