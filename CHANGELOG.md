@@ -5,11 +5,22 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Per-type notification switches appear under Notifications while it is on;
+  every type starts on.
+
 ### Fixed
 
 - Keep the retained panel visible after display changes: recompute each opening
   against current work areas, prefer the clicked tray display and resize to fit
   smaller screens.
+- Turning notifications on no longer sends alerts for events that already
+  existed or happened while off; it sends one confirmation instead.
+
+### Removed
+
+- Settings test-notification destination and Send test notification controls.
 
 ## 0.3.1 - 2026-10-14
 
