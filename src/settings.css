@@ -1474,9 +1474,34 @@
   font-size: 12px;
   white-space: normal;
 }
-.resource-library {
+/* Shared grouped list for Settings collections (Agents, Doctrines): one
+   card, hairline-separated .resource-card rows. */
+.settings-window .resource-library {
   display: grid;
-  gap: 10px;
+  gap: 0;
+  border: 1px solid #e3e9ee;
+  border-radius: 12px;
+  background: white;
+  overflow: hidden;
+}
+.settings-window .resource-library:empty {
+  display: none;
+}
+.settings-window .resource-library > .resource-card {
+  border: 0;
+  border-radius: 0;
+}
+.settings-window .resource-library > .resource-card + .resource-card {
+  border-top: 1px solid #edf1f4;
+}
+.settings-window .resource-library .resource-card [data-edit]::before {
+  border-radius: 0;
+}
+.settings-window
+  .resource-library
+  .resource-card
+  [data-edit]:focus-visible::before {
+  outline-offset: -3px;
 }
 .settings-window .resource-card {
   position: relative;

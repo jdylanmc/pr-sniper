@@ -286,6 +286,8 @@ function fillTimeZones(
   if (known) select.removeAttribute("aria-invalid");
   else select.setAttribute("aria-invalid", "true");
 }
+const countLabel = (count: number, one: string, many: string) =>
+  `${count} ${count === 1 ? one : many}`;
 const escape = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -1250,7 +1252,7 @@ export async function mountSettings(
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
       row.className = "doctrine-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${doctrineUsers(doctrine).length} Agents</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${countLabel(doctrineUsers(doctrine).length, "Agent", "Agents")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
           `doctrine:${doctrine.title}:${action}`;
@@ -1303,7 +1305,7 @@ export async function mountSettings(
     const modal = dialog(
       existing ? `Editing ${existing.title}` : "New doctrine",
       `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p>
-      <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("doctrine", !!existing)}</form>`,
+      <p class="resource-impact">${users.length ? `Shared by ${countLabel(users.length, "Agent", "Agents")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
     );
     resourceEditor(
@@ -1374,7 +1376,7 @@ export async function mountSettings(
       );
       const row = document.createElement("article");
       row.className = "agent-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${agentRepositories(agent).length} repositories</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${agent.ai_account ? (account?.state === "connected" ? "" : "Reconnect required") : "Unconfigured"}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${countLabel(agentRepositories(agent).length, "repository", "repositories")}</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${agent.ai_account ? (account?.state === "connected" ? "" : "Reconnect required") : "Unconfigured"}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       row.dataset.agentId = agent.id;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
@@ -1498,7 +1500,7 @@ export async function mountSettings(
           .join("")}</div><p data-no-doctrines hidden></p></fieldset>
         <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
-        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
+        <p class="resource-impact">${assigned.length ? `Shared by ${countLabel(assigned.length, "repository", "repositories")}: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
     const promptField = modal.querySelector<HTMLTextAreaElement>(
@@ -2613,12 +2615,12 @@ export async function mountSettings(
         .join("");
       if (loaded && owner.value)
         status.textContent = incomplete
-          ? `${results.length} repositories; incomplete`
+          ? `${countLabel(results.length, "repository", "repositories")}; incomplete`
           : !results.length
             ? "None"
             : !filtered.length
               ? "No matches"
-              : `${results.length} repositories`;
+              : countLabel(results.length, "repository", "repositories");
       list
         .querySelectorAll<HTMLButtonElement>("[data-pick]")
         .forEach((button) => {

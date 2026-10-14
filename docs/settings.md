@@ -7,6 +7,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Overview: saved resource counts and a Genie icon by the title.
 - Two grouped cards. **General**: **Accounts**, **Repositories**, **Preferences** (AI capacity lives there). **Review behavior**: **Agents**, **Doctrines**.
 - Back restores the row and scroll. Back never saves or resets other drafts.
+- Collections (Agents, Doctrines) are one grouped list: `.resource-library` card, hairline-separated `.resource-card` rows. Counts are singular-aware.
 - Resource editors keep Save/Cancel. No global save bar. Lists have no save bar.
 - Reset discards remaining unsaved edits, not successful resource saves. Controls and dialog dismissal are locked during saves.
 - Dialogs keep focus, `Escape`/Close and background isolation without native dialog APIs.

@@ -738,7 +738,7 @@ function collectionPage(kind) {
   const cards = state[kind].map((item) => {
     const detail =
       kind === "agents"
-        ? `${item.model} / ${state.repos.filter((repo) => repo.agentIds.includes(item.id)).length} repositories`
+        ? `${item.model} / ${countLabel(state.repos.filter((repo) => repo.agentIds.includes(item.id)).length, "repository", "repositories")}`
         : `${item.body.trim().split(/\s+/).length} words`;
     const problem = warning(item);
     return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(kind === "agents" ? "crosshair" : "book")}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
@@ -851,6 +851,7 @@ function addRepository(name, accountId) {
 function field(label, control, hint = "") {
   return `<label class="form-field"><span>${label}</span>${control}${hint ? `<small>${hint}</small>` : ""}</label>`;
 }
+const countLabel = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 const input = (name, value = "", required = true) =>
   `<input name="${name}" value="${esc(value)}" ${required ? "required" : ""} autocomplete="off" />`;
 const option = (value, label, current) =>
