@@ -33,16 +33,19 @@ pub enum Exit {
     ApproveAndMerge,
     PanicExit,
     SubmitReport,
+    /// The Rubber Duck's only exit. Never offered to a review assignment.
+    SubmitVerdict,
 }
 
 impl Exit {
-    pub const ALL: [Exit; 6] = [
+    pub const ALL: [Exit; 7] = [
         Exit::LeaveComments,
         Exit::ReadyForHuman,
         Exit::ApprovePullRequest,
         Exit::ApproveAndMerge,
         Exit::PanicExit,
         Exit::SubmitReport,
+        Exit::SubmitVerdict,
     ];
 
     pub fn id(self) -> &'static str {
@@ -53,6 +56,7 @@ impl Exit {
             Exit::ApproveAndMerge => "approve_and_merge",
             Exit::PanicExit => "panic_exit",
             Exit::SubmitReport => "submit_report",
+            Exit::SubmitVerdict => "submit_verdict",
         }
     }
 
@@ -76,6 +80,7 @@ impl Exit {
             Exit::ApproveAndMerge => "Terminal exit: approve with an approval comment, then merge. Ends the run.",
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
+            Exit::SubmitVerdict => crate::review::duck::VERDICT_DESCRIPTION,
         }
     }
 
@@ -113,6 +118,7 @@ impl Exit {
                 json!({"findings":{"type":"array","items":finding}}),
                 json!(["findings"]),
             ),
+            Exit::SubmitVerdict => return crate::review::duck::verdict_schema(),
         };
         json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
     }
@@ -178,6 +184,9 @@ pub enum ExitCall {
     SubmitReport {
         report: TeammateReport,
     },
+    SubmitVerdict {
+        verdict: crate::review::duck::Verdict,
+    },
 }
 
 /// What a successful run stored. Panic never completes a run, so it has no outcome.
@@ -213,6 +222,7 @@ impl ExitCall {
             Self::ApproveAndMerge { .. } => Exit::ApproveAndMerge,
             Self::Panic { .. } => Exit::PanicExit,
             Self::SubmitReport { .. } => Exit::SubmitReport,
+            Self::SubmitVerdict { .. } => Exit::SubmitVerdict,
         }
     }
 
@@ -252,7 +262,7 @@ impl ExitCall {
                 None,
             ),
             Self::SubmitReport { report } => (ExitOutcome::SubmitReport, Some(report.clone())),
-            Self::Panic { .. } => return None,
+            Self::Panic { .. } | Self::SubmitVerdict { .. } => return None,
         })
     }
 
@@ -378,6 +388,9 @@ impl ExitCall {
                 }
                 Ok(Self::SubmitReport { report })
             }
+            Exit::SubmitVerdict => Ok(Self::SubmitVerdict {
+                verdict: crate::review::duck::Verdict::parse(args)?,
+            }),
         }
     }
 }

@@ -87,6 +87,8 @@ pub struct Settings {
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
     pub capacity: u32,
+    #[serde(default, skip_serializing_if = "DuckLimits::is_default")]
+    pub rubber_duck: DuckLimits,
     /// Always written. Settings files without it predate admission rules and
     /// get the one-time migration on load; programmatic settings are current.
     #[serde(default = "admission_migration_version")]
@@ -145,6 +147,7 @@ impl Default for Settings {
             capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
+            rubber_duck: DuckLimits::default(),
             admission_migration_version: admission_migration_version(),
         }
     }
@@ -353,6 +356,9 @@ pub struct Assignment {
     /// Packet tool ids (`PACKET_TOOLS`). None = the role default (`default_tools`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Rubber Duck Agent id. Honored on the primary only; inert elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubber_duck: Option<String>,
 }
 
 /// Role default tool set: investigation tools, the granted exits, then `panic_exit`.
@@ -378,8 +384,8 @@ pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
     tools.into_iter().map(String::from).collect()
 }
 
-/// Investigation tools, then exits. Mirrored by `PACKET_TOOLS` in `src/settings.ts`.
-pub const PACKET_TOOLS: [&str; 13] = [
+/// Investigation tools, `rubber_duck`, then exits. Mirrored by `PACKET_TOOLS` in `src/policy.ts`.
+pub const PACKET_TOOLS: [&str; 14] = [
     "read_changes",
     "read_source",
     "get_thread",
@@ -387,6 +393,7 @@ pub const PACKET_TOOLS: [&str; 13] = [
     "read_check_log",
     "list_tree",
     "search_code",
+    crate::review::duck::TOOL,
     "leave_comments",
     "ready_for_human",
     "approve_pull_request",
@@ -441,6 +448,47 @@ pub struct GlobalPreferences {
     pub root_folder: Option<String>,
     pub presets: Vec<ReviewPreset>,
     pub default_review_preset: Option<String>,
+    #[serde(default)]
+    pub rubber_duck: DuckLimits,
+}
+
+/// Saved Preferences bounding Rubber Duck use per primary attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuckLimits {
+    pub max_calls: u32,
+    pub call_timeout_seconds: u32,
+    pub primary_window_minutes: u32,
+}
+
+impl DuckLimits {
+    pub const MAX_CALLS: std::ops::RangeInclusive<u32> = 1..=32;
+    pub const CALL_TIMEOUT_SECONDS: std::ops::RangeInclusive<u32> = 30..=600;
+    pub const PRIMARY_WINDOW_MINUTES: std::ops::RangeInclusive<u32> = 5..=120;
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !Self::MAX_CALLS.contains(&self.max_calls)
+            || !Self::CALL_TIMEOUT_SECONDS.contains(&self.call_timeout_seconds)
+            || !Self::PRIMARY_WINDOW_MINUTES.contains(&self.primary_window_minutes)
+        {
+            return Err("Rubber duck limits: calls 1-32, call timeout 30-600 seconds, primary window 5-120 minutes.".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for DuckLimits {
+    fn default() -> Self {
+        Self {
+            max_calls: 8,
+            call_timeout_seconds: 180,
+            primary_window_minutes: 15,
+        }
+    }
 }
 
 /// Compare-and-save only the addressed resource. None means create/delete,
@@ -640,6 +688,7 @@ impl Settings {
             root_folder: self.root_folder.clone(),
             presets: self.presets.clone(),
             default_review_preset: self.default_review_preset.clone(),
+            rubber_duck: self.rubber_duck,
         }
     }
 
@@ -673,6 +722,22 @@ impl Settings {
                     {
                         issues.push(format!(
                             "Assignment {} needs an explicit AI account and model.",
+                            assignment.id
+                        ));
+                    }
+                }
+                for assignment in &repository.assignments {
+                    let Some(duck) = repository.assignment_duck(assignment) else {
+                        continue;
+                    };
+                    if self
+                        .agents
+                        .iter()
+                        .find(|a| a.id == duck)
+                        .is_none_or(|a| a.ai_account.is_none() || a.model.trim().is_empty())
+                    {
+                        issues.push(format!(
+                            "Assignment {} Rubber duck needs an explicit AI account and model.",
                             assignment.id
                         ));
                     }
@@ -737,6 +802,7 @@ impl Settings {
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
         }
+        self.rubber_duck.validate()?;
         if self
             .root_folder
             .as_ref()
@@ -905,6 +971,15 @@ impl Settings {
                 if !agent_ids.contains(&assignment.agent_id) {
                     return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
+                if assignment
+                    .rubber_duck
+                    .as_ref()
+                    .is_some_and(|id| !agent_ids.contains(id))
+                {
+                    return Err(
+                        "The Rubber duck Agent no longer exists. Choose a local agent.".into(),
+                    );
+                }
                 assignment.schedule.validate()?;
                 if assignment
                     .tools
@@ -970,6 +1045,10 @@ fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<
             Some("is primary-only")
         } else if id == "submit_report" && primary {
             Some("is non-primary only")
+        } else if id == crate::review::duck::TOOL && !primary {
+            Some("is primary-only")
+        } else if id == crate::review::duck::TOOL && assignment.rubber_duck.is_none() {
+            Some("needs a Rubber duck")
         } else if id == "leave_comments" && !assignment.comment {
             Some("needs Publish Comment")
         } else if id == "approve_pull_request" && !(actions.approve || actions.merge) {
@@ -1103,8 +1182,24 @@ impl Repository {
     pub fn assignment_tools(&self, assignment: &Assignment) -> Vec<String> {
         match &assignment.tools {
             Some(tools) => tools.clone(),
-            None => default_tools(&self.assignment_authority(assignment)),
+            None => {
+                let mut tools = default_tools(&self.assignment_authority(assignment));
+                if self.assignment_duck(assignment).is_some() {
+                    tools.insert(
+                        crate::review::tools::INVESTIGATION.len(),
+                        crate::review::duck::TOOL.into(),
+                    );
+                }
+                tools
+            }
         }
+    }
+
+    /// The assignment's Rubber Duck Agent id: primary only.
+    pub fn assignment_duck<'a>(&self, assignment: &'a Assignment) -> Option<&'a str> {
+        (self.primary_assignment_id() == Some(assignment.id.as_str()))
+            .then_some(assignment.rubber_duck.as_deref())
+            .flatten()
     }
 
     pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
@@ -1355,10 +1450,11 @@ impl Store {
                     }
                 }
                 if value.is_none()
-                    && settings
-                        .repositories
-                        .iter()
-                        .any(|r| r.assignments.iter().any(|a| a.agent_id == id))
+                    && settings.repositories.iter().any(|r| {
+                        r.assignments.iter().any(|a| {
+                            a.agent_id == id || a.rubber_duck.as_deref() == Some(id.as_str())
+                        })
+                    })
                 {
                     return Err("This Agent is assigned to a repository. Remove or replace its assignments explicitly before deleting it.".into());
                 }
@@ -1452,6 +1548,7 @@ impl Store {
                 settings.root_folder = value.root_folder;
                 settings.presets = value.presets;
                 settings.default_review_preset = value.default_review_preset;
+                settings.rubber_duck = value.rubber_duck;
             }
         }
         settings.validate()?;

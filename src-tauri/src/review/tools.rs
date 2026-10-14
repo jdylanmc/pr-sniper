@@ -55,14 +55,22 @@ pub fn definition(name: &str) -> Option<ToolDef> {
     })
 }
 
-/// A run's tool ids: granted investigation tools (registry order), then offered exits.
-pub fn tool_set(granted: &[String], offered: &[crate::exits::Exit]) -> Vec<String> {
+/// A run's tool ids: granted investigation tools (registry order), `rubber_duck` when
+/// granted and a duck is configured, then offered exits.
+pub fn tool_set(granted: &[String], duck: bool, offered: &[crate::exits::Exit]) -> Vec<String> {
+    let duck = duck && granted.iter().any(|g| g == super::duck::TOOL);
     INVESTIGATION
         .iter()
         .filter(|name| granted.iter().any(|g| g == *name))
         .map(|name| name.to_string())
+        .chain(duck.then(|| super::duck::TOOL.to_string()))
         .chain(offered.iter().map(|exit| exit.id().to_string()))
         .collect()
+}
+
+/// The duck's read tools: the primary's granted investigation tools, nothing else.
+pub fn duck_tools(granted: &[String]) -> Vec<String> {
+    tool_set(granted, false, &[crate::exits::Exit::SubmitVerdict])
 }
 
 fn start_offset(args: &Value) -> Result<usize, Failure> {

@@ -44,6 +44,7 @@ fn failure(kind: OperationFailure, retry_after_seconds: Option<i64>) -> Failure 
         message: "Failed".into(),
         retry_after_seconds,
         origin: Origin::Github,
+        duck_setup: false,
     }
 }
 
@@ -231,6 +232,7 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
     ReviewRun {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),

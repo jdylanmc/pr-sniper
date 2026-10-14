@@ -486,6 +486,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                         .into(),
                     retry_after_seconds: None,
                     origin: crate::backpressure::Origin::Github,
+                    duck_setup: false,
                 });
             }
             if !thread.can_reply {

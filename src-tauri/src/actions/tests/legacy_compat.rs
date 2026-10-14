@@ -99,6 +99,7 @@ fn old_legacy_records_load_and_unfinished_legacy_work_is_retired_not_run() {
         tool_calls: 0,
         byte_coverage: false,
         coverage: None,
+        ducks: vec![],
     });
     write(
         root.path(),

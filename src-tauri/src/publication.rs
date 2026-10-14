@@ -781,6 +781,7 @@ fn unresolved() -> Failure {
     Failure {
         cancelled: false,
         message: "GitHub mutation outcome is unresolved. Reconcile the original review; no replacement batch will be created.".into(),
+        duck_setup: false,
         kind: OperationFailure::Network,
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,

@@ -151,6 +151,7 @@ pub fn toss_and_requeue(
         result: None,
         error: None,
         packet: None,
+        failed_duck: None,
         feedback_context: None,
         phase: "Waiting for shared AI capacity".into(),
         ..run.clone()

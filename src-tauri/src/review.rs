@@ -1,4 +1,5 @@
 pub(crate) mod diagnostics;
+pub mod duck;
 pub(crate) mod host;
 pub(crate) mod packet_run;
 pub(crate) mod runtime;
@@ -42,6 +43,10 @@ pub struct ExecutionConfiguration {
     /// that predate Voices; never inferred later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<Voice>,
+    /// The primary's Rubber Duck at job start. Absent when none is set and on
+    /// jobs that predate it; never rebuilt from later settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubber_duck: Option<duck::DuckSnapshot>,
 }
 
 /// Exact title and body: what a library entry puts in the packet. Ids and
@@ -50,18 +55,23 @@ fn entry_lens(title: &str, body: &str) -> (String, String) {
     (title.to_string(), body.to_string())
 }
 
+/// An Agent without its library references (compared by content elsewhere).
+fn library_free(agent: &Agent) -> Agent {
+    let mut agent = agent.clone();
+    agent.doctrine = None;
+    agent.doctrines = None;
+    agent.doctrine_ids = Vec::new();
+    agent.voice_id = None;
+    agent
+}
+
 impl Selection {
     /// The Agent without its library references, which [`Self::doctrine_lens`]
     /// and the captured Voice compare by content. Pre-id evidence (title
     /// references) and current settings (id references) then compare equal
     /// when nothing real changed.
     fn agent_lens(&self) -> Agent {
-        let mut agent = self.agent.clone();
-        agent.doctrine = None;
-        agent.doctrines = None;
-        agent.doctrine_ids = Vec::new();
-        agent.voice_id = None;
-        agent
+        library_free(&self.agent)
     }
 
     /// Ordered resolved Doctrines when captured; else the composed legacy text.
@@ -91,6 +101,19 @@ impl Selection {
                 let (title, body) = entry_lens(&v.title, &v.body);
                 (title, body, v.guardrails)
             })
+    }
+
+    /// The Rubber Duck as it ran: its Agent without library references and its
+    /// Doctrines by content. A duck never runs with a Voice, so none is compared.
+    fn duck_lens(&self) -> Option<(Agent, Vec<(String, String)>)> {
+        let duck = self.configuration.as_ref()?.rubber_duck.as_ref()?;
+        Some((
+            library_free(&duck.agent),
+            duck.doctrines
+                .iter()
+                .map(|d| entry_lens(&d.title, &d.body))
+                .collect(),
+        ))
     }
 
     /// The reviewed lens: Agent, Doctrines, Voice, preset and prompt, compared
@@ -126,6 +149,7 @@ impl Selection {
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
                     self.voice_lens() == other.voice_lens()
+                        && self.duck_lens() == other.duck_lens()
                         && a.id == b.id
                         && a.provider == b.provider
                         && a.name == b.name
@@ -180,18 +204,22 @@ impl Selection {
                 "Choose a Copilot account and account-returned model for this Agent.".into(),
             );
         }
-        let doctrines = agent
-            .doctrine_ids
-            .iter()
+        let doctrines = doctrine_bodies(settings, &agent)?;
+        let rubber_duck = repository
+            .assignment_duck(assignment)
             .map(|id| {
-                settings
-                    .doctrines
+                let agent = settings
+                    .agents
                     .iter()
-                    .find(|d| &d.id == id)
-                    .cloned()
-                    .ok_or("The Agent's doctrine is unavailable.")
+                    .find(|a| a.id == id)
+                    .ok_or("The Rubber duck Agent is unavailable.")?
+                    .clone();
+                Ok::<_, String>(duck::DuckSnapshot {
+                    doctrines: doctrine_bodies(settings, &agent)?,
+                    agent,
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .transpose()?;
         let voice = agent
             .voice_id
             .as_ref()
@@ -241,9 +269,27 @@ impl Selection {
                 doctrines,
                 doctrine_catalog: Some(settings.doctrine_catalog()),
                 voice,
+                rubber_duck,
             }),
         })
     }
+}
+
+/// The Agent's Doctrines in its order, resolved by stable id, with exact saved id,
+/// title and body.
+fn doctrine_bodies(settings: &Settings, agent: &Agent) -> Result<Vec<Doctrine>, String> {
+    agent
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            settings
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .cloned()
+                .ok_or_else(|| "The Agent's doctrine is unavailable.".into())
+        })
+        .collect()
 }
 
 pub fn key(job: &QueueJob, assignment_id: &str) -> String {
@@ -288,6 +334,9 @@ pub struct ReviewRun {
     /// Content-free record of the packet this run was given (Packet mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packet: Option<crate::packet::PacketRecord>,
+    /// The Rubber Duck Agent whose setup failed this run's last attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_duck: Option<String>,
 }
 
 impl ReviewRun {
@@ -492,6 +541,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// Informational count of changed files read in full; never a gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<ReadCoverage>,
+    /// Rubber duck calls of this attempt, in call order. Evidence only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ducks: Vec<duck::DuckCall>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,6 +561,8 @@ pub struct Failure {
     pub retry_after_seconds: Option<i64>,
     /// Provider that signalled a rate limit; meaningful only for `RateLimited`.
     pub origin: crate::backpressure::Origin,
+    /// The primary's Rubber Duck could not be set up: typed provenance, never text.
+    pub duck_setup: bool,
 }
 
 impl Failure {
@@ -530,6 +584,7 @@ impl Failure {
             message: message.into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
+            duck_setup: false,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -546,6 +601,7 @@ impl Failure {
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
+            duck_setup: false,
         }
     }
     pub fn schema() -> Self {
@@ -577,6 +633,13 @@ impl Failure {
             ..Self::permanent(message)
         }
     }
+    /// This failure came from setting up the primary's Rubber Duck.
+    pub fn duck_setup(self) -> Self {
+        Self {
+            duck_setup: true,
+            ..self
+        }
+    }
     pub fn operation(message: String) -> Self {
         if message == "Copilot operation cancelled." {
             return Self::cancelled();
@@ -602,6 +665,7 @@ impl Failure {
                 message,
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
+                duck_setup: false,
             }
         }
     }
@@ -617,7 +681,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -640,6 +704,7 @@ impl Failure {
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
+            duck_setup: false,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
@@ -673,6 +738,7 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
+                duck_setup: false,
             },
             MonitoringError::Backpressure {
                 origin,
@@ -684,6 +750,7 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin,
+                duck_setup: false,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }
@@ -762,6 +829,7 @@ impl Events {
             tool_calls: self.tool_calls,
             byte_coverage: false,
             coverage: None,
+            ducks: Vec::new(),
         })
     }
 }

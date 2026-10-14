@@ -185,6 +185,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
     let mut run = ReviewRun {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
         feedback_context: None,
         key: review::key(&job, "assignment"),
         assignment_id: "assignment".into(),
@@ -225,6 +226,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         message: "Rate limited".into(),
         retry_after_seconds: Some(900),
         origin: pr_sniper_lib::backpressure::Origin::Copilot,
+        duck_setup: false,
     };
     // Beyond the retry window a rate limit still only waits: no park, no budget.
     operation.fail(&failure.monitoring(), 100);

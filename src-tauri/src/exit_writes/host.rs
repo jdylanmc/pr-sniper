@@ -104,6 +104,7 @@ fn waiting(message: &str) -> Failure {
         message: message.into(),
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
+        duck_setup: false,
     }
 }
 
