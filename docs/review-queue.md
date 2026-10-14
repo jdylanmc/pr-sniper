@@ -60,11 +60,11 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the packaged app; `npm run bundle` applies the local ad-hoc signature that binds `Info.plist` to the app identifier.
 
-- Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Existing attention states notify once after opt-in.
-- Notifies: confirmation, human input, ready for final review, failures. Not: routine queued/reviewing, author waits.
+- Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Opt-in is from now forward: states that exist at opt-in, or arose while off, never notify. Turning on sends one confirmation (opens Settings).
+- Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
 - Click opens the exact saved queue item, or Settings for a scheduling/account failure with no PR.
-- Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions; an accepted request may still show.
+- Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.
 - Review Queue > Notifications states: queued, submitting, accepted-unconfirmed, unknown, denied, failed, no-longer-current. Acceptance is not banner display; Focus may suppress. Missing or foreign-profile destination fails visibly. Denied/failed events stay in history, not replayed after permission change.
-- **Send test notification**: chosen queue item or Settings; runs no review. Denied: System Settings > Notifications > PR Sniper.
+- Denied: System Settings > Notifications > PR Sniper.
 - Isolated profiles still need per-app macOS authorization. Procedure: [tests/macos-notifications.md](../tests/macos-notifications.md).

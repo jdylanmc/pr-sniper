@@ -4258,7 +4258,6 @@ pub fn run() {
             select_queue_item,
             notifications::host::notification_snapshot,
             notifications::host::set_notifications_enabled,
-            notifications::host::test_notification,
             notifications::host::open_notification,
             monitoring_snapshot,
             retry_monitoring_operation,

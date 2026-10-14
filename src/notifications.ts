@@ -27,7 +27,6 @@ interface Snapshot {
   } | null;
   error: string | null;
   notices: Notice[];
-  targets: { id: string; label: string }[];
 }
 
 const phase: Record<Notice["phase"], string> = {
@@ -55,7 +54,6 @@ function permissionText(state: Snapshot) {
 export function mountNotificationSettings(
   root: HTMLElement,
   view: {
-    target: string;
     pending?: boolean;
     actionError?: string | null;
     refresh?: () => Promise<void>;
@@ -64,34 +62,18 @@ export function mountNotificationSettings(
   root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
     <label class="setting-row"><span>Notifications</span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
     <p id="notification-permission" role="status">Loading</p>
-    <p id="notification-error" role="alert" hidden></p>
-    <label>Test destination<select id="notification-target"><option value="">Settings</option></select></label>
-    <button id="notification-test" type="button" disabled>Send test notification</button></fieldset>`;
+    <p id="notification-error" role="alert" hidden></p></fieldset>`;
   const enabled = root.querySelector<HTMLInputElement>(
     "#notification-enabled",
   )!;
   const status = root.querySelector<HTMLElement>("#notification-permission")!;
   const error = root.querySelector<HTMLElement>("#notification-error")!;
-  const target = root.querySelector<HTMLSelectElement>("#notification-target")!;
-  const test = root.querySelector<HTMLButtonElement>("#notification-test")!;
   let reading = false;
   let revision = 0;
-  let selected = view.target;
-  let targetsSignature = "";
   let state: Snapshot | undefined;
-  target.onchange = () => {
-    selected = target.value;
-    view.target = selected;
-    updateControls();
-  };
 
   function updateControls() {
     enabled.disabled = !!view.pending || !state;
-    test.disabled =
-      !!view.pending ||
-      !state?.enabled ||
-      (!!selected && !state.targets.some((t) => t.id === selected));
-    target.disabled = !!view.pending || !state;
   }
 
   async function refresh() {
@@ -108,17 +90,6 @@ export function mountNotificationSettings(
         .filter(Boolean)
         .join("\n");
       error.hidden = !error.textContent;
-      const targets = JSON.stringify(next.targets);
-      if (targets !== targetsSignature) {
-        targetsSignature = targets;
-        target.replaceChildren(new Option("Settings", ""));
-        for (const item of next.targets)
-          target.append(new Option(item.label, item.id));
-        if (selected && !next.targets.some((t) => t.id === selected)) {
-          target.append(new Option("Unavailable", selected));
-        }
-        target.value = selected;
-      }
     } catch {
       if (!root.isConnected || captured !== revision) return;
       state = undefined;
@@ -157,8 +128,6 @@ export function mountNotificationSettings(
   }
   enabled.onchange = () =>
     void act("set_notifications_enabled", { enabled: enabled.checked });
-  test.onclick = () =>
-    void act("test_notification", { itemId: selected || null });
   view.refresh = refresh;
   updateControls();
   if (view.pending) status.textContent = "Pending";

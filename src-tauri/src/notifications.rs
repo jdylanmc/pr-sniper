@@ -32,7 +32,7 @@ impl Category {
             Self::HumanInput => "Review needs your input",
             Self::Ready => "Ready for your final review",
             Self::Failure => "PR Sniper needs attention",
-            Self::Test => "PR Sniper test notification",
+            Self::Test => "PR Sniper notifications are on",
             Self::Approved => "Automated approval confirmed; personal review remains",
             Self::Merged => "PR merged on GitHub",
             Self::FinalReviewCleared => "Primary final full review cleared",
@@ -45,7 +45,7 @@ impl Category {
             Self::HumanInput => "Automated review needs your judgment. Open the exact queue item for the conversation and evidence.",
             Self::Ready => "Automated review completed. Open the exact queue item for your final review and merge decision. This is not approval.",
             Self::Failure => "A review or monitoring operation needs recovery. Open the saved destination for details; no success is implied.",
-            Self::Test => "Open to verify the selected in-app destination. No review will start and nothing will be published.",
+            Self::Test => "Alerts for review events will appear here.",
             Self::Approved => "GitHub recorded the acting account's automated approval. This unmerged PR still needs your personal review; one account is one vote.",
             Self::Merged => "GitHub confirmed merge. Open saved evidence for action attribution; human review is not inferred.",
             Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
@@ -306,6 +306,7 @@ pub struct Ledger {
 
 #[cfg(windows)]
 pub(crate) const WINDOWS_SETUP_SOURCE: &str = "windows-permission-setup";
+pub(crate) const ENABLED_SOURCE: &str = "notifications-enabled";
 
 impl Default for Ledger {
     fn default() -> Self {
@@ -339,6 +340,11 @@ impl Ledger {
         if !self.enabled {
             return Ok(false);
         }
+        self.record(frames, now, true)
+    }
+
+    /// Tracks every source's current event; `notify: false` records a silent baseline.
+    fn record(&mut self, frames: &[Frame], now: i64, notify: bool) -> Result<bool, String> {
         let mut changed = false;
         let mut sources = BTreeSet::new();
         for frame in frames {
@@ -357,6 +363,9 @@ impl Ledger {
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
+                if !notify {
+                    continue;
+                }
                 self.notices.push(Notice {
                     id: format!("pr-sniper:{}:{}", self.profile_id, uuid::Uuid::new_v4()),
                     source: frame.source.clone(),
@@ -379,11 +388,48 @@ impl Ledger {
         Ok(changed)
     }
 
-    pub fn enqueue_test(&mut self, destination: Destination, now: i64) -> Result<String, String> {
-        if !self.enabled {
-            return Err("Enable notifications before sending a test.".into());
+    /// Turns notifications on from now forward: current events become a silent
+    /// baseline and one confirmation is queued. Returns `None` when already on.
+    pub fn enable(&mut self, frames: &[Frame], now: i64) -> Result<Option<String>, String> {
+        if self.enabled {
+            return Ok(None);
         }
-        Ok(self.push_test(destination, now, "test", Phase::Queued))
+        self.drop_queued(
+            |_| true,
+            "Notifications were turned off before this was sent.",
+        );
+        self.record(frames, now, false)?;
+        self.enabled = true;
+        Ok(Some(self.push_test(
+            Destination::Settings,
+            now,
+            ENABLED_SOURCE,
+            Phase::Queued,
+        )))
+    }
+
+    /// Returns whether the preference changed.
+    pub fn disable(&mut self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.enabled = false;
+        self.drop_queued(
+            |_| true,
+            "Notifications were turned off before this was sent.",
+        );
+        true
+    }
+
+    fn drop_queued(&mut self, matches: impl Fn(&Notice) -> bool, reason: &str) {
+        for notice in self
+            .notices
+            .iter_mut()
+            .filter(|n| n.phase == Phase::Queued && matches(n))
+        {
+            notice.phase = Phase::NotSent;
+            notice.error = Some(reason.into());
+        }
     }
 
     #[cfg(windows)]

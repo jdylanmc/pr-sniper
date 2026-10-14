@@ -175,19 +175,12 @@ pub struct NoticeView {
 }
 
 #[derive(Serialize)]
-pub struct Target {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Serialize)]
 pub struct Snapshot {
     pub platform: &'static str,
     pub enabled: bool,
     pub permission: Option<Permission>,
     pub error: Option<String>,
     pub notices: Vec<NoticeView>,
-    pub targets: Vec<Target>,
 }
 
 pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Snapshot, String> {
@@ -215,22 +208,6 @@ pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Sna
                 title: notice.event.category.title(),
                 body: notice.event.category.body(),
                 notice,
-            })
-            .collect(),
-        targets: queue
-            .map(|snapshot| snapshot.items)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|item| Target {
-                id: item.id,
-                label: format!(
-                    "{} #{} / {} ({}) / {}",
-                    item.job.repository_name,
-                    item.job.number,
-                    item.job.account_login,
-                    item.job.account_id,
-                    item.job.head_sha
-                ),
             })
             .collect(),
     })
@@ -267,7 +244,8 @@ pub(crate) async fn set_notifications_enabled(
         .configuration
         .fetch_add(1, Ordering::SeqCst)
         + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+    let pump = app.clone();
+    let confirmation = tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
         if enabled {
             let permission = host.notifications.native.as_ref().map_err(Clone::clone)?.request_permission()?;
@@ -279,6 +257,14 @@ pub(crate) async fn set_notifications_enabled(
         if host.notifications.configuration.load(Ordering::SeqCst) != generation {
             return Err("A newer notification preference replaced this request.".into());
         }
+        // Baseline without the storage lock held; queue_snapshot takes it itself.
+        let baseline = if enabled {
+            frames(&crate::queue_snapshot(&host).map_err(|error| {
+                format!("{error} Notifications were not enabled.")
+            })?)
+        } else {
+            vec![]
+        };
         let store = host.store.lock().map_err(|_| "Notification storage unavailable.")?;
         let mut ledger = store.load_notifications()?;
         #[cfg(windows)]
@@ -290,35 +276,19 @@ pub(crate) async fn set_notifications_enabled(
                 return Err("Notification profile changed before opt-in was saved. Notifications were not enabled.".into());
             }
         }
-        ledger.enabled = enabled;
-        store.save_notifications(&ledger)
-    }).await.map_err(|_| "Notification preference change failed.".to_string())?
-}
-
-#[tauri::command]
-pub(crate) fn test_notification(
-    app: tauri::AppHandle,
-    item_id: Option<String>,
-) -> Result<String, String> {
-    let host = app.state::<Host>();
-    let id = {
-        let store = host
-            .store
-            .lock()
-            .map_err(|_| "Notification storage unavailable.")?;
-        let destination = if let Some(item_id) = item_id {
-            queue::destination(&store, &item_id, None)?;
-            Destination::QueueItem { item_id }
+        let confirmation = if enabled {
+            ledger.enable(&baseline, now_seconds()?)?
         } else {
-            Destination::Settings
+            ledger.disable();
+            None
         };
-        let mut ledger = store.load_notifications()?;
-        let id = ledger.enqueue_test(destination, now_seconds()?)?;
         store.save_notifications(&ledger)?;
-        id
-    };
-    Coordinator::pump(&app);
-    Ok(id)
+        Ok(confirmation)
+    }).await.map_err(|_| "Notification preference change failed.".to_string())??;
+    if confirmation.is_some() {
+        Coordinator::pump(&pump);
+    }
+    Ok(())
 }
 
 pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String> {

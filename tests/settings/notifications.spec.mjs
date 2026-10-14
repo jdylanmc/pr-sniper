@@ -4,31 +4,12 @@ import { expect, test } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 
-test("focus refresh preserves the explicitly selected notification destination", async ({
-  page,
-  store,
-}) => {
-  await queueFixture(store);
-  const item = (await store("monitoring_snapshot")).items.find(
-    (item) => item.job.number === 9,
-  );
-  await page.goto("/?view=settings");
-  await section(page, "Preferences");
-  await page.getByLabel("Test destination").selectOption(item.id);
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.getByLabel("Test destination")).toHaveValue(item.id);
-});
-
-test("notification opt-in is immediate, independent and tests the explicitly selected queue item", async ({
+test("notification opt-in is immediate, independent and confirms once without replaying existing events", async ({
   page,
   store,
 }) => {
   await queueFixture(store);
   const before = (await store("snapshot")).settings;
-  const item = (await store("monitoring_snapshot")).items.find(
-    (item) => item.job.number === 9,
-  );
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const enabled = page.getByRole("switch", {
@@ -36,42 +17,60 @@ test("notification opt-in is immediate, independent and tests the explicitly sel
     exact: true,
   });
   await expect(enabled).not.toBeChecked();
+  await expect(page.getByLabel("Test destination")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Send test notification" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await enabled.check();
   await expect
     .poll(async () => (await store("notification_snapshot")).enabled)
     .toBe(true);
   expect((await store("snapshot")).settings).toEqual(before);
-  await page.getByLabel("Test destination").selectOption(item.id);
-  await page.getByRole("button", { name: "Send test notification" }).click();
-  await expect
-    .poll(async () => (await store("notification_snapshot")).notices.length)
-    .toBe(1);
-  const notice = (await store("notification_snapshot")).notices[0];
-  expect(notice.event.destination).toEqual({
-    kind: "queue_item",
-    item_id: item.id,
-  });
-  expect(notice.title).toBe("PR Sniper test notification");
+  const [notice] = (await store("notification_snapshot")).notices;
+  expect(notice.event.category).toBe("test");
+  expect(notice.event.destination).toEqual({ kind: "settings" });
+  expect(notice.phase).toBe("queued");
+  expect(notice.title).toBe("PR Sniper notifications are on");
   expect(notice.body).not.toContain("example/repo");
+  const observed = await store("observe_notifications");
+  expect(observed.notices.map((n) => n.id)).toEqual([notice.id]);
+  await store("set_notifications_enabled", { enabled: true });
+  expect((await store("notification_snapshot")).notices).toHaveLength(1);
   await page.reload();
   await section(page, "Preferences");
   await expect(enabled).toBeChecked();
+});
+
+test("re-enabling skips events from while off and never sends stale unsent notices", async ({
+  store,
+}) => {
+  await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
+  const live = await store("observe_notifications");
+  expect(live.notices.filter((n) => n.phase === "queued")).toHaveLength(4);
+  await store("set_notifications_enabled", { enabled: false });
+  const off = (await store("notification_snapshot")).notices;
+  expect(off.every((n) => n.phase === "not_sent")).toBe(true);
+  expect(off.every((n) => /turned off/.test(n.error))).toBe(true);
+  await store("set_notifications_enabled", { enabled: true });
+  const again = await store("observe_notifications");
+  expect(again.notices).toHaveLength(5);
+  const queued = again.notices.filter((n) => n.phase === "queued");
+  expect(queued.map((n) => n.event.category)).toEqual(["test"]);
 });
 
 test("native projection ignores author waits and deduplicates every repeated poll and restart", async ({
   page,
   store,
 }) => {
-  await queueFixture(store);
   await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
   const first = await store("observe_notifications");
   expect(first.notices.map((notice) => notice.event.category).sort()).toEqual([
     "failure",
     "human_input",
     "ready",
+    "test",
   ]);
   const second = await store("observe_notifications");
   expect(second.notices.map((n) => n.id)).toEqual(
@@ -80,9 +79,9 @@ test("native projection ignores author waits and deduplicates every repeated pol
   await page.goto("/?view=queue");
   await page
     .locator("#notification-history")
-    .getByText("Notification history (3)", { exact: true })
+    .getByText("Notification history (4)", { exact: true })
     .click();
-  await expect(page.locator("#notification-history article")).toHaveCount(3);
+  await expect(page.locator("#notification-history article")).toHaveCount(4);
   await page.reload();
   expect(
     (await store("observe_notifications")).notices.map((n) => n.id),
@@ -93,9 +92,10 @@ test("history distinguishes OS acceptance, uncertainty and saved destinations wi
   page,
   store,
 }) => {
-  await queueFixture(store);
   await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
   const ledger = await store("observe_notifications");
+  ledger.notices.shift();
   ledger.notices[0].phase = "accepted_unconfirmed";
   ledger.notices[1].phase = "outcome_unknown";
   ledger.notices[1].error = "No callback; do not repeat.";
@@ -265,16 +265,16 @@ test("persisted notification history survives unavailable queue data without an 
   store,
   dataRoot,
 }) => {
-  await queueFixture(store);
   await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
   await store("observe_notifications");
   await writeFile(join(dataRoot, "state/queue.json"), "invalid");
   await page.goto("/?view=queue");
   const history = page.locator("#notification-history");
-  await history.getByText("Notification history (3)", { exact: true }).click();
+  await history.getByText("Notification history (4)", { exact: true }).click();
   await expect(history.getByRole("alert")).toContainText(
     "Review queue is invalid",
   );
-  await expect(history.locator("article")).toHaveCount(3);
+  await expect(history.locator("article")).toHaveCount(4);
   await expect(page.locator("#error")).toHaveText("Failed");
 });

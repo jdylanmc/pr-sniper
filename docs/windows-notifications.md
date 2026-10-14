@@ -45,7 +45,7 @@ result are recorded in notification history; no banner visibility is claimed.
 Denied/failed setup does not enable opt-in. Interrupted or uncertain attempts
 are never resubmitted; a later explicit opt-in may retry exact cleanup and
 re-read actual permission. Definite pre-submission failures may be retried
-explicitly. Ordinary test sending still requires opt-in.
+explicitly. The opt-in confirmation is queued only after opt-in is saved.
 
 `Setting` is **aggregate**, not separate banner/notification-center
 authorization. Windows returns `null` for those two channel fields. The UI says

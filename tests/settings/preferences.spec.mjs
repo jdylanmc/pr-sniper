@@ -475,7 +475,7 @@ test("denied and unreadable native notifications stay explicit without saving pr
     "Unavailable",
   );
   await expect(page.locator("#notification-enabled")).toBeDisabled();
-  await expect(page.locator("#notification-test")).toBeDisabled();
+  await expect(page.locator("#notification-test")).toHaveCount(0);
   await expect(page.locator("#notification-permission")).toHaveText(
     "Unavailable",
   );
@@ -863,8 +863,8 @@ test("Status retains notification destinations, pending recovery and exact Back 
   store,
   browserName,
 }) => {
-  await queueFixture(store);
   await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
   const notices = await store("observe_notifications");
   const failure = notices.notices.find(
     (notice) => notice.event.category === "failure",
@@ -901,7 +901,8 @@ test("Status retains notification destinations, pending recovery and exact Back 
   await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
   await expect(page.locator("#schedule-health")).toBeVisible();
   await page.locator("#notification-history summary").click();
-  await expect(page.locator("#notification-history article")).toHaveCount(3);
+  // Three attention events plus the opt-in confirmation.
+  await expect(page.locator("#notification-history article")).toHaveCount(4);
   await capture(page, browserName, "status-recovery");
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await page.evaluate(() => window.__settingsIdle());

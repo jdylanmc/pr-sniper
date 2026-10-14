@@ -101,8 +101,7 @@ fn failed_initial_save_recovers_only_from_the_exact_persisted_profile() {
     let mut ledger = persisted_ledger(&store).unwrap();
     assert_eq!(registration.profile, ledger.profile_id);
     assert!(!ledger.enabled);
-    ledger.enabled = true;
-    let id = ledger.enqueue_test(Destination::Settings, 101).unwrap();
+    let id = ledger.enable(&[], 101).unwrap().unwrap();
     store.save_notifications(&ledger).unwrap();
     let wire = Wire {
         store: Store::new(root.path().into()),
@@ -348,16 +347,8 @@ fn exact_destinations_and_profile_identity_survive_restart_without_fallback() {
     let (root, store) = store();
     store.save_queue(&[job()]).unwrap();
     let item_id = queue::item_id(&job());
-    let mut ledger = store.load_notifications().unwrap();
-    let id = ledger
-        .enqueue_test(
-            Destination::QueueItem {
-                item_id: item_id.clone(),
-            },
-            100,
-        )
-        .unwrap();
-    store.save_notifications(&ledger).unwrap();
+    let exact = [queue_frame(&item_id, Category::Ready, "review")];
+    let id = admit(&store, &exact);
     assert_eq!(
         destination(&Store::new(root.path().into()), &id).unwrap(),
         Destination::QueueItem {
@@ -372,9 +363,11 @@ fn exact_destinations_and_profile_identity_survive_restart_without_fallback() {
     assert!(destination(&other_store, &id).is_err());
     assert!(destination(&store, "unknown").is_err());
     store.save_queue(&[]).unwrap();
-    assert_eq!(
-        prepare(&store, &[], &id, 101).unwrap().phase,
-        Phase::NotSent
+    let missing = prepare(&store, &exact, &id, 101).unwrap();
+    assert_eq!(missing.phase, Phase::NotSent);
+    assert_ne!(
+        missing.error.as_deref(),
+        Some("The transition changed or notifications were disabled before submission.")
     );
     assert_ne!(root.path(), other_root.path());
 }
@@ -475,21 +468,140 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
 }
 
 #[test]
-fn opt_in_and_dedup_are_independent_of_permission_queries_and_test_notifications() {
+fn opt_in_and_dedup_are_independent_of_permission_queries_and_confirmations() {
     let mut ledger = Ledger::default();
     assert!(!ledger.enabled);
     assert!(!ledger
         .observe(&[frame(Category::Ready, "review")], 1)
         .unwrap());
     assert!(ledger.notices.is_empty());
-    assert!(ledger.enqueue_test(Destination::Settings, 2).is_err());
-    ledger.enabled = true;
-    let first = ledger.enqueue_test(Destination::Settings, 3).unwrap();
-    let second = ledger.enqueue_test(Destination::Settings, 4).unwrap();
-    assert_ne!(first, second);
+    let first = ledger.enable(&[], 3).unwrap().unwrap();
+    assert_eq!(ledger.enable(&[], 4).unwrap(), None);
     ledger
         .observe(&[frame(Category::Ready, "review")], 5)
         .unwrap();
     assert_eq!(ledger.next().unwrap().id, first);
-    assert_eq!(ledger.notices.len(), 3);
+    assert_eq!(ledger.notices.len(), 2);
+}
+
+fn queue_frame(item: &str, category: Category, cause: &str) -> Frame {
+    Frame {
+        source: format!("queue:{item}"),
+        event: Some(Event {
+            category,
+            destination: Destination::QueueItem {
+                item_id: item.into(),
+            },
+            cause: cause.into(),
+            group: "repository-group".into(),
+        }),
+    }
+}
+
+#[test]
+fn enabling_does_not_flood_existing_queue_events() {
+    let existing = [
+        queue_frame("a", Category::Ready, "review-a"),
+        queue_frame("b", Category::HumanInput, "comment-b"),
+        queue_frame("c", Category::Failure, "failure-c"),
+    ];
+    let mut ledger = Ledger::default();
+    assert!(!ledger.observe(&existing, 1).unwrap());
+    // The pump observes the same queue right after the preference is saved.
+    let confirmation = ledger.enable(&existing, 2).unwrap().unwrap();
+    ledger.observe(&existing, 3).unwrap();
+    let events: Vec<_> = ledger
+        .notices
+        .iter()
+        .filter(|n| n.event.category != Category::Test)
+        .collect();
+    assert!(events.is_empty(), "flooded {} notices", events.len());
+    assert_eq!(ledger.notices.len(), 1);
+    let notice = ledger.next().unwrap();
+    assert_eq!(notice.id, confirmation);
+    assert_eq!(notice.source, ENABLED_SOURCE);
+    assert_eq!(notice.event.destination, Destination::Settings);
+    assert!(ledger.current(notice));
+}
+
+fn events(ledger: &Ledger) -> Vec<&Notice> {
+    ledger
+        .notices
+        .iter()
+        .filter(|n| n.event.category != Category::Test)
+        .collect()
+}
+
+#[test]
+fn only_events_after_enabling_notify_once() {
+    let existing = [queue_frame("a", Category::Ready, "review-a")];
+    let mut ledger = Ledger::default();
+    ledger.enable(&existing, 1).unwrap();
+    let later = [
+        queue_frame("a", Category::Ready, "review-a"),
+        queue_frame("b", Category::HumanInput, "comment-b"),
+    ];
+    assert!(ledger.observe(&later, 2).unwrap());
+    assert!(!ledger.observe(&later, 3).unwrap());
+    let fresh = events(&ledger);
+    assert_eq!(fresh.len(), 1);
+    assert_eq!(fresh[0].source, "queue:b");
+    assert!(ledger.current(fresh[0]));
+}
+
+#[test]
+fn reenabling_ignores_events_from_while_off_and_drops_stale_unsent_notices() {
+    let mut ledger = Ledger::default();
+    let confirmation = ledger.enable(&[], 1).unwrap().unwrap();
+    let before = [queue_frame("a", Category::Ready, "review-a")];
+    ledger.observe(&before, 2).unwrap();
+    let stale = events(&ledger)[0].id.clone();
+    assert!(ledger.disable());
+    assert!(!ledger.disable());
+    for id in [&confirmation, &stale] {
+        let notice = ledger.notices.iter().find(|n| &n.id == id).unwrap();
+        assert_eq!(notice.phase, Phase::NotSent);
+        assert_eq!(
+            notice.error.as_deref(),
+            Some("Notifications were turned off before this was sent.")
+        );
+    }
+    let while_off = [
+        queue_frame("a", Category::Ready, "review-a"),
+        queue_frame("b", Category::Failure, "failure-b"),
+    ];
+    assert!(!ledger.observe(&while_off, 3).unwrap());
+    let second = ledger.enable(&while_off, 4).unwrap().unwrap();
+    ledger.observe(&while_off, 5).unwrap();
+    assert_eq!(ledger.next().unwrap().id, second);
+    assert_eq!(
+        ledger
+            .notices
+            .iter()
+            .filter(|n| n.phase == Phase::Queued)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events(&ledger).len(),
+        1,
+        "only the dropped pre-disable notice"
+    );
+    assert_eq!(ledger.notices.len(), 3, "history is preserved");
+}
+
+#[test]
+fn legacy_queued_notices_are_not_sent_when_enabling() {
+    // Ledgers saved before this fix may hold unsent notices while disabled.
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let frames = [queue_frame("a", Category::Ready, "review-a")];
+    ledger.observe(&frames, 1).unwrap();
+    ledger.enabled = false;
+    ledger.enable(&frames, 2).unwrap();
+    let old = events(&ledger)[0];
+    assert_eq!(old.phase, Phase::NotSent);
+    assert_eq!(ledger.next().unwrap().event.category, Category::Test);
 }

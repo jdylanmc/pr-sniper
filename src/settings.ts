@@ -481,7 +481,7 @@ export async function mountSettings(
     () => revision++,
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
-  const notificationView = { target: "" };
+  const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
   const automationView = {};
   const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);

@@ -266,10 +266,9 @@ test("native notification identity, legacy entry commands and missing routes nev
   page,
   store,
 }) => {
+  await store("set_notifications_enabled", { enabled: true });
   await queueFixture(store);
-  const item = (await store("monitoring_snapshot")).items.find(
-    (i) => i.job.number === 1,
-  );
+  const items = (await store("monitoring_snapshot")).items;
   await page.goto("/");
   await page.evaluate(() => {
     window.__sameDocument = "retained";
@@ -281,12 +280,16 @@ test("native notification identity, legacy entry commands and missing routes nev
   await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
     /\n\nNo events$/,
   );
-  await store("set_notifications_enabled", { enabled: true });
-  const id = await store("test_notification", { itemId: item.id });
+  const { id } = (await store("observe_notifications")).notices.find(
+    (n) => n.event.destination.kind === "queue_item",
+  );
   const destination = await store("notification_destination", { id });
+  const item = items.find((i) => i.id === destination.item_id);
   await invoke(page, "open_queue_item", { itemId: destination.item_id });
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
-  await expect(page.locator("#agent-reviews")).toContainText("example/repo #1");
+  await expect(page.locator("#agent-reviews")).toContainText(
+    `example/repo #${item.job.number}`,
+  );
   const missing = '<img src=x onerror="window.injected=true">deleted-iteration';
   await expect(
     invoke(page, "open_queue_item", { itemId: missing }),

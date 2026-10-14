@@ -684,10 +684,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         )?)
         .map_err(|_| "Cannot encode notification test state.".into()),
         "set_notifications_enabled" => {
-            let mut ledger = store.load_notifications()?;
-            ledger.enabled = request.args["enabled"]
+            let enabled = request.args["enabled"]
                 .as_bool()
                 .ok_or("Enabled flag required.")?;
+            let mut ledger = store.load_notifications()?;
+            if enabled {
+                let snapshot = pr_sniper_lib::queue::snapshot(store, vec![])?;
+                ledger.enable(
+                    &pr_sniper_lib::notifications::frames(&snapshot),
+                    1_800_000_000,
+                )?;
+            } else {
+                ledger.disable();
+            }
             store.save_notifications(&ledger)?;
             Ok(Value::Null)
         }
@@ -706,20 +715,6 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             store.save_notifications(&ledger)?;
             Ok(json!(ledger))
-        }
-        "test_notification" => {
-            let destination = if let Some(item_id) = request.args["itemId"].as_str() {
-                pr_sniper_lib::queue::destination(store, item_id, None)?;
-                pr_sniper_lib::notifications::Destination::QueueItem {
-                    item_id: item_id.into(),
-                }
-            } else {
-                pr_sniper_lib::notifications::Destination::Settings
-            };
-            let mut ledger = store.load_notifications()?;
-            let id = ledger.enqueue_test(destination, 1_800_000_000)?;
-            store.save_notifications(&ledger)?;
-            Ok(json!(id))
         }
         "notification_destination" => Ok(json!(pr_sniper_lib::notifications::destination(
             store,

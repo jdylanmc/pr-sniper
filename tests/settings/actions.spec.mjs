@@ -610,6 +610,7 @@ test("approval receipt leaves the Queue for Reviewed yet keeps personal review r
   page,
   store,
 }) => {
+  await store("set_notifications_enabled", { enabled: true });
   const fixture = await actionFixture(store);
   const final = fixture.actions.finals[0];
   final.execution.result = fixture.review.result;
@@ -649,7 +650,6 @@ test("approval receipt leaves the Queue for Reviewed yet keeps personal review r
   await expect(kv(queue, "Approve receipt")).toHaveText("401");
   await expect(kv(queue, "Approve actor")).toHaveText("22");
   await expect(kv(queue, "Personal review")).toHaveText("Required");
-  await store("set_notifications_enabled", { enabled: true });
   const ledger = await store("observe_notifications");
   expect(ledger.notices.some((n) => n.event.category === "approved")).toBe(
     true,
