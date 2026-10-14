@@ -11,13 +11,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   every type starts on.
 - Settings › Preferences **Copy diagnostics** copies the content-free
   diagnostic export to the clipboard.
+- Voices: an optional per-Agent writing style for comments, replies and
+  summaries people read. Settings › Voices ships Caveman, Gilfoyle and Merlin,
+  accepts custom Voices and has a per-Voice "Fixed guardrails" switch, on by
+  default. Teammate reports stay caveman; permissions, gates and exits are
+  unchanged.
 
 ### Changed
 
 - Time zone is a dedicated dropdown of host time zones; new profiles start in
   the system time zone, falling back to UTC.
 - Settings home groups into General (Accounts, Repositories, Preferences) and
-  Review behavior (Agents, Doctrines); collections render as single lists.
+  Review behavior (Agents, Doctrines, Voices); collections render as single
+  lists.
 
 ### Fixed
 
