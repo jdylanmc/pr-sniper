@@ -160,10 +160,16 @@
   opacity: 0.8;
   pointer-events: none;
 }
-.panel-shell[data-detail="true"]:not([data-evidence="job"]) .panel-art {
+.panel-shell[data-detail="true"]:not([data-evidence="job"]):not(
+    [data-changelog="true"]
+  )
+  .panel-art {
   display: none;
 }
-.panel-shell[data-detail="true"]:not([data-evidence="job"]) .panel-context {
+.panel-shell[data-detail="true"]:not([data-evidence="job"]):not(
+    [data-changelog="true"]
+  )
+  .panel-context {
   padding-bottom: 18px;
 }
 .panel-shell [data-panel-back] {
@@ -1294,8 +1300,29 @@
   font-size: 12px;
   line-height: 1.45;
 }
-.panel-shell[data-settings-editor="true"] .panel-art {
+.panel-shell[data-settings-editor="true"]:not([data-changelog="true"])
+  .panel-art {
   display: none;
+}
+/* Changelog is an ordinary sub-page: shared band and art, one card that
+   overlaps the band, no tab summary. */
+.panel-shell[data-changelog="true"] .panel-summary {
+  display: none;
+}
+.panel-shell[data-changelog="true"] .panel-content {
+  position: relative;
+  margin-top: -23px;
+}
+.panel-shell .changelog code {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: #eef2f5;
+  font:
+    11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
 }
 
 /* Native panel window is transparent; the shell draws the rounded edge. */

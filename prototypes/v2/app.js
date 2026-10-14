@@ -1420,6 +1420,14 @@ const changelogSource = `# Changelog
 - Sample entries stand in for the rendered CHANGELOG.md in this prototype.
 `;
 
+// Escape first, then mark up **bold** and `code`; never raw HTML.
+const inlineMarkdown = (text) =>
+  esc(text).replace(
+    /\*\*([^*]+)\*\*|`([^`]+)`/g,
+    (_match, bold, code) =>
+      bold === undefined ? `<code>${code}</code>` : `<strong>${bold}</strong>`,
+  );
+
 function changelogPage() {
   let html = "";
   let open = false;
@@ -1429,11 +1437,11 @@ function changelogPage() {
       if (open) html += "</ul>";
       open = false;
       const tag = heading[1] === "##" ? "h2" : "h3";
-      html += `<${tag}>${esc(heading[2])}</${tag}>`;
+      html += `<${tag}>${inlineMarkdown(heading[2])}</${tag}>`;
     } else if (raw.startsWith("- ")) {
       if (!open) html += "<ul>";
       open = true;
-      html += `<li>${esc(raw.slice(2))}</li>`;
+      html += `<li>${inlineMarkdown(raw.slice(2))}</li>`;
     }
   }
   if (open) html += "</ul>";

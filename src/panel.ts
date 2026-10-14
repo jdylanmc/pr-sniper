@@ -17,6 +17,7 @@ import {
 import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
 import { terseError } from "./errors";
+import { inlineMarkdown } from "./markdown";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -183,25 +184,32 @@ export async function mountPanel(app: HTMLElement) {
     const view = views.changelog;
     view.replaceChildren();
     let list: HTMLUListElement | undefined;
+    let item: { element: HTMLLIElement; text: string } | undefined;
+    const flush = () => {
+      if (item) inlineMarkdown(item.element, item.text);
+      item = undefined;
+    };
     for (const raw of changelogSource.split("\n").slice(1)) {
       const line = raw.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
       const heading = /^(##|###) (.+)$/.exec(line);
       if (heading) {
+        flush();
         list = undefined;
         const h = document.createElement(heading[1] === "##" ? "h2" : "h3");
-        h.textContent = heading[2];
+        inlineMarkdown(h, heading[2]);
         view.append(h);
       } else if (line.startsWith("- ")) {
+        flush();
         list ??= view.appendChild(document.createElement("ul"));
-        list.append(
-          Object.assign(document.createElement("li"), {
-            textContent: line.slice(2),
-          }),
-        );
-      } else if (/^\s+\S/.test(line) && list?.lastElementChild) {
-        list.lastElementChild.textContent += ` ${line.trim()}`;
+        item = {
+          element: list.appendChild(document.createElement("li")),
+          text: line.slice(2),
+        };
+      } else if (/^\s+\S/.test(line) && item) {
+        item.text += ` ${line.trim()}`;
       }
     }
+    flush();
     view.scrollTop = 0;
   }
   function setChangelog(open: boolean) {
@@ -944,12 +952,14 @@ export async function mountPanel(app: HTMLElement) {
               : "Saved evidence"
             : destinations[route.tab].title;
     app.dataset.tab = route.tab;
+    app.dataset.changelog = String(changelogOpen);
     app.dataset.settingsSub = String(!!sub);
     app.dataset.settingsEditor = String(!!settingsEditor && !!sub);
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
-    const scrollQueue = route.tab === "queue" && !setupVisible();
+    const scrollQueue =
+      route.tab === "queue" && !setupVisible() && !changelogOpen;
     app.dataset.scrollQueue = String(scrollQueue);
     if (scrollQueue) {
       content.tabIndex = 0;

@@ -29,7 +29,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 - Navy header band, artwork, bottom nav. Cards overlap the band. 8px corners. Page title and back arrow in the band.
 - Monitoring control = machine-wide pause gate. Unknown automation state: control disabled, active-work badge cleared.
-- Version comes from native app metadata, shown in the footer. Unavailable metadata is labelled; clicking it retries. Footer version opens the in-app Changelog.
+- Version comes from native app metadata, shown in the footer. Unavailable metadata is labelled; clicking it retries. Footer version opens the in-app Changelog: an ordinary sub-page (shared band, art, overlapping card) rendering `**bold**` and `` `code` `` as text nodes, never HTML.
 - Repository intake has no local-folder selection.
 
 ## Queue tab
