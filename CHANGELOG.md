@@ -16,6 +16,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   accepts custom Voices and has a per-Voice "Fixed guardrails" switch, on by
   default. Teammate reports stay caveman; permissions, gates and exits are
   unchanged.
+- Optional Rubber Duck for the primary Agent: pick any Agent on the primary
+  assignment, and the primary can send a finding for a confirmed, revise,
+  rejected or unverifiable verdict before posting. Call, timeout and run-window
+  limits live in Settings › Preferences; if the duck can't start, the job parks
+  in Needs attention.
 
 ### Changed
 
