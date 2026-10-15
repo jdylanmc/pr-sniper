@@ -247,6 +247,7 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    let jobs = store.load_queue()?;
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
     for review in &mut reviews {
@@ -254,7 +255,7 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
             continue;
         }
-        if recover_parked_supersession(review) {
+        if recover_parked_supersession(review, &jobs) {
             changed = true;
             continue;
         }
@@ -272,17 +273,58 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
         }
     }
+    changed |= end_retired_runs(&mut reviews, &jobs);
     if changed {
         store.save_reviews(&reviews)?;
     }
     Ok(())
 }
 
+/// Ends waiting runs whose queue entry a scan retired (merged, closed,
+/// superseded, out of scope, assignment removed): they can never run, so they
+/// leave Running quietly instead of waiting forever.
+pub fn end_retired(store: &Store) -> Result<(), String> {
+    let jobs = store.load_queue()?;
+    let mut reviews = store.load_reviews()?;
+    if end_retired_runs(&mut reviews, &jobs) {
+        store.save_reviews(&reviews)?;
+    }
+    Ok(())
+}
+
+fn retired_job(run: &ReviewRun, jobs: &[QueueJob]) -> bool {
+    jobs.iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::retired)
+}
+
+fn end_retired_runs(reviews: &mut [ReviewRun], jobs: &[QueueJob]) -> bool {
+    let mut changed = false;
+    for run in reviews {
+        if matches!(
+            run.operation.state,
+            OperationState::Queued | OperationState::Interrupted
+        ) && retired_job(run, jobs)
+        {
+            end_quietly(run);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn end_quietly(run: &mut ReviewRun) {
+    run.operation.end_superseded();
+    run.result = None;
+    run.error = None;
+    run.phase = "Superseded".into();
+}
+
 /// Builds before typed supersession parked a stale Iteration or assignment as a
 /// permanent failure. No typed cause was stored, so the exact retired texts
 /// identify those records; requeue them with a fresh budget so the queue
-/// retargets or retires them like any superseded attempt.
-fn recover_parked_supersession(run: &mut ReviewRun) -> bool {
+/// retargets them like any superseded attempt, or ends them when retired.
+fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob]) -> bool {
     const PARKED: [monitoring::PolicyRejection; 2] = [
         monitoring::PolicyRejection::RevisionChanged,
         monitoring::PolicyRejection::AssignmentChanged,
@@ -294,6 +336,15 @@ fn recover_parked_supersession(run: &mut ReviewRun) -> bool {
             .any(|rejection| run.error.as_deref() == Some(rejection.message()))
     {
         return false;
+    }
+    // Only live work earns a new attempt; work a scan retired just ends.
+    if !jobs
+        .iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::actionable)
+    {
+        end_quietly(run);
+        return true;
     }
     run.operation.requeue_fresh(0);
     run.result = None;

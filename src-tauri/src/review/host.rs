@@ -58,7 +58,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 .find(|a| a.id == assignment.agent_id)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "Missing Agent".into());
-            let run = reviews.iter().rev().find(|r| r.key == key).cloned();
+            // A quietly ended run is history: revived work starts a new operation.
+            let run = reviews
+                .iter()
+                .rev()
+                .find(|r| r.key == key)
+                .filter(|r| !r.operation.ended_superseded())
+                .cloned();
             result.push(Candidate {
                 agent_name: run
                     .as_ref()

@@ -3341,6 +3341,28 @@ impl JobOperation {
         self.next_attempt_at = Some(next_attempt);
     }
 
+    /// Ends unstarted or waiting work quietly: superseded, not failed. The
+    /// attempt is handed back and nothing resumes it.
+    pub fn end_superseded(&mut self) {
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.state = OperationState::Failed;
+        self.failure = Some(OperationFailure::Superseded);
+        self.next_attempt_at = None;
+        self.superseded = None;
+        self.resume_at = None;
+        self.backpressure_until = None;
+        self.interruption = None;
+    }
+
+    /// Quietly ended by supersession: history, never a failure or Needs attention.
+    pub fn ended_superseded(&self) -> bool {
+        self.state == OperationState::Failed && self.failure == Some(OperationFailure::Superseded)
+    }
+
     pub fn parked(&self) -> bool {
         matches!(
             self.state,
@@ -3462,6 +3484,21 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "scope_confirmation_required"
                 | "repository_configuration_required"
         )
+    )
+}
+
+/// A scan retired this entry: its PR moved on, closed, merged, left review
+/// scope or lost the assignment. No work for it can run again.
+pub fn retired(job: &QueueJob) -> bool {
+    matches!(
+        job.waiting.as_str(),
+        WAITING_SUPERSEDED
+            | WAITING_CLOSED
+            | WAITING_MERGED
+            | WAITING_INELIGIBLE
+            | WAITING_NO_LONGER_CURRENT
+            | WAITING_SCOPE_EXCLUDED
+            | WAITING_ASSIGNMENT_REMOVED
     )
 }
 
@@ -3662,15 +3699,10 @@ pub fn check_review_policy(
         return Err(PolicyRejection::ConfigurationChanged);
     }
     if !actionable(job) {
-        return Err(match job.waiting.as_str() {
-            WAITING_SUPERSEDED
-            | WAITING_CLOSED
-            | WAITING_MERGED
-            | WAITING_INELIGIBLE
-            | WAITING_NO_LONGER_CURRENT
-            | WAITING_SCOPE_EXCLUDED
-            | WAITING_ASSIGNMENT_REMOVED => PolicyRejection::Retired,
-            _ => PolicyRejection::ConfigurationChanged,
+        return Err(if retired(job) {
+            PolicyRejection::Retired
+        } else {
+            PolicyRejection::ConfigurationChanged
         });
     }
     if let Some(work) = &job.work {

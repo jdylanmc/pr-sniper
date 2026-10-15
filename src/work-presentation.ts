@@ -87,6 +87,7 @@ export function workPresentation(
 ): WorkPresentation | undefined {
   let job: QueueItem["job"] | undefined;
   let selection: ReviewSelection | null | undefined;
+  let agentName: string | undefined;
   let state = "waiting";
   let captured = false;
   let attempt: number | null = null;
@@ -103,6 +104,8 @@ export function workPresentation(
     selection = captured
       ? candidate.run?.selection
       : candidate.planned_selection;
+    // Retired work has no current plan; its own record still names the Agent.
+    agentName = candidate.run?.selection.agent.name ?? candidate.agent_name;
     attempt = candidate.run?.operation.attempt_count ?? 0;
     state = candidate.run?.operation.state ?? "waiting";
     reason = candidate.blocked ?? candidate.run?.error ?? null;
@@ -209,7 +212,7 @@ export function workPresentation(
     count = run.reply_ordinal ?? null;
   }
   return {
-    agent: selection?.agent.name ?? "Unavailable",
+    agent: selection?.agent.name ?? agentName ?? "Unavailable",
     subject: job?.title ?? "Unavailable",
     reference: job
       ? `${job.repository_name} #${job.number}`

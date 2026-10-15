@@ -245,20 +245,13 @@ fn a_closed_merged_or_unadmitted_draft_pr_ends_the_attempt_quietly() {
             "{change}"
         );
         assert_quiet(&store, &monitor);
-        // The stale attempt waits exactly like the never-started primary entry.
-        let work = crate::capacity::candidates(&store, NOW + 60).unwrap();
-        let state = |key: &str| {
-            let entry = work.iter().find(|w| w.key.id == key).unwrap();
-            (entry.state, entry.failure)
-        };
-        let primary = store
-            .load_queue()
-            .unwrap()
-            .into_iter()
-            .find(|j| j.assignment_id.as_deref() == Some(PRIMARY))
-            .unwrap();
-        assert_eq!(state(&run.key), state(&key(&primary, PRIMARY)), "{change}");
-        assert_eq!(state(&run.key).1, None);
+        // Retired work, started or not, leaves Running and ends quietly.
+        assert!(running_for_pr(&store, NOW + 60).is_empty(), "{change}");
+        assert!(dispatched(&store, NOW + 60).is_empty(), "{change}");
+        let ended = stored(&store, &run.operation.id);
+        assert!(ended.operation.ended_superseded(), "{change}");
+        assert_eq!(ended.operation.attempt_count, 0);
+        assert_quiet(&store, &monitor);
     }
 }
 
@@ -414,7 +407,8 @@ fn a_superseded_draft_run_waits_for_a_poll_never_a_timer_and_retires_on_ineligib
     }
     let stale = stored(&store, &run.operation.id);
     assert_eq!(stale.operation.attempt_count, 0);
-    assert!(!stale.operation.parked());
+    assert!(stale.operation.ended_superseded());
+    assert!(running_for_pr(&store, NOW + 86_400).is_empty());
     assert_quiet(&store, &monitor);
 }
 
@@ -593,4 +587,162 @@ fn an_older_intake_read_never_moves_the_observation_back() {
     assert_eq!(observed, NOW + 100);
     assert_eq!(reason(&store, &run.key, NOW + 160), None);
     assert!(dispatched(&store, NOW + 160).contains(&run.operation.id));
+}
+
+/// Running entries for the fixture PR (normal work only).
+fn running_for_pr(store: &Store, now: i64) -> Vec<String> {
+    crate::capacity::candidates(store, now)
+        .unwrap()
+        .into_iter()
+        .map(|w| w.key.id)
+        .collect()
+}
+
+fn merge(monitor: &mut Monitor, store: &Store, at: i64) {
+    let mut merged = pull('a');
+    merged.state = Lifecycle::Merged;
+    scan(monitor, store, vec![merged], at);
+}
+
+#[test]
+fn a_queued_teammate_run_on_a_merged_pr_ends_quietly_and_leaves_running() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(&store, &run.operation.id, Err(base_changed(None)), NOW + 3).unwrap();
+    merge(&mut monitor, &store, NOW + 100);
+
+    assert!(!dispatched(&store, NOW + 160).contains(&run.operation.id));
+    let ended = stored(&store, &run.operation.id);
+    assert!(ended.operation.ended_superseded());
+    assert_eq!(ended.operation.attempt_count, 0);
+    assert_eq!(ended.operation.next_attempt_at, None);
+    assert!(ended.result.is_none());
+    assert!(running_for_pr(&store, NOW + 200).is_empty());
+    assert_quiet(&store, &monitor);
+    let snapshot = crate::queue::snapshot(&store, monitor.snapshot()).unwrap();
+    assert!(snapshot.items.iter().all(|i| i.state == State::Merged));
+    assert!(store.load_publications().unwrap().is_empty());
+}
+
+#[test]
+fn a_legacy_parked_run_on_a_merged_pr_ends_instead_of_requeueing() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let mut reviews = store.load_reviews().unwrap();
+    let message = "Pull request revision or eligibility changed; wait for the next poll.";
+    reviews[0]
+        .operation
+        .fail(&Failure::permanent(message).monitoring(), NOW + 3);
+    reviews[0].error = Some(message.into());
+    store.save_reviews(&reviews).unwrap();
+    merge(&mut monitor, &store, NOW + 100);
+
+    crate::review::restore(&store).unwrap();
+
+    let ended = stored(&store, &run.operation.id);
+    assert!(ended.operation.ended_superseded());
+    assert_ne!(ended.operation.state, OperationState::Queued);
+    assert!(ended.error.is_none());
+    assert!(running_for_pr(&store, NOW + 200).is_empty());
+    assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn owner_zombie_runs_on_merged_prs_clean_up_at_startup() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    merge(&mut monitor, &store, NOW + 100);
+    // The installed build's shape: queued, never started, waiting for current state.
+    let mut reviews = store.load_reviews().unwrap();
+    let zombie = &mut reviews[0];
+    zombie.operation.state = OperationState::Queued;
+    zombie.operation.attempt_count = 0;
+    zombie.operation.next_attempt_at = Some(0);
+    zombie.operation.failure = None;
+    zombie.operation.superseded = None;
+    zombie.operation.ai_attempt = None;
+    zombie.phase = "Waiting for current PR state".into();
+    zombie.error = None;
+    store.save_reviews(&reviews).unwrap();
+    assert!(store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .all(|j| j.waiting == crate::monitoring::WAITING_MERGED));
+
+    crate::review::restore(&store).unwrap();
+
+    let ended = stored(&store, &run.operation.id);
+    assert!(ended.operation.ended_superseded());
+    assert_eq!(ended.operation.attempt_count, 0);
+    assert!(running_for_pr(&store, NOW + 200).is_empty());
+    assert!(!dispatched(&store, NOW + 200).contains(&run.operation.id));
+    assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn a_primary_never_waits_on_a_retired_teammate() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let primary = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.assignment_id.as_deref() == Some(PRIMARY))
+        .unwrap();
+    let primary_key = key(&primary, PRIMARY);
+    let blocked = |store: &Store| {
+        crate::capacity::candidates(store, NOW + 10)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.key.id == primary_key)
+            .unwrap()
+            .blocked_by
+    };
+    assert!(
+        blocked(&store).is_some(),
+        "barrier holds while the teammate is live"
+    );
+    let mut jobs = store.load_queue().unwrap();
+    for job in &mut jobs {
+        if job.assignment_id.as_deref() == Some(TEAMMATE) {
+            job.waiting = crate::monitoring::WAITING_SCOPE_EXCLUDED.into();
+        }
+    }
+    store.save_queue(&jobs).unwrap();
+    assert!(blocked(&store).is_none());
+    assert!(dispatched(&store, NOW + 10)
+        .iter()
+        .any(|id| stored(&store, id).assignment_id == PRIMARY));
+}
+
+#[test]
+fn a_teammate_ended_for_a_transient_draft_reviews_again_when_ready() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(&store, &run.operation.id, Err(base_changed(None)), NOW + 3).unwrap();
+    let mut draft = pull('a');
+    draft.draft = true;
+    scan(&mut monitor, &store, vec![draft], NOW + 100);
+    assert!(!dispatched(&store, NOW + 150).contains(&run.operation.id));
+    assert!(stored(&store, &run.operation.id)
+        .operation
+        .ended_superseded());
+    // Ready again on the same head: a fresh operation runs, the ended one stays history.
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 200);
+    let started = dispatched(&store, NOW + 260);
+    let fresh: Vec<_> = started
+        .iter()
+        .filter(|id| stored(&store, id).assignment_id == TEAMMATE)
+        .collect();
+    assert_eq!(fresh.len(), 1);
+    assert_ne!(*fresh[0], run.operation.id);
+    assert!(stored(&store, &run.operation.id)
+        .operation
+        .ended_superseded());
+    assert_quiet(&store, &monitor);
 }

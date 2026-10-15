@@ -166,10 +166,17 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         })
         .collect();
     for candidate in reviews {
-        if candidate
-            .run
-            .as_ref()
-            .is_some_and(|r| r.operation.state == OperationState::Completed)
+        if candidate.run.as_ref().is_some_and(|r| {
+            r.operation.state == OperationState::Completed || r.operation.ended_superseded()
+        }) {
+            continue;
+        }
+        // Running lists only real work: a retired entry can never run.
+        if crate::monitoring::retired(&candidate.job)
+            && candidate
+                .run
+                .as_ref()
+                .is_none_or(|r| r.operation.state != OperationState::Running)
         {
             continue;
         }
@@ -350,6 +357,7 @@ impl Coordinator {
 
     /// Called under the Host Store lock, including by deterministic worker tests.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
+        review::end_retired(store)?;
         let settings = store.load_settings()?;
         let paused = store.load_automation()?.paused;
         let mut active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
