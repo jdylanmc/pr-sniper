@@ -21,6 +21,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   rejected or unverifiable verdict before posting. Call, timeout and run-window
   limits live in Settings › Preferences; if the duck can't start, the job parks
   in Needs attention.
+- Themes: Settings › Preferences › Appearance picks Light, Dark or OS. The
+  choice applies right away in every window, and OS follows system changes
+  live. Defaults to Light, which looks the same as before.
 
 ### Changed
 
