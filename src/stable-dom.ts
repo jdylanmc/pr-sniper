@@ -62,6 +62,8 @@ export function whenReleased(task: () => void) {
     task();
     return;
   }
+  // Re-queue at the end so the latest of several deferred redraws wins.
+  waiting.delete(task);
   waiting.add(task);
 }
 

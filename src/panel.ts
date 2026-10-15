@@ -595,13 +595,24 @@ export async function mountPanel(app: HTMLElement) {
       : undefined;
   }
   // Lists redraw after a press ends so a refresh never drops its click.
-  const pendingRows = new Map<"running" | "reviewed", Row[]>();
+  // `null` marks an unavailable list; it defers like any other redraw so a
+  // later paint can never resurrect stale rows over it.
+  const pendingRows = new Map<"running" | "reviewed", Row[] | null>();
+  const paint = (tab: "running" | "reviewed") => {
+    const rows = pendingRows.get(tab);
+    if (rows !== null) return render(tab, rows ?? []);
+    (tab === "running"
+      ? views.running.querySelector<HTMLElement>("[data-running-list]")!
+      : views.reviewed
+    ).textContent = "Unavailable";
+    listSignatures.delete(tab);
+  };
   const drawers = {
-    running: () => render("running", pendingRows.get("running") ?? []),
-    reviewed: () => render("reviewed", pendingRows.get("reviewed") ?? []),
+    running: () => paint("running"),
+    reviewed: () => paint("reviewed"),
   };
   // `now`: user-initiated redraws (Show more, opening a tab) never wait.
-  function draw(tab: "running" | "reviewed", rows: Row[], now = false) {
+  function draw(tab: "running" | "reviewed", rows: Row[] | null, now = false) {
     pendingRows.set(tab, rows);
     if (now) drawNow(drawers[tab]);
     else whenReleased(drawers[tab]);
@@ -835,10 +846,7 @@ export async function mountPanel(app: HTMLElement) {
   }
   function drawLists(now = false) {
     if (!automation) {
-      views.running.querySelector<HTMLElement>(
-        "[data-running-list]",
-      )!.textContent = "Unavailable";
-      listSignatures.delete("running");
+      draw("running", null, now);
     } else {
       const rows: Row[] = [...automation.work]
         .sort((a, b) => {
@@ -880,8 +888,7 @@ export async function mountPanel(app: HTMLElement) {
       draw("running", rows, now);
     }
     if (!snapshot) {
-      views.reviewed.textContent = "Unavailable";
-      listSignatures.delete("reviewed");
+      draw("reviewed", null, now);
       return;
     }
     const rows: Row[] = [];

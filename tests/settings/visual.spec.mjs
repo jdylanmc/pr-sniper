@@ -545,6 +545,46 @@ test("a job evidence control keeps its click while the job's automation state ch
   await expect.poll(() => evidence.innerText()).not.toBe(before);
 });
 
+test("a running row keeps its click when automation fails mid-press, then shows Unavailable", async ({
+  page,
+  store,
+}) => {
+  await workFixture(store);
+  await nativeCapacity(page, ["visual-work-1"]);
+  const start = new Date("2026-10-14T12:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
+  await tab(page, "Running").click();
+  await page.evaluate(() => window.__settingsIdle());
+  const list = page.locator("[data-running-list]");
+  const row = page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button", { name: "Open job" });
+  await expect(row).toBeVisible();
+  const rows = await list.locator("article").count();
+  expect(rows).toBeGreaterThan(0);
+  const box = await row.boundingBox();
+  await page.clock.fastForward(4900);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // The monitor poll still succeeds; the automation read fails.
+  await page.evaluate(() => {
+    window.__capacityUnavailable = true;
+  });
+  await page.clock.fastForward(200);
+  await page.evaluate(() => window.__settingsIdle());
+  // Still the pressed rows while the press lasts.
+  await expect(list.locator("article")).toHaveCount(rows);
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Job details");
+  // The deferred failure lands after release; no stale row is repainted.
+  await expect(list).toHaveText("Unavailable");
+  await expect(list.locator("article")).toHaveCount(0);
+});
+
 test("captured full configuration survives current Agent and doctrine edits without relabeling history", async ({
   page,
   store,

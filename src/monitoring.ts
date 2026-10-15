@@ -902,6 +902,20 @@ export function renderMonitoring(
     }
   }
 
+  // Deferred like every background redraw; queued after any earlier redraw,
+  // so the failure is what remains once the press ends.
+  function showUnavailable() {
+    if (snapshot) return;
+    root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
+      "Unavailable";
+    root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+      "Unavailable";
+    reviews.replaceChildren();
+    reviewsSignature = "";
+    detailSignature = "";
+    followUps([]);
+  }
+
   async function refresh() {
     if (loading || !root.isConnected) return;
     loading = true;
@@ -920,14 +934,7 @@ export function renderMonitoring(
       options.onSnapshot?.(undefined);
       if (options.panel) {
         queue.invalidate();
-        root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
-          "Unavailable";
-        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
-          "Unavailable";
-        reviews.replaceChildren();
-        reviewsSignature = "";
-        detailSignature = "";
-        followUps([]);
+        whenReleased(showUnavailable);
       }
       showError("Failed");
     } finally {
