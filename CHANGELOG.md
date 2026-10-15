@@ -5,6 +5,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-15
+
 ### Added
 
 - Per-type notification switches appear under Notifications while it is on;
