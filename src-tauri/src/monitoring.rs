@@ -3488,7 +3488,7 @@ fn configuration_failure(failure: Option<&str>) -> bool {
 }
 
 /// A scan retired this entry: its PR moved on, closed, merged, left review
-/// scope or lost the assignment. No work for it can run again.
+/// scope, or lost its assignment or repository. No work for it can run again.
 pub fn retired(job: &QueueJob) -> bool {
     matches!(
         job.waiting.as_str(),
@@ -3499,6 +3499,7 @@ pub fn retired(job: &QueueJob) -> bool {
             | WAITING_NO_LONGER_CURRENT
             | WAITING_SCOPE_EXCLUDED
             | WAITING_ASSIGNMENT_REMOVED
+            | WAITING_REPOSITORY_REMOVED
     )
 }
 
@@ -3651,7 +3652,10 @@ impl PolicyRejection {
     pub fn superseded(self) -> bool {
         matches!(
             self,
-            Self::AssignmentChanged | Self::RevisionChanged | Self::Retired
+            Self::RepositoryRemoved
+                | Self::AssignmentChanged
+                | Self::RevisionChanged
+                | Self::Retired
         )
     }
 

@@ -247,6 +247,7 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    let now = crate::now_seconds()?;
     let jobs = store.load_queue()?;
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
@@ -255,7 +256,7 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
             continue;
         }
-        if recover_parked_supersession(review, &jobs) {
+        if recover_parked_supersession(review, &jobs, now) {
             changed = true;
             continue;
         }
@@ -324,7 +325,7 @@ fn end_quietly(run: &mut ReviewRun) {
 /// permanent failure. No typed cause was stored, so the exact retired texts
 /// identify those records; requeue them with a fresh budget so the queue
 /// retargets them like any superseded attempt, or ends them when retired.
-fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob]) -> bool {
+fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
     const PARKED: [monitoring::PolicyRejection; 2] = [
         monitoring::PolicyRejection::RevisionChanged,
         monitoring::PolicyRejection::AssignmentChanged,
@@ -346,7 +347,7 @@ fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob]) -> bool {
         end_quietly(run);
         return true;
     }
-    run.operation.requeue_fresh(0);
+    run.operation.requeue_fresh(now);
     run.result = None;
     run.error = None;
     run.phase = "Waiting for current PR state".into();

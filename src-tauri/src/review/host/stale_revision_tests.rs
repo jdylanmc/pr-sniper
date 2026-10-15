@@ -746,3 +746,136 @@ fn a_teammate_ended_for_a_transient_draft_reviews_again_when_ready() {
         .ended_superseded());
     assert_quiet(&store, &monitor);
 }
+
+fn no_failure_notice(store: &Store, monitor: &Monitor) {
+    let snapshot = crate::queue::snapshot(store, monitor.snapshot()).unwrap();
+    assert!(crate::notifications::frames(&snapshot)
+        .iter()
+        .filter_map(|f| f.event.as_ref())
+        .all(|e| e.category != crate::notifications::Category::Failure));
+}
+
+#[test]
+fn a_recovered_legacy_run_gets_a_full_retry_window() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let mut reviews = store.load_reviews().unwrap();
+    let message = "Pull request revision or eligibility changed; wait for the next poll.";
+    reviews[0]
+        .operation
+        .fail(&Failure::permanent(message).monitoring(), NOW + 3);
+    reviews[0].error = Some(message.into());
+    store.save_reviews(&reviews).unwrap();
+
+    let before = crate::now_seconds().unwrap();
+    crate::review::restore(&store).unwrap();
+    let recovered = stored(&store, &run.operation.id);
+    // A fresh window from the real recovery time, not one that expired at epoch + 15 minutes.
+    assert!(recovered.operation.initial_attempt_at >= before);
+    assert!(recovered.operation.retry_deadline > before);
+
+    let attempt = prepare_dispatch(&store, &run.key, NOW + 10).unwrap();
+    complete(
+        &store,
+        &attempt.operation.id,
+        Err(Failure::provider("Transient provider failure.")),
+        NOW + 20,
+    )
+    .unwrap();
+    let retrying = stored(&store, &run.operation.id);
+    assert_eq!(retrying.operation.state, OperationState::Queued);
+    assert!(!retrying.operation.parked());
+    assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn a_removed_repository_ends_its_waiting_and_running_runs_quietly() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let waiting = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(
+        &store,
+        &waiting.operation.id,
+        Err(base_changed(None)),
+        NOW + 3,
+    )
+    .unwrap();
+    let running = dispatch(&store, PRIMARY, NOW + 4);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories.clear();
+    store.save_settings(&settings).unwrap();
+    // The next monitoring tick marks the entries removed.
+    assert!(monitor
+        .prepare_checks(&store, NOW + 5, false)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .all(|j| j.waiting == crate::monitoring::WAITING_REPOSITORY_REMOVED));
+
+    // The run still in flight is superseded, not failed.
+    let error = crate::review::validate_execution_selection(&store, &running).unwrap_err();
+    assert_eq!(error.kind, OperationFailure::Superseded);
+    complete(&store, &running.operation.id, Err(error), NOW + 5).unwrap();
+
+    assert!(dispatched(&store, NOW + 60).is_empty());
+    for id in [&waiting.operation.id, &running.operation.id] {
+        let ended = stored(&store, id);
+        assert!(ended.operation.ended_superseded());
+        assert_eq!(ended.operation.attempt_count, 0);
+    }
+    assert!(running_for_pr(&store, NOW + 60).is_empty());
+    assert_quiet(&store, &monitor);
+    no_failure_notice(&store, &monitor);
+}
+
+#[test]
+fn a_reopened_pr_starts_a_fresh_run_after_the_closed_one_ended() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(&store, &run.operation.id, Err(base_changed(None)), NOW + 3).unwrap();
+    let mut closed = pull('a');
+    closed.state = Lifecycle::Closed;
+    scan(&mut monitor, &store, vec![closed], NOW + 100);
+    assert!(dispatched(&store, NOW + 150).is_empty());
+    assert!(stored(&store, &run.operation.id)
+        .operation
+        .ended_superseded());
+
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 200);
+    let started = dispatched(&store, NOW + 260);
+    let teammate: Vec<_> = started
+        .iter()
+        .filter(|id| stored(&store, id).assignment_id == TEAMMATE)
+        .collect();
+    assert_eq!(teammate.len(), 1);
+    assert_ne!(*teammate[0], run.operation.id);
+    assert!(stored(&store, &run.operation.id)
+        .operation
+        .ended_superseded());
+    assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn a_run_in_flight_at_merge_finishes_superseded_and_ends_next_cycle() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    merge(&mut monitor, &store, NOW + 100);
+    // The worker's completion gate sees the retired entry.
+    let error = crate::review::validate_execution_selection(&store, &run).unwrap_err();
+    assert_eq!(error.kind, OperationFailure::Superseded);
+    complete(&store, &run.operation.id, Err(error), NOW + 150).unwrap();
+    assert!(dispatched(&store, NOW + 155).is_empty());
+    let ended = stored(&store, &run.operation.id);
+    assert!(ended.operation.ended_superseded());
+    assert_eq!(ended.operation.attempt_count, 0);
+    assert!(ended.result.is_none());
+    assert!(running_for_pr(&store, NOW + 160).is_empty());
+    assert_quiet(&store, &monitor);
+    no_failure_notice(&store, &monitor);
+}
