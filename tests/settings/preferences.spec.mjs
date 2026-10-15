@@ -122,10 +122,16 @@ async function automationFailures(page) {
         rejectPause: false,
         holdPause: false,
         pauseRequests: [],
+        // Fails only reads that start after a pause request, so reads left
+        // over from an earlier tick cannot disable the switch before the click.
+        failReadsAfterPause: false,
       });
       window.__TAURI_INTERNALS__.invoke = async (command, args) => {
         if (command === "automation_snapshot") {
-          const fail = control.readUnavailable || control.failReads > 0;
+          const fail =
+            control.readUnavailable ||
+            control.failReads > 0 ||
+            (control.failReadsAfterPause && control.pauseRequests.length > 0);
           if (control.failReads > 0) control.failReads--;
           const value = await original(command, args);
           if (fail) throw readError;
@@ -860,13 +866,17 @@ for (const staleRead of ["success", "failure"]) {
       window.__automationFailures.failReads = staleRead === "failure" ? 1 : 0;
     }, staleRead);
     const older = ipc.holdNext("automation_snapshot");
+    // The tick's monitor read straggles; its completion refreshes the header.
+    const monitor = ipc.holdNext("monitoring_snapshot");
     await page.clock.fastForward(5000);
     await older.arrived;
+    await monitor.arrived;
     await expect(button).toBeEnabled();
     await page.evaluate(() => {
       window.__automationFailures.rejectPause = true;
-      window.__automationFailures.readUnavailable = true;
+      window.__automationFailures.failReadsAfterPause = true;
     });
+    monitor.release();
     await button.click();
     await expect(error).toHaveText(
       `${automationActionError}\n${automationReadError}`,
@@ -881,7 +891,7 @@ for (const staleRead of ["success", "failure"]) {
       `${automationActionError}\n${automationReadError}`,
     );
     await page.evaluate(() => {
-      window.__automationFailures.readUnavailable = false;
+      window.__automationFailures.failReadsAfterPause = false;
     });
     await page.clock.fastForward(5000);
     await page.evaluate(() => window.__settingsIdle());
