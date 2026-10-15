@@ -625,3 +625,42 @@ async fn cancelling_the_primary_mid_call_stops_the_duck_and_leaves_no_turn() {
     );
     assert_eq!(methods(&root.path().join("duck"), "session.abort"), 1);
 }
+
+#[tokio::test]
+async fn a_primary_failing_mid_call_stops_the_duck_at_once_and_records_it() {
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-slow",
+        limits(8, 180),
+        false,
+    );
+    let log = duck.setup.log.clone();
+    let started = Instant::now();
+    let error = execute(
+        options(root.path(), "duck-primary-error"),
+        &identity(),
+        &operation(600),
+        primary_request(duck.setup),
+    )
+    .await
+    .unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(!error.cancelled && !error.duck_setup, "{}", error.message);
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "teardown took {elapsed:?}"
+    );
+    stopped(&root.path().join("duck"));
+    stopped(root.path());
+    let calls = log.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].packet.is_some() && calls[0].session_id.is_some());
+    assert_eq!(
+        calls[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::Unavailable
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.abort"), 1);
+}

@@ -32,6 +32,7 @@ const duckScenarios = {
   "duck-sequential": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-then-error": [duckArgs],
   "duck-flood": Array.from({ length: 100 }, () => duckArgs),
+  "duck-primary-error": [duckArgs],
   "duck-parallel": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-invalid": [{ ...duckArgs, path: "unchanged.rs" }],
 };
@@ -230,6 +231,9 @@ process.stdin.on("data", (chunk) => {
           setTimeout(() => {
             if (sequential) duckCall(0);
             else duckCalls.forEach((_, index) => duckCall(index));
+            // The primary run fails on its own while the duck call is still pending.
+            if (scenario === "duck-primary-error")
+              setTimeout(() => event("session.error", { statusCode: 500 }), 300);
           }, 10);
           break;
         }

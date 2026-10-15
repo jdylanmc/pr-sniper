@@ -90,6 +90,9 @@ pub(super) struct DuckEngine {
     version: String,
     /// Held for the whole of a call; teardown takes it to let an in-flight call settle.
     pub serial: tokio::sync::Mutex<()>,
+    /// Set when the primary attempt is ending for any reason: an in-flight call stops
+    /// at once (abort, close, record) and no new call starts.
+    pub ending: std::sync::atomic::AtomicBool,
 }
 
 impl DuckEngine {
@@ -130,6 +133,7 @@ impl DuckEngine {
             setup,
             version: String::new(),
             serial: tokio::sync::Mutex::new(()),
+            ending: std::sync::atomic::AtomicBool::new(false),
         };
         match engine.verify(&identity).await {
             Ok(version) => Ok(Self { version, ..engine }),
@@ -291,7 +295,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         if (setup.gated)() {
             return refuse(DuckFailure::RateLimited, input);
         }
-        if !self.engine.account_ok() {
+        if !self.engine.account_ok() || self.engine.ending.load(Ordering::SeqCst) {
             return refuse(DuckFailure::Unavailable, input);
         }
         self.started.store(ordinal, Ordering::SeqCst);
@@ -332,6 +336,9 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             }
             if self.primary_exit.taken() {
                 return DuckFailure::ExitTaken;
+            }
+            if self.engine.ending.load(Ordering::SeqCst) {
+                return DuckFailure::Unavailable;
             }
             if self.operation.check().is_err()
                 || (self.local_gate)().is_err()

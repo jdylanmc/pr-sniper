@@ -1182,6 +1182,13 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         }
     };
     let result = tokio::select! { biased; result = run => result, error = monitor => Err(error) };
+    // Whatever ended the attempt, an in-flight duck call stops now: it aborts its turn,
+    // closes its session and records itself; no new call starts.
+    if let Some(engine) = &duck_engine {
+        engine
+            .ending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     // The inference outcome is fixed before cleanup; cancellation must not
     // replace an observed failure while abort or client shutdown is pending.
     let abort = if let Some(session) = session {
@@ -1203,7 +1210,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     };
     let shutdown = crate::copilot::runtime::shutdown(&client).await;
     if let Some(engine) = duck_engine {
-        // An in-flight call sees the cancellation, aborts its turn and records itself.
+        // The in-flight call (told the attempt ended above) settles before the stop.
         let _ = tokio::time::timeout(Duration::from_secs(5), engine.serial.lock()).await;
         crate::copilot::runtime::shutdown(&engine.client).await;
     }
