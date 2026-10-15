@@ -1493,7 +1493,7 @@ fn closure_after_an_unseen_push_also_terminates_superseded_heads() {
 }
 
 #[test]
-fn a_legacy_global_interval_keeps_repository_crons_and_moves_its_zone() {
+fn a_legacy_global_interval_pauses_repositories_and_moves_its_zone() {
     let (_fixture, store, mut monitor) = configured(1);
     let mut settings = store.load_settings().unwrap();
     settings.defaults.schedule = Some(monitoring_schedule());
@@ -1501,12 +1501,14 @@ fn a_legacy_global_interval_keeps_repository_crons_and_moves_its_zone() {
     let saved = store.load_settings().unwrap();
     assert_eq!(saved.defaults.schedule, None);
     assert_eq!(saved.time_zone, "America/New_York");
-    assert_eq!(saved.repositories[0].cron, "*/15 * * * *");
-    assert_eq!(monitor.prepare_checks(&store, NOW, true).unwrap().len(), 1);
-    assert_eq!(
-        monitor.snapshot()[0].schedule_key,
-        "cron:*/15 * * * *:America/New_York"
-    );
+    // The interval never polled; its repositories stay off after upgrade.
+    assert!(!saved.repositories[0].enabled);
+    assert_eq!(saved.repositories[0].cron, "*/30 * * * *");
+    assert!(monitor
+        .prepare_checks(&store, NOW, true)
+        .unwrap()
+        .is_empty());
+    assert!(!monitor.snapshot()[0].enabled);
 }
 
 fn monitoring_schedule() -> pr_sniper_lib::policy::Schedule {

@@ -34,8 +34,9 @@ async function ring(locator) {
   return locator.evaluate((element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    // Playwright's WebKit does not report :focus-visible for checkboxes and
-    // buttons; measure the shared editor ring (3px + 2px offset) instead.
+    // Playwright's WebKit does not report :focus-visible for checkboxes,
+    // buttons and time fields (focus sits in an inner segment); measure the
+    // painted ring, else the shared editor ring (3px + 2px offset).
     const assumed = !element.matches(":focus-visible");
     let spread = assumed ? 5 : 0;
     let width = assumed ? 3 : 0;
@@ -83,7 +84,8 @@ async function ring(locator) {
     return {
       focusVisible:
         element.matches(":focus-visible") ||
-        (assumed && /^(checkbox|submit|button)$/.test(element.type)),
+        (assumed && /^(checkbox|submit|button)$/.test(element.type)) ||
+        (element.type === "time" && element.matches(":focus-within")),
       width,
       painted,
       clips,
@@ -178,12 +180,37 @@ for (const width of [408, 320]) {
       await ring(repository.getByRole("switch", { name: "All pull requests" })),
       "repository switch",
     );
+    await expect(repository.locator("[data-schedule]")).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expectUnclipped(
+      await ring(repository.locator("#schedule-every")),
+      "schedule interval",
+    );
+    expectUnclipped(
+      await ring(repository.locator("#schedule-day-1")),
+      "schedule day",
+    );
+    await repository.locator("#schedule-mode-daily").check();
+    expectUnclipped(
+      await ring(repository.locator("#schedule-time-0")),
+      "schedule time",
+    );
+    expectUnclipped(
+      await ring(repository.locator("#schedule-add-time")),
+      "schedule add time",
+    );
+    await repository.locator("#schedule-mode-advanced").check();
+    expectUnclipped(
+      await ring(repository.locator("#schedule-cron")),
+      "schedule cron",
+    );
     await closeDialog(page);
 
     await section(page, "Preferences");
     for (const [selector, label] of [
       ["#global-timezone", "time zone"],
-      ["#global-cron", "cron"],
       ["#global-capacity", "AI capacity"],
     ])
       expectUnclipped(await ring(page.locator(selector)), label);

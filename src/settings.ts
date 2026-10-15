@@ -3087,9 +3087,6 @@ export async function mountSettings(
     minute: number;
     times: string[];
     days: number[];
-    limit: boolean;
-    start: number;
-    end: number;
     cron: string;
   }
   const scheduleModes: [ScheduleMode, string][] = [
@@ -3098,7 +3095,6 @@ export async function mountSettings(
     ["daily", "Daily"],
     ["advanced", "Advanced"],
   ];
-  const hourLabel = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
 
   function scheduleState(preview: SchedulePreview): ScheduleState {
     const state: ScheduleState = {
@@ -3107,19 +3103,11 @@ export async function mountSettings(
       minute: 0,
       times: ["09:00"],
       days: [...ALL_DAYS],
-      limit: false,
-      start: 9,
-      end: 18,
       cron: preview.cron,
     };
     const builder = preview.builder;
     if (!builder) return state;
     state.days = [...builder.days];
-    if (builder.hours) {
-      state.limit = true;
-      state.start = builder.hours.start;
-      state.end = builder.hours.end;
-    }
     const cadence = builder.cadence;
     state.mode = cadence.kind;
     if (cadence.kind === "every") state.every = cadence.minutes;
@@ -3141,9 +3129,6 @@ export async function mountSettings(
       builder: {
         cadence,
         days: state.days,
-        ...(state.limit && state.mode !== "daily"
-          ? { hours: { start: state.start, end: state.end } }
-          : {}),
       },
     };
   }
@@ -3205,14 +3190,23 @@ export async function mountSettings(
         if (current === read) section.removeAttribute("aria-busy");
       });
     };
+    // The latest edit's cron, by edit sequence. A concurrent repository
+    // commit (the Monitor switch) restores its older draft copy; `reassert`
+    // puts this edit back afterwards.
+    let edits = 0;
+    let intended: { edit: number; cron: string } | undefined;
     const update = () => {
       if (!state) return;
+      const edit = ++edits;
       if (state.mode === "advanced") {
         // Saved as typed; the backend rejects an invalid cron on Save too.
-        repository.cron = state.cron.trim();
+        intended = { edit, cron: state.cron.trim() };
+        repository.cron = intended.cron;
         changed();
       }
       request(scheduleRequest(state), (preview) => {
+        if (edit !== edits) return;
+        intended = { edit, cron: preview.cron };
         repository.cron = preview.cron;
         changed();
       });
@@ -3265,20 +3259,6 @@ export async function mountSettings(
               `<label class="schedule-day"><input type="checkbox" id="schedule-day-${day}" value="${day}" ${state!.days.includes(day) ? "checked" : ""} /><span>${DAY_NAMES[day]}</span></label>`,
           ).join("")}</div></fieldset>`,
         );
-        if (mode !== "daily")
-          fields.push(
-            `<fieldset class="schedule-field"><legend>Hours</legend><label class="repository-check"><input type="checkbox" role="switch" id="schedule-hours" ${state.limit ? "checked" : ""} /><span>Limit hours</span></label><div class="schedule-hours" data-schedule-hours ${state.limit ? "" : "hidden"}><label><span>From</span><select id="schedule-hours-start">${Array.from(
-              { length: 24 },
-              (_, hour) =>
-                `<option value="${hour}" ${hour === state!.start ? "selected" : ""}>${hourLabel(hour)}</option>`,
-            ).join(
-              "",
-            )}</select></label><label><span>To</span><select id="schedule-hours-end">${Array.from(
-              { length: 24 },
-              (_, index) =>
-                `<option value="${index + 1}" ${index + 1 === state!.end ? "selected" : ""}>${hourLabel(index + 1)}</option>`,
-            ).join("")}</select></label></div></fieldset>`,
-          );
       }
       body.innerHTML = fields.join("");
       restore();
@@ -3298,14 +3278,6 @@ export async function mountSettings(
             body.querySelector<HTMLInputElement>(`#schedule-day-${day}`)
               ?.checked,
         );
-      else if (target.id === "schedule-hours") {
-        state.limit = (target as HTMLInputElement).checked;
-        body.querySelector<HTMLElement>("[data-schedule-hours]")!.hidden =
-          !state.limit;
-      } else if (target.id === "schedule-hours-start")
-        state.start = Number(target.value);
-      else if (target.id === "schedule-hours-end")
-        state.end = Number(target.value);
       else if (target.id.startsWith("schedule-time-"))
         state.times[Number(target.id.slice("schedule-time-".length))] =
           target.value;
@@ -3360,6 +3332,12 @@ export async function mountSettings(
       async settled() {
         await pending;
         return failure;
+      },
+      /** Restore the latest edit after another write replaced the draft. */
+      reassert() {
+        if (!intended || repository.cron === intended.cron) return;
+        repository.cron = intended.cron;
+        changed();
       },
     };
   }
@@ -3495,6 +3473,7 @@ export async function mountSettings(
       alert.hidden = true;
       try {
         await toggleRepositoryMonitoring(repository.id, enabled, modal);
+        schedule.reassert();
         monitoring.checked = repository.enabled;
         updateMonitoring();
         refreshRepositoryRows?.();

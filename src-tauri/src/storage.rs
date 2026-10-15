@@ -1065,10 +1065,12 @@ impl Settings {
         Ok(())
     }
 
-    /// Moves a legacy global schedule onto every repository: a cron becomes
-    /// each repository's cron, a legacy interval leaves each repository's
-    /// cron unchanged; its zone becomes the saved time zone. An invalid legacy
-    /// schedule is rejected, never silently dropped. True when one was moved.
+    /// Moves a legacy global schedule onto every repository; its zone becomes
+    /// the saved time zone. A cron that can run becomes each repository's
+    /// cron. A legacy interval (it never polled) or a cron with no occurrence
+    /// leaves every repository paused (monitoring off) on the default cron.
+    /// An unparseable legacy schedule is rejected, never silently dropped.
+    /// True when one was moved.
     pub fn migrate_global_schedule(&mut self) -> Result<bool, String> {
         if let Some(schedule) = &self.defaults.schedule {
             schedule.validate()?;
@@ -1076,18 +1078,26 @@ impl Settings {
         let Some(schedule) = self.defaults.schedule.take() else {
             return Ok(false);
         };
-        let timezone = match schedule {
+        let (cron, timezone) = match schedule {
             Schedule::Cron {
                 expression,
                 timezone,
-            } => {
-                for repository in &mut self.repositories {
-                    repository.cron.clone_from(&expression);
-                }
-                timezone
+            } if crate::schedule::validate_cron(&expression).is_ok() => {
+                (Some(expression), timezone)
             }
-            Schedule::Interval { timezone, .. } => timezone,
+            Schedule::Cron { timezone, .. } | Schedule::Interval { timezone, .. } => {
+                (None, timezone)
+            }
         };
+        for repository in &mut self.repositories {
+            match &cron {
+                Some(cron) => repository.cron.clone_from(cron),
+                None => {
+                    repository.cron = default_cron();
+                    repository.enabled = false;
+                }
+            }
+        }
         self.time_zone = timezone;
         Ok(true)
     }
@@ -1809,12 +1819,12 @@ impl Store {
         // real change is written, like the admission migration.
         let saved_schedule = settings.defaults.schedule.is_some();
         let schedules = |settings: &Settings| {
-            let crons: Vec<_> = settings
+            let repositories: Vec<_> = settings
                 .repositories
                 .iter()
-                .map(|r| r.cron.clone())
+                .map(|r| (r.cron.clone(), r.enabled))
                 .collect();
-            (settings.time_zone.clone(), crons)
+            (settings.time_zone.clone(), repositories)
         };
         let unmigrated = schedules(&settings);
         if saved_version.time_zone.is_none() {

@@ -24,23 +24,12 @@ pub enum Cadence {
     Daily { times: Vec<String> },
 }
 
-/// Hours `start..end` (end exclusive, 1..=24) on the 24-hour clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HourWindow {
-    pub start: u32,
-    pub end: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Builder {
     pub cadence: Cadence,
     /// Weekdays, 0 = Sunday. All seven = every day.
     pub days: Vec<u32>,
-    /// Not allowed with `Daily`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hours: Option<HourWindow>,
 }
 
 const ALL_DAYS: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
@@ -58,34 +47,17 @@ impl Builder {
         } else {
             compress(&days)
         };
-        if let Some(window) = self.hours {
-            if window.start >= window.end || window.end > 24 {
-                return Err("Hours must start before they end.".into());
-            }
-        }
-        // Windows always use range syntax so a one-hour window stays distinct
-        // from a daily time on decode.
-        let window = self.hours.map(|w| format!("{}-{}", w.start, w.end - 1));
         let (minute, hour) = match &self.cadence {
             Cadence::Every { minutes } if *minutes < 60 && EVERY_MINUTES.contains(minutes) => {
-                (format!("*/{minutes}"), window.unwrap_or_else(|| "*".into()))
+                (format!("*/{minutes}"), "*".to_string())
             }
             Cadence::Every { minutes } if EVERY_MINUTES.contains(minutes) => {
-                let step = minutes / 60;
-                (
-                    "0".into(),
-                    format!("{}/{step}", window.unwrap_or_else(|| "*".into())),
-                )
+                ("0".to_string(), format!("*/{}", minutes / 60))
             }
             Cadence::Every { .. } => return Err("Choose a listed interval.".into()),
-            Cadence::Hourly { minute } if *minute < 60 => {
-                (minute.to_string(), window.unwrap_or_else(|| "*".into()))
-            }
+            Cadence::Hourly { minute } if *minute < 60 => (minute.to_string(), "*".to_string()),
             Cadence::Hourly { .. } => return Err("Minute must be 0-59.".into()),
             Cadence::Daily { times } => {
-                if window.is_some() {
-                    return Err("Daily times cannot also limit hours.".into());
-                }
                 let (minutes, hours) = grid(times)?;
                 (join(&minutes), join(&hours))
             }
@@ -100,26 +72,20 @@ impl Builder {
             return None;
         };
         let days = weekday_set(weekdays)?;
-        let (cadence, hours) = if let Some(step) = minute.strip_prefix("*/") {
+        let cadence = if let Some(step) = minute.strip_prefix("*/") {
             let minutes = number(step, 1, 59)?;
-            if minutes >= 60 || !EVERY_MINUTES.contains(&minutes) {
+            if hour != "*" || !EVERY_MINUTES.contains(&minutes) {
                 return None;
             }
-            (Cadence::Every { minutes }, hour_window(hour)?)
-        } else if let (Some(0), Some((range, step))) = (number(minute, 0, 59), hour.split_once('/'))
-        {
+            Cadence::Every { minutes }
+        } else if let (Some(0), Some(step)) = (number(minute, 0, 59), hour.strip_prefix("*/")) {
             let minutes = number(step, 1, 23)? * 60;
             if !EVERY_MINUTES.contains(&minutes) {
                 return None;
             }
-            let window = if range == "*" {
-                None
-            } else {
-                Some(range_window(range)?)
-            };
-            (Cadence::Every { minutes }, window)
-        } else if let (Some(at), Some(window)) = (number(minute, 0, 59), hour_window(hour)) {
-            (Cadence::Hourly { minute: at }, window)
+            Cadence::Every { minutes }
+        } else if let (Some(at), "*") = (number(minute, 0, 59), hour) {
+            Cadence::Hourly { minute: at }
         } else {
             let minutes = number_list(minute, 59)?;
             let hours = number_list(hour, 23)?;
@@ -127,13 +93,9 @@ impl Builder {
                 .iter()
                 .flat_map(|h| minutes.iter().map(move |m| format!("{h:02}:{m:02}")))
                 .collect();
-            (Cadence::Daily { times }, None)
+            Cadence::Daily { times }
         };
-        Some(Self {
-            cadence,
-            days,
-            hours,
-        })
+        Some(Self { cadence, days })
     }
 }
 
@@ -215,24 +177,6 @@ fn number_list(text: &str, max: u32) -> Option<Vec<u32>> {
     values.sort_unstable();
     values.dedup();
     Some(values)
-}
-
-/// `*` = no window; `A-B` = hours A through B inclusive.
-fn hour_window(text: &str) -> Option<Option<HourWindow>> {
-    if text == "*" {
-        Some(None)
-    } else {
-        range_window(text).map(Some)
-    }
-}
-
-fn range_window(text: &str) -> Option<HourWindow> {
-    let (start, last) = text.split_once('-')?;
-    let (start, last) = (number(start, 0, 23)?, number(last, 0, 23)?);
-    (start <= last).then_some(HourWindow {
-        start,
-        end: last + 1,
-    })
 }
 
 fn weekday(text: &str) -> Option<u32> {
@@ -347,11 +291,10 @@ pub fn describe(crons: &[String]) -> Vec<Option<Builder>> {
 mod tests {
     use super::*;
 
-    fn builder(cadence: Cadence, days: &[u32], hours: Option<(u32, u32)>) -> Builder {
+    fn builder(cadence: Cadence, days: &[u32]) -> Builder {
         Builder {
             cadence,
             days: days.to_vec(),
-            hours: hours.map(|(start, end)| HourWindow { start, end }),
         }
     }
 
@@ -364,65 +307,53 @@ mod tests {
             times: times.iter().map(|t| t.to_string()).collect(),
         };
         let cases = [
+            (builder(Cadence::Every { minutes: 5 }, &WEEK), "*/5 * * * *"),
             (
-                builder(Cadence::Every { minutes: 5 }, &WEEK, None),
-                "*/5 * * * *",
-            ),
-            (
-                builder(Cadence::Every { minutes: 10 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 10 }, &WEEK),
                 "*/10 * * * *",
             ),
             (
-                builder(Cadence::Every { minutes: 15 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 15 }, &WEEK),
                 "*/15 * * * *",
             ),
             (
-                builder(Cadence::Every { minutes: 30 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 30 }, &WEEK),
                 "*/30 * * * *",
             ),
             (
-                builder(Cadence::Every { minutes: 60 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 60 }, &WEEK),
                 "0 */1 * * *",
             ),
             (
-                builder(Cadence::Every { minutes: 120 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 120 }, &WEEK),
                 "0 */2 * * *",
             ),
             (
-                builder(Cadence::Every { minutes: 240 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 240 }, &WEEK),
                 "0 */4 * * *",
             ),
+            (builder(Cadence::Hourly { minute: 0 }, &WEEK), "0 * * * *"),
+            (builder(Cadence::Hourly { minute: 45 }, &WEEK), "45 * * * *"),
+            (builder(daily(&["09:00"]), &WEEK), "0 9 * * *"),
             (
-                builder(Cadence::Hourly { minute: 0 }, &WEEK, None),
-                "0 * * * *",
-            ),
-            (
-                builder(Cadence::Hourly { minute: 45 }, &WEEK, None),
-                "45 * * * *",
-            ),
-            (builder(daily(&["09:00"]), &WEEK, None), "0 9 * * *"),
-            (
-                builder(daily(&["09:00", "09:30", "17:00", "17:30"]), &WEEK, None),
+                builder(daily(&["09:00", "09:30", "17:00", "17:30"]), &WEEK),
                 "0,30 9,17 * * *",
             ),
+            (builder(daily(&["08:15"]), &[1, 3, 5]), "15 8 * * 1,3,5"),
             (
-                builder(Cadence::Every { minutes: 15 }, &WEEKDAYS, Some((9, 18))),
-                "*/15 9-17 * * 1-5",
+                builder(Cadence::Every { minutes: 15 }, &WEEKDAYS),
+                "*/15 * * * 1-5",
             ),
             (
-                builder(Cadence::Every { minutes: 120 }, &WEEKDAYS, Some((9, 18))),
-                "0 9-17/2 * * 1-5",
+                builder(Cadence::Every { minutes: 120 }, &WEEKDAYS),
+                "0 */2 * * 1-5",
             ),
             (
-                builder(Cadence::Hourly { minute: 5 }, &[0, 6], Some((10, 11))),
-                "5 10-10 * * 0,6",
+                builder(Cadence::Hourly { minute: 5 }, &[0, 6]),
+                "5 * * * 0,6",
             ),
             (
-                builder(daily(&["08:15"]), &[1, 3, 5], None),
-                "15 8 * * 1,3,5",
-            ),
-            (
-                builder(Cadence::Every { minutes: 30 }, &[0, 1, 2, 4, 5, 6], None),
+                builder(Cadence::Every { minutes: 30 }, &[0, 1, 2, 4, 5, 6]),
                 "*/30 * * * 0-2,4-6",
             ),
         ];
@@ -443,12 +374,11 @@ mod tests {
                         times: vec!["09:00".into()],
                     },
                     &WEEKDAYS,
-                    None,
                 ),
             ),
             (
                 "*/15 * * * 0-6",
-                builder(Cadence::Every { minutes: 15 }, &WEEK, None),
+                builder(Cadence::Every { minutes: 15 }, &WEEK),
             ),
             (
                 "30 13,9 * * 7",
@@ -457,7 +387,6 @@ mod tests {
                         times: vec!["09:30".into(), "13:30".into()],
                     },
                     &[0],
-                    None,
                 ),
             ),
         ];
@@ -479,6 +408,11 @@ mod tests {
             "*/15 9-17/2 * * *",
             "15 */2 * * *",
             "0 9-17 * * 5-1",
+            // Hour windows are not a builder concept: Advanced.
+            "*/15 9-17 * * 1-5",
+            "0 9-17/2 * * 1-5",
+            "5 10-10 * * 0,6",
+            "45 9-17 * * *",
             "0 0 * * * *",
             "nonsense",
         ] {
@@ -492,17 +426,14 @@ mod tests {
             times: times.iter().map(|t| t.to_string()).collect(),
         };
         for invalid in [
-            builder(Cadence::Every { minutes: 7 }, &WEEK, None),
-            builder(Cadence::Every { minutes: 15 }, &[], None),
-            builder(Cadence::Every { minutes: 15 }, &[7], None),
-            builder(Cadence::Every { minutes: 15 }, &WEEK, Some((18, 9))),
-            builder(Cadence::Every { minutes: 15 }, &WEEK, Some((9, 25))),
-            builder(Cadence::Hourly { minute: 60 }, &WEEK, None),
-            builder(daily(&[]), &WEEK, None),
-            builder(daily(&["9:00"]), &WEEK, None),
-            builder(daily(&["24:00"]), &WEEK, None),
-            builder(daily(&["09:00", "13:30"]), &WEEK, None),
-            builder(daily(&["09:00"]), &WEEK, Some((9, 18))),
+            builder(Cadence::Every { minutes: 7 }, &WEEK),
+            builder(Cadence::Every { minutes: 15 }, &[]),
+            builder(Cadence::Every { minutes: 15 }, &[7]),
+            builder(Cadence::Hourly { minute: 60 }, &WEEK),
+            builder(daily(&[]), &WEEK),
+            builder(daily(&["9:00"]), &WEEK),
+            builder(daily(&["24:00"]), &WEEK),
+            builder(daily(&["09:00", "13:30"]), &WEEK),
         ] {
             assert!(invalid.encode().is_err(), "{invalid:?}");
         }
@@ -547,7 +478,7 @@ mod tests {
     fn preview_encodes_builders_and_rejects_invalid_crons() {
         let preview = preview(
             PreviewRequest::Builder {
-                builder: builder(Cadence::Every { minutes: 30 }, &WEEK, None),
+                builder: builder(Cadence::Every { minutes: 30 }, &WEEK),
             },
             "UTC",
             1_800_000_000,

@@ -75,21 +75,16 @@ test("each builder mode saves its cron through the real Store and reopens in the
   await page.goto("/?view=settings");
   const cases = [
     {
-      cron: "*/15 9-17 * * 1-5",
+      cron: "*/15 * * * 1-5",
       build: async (editor) => {
         await editor.locator("#schedule-every").selectOption("15");
         await editor.locator("#schedule-day-0").uncheck();
         await editor.locator("#schedule-day-6").uncheck();
-        await editor.locator("#schedule-hours").check();
-        await editor.locator("#schedule-hours-start").selectOption("9");
-        await editor.locator("#schedule-hours-end").selectOption("18");
       },
       check: async (editor) => {
         await expect(editor.locator("#schedule-mode-every")).toBeChecked();
         await expect(editor.locator("#schedule-every")).toHaveValue("15");
-        await expect(editor.locator("#schedule-hours")).toBeChecked();
-        await expect(editor.locator("#schedule-hours-start")).toHaveValue("9");
-        await expect(editor.locator("#schedule-hours-end")).toHaveValue("18");
+        await expect(editor.locator("#schedule-hours")).toHaveCount(0);
         await expect(editor.locator("#schedule-day-6")).not.toBeChecked();
         await expect(editor.locator("#schedule-day-5")).toBeChecked();
       },
@@ -101,11 +96,10 @@ test("each builder mode saves its cron through the real Store and reopens in the
         await editor.locator("#schedule-every").selectOption("120");
         for (const day of [0, 6])
           await editor.locator(`#schedule-day-${day}`).check();
-        await editor.locator("#schedule-hours").uncheck();
       },
       check: async (editor) => {
         await expect(editor.locator("#schedule-every")).toHaveValue("120");
-        await expect(editor.locator("#schedule-hours")).not.toBeChecked();
+        await expect(editor.locator("#schedule-day-0")).toBeChecked();
       },
     },
     {
@@ -167,11 +161,17 @@ test("saved crons decode into the matching mode, else Advanced with the raw cron
   page,
   store,
 }) => {
-  await seed(store, ["*/15 9-17 * * 1-5", "0 9 * * MON-FRI", "7 */3 * * *"]);
+  await seed(store, [
+    "*/15 * * * 1-5",
+    "0 9 * * MON-FRI",
+    "7 */3 * * *",
+    "*/15 9-17 * * 1-5",
+  ]);
   await page.goto("/?view=settings");
   let editor = await open(page);
   await expect(editor.locator("#schedule-mode-every")).toBeChecked();
   await expect(editor.locator("#schedule-every")).toHaveValue("15");
+  await expect(editor.locator("#schedule-day-6")).not.toBeChecked();
   await closeDialog(page);
   editor = await open(page, "fixture/schedule-1");
   await expect(editor.locator("#schedule-mode-daily")).toBeChecked();
@@ -180,6 +180,13 @@ test("saved crons decode into the matching mode, else Advanced with the raw cron
   editor = await open(page, "fixture/schedule-2");
   await expect(editor.locator("#schedule-mode-advanced")).toBeChecked();
   await expect(editor.locator("#schedule-cron")).toHaveValue("7 */3 * * *");
+  await closeDialog(page);
+  // Hour ranges are not a builder concept: Advanced keeps them exactly.
+  editor = await open(page, "fixture/schedule-3");
+  await expect(editor.locator("#schedule-mode-advanced")).toBeChecked();
+  await expect(editor.locator("#schedule-cron")).toHaveValue(
+    "*/15 9-17 * * 1-5",
+  );
   // Opening never rewrites an equivalent saved cron.
   expect((await store("snapshot")).settings.repositories[1].cron).toBe(
     "0 9 * * MON-FRI",
@@ -293,18 +300,58 @@ test("the repository list shows each schedule as a compact value", async ({
 }) => {
   await seed(store, [
     "*/30 * * * *",
-    "*/15 9-17 * * 1-5",
+    "*/15 * * * 1-5",
     "0 9,17 * * *",
     "7 */3 * * *",
+    "*/15 9-17 * * 1-5",
   ]);
   await page.goto("/?view=settings");
   await section(page, "Integrations");
   const summary = (index) =>
     page.locator(`[data-repository-schedule]`).nth(index);
   await expect(summary(0)).toHaveText("Every 30 min");
-  await expect(summary(1)).toHaveText("Mon–Fri 9–18 · every 15 min");
+  await expect(summary(1)).toHaveText("Mon–Fri · every 15 min");
   await expect(summary(2)).toHaveText("Daily 09:00, 17:00");
   await expect(summary(3)).toHaveText("7 */3 * * *");
+  await expect(summary(4)).toHaveText("*/15 9-17 * * 1-5");
+});
+
+test("a preview landing during a Monitor switch save keeps the latest schedule edit", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const settings = await seed(store, ["*/30 * * * *"]);
+  settings.repositories[0].enabled = true;
+  await store("seed_settings", settings);
+  await page.goto("/?view=settings");
+  const editor = await open(page);
+  const preview = ipc.holdNext("preview_schedule");
+  await editor.locator("#schedule-every").selectOption("5");
+  await preview.arrived;
+  // The switch save copies the draft before the held preview lands.
+  const save = ipc.holdNext("save_resource");
+  await editor.getByRole("switch", { name: `Monitor ${NAME}` }).click();
+  await save.arrived;
+  preview.release();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("[data-schedule-runs] li")].some((li) =>
+      li.textContent.endsWith(":05"),
+    ),
+  );
+  save.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(
+    editor.getByRole("switch", { name: `Monitor ${NAME}` }),
+  ).not.toBeChecked();
+  expect((await store("snapshot")).settings.repositories[0].enabled).toBe(
+    false,
+  );
+  await expect(editor.locator("#schedule-every")).toHaveValue("5");
+  await saveRepository(editor);
+  const saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.cron).toBe("*/5 * * * *");
+  expect(saved.enabled).toBe(false);
 });
 
 test("keyboard moves through modes and times with focus kept by stable id", async ({
@@ -345,7 +392,7 @@ for (const width of [408, 320]) {
     store,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 744 });
-    await seed(store, ["*/15 9-17 * * 1-5"]);
+    await seed(store, ["*/15 * * * 1-5"]);
     await page.goto("/?view=settings");
     const editor = await open(page);
     for (const mode of ["every", "hourly", "daily", "advanced"]) {
@@ -372,7 +419,7 @@ test("Dark theme draws the builder from theme variables", async ({
   page,
   store,
 }) => {
-  await seed(store, ["*/15 9-17 * * 1-5"]);
+  await seed(store, ["*/15 * * * 1-5"]);
   await store("save_theme", { theme: "dark" });
   await page.goto("/?view=settings");
   const editor = await open(page);

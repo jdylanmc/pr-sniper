@@ -1974,15 +1974,13 @@
   border: 0;
 }
 .repository-editor .schedule-field legend,
-.repository-editor .schedule-row > span,
-.repository-editor .schedule-hours label > span {
+.repository-editor .schedule-row > span {
   padding: 0 0 6px;
   color: var(--panel-muted);
   font-size: 12px;
   font-weight: 600;
 }
-.repository-editor .schedule-row,
-.repository-editor .schedule-hours label {
+.repository-editor .schedule-row {
   display: grid;
   min-width: 0;
 }
@@ -2073,6 +2071,12 @@
   flex: 1;
   min-width: 0;
 }
+/* WebKit focuses a time field's inner segment, so the host never matches
+   :focus-visible; draw the same keyboard ring from :focus-within. */
+.settings-window .repository-editor .schedule-time input:focus-within {
+  outline: 3px solid var(--focus-sage-3a5945);
+  outline-offset: 3px;
+}
 .repository-editor .schedule-time button {
   display: grid;
   flex: none;
@@ -2084,15 +2088,6 @@
 .repository-editor .schedule-time button svg {
   width: 16px;
   height: 16px;
-}
-.repository-editor .schedule-hours {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
-}
-.repository-editor .schedule-hours[hidden] {
-  display: none;
 }
 .repository-editor #schedule-cron {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

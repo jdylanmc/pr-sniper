@@ -87,21 +87,32 @@ fn cron_rejects_wrong_field_counts_out_of_range_values_and_empty_ranges() {
 
 #[test]
 fn legacy_global_schedules_move_onto_repositories_and_the_time_zone() {
-    for (schedule, cron, zone) in [
+    for (schedule, cron, zone, enabled) in [
         (
             json!({"kind":"cron","expression":"0 9 * * MON-FRI","timezone":"America/New_York"}),
             "0 9 * * MON-FRI",
             "America/New_York",
+            true,
         ),
         (
             json!({"kind":"cron","expression":"*/5 9-17 * JAN-MAR MON-FRI","timezone":"Europe/London"}),
             "*/5 9-17 * JAN-MAR MON-FRI",
             "Europe/London",
+            true,
         ),
+        // Never polled before: paused on the default cron.
         (
             json!({"kind":"interval","minutes":90,"timezone":"Asia/Tokyo"}),
             "*/30 * * * *",
             "Asia/Tokyo",
+            false,
+        ),
+        // Parses but never fires: must not brick saves.
+        (
+            json!({"kind":"cron","expression":"0 0 30 2 *","timezone":"UTC"}),
+            "*/30 * * * *",
+            "UTC",
+            false,
         ),
     ] {
         let fixture = Fixture::new();
@@ -115,6 +126,8 @@ fn legacy_global_schedules_move_onto_repositories_and_the_time_zone() {
         assert_eq!(saved.defaults, Policy::default());
         assert_eq!(saved.time_zone, zone);
         assert_eq!(saved.repositories[0].cron, cron);
+        assert_eq!(saved.repositories[0].enabled, enabled, "{cron}");
+        fixture.store().save_settings(&saved).unwrap();
     }
 }
 

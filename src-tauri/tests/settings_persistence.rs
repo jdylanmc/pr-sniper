@@ -575,12 +575,12 @@ fn legacy_settings_file(fixture: &Fixture, defaults: &str) -> std::path::PathBuf
         &path,
         format!(
             r#"{{
-          "launch_at_login": false,{defaults}
+          "launch_at_login": false, "admission_migration_version": 1,{defaults}
           "repositories": [
             {{"id": "c53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
-              "name": "octo/one", "enabled": false}},
+              "name": "octo/one", "enabled": true}},
             {{"id": "d53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
-              "name": "octo/two", "enabled": false}}
+              "name": "octo/two", "enabled": true}}
           ]
         }}"#
         ),
@@ -607,7 +607,7 @@ fn the_global_cron_moves_onto_every_repository_once() {
     assert!(settings
         .repositories
         .iter()
-        .all(|repository| repository.cron == "0 9 * * MON-FRI"));
+        .all(|repository| repository.cron == "0 9 * * MON-FRI" && repository.enabled));
     let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert!(written["defaults"].get("schedule").is_none());
     assert_eq!(written["time_zone"], "Europe/Paris");
@@ -679,5 +679,48 @@ fn repository_saves_reject_crons_that_cannot_run() {
             "{cron:?}"
         );
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}
+
+fn legacy_defaults(schedule: &str) -> String {
+    format!(
+        r#""defaults": {{
+            "schedule": {schedule},
+            "watched_authors": [], "reviewer_assignment": true, "adapter": "copilot",
+            "selector": {{"kind":"default"}}, "prompt": "Review.",
+            "automatic_agent_start": false, "automatic_comment_publication": false
+          }},"#
+    )
+}
+
+#[test]
+fn legacy_intervals_and_crons_that_never_run_pause_every_repository_once() {
+    for (schedule, zone) in [
+        (
+            r#"{"kind":"interval","minutes":7,"timezone":"Europe/London"}"#,
+            "Europe/London",
+        ),
+        (
+            r#"{"kind":"cron","expression":"0 0 30 2 *","timezone":"Asia/Tokyo"}"#,
+            "Asia/Tokyo",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let path = legacy_settings_file(&fixture, &legacy_defaults(schedule));
+        let settings = fixture.store().load_settings().unwrap();
+        assert_eq!(settings.time_zone, zone, "{schedule}");
+        assert_eq!(settings.defaults.schedule, None);
+        assert!(settings
+            .repositories
+            .iter()
+            .all(|repository| !repository.enabled && repository.cron == "*/30 * * * *"));
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(fixture.store().load_settings().unwrap(), settings);
+        assert_eq!(fs::read(&path).unwrap(), bytes, "migration runs once");
+        // Saves keep working; re-enabling is an explicit user choice.
+        let mut enabled = settings.clone();
+        enabled.repositories[0].enabled = true;
+        fixture.store().save_settings(&enabled).unwrap();
+        assert!(fixture.store().load_settings().unwrap().repositories[0].enabled);
     }
 }

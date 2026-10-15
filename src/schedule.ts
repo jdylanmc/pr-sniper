@@ -11,8 +11,6 @@ export interface ScheduleBuilder {
   cadence: Cadence;
   /** 0 = Sunday. All seven = every day. */
   days: number[];
-  /** Hours `start..end`, end exclusive. Not with `daily`. */
-  hours?: { start: number; end: number };
 }
 
 export type ScheduleRequest =
@@ -70,20 +68,17 @@ function cadenceLabel(cadence: Cadence): string {
   return `daily ${cadence.times.join(", ")}`;
 }
 
-/** Compact value, e.g. `Every 30 min` or `Mon–Fri 9–18 · every 15 min`.
+/** Compact value, e.g. `Every 30 min` or `Mon–Fri · every 15 min`.
  * A cron outside the builder shows as itself. */
 export function scheduleSummary(
   builder: ScheduleBuilder | null | undefined,
   cron: string,
 ): string {
   if (!builder) return cron;
-  const limits = [
-    dayLabel(builder.days),
-    builder.hours ? `${builder.hours.start}–${builder.hours.end}` : "",
-  ].filter(Boolean);
+  const days = dayLabel(builder.days);
   const cadence = cadenceLabel(builder.cadence);
-  return limits.length
-    ? `${limits.join(" ")} · ${cadence}`
+  return days
+    ? `${days} · ${cadence}`
     : cadence[0].toUpperCase() + cadence.slice(1);
 }
 

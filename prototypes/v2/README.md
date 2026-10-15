@@ -102,7 +102,7 @@ This pass changes repository intake and navigation only. The older prototype's
 sample review trust behavior is historical, not a current production
 requirement; production has no per-revision trust prompt (#113). Production
 schedules are per repository again ([ADR 0024](../../docs/adr/0024-repository-schedules.md)):
-a builder (Every, Hourly, Daily, Advanced; days and hours) writes one cron per
+a builder (Every, Hourly, Daily, Advanced; days of the week) writes one cron per
 repository, evaluated in the single Preferences time zone. The prototype's
 collapsed interval/cron editor approximates that builder. Existing-backlog activation is still an open
 product decision in #108; this prototype retains its new-PR-only scope mock.

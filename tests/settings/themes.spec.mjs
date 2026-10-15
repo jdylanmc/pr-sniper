@@ -516,6 +516,79 @@ test.describe("contrast", () => {
   });
 });
 
+test.describe("schedule builder contrast", () => {
+  test.use({ viewport: { width: 408, height: 744 } });
+
+  test("Dark keeps AA text and 3:1 focus rings in every schedule mode", async ({
+    page,
+    store,
+  }) => {
+    await queueFixture(store);
+    const { settings } = await store("snapshot");
+    await store("seed_settings", { ...settings, theme: "dark" });
+    await openPanel(page, store);
+    await tab(page, "Settings").click();
+    await section(page, "Repositories");
+    await page.locator("[data-repository]").first().click();
+    const schedule = page.locator("[data-schedule]");
+    await expect(schedule).not.toHaveAttribute("aria-busy", "true");
+    const failures = {};
+    for (const mode of ["every", "hourly", "daily", "advanced"]) {
+      await page.locator(`#schedule-mode-${mode}`).check();
+      await page.evaluate(() => window.__settingsIdle());
+      await expect(schedule.locator("[data-schedule-runs] li")).toHaveCount(3);
+      const found = await contrastFailures(page);
+      if (found.length) failures[mode] = found;
+    }
+    expect(failures).toEqual({});
+
+    // Rings: the segment draws on its label, a day chip on its pill.
+    const ring = (element) =>
+      element.evaluate((element) => {
+        const parse = (v) =>
+          v
+            .match(/\d+(\.\d+)?/g)
+            .slice(0, 3)
+            .map(Number);
+        const lum = (rgb) =>
+          rgb
+            .map((x) => {
+              x /= 255;
+              return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+            })
+            .reduce((sum, x, i) => sum + x * [0.2126, 0.7152, 0.0722][i], 0);
+        const style = getComputedStyle(element);
+        let e = element.parentElement;
+        while (
+          e &&
+          /rgba\(0, 0, 0, 0\)|transparent/.test(
+            getComputedStyle(e).backgroundColor,
+          )
+        )
+          e = e.parentElement;
+        const [a, b] = [
+          lum(parse(style.outlineColor)),
+          lum(parse(getComputedStyle(e).backgroundColor)),
+        ].sort((x, y) => y - x);
+        return { style: style.outlineStyle, ratio: (a + 0.05) / (b + 0.05) };
+      });
+    await page.locator("#schedule-mode-every").check();
+    await page.evaluate(() => window.__settingsIdle());
+    await page.locator("#schedule-mode-every").focus();
+    const segment = await ring(
+      page.locator(".schedule-segments .segment").first(),
+    );
+    await page.locator("#schedule-day-1").focus();
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#schedule-day-2")).toBeFocused();
+    const day = await ring(page.locator("#schedule-day-2 + span"));
+    for (const { style, ratio } of [segment, day]) {
+      expect(style).not.toBe("none");
+      expect(ratio).toBeGreaterThanOrEqual(3);
+    }
+  });
+});
+
 test("a rejected theme save restores the previous theme and reports it", async ({
   page,
   store,

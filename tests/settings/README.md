@@ -587,7 +587,7 @@ before concurrent readers and use explicit readiness rather than sleeps.
 Corrective regressions require explicit Save/Cancel before dirty unbind,
 preserving assignment permissions, reviewer overrides, enablement and unrelated
 Preferences drafts. They retain clean unbind cancellation/write/conflict checks,
-and label saved legacy intervals as polling-blocked without changing their bytes.
+and migrate saved legacy intervals to paused repositories in the saved zone.
 Obsolete clone-discovery and scope-selection cases were replaced by the new
 provider intake and Save-authorization regressions, not retained as hidden routes.
 

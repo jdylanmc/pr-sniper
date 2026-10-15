@@ -825,12 +825,13 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   ).not.toBeChecked();
 });
 
-test("R2 correction (superseded by ADR 0024): a legacy global interval keeps repository crons and becomes the saved zone", async ({
+test("R2 correction (superseded by ADR 0024): a legacy global interval leaves repositories paused and becomes the saved zone", async ({
   page,
   store,
   dataRoot,
 }, testInfo) => {
   const initial = await seed(store);
+  initial.repositories[0].enabled = true;
   initial.defaults.schedule = {
     kind: "interval",
     minutes: 7,
@@ -840,18 +841,22 @@ test("R2 correction (superseded by ADR 0024): a legacy global interval keeps rep
   const migrated = (await store("snapshot")).settings;
   expect(migrated.defaults.schedule).toBeUndefined();
   expect(migrated.time_zone).toBe("Europe/London");
-  expect(migrated.repositories.map((r) => r.cron)).toEqual(
-    initial.repositories.map((r) => r.cron),
-  );
+  // The interval never polled: repositories stay off on the default cron.
+  expect(migrated.repositories.map((r) => [r.cron, r.enabled])).toEqual([
+    ["*/30 * * * *", false],
+    ["*/30 * * * *", false],
+  ]);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await provider(page);
   await start(page, store);
   const editor = await repositorySettings(page, "fixture/compact");
   const schedule = editor.locator("[data-schedule]");
   await expect(schedule).not.toHaveAttribute("aria-busy", "true");
-  await expect(editor.locator("#schedule-cron")).toHaveValue(
-    "7 */2 * * MON-FRI",
-  );
+  await expect(editor.locator("#schedule-mode-every")).toBeChecked();
+  await expect(editor.locator("#schedule-every")).toHaveValue("30");
+  await expect(
+    editor.getByRole("switch", { name: "Monitor fixture/compact" }),
+  ).not.toBeChecked();
   await expect(schedule.locator("[data-schedule-zone]")).toHaveText(
     "Europe/London",
   );
