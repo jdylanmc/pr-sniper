@@ -444,6 +444,7 @@ fn duck_packet(claim: &crate::review::duck::DuckInput, created_at: &str) -> Pack
         preset: Some("ignored preset".into()),
         signature: "ignored signature".into(),
         voice: Some(crate::storage::Voice {
+            id: "6e0e2c1a-1b7e-4f43-9a3d-0f8f3e1b2c4d".into(),
             title: "Merlin".into(),
             body: "Speak in riddles.".into(),
             guardrails: true,

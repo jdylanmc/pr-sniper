@@ -103,6 +103,7 @@ fn run(state: OperationState, result: bool) -> ReviewRun {
     ReviewRun {
         mode: review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: pre_id_selection(),
@@ -189,6 +190,7 @@ fn follow_up(review: ReviewRun) -> FollowUp {
         tool_calls: 1,
         byte_coverage: false,
         coverage: None,
+        ducks: vec![],
     });
     run
 }

@@ -274,3 +274,69 @@ fn the_duck_may_be_the_primarys_own_agent() {
         AGENT
     );
 }
+
+#[test]
+fn the_duck_snapshot_resolves_doctrines_by_id_and_compares_by_lens_without_a_voice() {
+    let fixture = Fixture::new();
+    let mut value = legacy();
+    value["doctrines"] = json!([
+        {"title":"Correctness","body":"Trace state."},
+        {"title":"Boundaries","body":"Own meaning."}
+    ]);
+    value["voices"] = json!([{"title":"Merlin","body":"Speak in riddles."}]);
+    value["agents"][1]["doctrines"] = json!(["Boundaries", "Correctness"]);
+    value["repositories"][0]["assignments"][0]["rubber_duck"] = json!(DUCK);
+    write(&fixture, &value);
+    let store = fixture.store();
+    let settings = store.load_settings().unwrap();
+    let duck = settings.agents.iter().find(|a| a.id == DUCK).unwrap();
+    assert_eq!(duck.doctrine_ids.len(), 2);
+    let selection = Selection::resolve(&settings, &job(ASSIGNMENT), ASSIGNMENT).unwrap();
+    let snapshot = selection
+        .configuration
+        .clone()
+        .unwrap()
+        .rubber_duck
+        .unwrap();
+    let ids: Vec<_> = snapshot.doctrines.iter().map(|d| d.id.clone()).collect();
+    assert_eq!(ids, duck.doctrine_ids, "in the duck Agent's order, by id");
+    assert_eq!(snapshot.doctrines[0].title, "Boundaries");
+
+    let again =
+        |settings: &Settings| Selection::resolve(settings, &job(ASSIGNMENT), ASSIGNMENT).unwrap();
+    // A Voice on the duck is ignored: duck runs are caveman.
+    let mut voiced = settings.clone();
+    let voice = voiced.voices[0].id.clone();
+    voiced
+        .agents
+        .iter_mut()
+        .find(|a| a.id == DUCK)
+        .unwrap()
+        .voice_id = Some(voice);
+    assert!(selection.same_execution(&again(&voiced)));
+    // A duck Doctrine body or order change is a different execution.
+    let mut edited = settings.clone();
+    let id = &duck.doctrine_ids[0];
+    edited
+        .doctrines
+        .iter_mut()
+        .find(|d| &d.id == id)
+        .unwrap()
+        .body = "Changed.".into();
+    assert!(!selection.same_execution(&again(&edited)));
+    let mut reordered = settings.clone();
+    reordered
+        .agents
+        .iter_mut()
+        .find(|a| a.id == DUCK)
+        .unwrap()
+        .doctrine_ids
+        .reverse();
+    assert!(!selection.same_execution(&again(&reordered)));
+    // Unchanged settings: same execution; the captured snapshot is never rewritten.
+    assert!(selection.same_execution(&again(&settings)));
+    assert_eq!(
+        selection.configuration.unwrap().rubber_duck.unwrap(),
+        snapshot
+    );
+}
