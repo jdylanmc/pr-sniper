@@ -186,6 +186,9 @@ pub(super) struct DuckTool<T: Transport> {
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
     started: AtomicU32,
     tool_calls: AtomicU64,
+    /// Calls run as their own task so dropping the primary's handler cannot drop a
+    /// call mid-turn: it still aborts its turn and records itself.
+    me: std::sync::Weak<Self>,
 }
 
 impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
@@ -200,8 +203,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         operation: Operation,
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-    ) -> Self {
-        Self {
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|me| Self {
             engine,
             context,
             github,
@@ -214,7 +217,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             diagnostics,
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
-        }
+            me: me.clone(),
+        })
     }
 
     pub fn calls(&self) -> Vec<DuckCall> {
@@ -502,7 +506,15 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for DuckTool<T> {
                 query_bytes: Some(invocation.arguments.to_string().len()),
             });
         }
-        let outcome = self.consult(&invocation.arguments).await;
+        let outcome = match self.me.upgrade() {
+            Some(this) => {
+                let args = invocation.arguments.clone();
+                tokio::spawn(async move { this.consult(&args).await })
+                    .await
+                    .unwrap_or_else(|_| Err(DuckFailure::Failed.message(None)))
+            }
+            None => Err(DuckFailure::Unavailable.message(None)),
+        };
         if let Some(trace) = &self.diagnostics {
             trace.emit(DiagnosticEvent::ToolFinished {
                 call: number,

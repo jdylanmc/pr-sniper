@@ -1032,7 +1032,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         let duck = engine.map(|engine| {
             let local = request.local_gate.clone();
             let duck_operation = operation.clone();
-            Arc::new(duck_tool::DuckTool::new(
+            duck_tool::DuckTool::new(
                 engine,
                 duck_context,
                 duck_github,
@@ -1045,7 +1045,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     local()
                 }),
                 diagnostics.clone(),
-            ))
+            )
         });
         let session = session.insert(
             client

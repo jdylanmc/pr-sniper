@@ -590,7 +590,7 @@ async fn cancelling_the_primary_mid_call_stops_the_duck_and_leaves_no_turn() {
         }
         cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     });
-    let error = tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         Duration::from_secs(30),
         execute(
             options(root.path(), "duck-call"),
@@ -600,10 +600,15 @@ async fn cancelling_the_primary_mid_call_stops_the_duck_and_leaves_no_turn() {
         ),
     )
     .await
-    .expect("cancellation ends the attempt")
-    .unwrap_err();
+    .expect("cancellation ends the attempt");
     watcher.await.unwrap();
-    assert!(error.cancelled, "{}", error.message);
+    // The primary either stops on its own watchdog or exits after the duck's typed
+    // error; in both cases the operation is cancelled, so the host discards it
+    // (`copilot::Integration::review` checks the operation after the run).
+    match &outcome {
+        Err(error) => assert!(error.cancelled, "{}", error.message),
+        Ok(_) => assert!(operation.check().is_err()),
+    }
     // The duck client is torn down with the primary: no duck process, no live turn.
     stopped(&root.path().join("duck"));
     stopped(root.path());
