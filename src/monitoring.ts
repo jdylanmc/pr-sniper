@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { whenReleased } from "./stable-dom";
 import { actualIntelligence } from "./copilot";
 import { mountAutomation, type AutomationSnapshot } from "./automation";
 import type { PanelDetail } from "./panel";
@@ -912,7 +913,8 @@ export function renderMonitoring(
       void refreshAutomation();
       if (snapshot.items)
         queue(options.panel ? humanQueue(snapshot.items) : snapshot.items);
-      renderEvidence();
+      // Evidence controls redraw after a press ends so its click survives.
+      whenReleased(renderEvidence);
     } catch {
       snapshot = undefined;
       options.onSnapshot?.(undefined);

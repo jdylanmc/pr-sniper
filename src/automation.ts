@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { setText } from "./stable-dom";
 
 export interface AutomationSnapshot {
   paused: boolean;
@@ -23,12 +24,6 @@ export interface AutomationSnapshot {
 }
 
 export type FailureClass = "credentials" | "permission" | "network" | "other";
-
-// Rewriting unchanged text replaces the text node under the pointer; WebKit
-// then drops a click whose press landed on it. Only write real changes.
-function setText(element: Element, text: string) {
-  if (element.textContent !== text) element.textContent = text;
-}
 
 export function mountAutomation(
   root: HTMLElement,
@@ -62,7 +57,10 @@ export function mountAutomation(
       error.textContent = view.actionError ?? "";
       error.hidden = !error.textContent;
       onSnapshot?.(next);
-      status.textContent = `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked`;
+      setText(
+        status,
+        `${next.paused ? "Paused" : "Running"}; ${next.active} occupied / ${next.capacity} AI slots (${next.stopping} stopping); ${next.waiting} waiting; ${next.blocked} blocked`,
+      );
       const label = next.paused ? "Resume automation" : "Pause automation";
       if (options.compact) {
         button.setAttribute("aria-label", label);

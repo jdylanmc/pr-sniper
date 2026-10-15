@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { whenReleased } from "./stable-dom";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -2253,7 +2254,7 @@ export async function mountSettings(
             detail.textContent = repositoryMonitoringDetail(committed);
         });
     };
-    refreshRepositoryRows = rows;
+    refreshRepositoryRows = () => whenReleased(rows);
     renderAccounts();
     if (accountContent) accountParking.append(accountContent);
     content.querySelector<HTMLButtonElement>("#add-repository")!.onclick = (

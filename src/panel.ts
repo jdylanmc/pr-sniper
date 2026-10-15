@@ -18,6 +18,7 @@ import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
 import { terseError } from "./errors";
 import { inlineMarkdown } from "./markdown";
+import { setText, whenReleased } from "./stable-dom";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -352,7 +353,7 @@ export async function mountPanel(app: HTMLElement) {
       const runningCount = app.querySelector<HTMLElement>(
         "[data-running-count]",
       )!;
-      runningCount.textContent = value ? String(value.active) : "?";
+      setText(runningCount, value ? String(value.active) : "?");
       // A zero badge is noise; the count stays in the DOM for state checks.
       runningCount.dataset.zero = String(value?.active === 0);
       app.querySelector<HTMLButtonElement>(
@@ -530,24 +531,31 @@ export async function mountPanel(app: HTMLElement) {
     const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
     const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
     if (route.tab === "running") {
-      main.textContent = automation
-        ? `${automation.active - automation.stopping} / ${automation.capacity} running`
-        : "Unavailable";
-      detail.textContent = automation
-        ? `${waitingCount()} waiting${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
-        : "Occupancy unknown";
+      setText(
+        main,
+        automation
+          ? `${automation.active - automation.stopping} / ${automation.capacity} running`
+          : "Unavailable",
+      );
+      setText(
+        detail,
+        automation
+          ? `${waitingCount()} waiting${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
+          : "Occupancy unknown",
+      );
     } else {
       const items = humanQueue(snapshot?.items ?? []);
       const known = Array.isArray(snapshot?.items);
       const ready = items.filter(
         (item) => item.state === "machine_signed_off",
       ).length;
-      main.textContent = known
-        ? `${items.length} for you`
-        : "Queue unavailable";
-      detail.textContent = known
-        ? `${ready} ready / ${items.length - ready} need attention`
-        : "Handoffs unavailable";
+      setText(main, known ? `${items.length} for you` : "Queue unavailable");
+      setText(
+        detail,
+        known
+          ? `${ready} ready / ${items.length - ready} need attention`
+          : "Handoffs unavailable",
+      );
       const view = queueFilter ?? (ready > 0 ? "ready" : "attention");
       app.dataset.queueView = view;
       for (const button of summary.querySelectorAll<HTMLElement>(
@@ -557,18 +565,24 @@ export async function mountPanel(app: HTMLElement) {
           "aria-pressed",
           String(button.dataset.queueFilter === view),
         );
-      summary.querySelector<HTMLElement>("[data-queue-ready]")!.textContent =
-        known ? String(ready) : "?";
-      summary.querySelector<HTMLElement>(
-        "[data-queue-attention]",
-      )!.textContent = known ? String(items.length - ready) : "?";
-      summary.querySelector<HTMLElement>("[data-queue-capacity]")!.textContent =
-        automation ? `${automation.active}/${automation.capacity}` : "?";
-      summary.querySelector<HTMLElement>(
-        "[data-queue-work-status]",
-      )!.textContent = automation
-        ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${waitingCount()} waiting${automation.paused ? " / paused" : ""}`
-        : "Unavailable";
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-ready]")!,
+        known ? String(ready) : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-attention]")!,
+        known ? String(items.length - ready) : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-capacity]")!,
+        automation ? `${automation.active}/${automation.capacity}` : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-work-status]")!,
+        automation
+          ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${waitingCount()} waiting${automation.paused ? " / paused" : ""}`
+          : "Unavailable",
+      );
     }
   }
   function metadata(
@@ -580,7 +594,17 @@ export async function mountPanel(app: HTMLElement) {
       ? { title: `${work.reference} / ${work.agent}`, state: work.state }
       : undefined;
   }
+  // Lists redraw after a press ends so a refresh never drops its click.
+  const pendingRows = new Map<"running" | "reviewed", Row[]>();
+  const drawers = {
+    running: () => render("running", pendingRows.get("running") ?? []),
+    reviewed: () => render("reviewed", pendingRows.get("reviewed") ?? []),
+  };
   function draw(tab: "running" | "reviewed", rows: Row[]) {
+    pendingRows.set(tab, rows);
+    whenReleased(drawers[tab]);
+  }
+  function render(tab: "running" | "reviewed", rows: Row[]) {
     const limit = tab === "reviewed" ? reviewedLimit : rows.length;
     const signature = JSON.stringify([rows, limit]);
     if (listSignatures.get(tab) === signature) return;

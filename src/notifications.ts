@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { setText } from "./stable-dom";
 
 interface Notice {
   id: string;
@@ -97,8 +98,7 @@ export function mountNotificationSettings(
   )!;
   const status = root.querySelector<HTMLElement>("#notification-permission")!;
   const showAlert = (label: string | null) => {
-    status.querySelector("[data-notification-alert]")!.textContent =
-      label ?? "";
+    setText(status.querySelector("[data-notification-alert]")!, label ?? "");
     status.hidden = !label;
   };
   const error = root.querySelector<HTMLElement>("#notification-error")!;
