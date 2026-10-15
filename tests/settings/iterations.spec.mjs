@@ -76,12 +76,6 @@ async function iterationFixture(store, count = 7) {
       },
     ],
     monitoring: {
-      global_scan: {
-        schedule_key: "cron:*/15 * * * *:UTC",
-        next_run: 1_800_000_900,
-        pending: [],
-        requested: false,
-      },
       health: {
         [repository.id]: {
           repository_id: repository.id,
@@ -95,6 +89,7 @@ async function iterationFixture(store, count = 7) {
           last_attempt: 1_800_000_000,
           last_success: 1_800_000_001,
           next_run: 1_800_000_900,
+          scheduled_run: 1_800_000_900,
           schedule_available: true,
           last_failure: null,
           in_flight: false,
@@ -132,7 +127,8 @@ test("one global repository read exposes seven ordered independent jobs and immu
   await expect(page.locator("#agent-reviews article").first()).toContainText(
     "attempt 3",
   );
-  expect(before.global_scan.schedule_key).toBe("cron:*/15 * * * *:UTC");
+  expect(before.health[0].schedule_key).toBe("cron:*/15 * * * *:UTC");
+  expect(before.health[0].scheduled_run).toBe(1_800_000_900);
   expect(before.health[0].assignment_id).toBeNull();
   expect(before.jobs).toHaveLength(7);
   const admission = before.jobs[0].work?.admission ?? before.jobs[0];

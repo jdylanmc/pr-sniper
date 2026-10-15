@@ -57,7 +57,10 @@ impl From<SelectorInput> for Selector {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-    pub schedule: Schedule,
+    /// Legacy global schedule. Moved onto every repository on load and on
+    /// whole-settings saves (`Settings::migrate_global_schedule`); never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
     pub watched_authors: Vec<WatchedIdentity>,
     pub reviewer_assignment: bool,
     pub adapter: Adapter,
@@ -71,10 +74,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            schedule: Schedule::Cron {
-                expression: "*/15 * * * *".into(),
-                timezone: "UTC".into(),
-            },
+            schedule: None,
             watched_authors: Vec::new(),
             reviewer_assignment: true,
             adapter: Adapter::Copilot,
@@ -146,7 +146,9 @@ pub fn validate_configuration_text(value: &str) -> Result<(), String> {
 
 impl Policy {
     pub fn validate(&self) -> Result<(), String> {
-        self.schedule.validate()?;
+        if let Some(schedule) = &self.schedule {
+            schedule.validate()?;
+        }
         let mut identities = HashSet::new();
         for identity in &self.watched_authors {
             let valid_id = identity
@@ -215,10 +217,7 @@ impl PolicyOverrides {
 
     pub fn effective(&self, defaults: &Policy) -> Policy {
         Policy {
-            schedule: self
-                .schedule
-                .clone()
-                .unwrap_or_else(|| defaults.schedule.clone()),
+            schedule: self.schedule.clone().or_else(|| defaults.schedule.clone()),
             watched_authors: self
                 .watched_authors
                 .clone()

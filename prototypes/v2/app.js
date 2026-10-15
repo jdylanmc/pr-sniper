@@ -1023,7 +1023,7 @@ function repoEditor(id) {
     </details>
     <details class="group-card repo-disclosure schedule-details"><summary>Schedule and scope (prototype)</summary>
       ${row("New-PR-only scope", `<input type="checkbox" class="switch" name="scope" ${checked(repo.scope)} />`)}
-      ${row("Schedule", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
+      ${row("Schedule", `<select name="schedule">${option("interval", "Every", repo.schedule)}${option("cron", "Advanced", repo.schedule)}</select>`)}
       <div data-schedule="interval">${row("Every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
       <div data-schedule="cron">${row("Cron", input("cron", repo.cron))}${row("Time zone", input("zone", repo.zone))}</div>
       ${["start", "comments"].map((key) => row(key === "start" ? "Start reviews" : "Publish comments", `<select name="${key}">${option("inherit", `Default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On", repo[key])}${option("off", "Off", repo[key])}</select>`)).join("")}

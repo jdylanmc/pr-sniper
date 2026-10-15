@@ -55,7 +55,7 @@ fn configured(count: usize) -> (Fixture, Store, Monitor) {
         "launch_at_login":false, "doctrines":[],
         "repositories":[{
             "id":REPO,"provider":"github","name":"example/repo","enabled":true,
-            "provider_account_id":"22","provider_repository_id":"100",
+            "cron":"*/15 * * * *","provider_account_id":"22","provider_repository_id":"100",
             "watched_authors":[{"id":"11","login":"author"}]
         }]
     }))
@@ -705,12 +705,7 @@ fn seven_way_fanout_successful_pass_dedupe_restart_and_next_scan_assignment_reco
         .unwrap()
         .is_empty());
     assert_eq!(store.load_queue().unwrap().len(), 7);
-    let due = store
-        .load_monitoring_state()
-        .unwrap()
-        .global_scan
-        .unwrap()
-        .next_run;
+    let due = store.load_monitoring_state().unwrap().health[REPO].scheduled_run;
     let ticket = monitor
         .prepare_checks(&store, due, false)
         .unwrap()
@@ -815,7 +810,7 @@ fn retries_do_not_allocate_another_normal_pass_or_change_fifo_metadata() {
 }
 
 #[test]
-fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan() {
+fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_scheduled_run() {
     let (_fixture, store, mut monitor) = configured(1);
     let ticket = monitor.prepare_checks(&store, NOW, true).unwrap().remove(0);
     let mut settings = store.load_settings().unwrap();
@@ -825,12 +820,7 @@ fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan(
         .finish(&store, ticket, Ok(result(vec![pull('a')])), NOW + 1)
         .is_err());
     assert!(store.load_queue().unwrap().is_empty());
-    let due = store
-        .load_monitoring_state()
-        .unwrap()
-        .global_scan
-        .unwrap()
-        .next_run;
+    let due = store.load_monitoring_state().unwrap().health[REPO].scheduled_run;
     let ticket = monitor
         .prepare_checks(&store, due, false)
         .unwrap()
@@ -1343,7 +1333,7 @@ fn legacy_assignment_retry_health_collapses_without_resetting_the_operation_or_b
     health.assignment_id = Some("cccccccc-cccc-4ccc-8ccc-000000000001".into());
     health.schedule_key = "interval:2:UTC".into();
     health.scan_assignments.clear();
-    state.global_scan = None;
+    health.scan_pending = false;
     state.health.insert(
         format!("{REPO}:assignment:cccccccc-cccc-4ccc-8ccc-000000000001"),
         health,
@@ -1503,20 +1493,20 @@ fn closure_after_an_unseen_push_also_terminates_superseded_heads() {
 }
 
 #[test]
-fn legacy_global_interval_is_preserved_and_reported_instead_of_silently_retimed() {
+fn a_legacy_global_interval_keeps_repository_crons_and_moves_its_zone() {
     let (_fixture, store, mut monitor) = configured(1);
     let mut settings = store.load_settings().unwrap();
-    settings.defaults.schedule = monitoring_schedule();
+    settings.defaults.schedule = Some(monitoring_schedule());
     store.save_settings(&settings).unwrap();
-    assert!(monitor
-        .prepare_checks(&store, NOW, true)
-        .unwrap()
-        .is_empty());
+    let saved = store.load_settings().unwrap();
+    assert_eq!(saved.defaults.schedule, None);
+    assert_eq!(saved.time_zone, "America/New_York");
+    assert_eq!(saved.repositories[0].cron, "*/15 * * * *");
+    assert_eq!(monitor.prepare_checks(&store, NOW, true).unwrap().len(), 1);
     assert_eq!(
-        monitor.snapshot()[0].last_failure.as_deref(),
-        Some("invalid_global_cron")
+        monitor.snapshot()[0].schedule_key,
+        "cron:*/15 * * * *:America/New_York"
     );
-    assert_eq!(store.load_settings().unwrap(), settings);
 }
 
 fn monitoring_schedule() -> pr_sniper_lib::policy::Schedule {

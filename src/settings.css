@@ -1962,9 +1962,157 @@
   color: var(--resource-muted);
   font-size: 10px;
 }
-.repository-editor [data-global-schedule] {
-  background: var(--bg-teal-f0f6f7);
-  font-size: 11px;
+/* Repository schedule builder: labeled controls, next runs as values. */
+.repository-editor .schedule-builder [data-schedule-body] {
+  display: grid;
+  gap: 12px;
+}
+.repository-editor .schedule-field {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.repository-editor .schedule-field legend,
+.repository-editor .schedule-row > span,
+.repository-editor .schedule-hours label > span {
+  padding: 0 0 6px;
+  color: var(--panel-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.repository-editor .schedule-row,
+.repository-editor .schedule-hours label {
+  display: grid;
+  min-width: 0;
+}
+.repository-editor .schedule-segments {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  box-sizing: border-box;
+  width: 100%;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-slate-d6dde6);
+}
+.repository-editor .schedule-segments .segment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 5px 6px;
+  border-radius: 999px;
+  color: var(--text-slate-526274);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.settings-window .repository-editor .schedule-segments input[type="radio"],
+.repository-editor .schedule-day input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.repository-editor .schedule-segments[data-value="every"] .segment:nth-child(1),
+.repository-editor
+  .schedule-segments[data-value="hourly"]
+  .segment:nth-child(2),
+.repository-editor .schedule-segments[data-value="daily"] .segment:nth-child(3),
+.repository-editor
+  .schedule-segments[data-value="advanced"]
+  .segment:nth-child(4) {
+  background: var(--bg-teal-327e84);
+  color: var(--text-inverse);
+}
+.repository-editor .schedule-segments .segment:focus-within,
+.repository-editor .schedule-day input:focus-visible + span {
+  outline: 2px solid var(--focus-teal-327e84);
+  outline-offset: 1px;
+}
+.repository-editor .schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.repository-editor .schedule-day {
+  position: relative;
+  display: grid;
+}
+.repository-editor .schedule-day span {
+  min-width: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-slate-cdd8e2);
+  border-radius: 999px;
+  color: var(--text-slate-526274);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.repository-editor .schedule-day input:checked + span {
+  border-color: var(--bg-teal-327e84);
+  background: var(--bg-teal-327e84);
+  color: var(--text-inverse);
+}
+.repository-editor .schedule-times {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.repository-editor .schedule-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.repository-editor .schedule-time input {
+  flex: 1;
+  min-width: 0;
+}
+.repository-editor .schedule-time button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.repository-editor .schedule-time button svg {
+  width: 16px;
+  height: 16px;
+}
+.repository-editor .schedule-hours {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.repository-editor .schedule-hours[hidden] {
+  display: none;
+}
+.repository-editor #schedule-cron {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.repository-editor .schedule-preview small {
+  margin: 0 0 4px;
+}
+.repository-editor .schedule-runs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--panel-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.repository-editor .schedule-runs:empty {
+  display: none;
+}
+.repository-editor [data-schedule-error][hidden] {
+  display: none;
 }
 .panel-shell .shared-resource-host.dialog-fallback {
   padding: 12px;
@@ -3243,8 +3391,7 @@
 
 /* Repository editor: compact cards, no prose. */
 .panel-shell .repository-editor .repository-identity,
-.panel-shell .repository-editor [data-repository-monitoring-state],
-.panel-shell .repository-editor [data-global-schedule] {
+.panel-shell .repository-editor [data-repository-monitoring-state] {
   display: none;
 }
 .panel-shell .repository-editor .dialog-body {

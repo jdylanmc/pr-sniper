@@ -210,8 +210,8 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
             "voice_catalog_version": 1,
             "capacity": 4,
             "admission_migration_version": 1,
+            "time_zone": "UTC",
             "defaults": {
-                "schedule": {"kind":"cron","expression":"*/15 * * * *","timezone":"UTC"},
                 "watched_authors": [],
                 "reviewer_assignment": true,
                 "adapter": "copilot",
@@ -294,6 +294,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
         provider: ProviderId::Github,
         name: "octo/example".into(),
         enabled: true,
+        cron: "*/30 * * * *".into(),
         provider_account_id: Some("202".into()),
         legacy_installation_id: None,
         provider_repository_id: Some("42".into()),
@@ -341,6 +342,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         provider: ProviderId::AzureDevops,
         name: "organization/project/repository".into(),
         enabled: true,
+        cron: "*/30 * * * *".into(),
         provider_account_id: Some("entra-object-id".into()),
         legacy_installation_id: None,
         provider_repository_id: Some("repository-guid".into()),
@@ -489,10 +491,7 @@ fn typescript_tool_registry_mirrors_the_rust_registry() {
 
 #[test]
 fn only_a_brand_new_profile_takes_the_initial_time_zone() {
-    let zone = |store: &Store| match store.load_settings().unwrap().defaults.schedule {
-        pr_sniper_lib::policy::Schedule::Cron { timezone, .. }
-        | pr_sniper_lib::policy::Schedule::Interval { timezone, .. } => timezone,
-    };
+    let zone = |store: &Store| store.load_settings().unwrap().time_zone;
     let fresh = tempfile::tempdir().unwrap();
     let created = Store::new(fresh.path().into()).with_initial_time_zone("Asia/Tokyo".into());
     assert_eq!(zone(&created), "Asia/Tokyo");
@@ -566,5 +565,119 @@ fn invalid_theme_values_are_rejected() {
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
         assert!(serde_json::from_str::<Theme>(value).is_err());
+    }
+}
+
+fn legacy_settings_file(fixture: &Fixture, defaults: &str) -> std::path::PathBuf {
+    let path = fixture.path().join("config/settings.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            r#"{{
+          "launch_at_login": false,{defaults}
+          "repositories": [
+            {{"id": "c53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
+              "name": "octo/one", "enabled": false}},
+            {{"id": "d53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
+              "name": "octo/two", "enabled": false}}
+          ]
+        }}"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn the_global_cron_moves_onto_every_repository_once() {
+    let fixture = Fixture::new();
+    let path = legacy_settings_file(
+        &fixture,
+        r#""defaults": {
+            "schedule": {"kind":"cron","expression":"0 9 * * MON-FRI","timezone":"Europe/Paris"},
+            "watched_authors": [], "reviewer_assignment": true, "adapter": "copilot",
+            "selector": {"kind":"default"}, "prompt": "Review.",
+            "automatic_agent_start": false, "automatic_comment_publication": false
+          },"#,
+    );
+    let settings = fixture.store().load_settings().unwrap();
+    assert_eq!(settings.time_zone, "Europe/Paris");
+    assert_eq!(settings.defaults.schedule, None);
+    assert!(settings
+        .repositories
+        .iter()
+        .all(|repository| repository.cron == "0 9 * * MON-FRI"));
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(written["defaults"].get("schedule").is_none());
+    assert_eq!(written["time_zone"], "Europe/Paris");
+    assert_eq!(written["repositories"][1]["cron"], "0 9 * * MON-FRI");
+
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+    assert_eq!(fs::read(&path).unwrap(), bytes, "migration runs once");
+}
+
+#[test]
+fn files_without_a_saved_schedule_keep_the_former_default_cadence() {
+    let fixture = Fixture::new();
+    legacy_settings_file(&fixture, "");
+    let settings = fixture.store().load_settings().unwrap();
+    assert_eq!(settings.time_zone, "UTC");
+    assert!(settings
+        .repositories
+        .iter()
+        .all(|repository| repository.cron == "*/15 * * * *"));
+}
+
+#[test]
+fn new_repositories_default_to_every_thirty_minutes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let added = store.add_repository("octo/example").unwrap();
+    assert_eq!(added.repositories[0].cron, "*/30 * * * *");
+    let mut value = serde_json::to_value(&added.repositories[0]).unwrap();
+    value.as_object_mut().unwrap().remove("cron");
+    value["id"] = "e53ae3be-2ad5-44aa-b257-9298186e1c6f".into();
+    value["name"] = "octo/other".into();
+    value["enabled"] = false.into();
+    let created = store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: "e53ae3be-2ad5-44aa-b257-9298186e1c6f".into(),
+            expected: None,
+            value: Some(Box::new(serde_json::from_value(value).unwrap())),
+        })
+        .unwrap();
+    assert_eq!(created.repositories[1].cron, "*/30 * * * *");
+}
+
+#[test]
+fn repository_saves_reject_crons_that_cannot_run() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let saved = store.add_repository("octo/example").unwrap();
+    let path = fixture.path().join("config/settings.json");
+    let before = fs::read(&path).unwrap();
+    for cron in [
+        "",
+        "* * * *",
+        "0 0 * * * *",
+        "61 * * * *",
+        "0 0 30 2 *",
+        "@hourly",
+    ] {
+        let mut value = saved.repositories[0].clone();
+        value.cron = cron.into();
+        assert!(
+            store
+                .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+                    id: value.id.clone(),
+                    expected: Some(Box::new(saved.repositories[0].clone())),
+                    value: Some(Box::new(value)),
+                })
+                .is_err(),
+            "{cron:?}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 }

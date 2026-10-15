@@ -555,6 +555,7 @@ test("legacy Agent becomes explicitly account/model bound and survives a real st
       provider: "github",
       name: "fixture/repository",
       enabled: true,
+      cron: "*/30 * * * *",
       assignments: [
         {
           id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",

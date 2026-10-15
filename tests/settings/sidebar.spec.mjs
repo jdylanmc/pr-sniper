@@ -149,11 +149,9 @@ test("new assignments use the global policy while cancelled drafts never opt int
   const saved = JSON.parse(
     await readFile(join(dataRoot, "config/settings.json"), "utf8"),
   );
-  expect(saved.repositories[0].assignments[0].schedule).toEqual({
-    kind: "cron",
-    expression: "*/15 * * * *",
-    timezone: "UTC",
-  });
+  // Schedules belong to repositories; new assignments carry none.
+  expect(saved.repositories[0].assignments[0].schedule).toBeUndefined();
+  expect(saved.repositories[0].cron).toBe(initial.repositories[0].cron);
   expect(saved.repositories[0].assignments[0].comment).toBe(false);
   expect(saved.defaults).toEqual(initial.defaults);
   expect(saved.launch_at_login).toBe(false);
@@ -396,6 +394,9 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   };
   initial.defaults.prompt = "Keep this exact custom prompt.\nAnd its newline.";
   await store("seed_settings", initial);
+  const seeded = (await store("snapshot")).settings;
+  expect(seeded.repositories[0].cron).toBe("0 9 * * MON-FRI");
+  expect(seeded.time_zone).toBe("Europe/London");
   await page.goto("/?view=settings");
   let modal = await assignment(page, "fixture/project");
   await assignmentView(page, modal, "permissions");
@@ -412,7 +413,7 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = (await store("snapshot")).settings;
-  expect(saved.defaults).toEqual(initial.defaults);
+  expect(saved.defaults).toEqual(seeded.defaults);
   expect(saved.repositories[0].assignments[0]).toMatchObject({
     comment: false,
     approve: false,

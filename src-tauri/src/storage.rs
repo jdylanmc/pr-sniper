@@ -96,6 +96,10 @@ pub struct Settings {
     /// Omitted when Light so default files stay readable by earlier versions.
     #[serde(default, skip_serializing_if = "Theme::is_light")]
     pub theme: Theme,
+    /// IANA zone for every repository schedule. Always written. Files without
+    /// it predate repository schedules and get `migrate_global_schedule` on load.
+    #[serde(default = "utc")]
+    pub time_zone: String,
 }
 
 /// Panel appearance. `Os` follows the current system light/dark appearance.
@@ -118,6 +122,14 @@ pub const ADMISSION_MIGRATION_VERSION: u32 = 1;
 
 fn admission_migration_version() -> u32 {
     ADMISSION_MIGRATION_VERSION
+}
+
+fn utc() -> String {
+    "UTC".into()
+}
+
+fn default_cron() -> String {
+    crate::schedule::DEFAULT_CRON.into()
 }
 
 fn default_capacity() -> u32 {
@@ -169,6 +181,7 @@ impl Default for Settings {
             rubber_duck: DuckLimits::default(),
             admission_migration_version: admission_migration_version(),
             theme: Theme::Light,
+            time_zone: utc(),
         }
     }
 }
@@ -366,7 +379,9 @@ pub struct AiAccount {
 pub struct Assignment {
     pub id: String,
     pub agent_id: String,
-    pub schedule: Schedule,
+    /// Legacy assignment schedule: readable, never consulted or written anew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
     pub comment: bool,
     #[serde(default)]
     pub approve: bool,
@@ -465,6 +480,7 @@ pub struct SavedSettings {
 pub struct GlobalPreferences {
     pub defaults: Policy,
     pub capacity: u32,
+    pub time_zone: String,
     pub root_folder: Option<String>,
     pub presets: Vec<ReviewPreset>,
     pub default_review_preset: Option<String>,
@@ -599,6 +615,9 @@ pub struct Repository {
     pub provider: ProviderId,
     pub name: String,
     pub enabled: bool,
+    /// Five-field cron, evaluated in `Settings::time_zone`.
+    #[serde(default = "default_cron")]
+    pub cron: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_account_id: Option<String>,
     #[serde(default, rename = "installation_id", skip_serializing)]
@@ -705,6 +724,7 @@ impl Settings {
         GlobalPreferences {
             defaults: self.defaults.clone(),
             capacity: self.capacity,
+            time_zone: self.time_zone.clone(),
             root_folder: self.root_folder.clone(),
             presets: self.presets.clone(),
             default_review_preset: self.default_review_preset.clone(),
@@ -714,9 +734,6 @@ impl Settings {
 
     pub fn readiness(&self) -> ResourceReadiness {
         let mut issues = Vec::new();
-        if !matches!(self.defaults.schedule, Schedule::Cron { .. }) {
-            issues.push("Choose a global five-field cron schedule; the saved legacy interval is retained until explicitly replaced.".into());
-        }
         if !self.repositories.iter().any(|r| r.enabled) {
             issues.push("Select at least one repository. Monitoring has not been enabled.".into());
         }
@@ -819,6 +836,11 @@ impl Settings {
             );
         }
         self.defaults.validate()?;
+        if self.time_zone.parse::<chrono_tz::Tz>().is_err() {
+            return Err(
+                "Enter an explicit IANA time zone, such as UTC or America/New_York.".into(),
+            );
+        }
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
         }
@@ -958,6 +980,8 @@ impl Settings {
             if !bindings.insert(binding) {
                 return Err("Repository bindings must be unique.".into());
             }
+            crate::schedule::validate_cron(&repository.cron)
+                .map_err(|error| format!("{}: {error}", repository.name))?;
             repository.overrides.effective(&self.defaults).validate()?;
             if let Some(admission) = &repository.admission {
                 admission.validate()?;
@@ -1000,7 +1024,9 @@ impl Settings {
                         "The Rubber duck Agent no longer exists. Choose a local agent.".into(),
                     );
                 }
-                assignment.schedule.validate()?;
+                if let Some(schedule) = &assignment.schedule {
+                    schedule.validate()?;
+                }
                 if assignment
                     .tools
                     .iter()
@@ -1037,6 +1063,33 @@ impl Settings {
             }
         }
         Ok(())
+    }
+
+    /// Moves a legacy global schedule onto every repository: a cron becomes
+    /// each repository's cron, a legacy interval leaves each repository's
+    /// cron unchanged; its zone becomes the saved time zone. An invalid legacy
+    /// schedule is rejected, never silently dropped. True when one was moved.
+    pub fn migrate_global_schedule(&mut self) -> Result<bool, String> {
+        if let Some(schedule) = &self.defaults.schedule {
+            schedule.validate()?;
+        }
+        let Some(schedule) = self.defaults.schedule.take() else {
+            return Ok(false);
+        };
+        let timezone = match schedule {
+            Schedule::Cron {
+                expression,
+                timezone,
+            } => {
+                for repository in &mut self.repositories {
+                    repository.cron.clone_from(&expression);
+                }
+                timezone
+            }
+            Schedule::Interval { timezone, .. } => timezone,
+        };
+        self.time_zone = timezone;
+        Ok(true)
     }
 
     pub fn effective_policy(&self, id: &str) -> Option<Policy> {
@@ -1558,13 +1611,12 @@ impl Store {
                 if settings.global_preferences() != expected {
                     return Err(conflict.into());
                 }
-                if value.defaults.schedule != expected.defaults.schedule
-                    && !matches!(value.defaults.schedule, Schedule::Cron { .. })
-                {
-                    return Err("Choose one global five-field cron expression.".into());
+                if value.defaults.schedule.is_some() {
+                    return Err("Schedules belong to repositories.".into());
                 }
                 settings.defaults = value.defaults;
                 settings.capacity = value.capacity;
+                settings.time_zone = value.time_zone;
                 settings.root_folder = value.root_folder;
                 settings.presets = value.presets;
                 settings.default_review_preset = value.default_review_preset;
@@ -1620,12 +1672,6 @@ impl Store {
             if repository.provider != ProviderId::Github || repository.account_binding().is_none() {
                 return Err(format!(
                     "{}: bind a supported GitHub account and repository before enabling monitoring.",
-                    repository.name
-                ));
-            }
-            if !matches!(settings.defaults.schedule, Schedule::Cron { .. }) {
-                return Err(format!(
-                    "{}: choose a global five-field cron schedule in Preferences before enabling monitoring.",
                     repository.name
                 ));
             }
@@ -1694,6 +1740,7 @@ impl Store {
     ) -> Result<Settings, String> {
         // Whole-settings saves may carry pre-id library shapes.
         settings.migrate_library_ids();
+        settings.migrate_global_schedule()?;
         let current = self.load_settings()?;
         if &current != expected {
             return Err("Settings changed in another window. Reload Settings before saving; your draft has not been written.".into());
@@ -1731,12 +1778,7 @@ impl Store {
                     voices: crate::seeds::voices(),
                     ..Settings::default()
                 };
-                match &mut settings.defaults.schedule {
-                    crate::policy::Schedule::Cron { timezone, .. }
-                    | crate::policy::Schedule::Interval { timezone, .. } => {
-                        timezone.clone_from(&self.initial_time_zone)
-                    }
-                }
+                settings.time_zone.clone_from(&self.initial_time_zone);
                 settings.validate()?;
                 self.write_settings(&settings)?;
                 return Ok(settings);
@@ -1753,6 +1795,8 @@ impl Store {
             admission_migration_version: Option<u32>,
             #[serde(default)]
             voice_catalog_version: Option<u32>,
+            #[serde(default)]
+            time_zone: Option<serde::de::IgnoredAny>,
         }
         // API-created settings default to the current version; only unversioned
         // on-disk pre-alpha settings need the one-time reconciliation.
@@ -1760,6 +1804,32 @@ impl Store {
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
         let reconcile_doctrines = saved_version.doctrine_catalog_version.is_none();
         let migrate_admission = saved_version.admission_migration_version.is_none();
+        // Files without a saved time zone predate repository schedules; a file
+        // with no saved global schedule ran on the then-default cron. Only a
+        // real change is written, like the admission migration.
+        let saved_schedule = settings.defaults.schedule.is_some();
+        let schedules = |settings: &Settings| {
+            let crons: Vec<_> = settings
+                .repositories
+                .iter()
+                .map(|r| r.cron.clone())
+                .collect();
+            (settings.time_zone.clone(), crons)
+        };
+        let unmigrated = schedules(&settings);
+        if saved_version.time_zone.is_none() {
+            settings
+                .defaults
+                .schedule
+                .get_or_insert_with(|| Schedule::Cron {
+                    expression: crate::schedule::LEGACY_DEFAULT_CRON.into(),
+                    timezone: "UTC".into(),
+                });
+        }
+        settings
+            .migrate_global_schedule()
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        let migrated_schedule = saved_schedule || schedules(&settings) != unmigrated;
         // One-time seed for files that predate Voices; never a top-up.
         let seed_voices = saved_version.voice_catalog_version.is_none();
         if seed_voices {
@@ -1859,6 +1929,7 @@ impl Store {
             || migrated_ids
             || reconciled_permissions
             || migrated_admission
+            || migrated_schedule
         {
             self.write_settings(&settings)?;
         }
@@ -1875,6 +1946,7 @@ impl Store {
         // Callers may still hand in pre-id shapes (fixtures, imports).
         let mut settings = settings.clone();
         settings.migrate_library_ids();
+        settings.migrate_global_schedule()?;
         let settings = &settings;
         settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
@@ -1907,6 +1979,7 @@ impl Store {
             provider: ProviderId::Github,
             name,
             enabled: true,
+            cron: default_cron(),
             provider_account_id: None,
             legacy_installation_id: None,
             provider_repository_id: None,

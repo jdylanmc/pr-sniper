@@ -251,7 +251,7 @@ test("grouped overview uses saved counts and all six destinations return focus a
       page.getByRole("button", { name: "New doctrine", exact: true }),
     ],
     ["Voices", page.getByRole("button", { name: "New voice", exact: true })],
-    ["Preferences", page.getByLabel("Cron expression", { exact: true })],
+    ["Preferences", page.locator("#global-timezone")],
   ]) {
     await row(page, name).scrollIntoViewIfNeeded();
     const scroll = await page
@@ -363,9 +363,7 @@ test("overview retains preference and repository drafts without claiming them in
   await tab(page, "Settings").click();
   await section(page, "Preferences");
   await page.getByLabel("AI capacity", { exact: true }).fill("7");
-  await page
-    .getByLabel("Cron expression", { exact: true })
-    .fill("*/23 * * * *");
+  await page.locator("#global-timezone").selectOption("Asia/Tokyo");
   await back(page).click();
   await expect(page.locator('[data-settings-count="capacity"]')).toHaveCount(0);
   await expect(row(page, "Concurrent reviews")).toHaveCount(0);
@@ -389,9 +387,7 @@ test("overview retains preference and repository drafts without claiming them in
   await expect(page.getByLabel("AI capacity", { exact: true })).toHaveValue(
     "7",
   );
-  await expect(page.getByLabel("Cron expression", { exact: true })).toHaveValue(
-    "*/23 * * * *",
-  );
+  await expect(page.locator("#global-timezone")).toHaveValue("Asia/Tokyo");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();

@@ -20,6 +20,7 @@ pub mod publication;
 pub mod queue;
 pub mod retention;
 pub mod review;
+pub mod schedule;
 mod seeds;
 pub mod startup;
 pub mod storage;
@@ -4133,6 +4134,20 @@ fn time_zones() -> Vec<&'static str> {
 }
 
 #[tauri::command]
+fn preview_schedule(
+    host: State<'_, Host>,
+    request: schedule::PreviewRequest,
+) -> Result<schedule::Preview, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    schedule::preview_saved(&store, request, now_seconds()?)
+}
+
+#[tauri::command]
+fn describe_schedules(crons: Vec<String>) -> Vec<Option<schedule::Builder>> {
+    schedule::describe(&crons)
+}
+
+#[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
     panel::show(&app, Some(panel::Route::tab(panel::Tab::Settings)))
         .await
@@ -4312,6 +4327,8 @@ pub fn run() {
             diagnostics,
             open_settings,
             time_zones,
+            preview_schedule,
+            describe_schedules,
             open_queue_destination,
             open_queue_item,
             panel::panel_snapshot,
@@ -4748,6 +4765,7 @@ mod github_auth_tests {
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),
             enabled: true,
+            cron: "*/15 * * * *".into(),
             provider_account_id: Some("22".into()),
             legacy_installation_id: None,
             provider_repository_id: Some("100".into()),

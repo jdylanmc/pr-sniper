@@ -59,6 +59,20 @@ import { mountNotificationSettings } from "./notifications";
 import { copyDiagnostics } from "./diagnostics";
 import type { AutomationSnapshot } from "./automation";
 import { applyTheme, currentTheme, isTheme, themeOptions } from "./theme";
+import {
+  ALL_DAYS,
+  DAY_NAMES,
+  DEFAULT_CRON,
+  EVERY_MINUTES,
+  WEEK,
+  describeSchedules,
+  everyLabel,
+  formatRun,
+  previewSchedule,
+  scheduleSummary,
+  type SchedulePreview,
+  type ScheduleRequest,
+} from "./schedule";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -560,6 +574,7 @@ export async function mountSettings(
     error.textContent = "";
   };
   const repositories = () => draft.repositories ?? [];
+  const scheduleSummaries = new Map<string, string>();
   const doctrines = () => draft.doctrines ?? [];
   const voices = () => draft.voices ?? [];
   const agents = () => draft.agents ?? [];
@@ -2350,6 +2365,28 @@ export async function mountSettings(
       });
   }
 
+  /** Compact values for saved crons; the backend decodes them. */
+  async function refreshScheduleSummaries() {
+    const missing = [
+      ...new Set(repositories().map((repository) => repository.cron)),
+    ].filter((cron) => !scheduleSummaries.has(cron));
+    if (missing.length) {
+      const builders = await describeSchedules(missing).catch(() => []);
+      missing.forEach((cron, index) =>
+        scheduleSummaries.set(cron, scheduleSummary(builders[index], cron)),
+      );
+    }
+    content
+      .querySelectorAll<HTMLElement>("[data-repository-schedule]")
+      .forEach((node) => {
+        const repository = repositories().find(
+          (r) => r.id === node.dataset.repositorySchedule,
+        );
+        if (repository)
+          node.textContent = scheduleSummaries.get(repository.cron) ?? "";
+      });
+  }
+
   function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
@@ -2395,7 +2432,7 @@ export async function mountSettings(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2475,6 +2512,7 @@ export async function mountSettings(
             );
         });
       restore();
+      void refreshScheduleSummaries();
     };
     const updateMonitoringDetails = () => {
       content
@@ -2528,6 +2566,7 @@ export async function mountSettings(
         id: newIdentity(),
         name: resolved.repository.name,
         enabled: false,
+        cron: DEFAULT_CRON,
         provider: "github",
         provider_account_id: accountId,
         provider_repository_id: resolved.repository.id,
@@ -3041,11 +3080,294 @@ export async function mountSettings(
     void load();
   }
 
+  type ScheduleMode = "every" | "hourly" | "daily" | "advanced";
+  interface ScheduleState {
+    mode: ScheduleMode;
+    every: number;
+    minute: number;
+    times: string[];
+    days: number[];
+    limit: boolean;
+    start: number;
+    end: number;
+    cron: string;
+  }
+  const scheduleModes: [ScheduleMode, string][] = [
+    ["every", "Every"],
+    ["hourly", "Hourly"],
+    ["daily", "Daily"],
+    ["advanced", "Advanced"],
+  ];
+  const hourLabel = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+
+  function scheduleState(preview: SchedulePreview): ScheduleState {
+    const state: ScheduleState = {
+      mode: "advanced",
+      every: 30,
+      minute: 0,
+      times: ["09:00"],
+      days: [...ALL_DAYS],
+      limit: false,
+      start: 9,
+      end: 18,
+      cron: preview.cron,
+    };
+    const builder = preview.builder;
+    if (!builder) return state;
+    state.days = [...builder.days];
+    if (builder.hours) {
+      state.limit = true;
+      state.start = builder.hours.start;
+      state.end = builder.hours.end;
+    }
+    const cadence = builder.cadence;
+    state.mode = cadence.kind;
+    if (cadence.kind === "every") state.every = cadence.minutes;
+    else if (cadence.kind === "hourly") state.minute = cadence.minute;
+    else state.times = [...cadence.times];
+    return state;
+  }
+
+  function scheduleRequest(state: ScheduleState): ScheduleRequest {
+    if (state.mode === "advanced") return { kind: "cron", cron: state.cron };
+    const cadence =
+      state.mode === "every"
+        ? { kind: "every" as const, minutes: state.every }
+        : state.mode === "hourly"
+          ? { kind: "hourly" as const, minute: state.minute }
+          : { kind: "daily" as const, times: state.times };
+    return {
+      kind: "builder",
+      builder: {
+        cadence,
+        days: state.days,
+        ...(state.limit && state.mode !== "daily"
+          ? { hours: { start: state.start, end: state.end } }
+          : {}),
+      },
+    };
+  }
+
+  /** The repository editor's schedule. The backend encodes, decodes and
+   * validates the cron and computes the preview in the saved time zone. */
+  function scheduleBuilder(modal: HTMLDialogElement, repository: Repository) {
+    const section = modal.querySelector<HTMLElement>("[data-schedule]")!;
+    const body = section.querySelector<HTMLElement>("[data-schedule-body]")!;
+    const alert = section.querySelector<HTMLElement>("[data-schedule-error]")!;
+    const runs = section.querySelector<HTMLElement>("[data-schedule-runs]")!;
+    let state: ScheduleState | undefined;
+    let read = 0;
+    let pending: Promise<void> = Promise.resolve();
+    let failure: string | undefined;
+
+    const show = (preview: SchedulePreview) => {
+      failure = undefined;
+      alert.hidden = true;
+      alert.textContent = "";
+      body
+        .querySelectorAll("[aria-invalid]")
+        .forEach((control) => control.removeAttribute("aria-invalid"));
+      runs.innerHTML = preview.next_runs
+        .map(
+          (run) =>
+            `<li><time datetime="${new Date(run * 1000).toISOString()}">${escape(formatRun(run, saved.time_zone))}</time></li>`,
+        )
+        .join("");
+    };
+    const fail = (message: string) => {
+      failure = message;
+      alert.textContent = message;
+      alert.hidden = false;
+      runs.innerHTML = "";
+      if (state?.mode === "advanced")
+        body
+          .querySelector("#schedule-cron")
+          ?.setAttribute("aria-invalid", "true");
+    };
+    const request = (
+      value: ScheduleRequest,
+      accept: (preview: SchedulePreview) => void,
+    ) => {
+      const current = ++read;
+      section.setAttribute("aria-busy", "true");
+      pending = previewSchedule(value).then(
+        (preview) => {
+          if (current !== read || !section.isConnected) return;
+          accept(preview);
+          show(preview);
+        },
+        (cause) => {
+          if (current !== read || !section.isConnected) return;
+          fail(reason(cause));
+        },
+      );
+      void pending.finally(() => {
+        if (current === read) section.removeAttribute("aria-busy");
+      });
+    };
+    const update = () => {
+      if (!state) return;
+      if (state.mode === "advanced") {
+        // Saved as typed; the backend rejects an invalid cron on Save too.
+        repository.cron = state.cron.trim();
+        changed();
+      }
+      request(scheduleRequest(state), (preview) => {
+        repository.cron = preview.cron;
+        changed();
+      });
+    };
+    const render = () => {
+      if (!state) return;
+      const restore = rememberControl(
+        body,
+        body.querySelector<HTMLElement>("#schedule-add-time") ?? undefined,
+      );
+      const mode = state.mode;
+      const fields: string[] = [
+        `<fieldset class="schedule-field"><legend>Repeat</legend><div class="schedule-segments" data-value="${mode}">${scheduleModes
+          .map(
+            ([value, label]) =>
+              `<label class="segment"><input type="radio" name="schedule-mode" id="schedule-mode-${value}" value="${value}" ${value === mode ? "checked" : ""} /><span>${label}</span></label>`,
+          )
+          .join("")}</div></fieldset>`,
+      ];
+      if (mode === "every")
+        fields.push(
+          `<label class="schedule-row"><span>Interval</span><select id="schedule-every">${EVERY_MINUTES.map(
+            (minutes) =>
+              `<option value="${minutes}" ${minutes === state!.every ? "selected" : ""}>${everyLabel(minutes)}</option>`,
+          ).join("")}</select></label>`,
+        );
+      if (mode === "hourly")
+        fields.push(
+          `<label class="schedule-row"><span>Minute</span><input id="schedule-minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="${state.minute}" /></label>`,
+        );
+      if (mode === "daily")
+        fields.push(
+          `<fieldset class="schedule-field"><legend>Times</legend><div class="schedule-times">${state.times
+            .map(
+              (time, index) =>
+                `<div class="schedule-time"><input type="time" step="60" id="schedule-time-${index}" aria-label="Time ${index + 1}" value="${escape(time)}" /><button type="button" id="schedule-remove-time-${index}" data-remove-time="${index}" aria-label="Remove time ${index + 1}" title="Remove time" ${state!.times.length === 1 ? "disabled" : ""}>${icon("trash")}</button></div>`,
+            )
+            .join(
+              "",
+            )}</div><button type="button" id="schedule-add-time" aria-label="Add time" title="Add time">+ Time</button></fieldset>`,
+        );
+      if (mode === "advanced")
+        fields.push(
+          `<label class="schedule-row"><span>Cron</span><input id="schedule-cron" value="${escape(state.cron)}" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="schedule-error" /></label>`,
+        );
+      else {
+        fields.push(
+          `<fieldset class="schedule-field"><legend>Days</legend><div class="schedule-days">${WEEK.map(
+            (day) =>
+              `<label class="schedule-day"><input type="checkbox" id="schedule-day-${day}" value="${day}" ${state!.days.includes(day) ? "checked" : ""} /><span>${DAY_NAMES[day]}</span></label>`,
+          ).join("")}</div></fieldset>`,
+        );
+        if (mode !== "daily")
+          fields.push(
+            `<fieldset class="schedule-field"><legend>Hours</legend><label class="repository-check"><input type="checkbox" role="switch" id="schedule-hours" ${state.limit ? "checked" : ""} /><span>Limit hours</span></label><div class="schedule-hours" data-schedule-hours ${state.limit ? "" : "hidden"}><label><span>From</span><select id="schedule-hours-start">${Array.from(
+              { length: 24 },
+              (_, hour) =>
+                `<option value="${hour}" ${hour === state!.start ? "selected" : ""}>${hourLabel(hour)}</option>`,
+            ).join(
+              "",
+            )}</select></label><label><span>To</span><select id="schedule-hours-end">${Array.from(
+              { length: 24 },
+              (_, index) =>
+                `<option value="${index + 1}" ${index + 1 === state!.end ? "selected" : ""}>${hourLabel(index + 1)}</option>`,
+            ).join("")}</select></label></div></fieldset>`,
+          );
+      }
+      body.innerHTML = fields.join("");
+      restore();
+    };
+    body.addEventListener("change", (event) => {
+      const target = event.target as HTMLInputElement | HTMLSelectElement;
+      if (!state) return;
+      if (target.name === "schedule-mode") {
+        if (target.value === "advanced") state.cron = repository.cron;
+        state.mode = target.value as ScheduleMode;
+        render();
+      } else if (target.id === "schedule-every")
+        state.every = Number(target.value);
+      else if (target.id.startsWith("schedule-day-"))
+        state.days = ALL_DAYS.filter(
+          (day) =>
+            body.querySelector<HTMLInputElement>(`#schedule-day-${day}`)
+              ?.checked,
+        );
+      else if (target.id === "schedule-hours") {
+        state.limit = (target as HTMLInputElement).checked;
+        body.querySelector<HTMLElement>("[data-schedule-hours]")!.hidden =
+          !state.limit;
+      } else if (target.id === "schedule-hours-start")
+        state.start = Number(target.value);
+      else if (target.id === "schedule-hours-end")
+        state.end = Number(target.value);
+      else if (target.id.startsWith("schedule-time-"))
+        state.times[Number(target.id.slice("schedule-time-".length))] =
+          target.value;
+      else return;
+      update();
+    });
+    body.addEventListener("input", (event) => {
+      const target = event.target as HTMLInputElement;
+      if (!state) return;
+      if (target.id === "schedule-minute") {
+        const minute = Number(target.value);
+        // Out-of-range input still reaches the backend, which rejects it.
+        state.minute =
+          target.value.trim() && Number.isInteger(minute) && minute >= 0
+            ? minute
+            : 60;
+      } else if (target.id === "schedule-cron") state.cron = target.value;
+      else return;
+      update();
+    });
+    body.addEventListener("click", (event) => {
+      const button = (event.target as HTMLElement).closest("button");
+      if (!state || !button) return;
+      if (button.id === "schedule-add-time") {
+        const last = state.times[state.times.length - 1] ?? "08:00";
+        const hour = (Number(last.slice(0, 2)) + 1) % 24;
+        state.times.push(`${String(hour).padStart(2, "0")}${last.slice(2)}`);
+        render();
+        body
+          .querySelector<HTMLElement>(
+            `#schedule-time-${state.times.length - 1}`,
+          )
+          ?.focus();
+      } else if (button.dataset.removeTime) {
+        const index = Number(button.dataset.removeTime);
+        state.times.splice(index, 1);
+        render();
+        body
+          .querySelector<HTMLElement>(
+            `#schedule-time-${Math.min(index, state.times.length - 1)}`,
+          )
+          ?.focus();
+      } else return;
+      update();
+    });
+    request({ kind: "cron", cron: repository.cron }, (preview) => {
+      state = scheduleState(preview);
+      render();
+    });
+    return {
+      /** The builder's validation error once the latest preview settles. */
+      async settled() {
+        await pending;
+        return failure;
+      },
+    };
+  }
+
   function repositoryDialog(
     repository: ConfiguredRepository,
     opener: HTMLElement,
   ) {
-    const schedule = saved.defaults.schedule;
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       repository.name,
@@ -3055,7 +3377,7 @@ export async function mountSettings(
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
-        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes`} / ${escape(schedule.timezone)}</p></section>
+        </section><section class="repository-group schedule-builder" data-schedule aria-labelledby="schedule-heading" aria-busy="true"><h2 id="schedule-heading">Schedule</h2><div data-schedule-body></div><p role="alert" id="schedule-error" data-schedule-error hidden></p><div class="schedule-preview"><small data-schedule-zone>${escape(saved.time_zone)}</small><ol class="schedule-runs" aria-label="Next runs" data-schedule-runs></ol></div></section>
         <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button></div><div class="repository-remove"><input type="text" data-remove-confirm aria-label="Type repository name to confirm" placeholder="${escape(repository.name)}" autocomplete="off" /><button type="button" id="remove-repository" aria-label="Remove repository" title="Remove repository" disabled>${icon("trash")}</button></div><div class="connection"></div></details>
         <p role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} queued on Save` : ""}</p>
         <p role="alert" data-earlier-intake-error hidden></p>
@@ -3064,6 +3386,7 @@ export async function mountSettings(
     );
     compactEditor(modal, "Back");
     modal.classList.add("repository-editor");
+    const schedule = scheduleBuilder(modal, repository);
     const currentEditor = () =>
       modal.open &&
       modal.isConnected &&
@@ -3187,6 +3510,8 @@ export async function mountSettings(
         const requestedPull = pendingPullRequests.get(repository.id);
         const saveRoute = routeGeneration;
         try {
+          const scheduleFailure = await schedule.settled();
+          if (scheduleFailure) throw scheduleFailure;
           const proposed = clone(repository);
           proposed.enabled = monitoring.checked;
           await commitResource(repositoryEdit(repository, proposed), modal);
@@ -3983,7 +4308,7 @@ export async function mountSettings(
         const value: Assignment = {
           id: assignmentId,
           agent_id: agentId,
-          schedule: existing?.schedule ?? clone(saved.defaults.schedule),
+          ...(existing?.schedule ? { schedule: existing.schedule } : {}),
           comment:
             modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
           approve: existing?.approve ?? false,
@@ -4180,14 +4505,11 @@ export async function mountSettings(
   }
 
   function renderPreferences() {
-    const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="preferences-view">
-      <div class="settings-group preferences-saved"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
+      <div class="settings-group preferences-saved"><fieldset aria-label="Capacity and time zone"><legend>Capacity and time zone</legend>
       <div class="preferences-schedule">
       <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
-      <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
-      <label>Schedule helper<select id="cron-helper"><option value="">Custom</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
-      <label>Time zone<select id="global-timezone"><option value="${escape(schedule.timezone)}">${escape(schedule.timezone)}</option></select></label>
+      <label>Time zone<select id="global-timezone"><option value="${escape(draft.time_zone)}">${escape(draft.time_zone)}</option></select></label>
       </div></fieldset></div>
       ${duckPreferences()}
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
@@ -4200,52 +4522,23 @@ export async function mountSettings(
     updateTheme();
     content.querySelector<HTMLSelectElement>("#theme")!.onchange = (event) =>
       void saveTheme((event.target as HTMLSelectElement).value);
-    const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
-    const helper = content.querySelector<HTMLSelectElement>("#cron-helper")!;
-    const syncHelper = () => {
-      helper.value = [...helper.options].some(
-        (option) => option.value === cron.value,
-      )
-        ? cron.value
-        : "";
-    };
-    syncHelper();
     const timezone =
       content.querySelector<HTMLSelectElement>("#global-timezone")!;
     void timeZones().then(
       (zones) => {
         if (timezone.isConnected)
-          fillTimeZones(timezone, zones, draft.defaults.schedule.timezone);
+          fillTimeZones(timezone, zones, draft.time_zone);
       },
       (cause) => {
         if (timezone.isConnected) showError(reason(cause));
       },
     );
-    const updateSchedule = () => {
-      draft.defaults.schedule = {
-        kind: "cron",
-        expression: cron.value,
-        timezone: timezone.value,
-      };
-      syncHelper();
-      changed();
-    };
-    cron.oninput = updateSchedule;
     timezone.onchange = () => {
-      draft.defaults.schedule.timezone = timezone.value;
+      draft.time_zone = timezone.value;
       if (timezone.selectedOptions[0]?.dataset.unavailable)
         timezone.setAttribute("aria-invalid", "true");
       else timezone.removeAttribute("aria-invalid");
       changed();
-    };
-    content.querySelector<HTMLSelectElement>("#cron-helper")!.onchange = (
-      event,
-    ) => {
-      const expression = (event.target as HTMLSelectElement).value;
-      if (expression) {
-        cron.value = expression;
-        updateSchedule();
-      }
     };
     mountDuckPreferences();
     content.querySelector<HTMLInputElement>("#global-capacity")!.oninput = (

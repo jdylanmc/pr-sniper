@@ -4,7 +4,8 @@ export type Schedule =
 export type Selector =
   { kind: "default" } | { kind: "model" | "agent"; value: string };
 export interface Policy {
-  schedule: Schedule;
+  /** Legacy global schedule; moved onto repositories on load, never saved. */
+  schedule?: Schedule;
   watched_authors: { id: string; login: string }[];
   reviewer_assignment: boolean;
   adapter: "copilot";
@@ -65,7 +66,8 @@ export interface AiAccount {
 export interface Assignment {
   id: string;
   agent_id: string;
-  schedule: Schedule;
+  /** Legacy; never written for new assignments. */
+  schedule?: Schedule;
   comment: boolean;
   approve: boolean;
   actions?: {

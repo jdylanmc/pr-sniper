@@ -195,7 +195,7 @@ fn enabled_repository_saves_reject_incomplete_legacy_configuration_without_break
 
 #[test]
 fn monitoring_toggle_requires_valid_saved_configuration_and_preserves_other_resources_on_restart() {
-    use pr_sniper_lib::{policy::Schedule, storage::Store};
+    use pr_sniper_lib::storage::Store;
     for invalid in [
         "binding",
         "schedule",
@@ -209,12 +209,7 @@ fn monitoring_toggle_requires_valid_saved_configuration_and_preserves_other_reso
         original.repositories[0].enabled = false;
         match invalid {
             "binding" => original.repositories[0].provider_account_id = None,
-            "schedule" => {
-                original.defaults.schedule = Schedule::Interval {
-                    minutes: 5,
-                    timezone: "UTC".into(),
-                }
-            }
+            "schedule" => {}
             "assignment" => original.repositories[0].assignments.clear(),
             "ai_account" => original.agents[0].ai_account = None,
             "unknown_agent" => {}
@@ -226,6 +221,9 @@ fn monitoring_toggle_requires_valid_saved_configuration_and_preserves_other_reso
         enabled.enabled = true;
         if invalid == "unknown_agent" {
             enabled.assignments[0].agent_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+        }
+        if invalid == "schedule" {
+            enabled.cron = "0 0 30 2 *".into();
         }
         assert!(store
             .save_resource(ResourceEdit::Repository {
@@ -617,10 +615,7 @@ fn global_policy_saves_preserve_libraries_legacy_choices_and_readiness() {
         body: "Preserve effective preset instructions.".into(),
     });
     value.default_review_preset = Some(value.presets[0].id.clone());
-    value.defaults.schedule = serde_json::from_value(json!({
-        "kind":"cron","expression":"0 9 * * MON-FRI","timezone":"America/New_York"
-    }))
-    .unwrap();
+    value.time_zone = "America/New_York".into();
     let saved = store
         .save_resource(ResourceEdit::Preferences {
             expected: settings.global_preferences(),
@@ -629,6 +624,7 @@ fn global_policy_saves_preserve_libraries_legacy_choices_and_readiness() {
         .unwrap();
     assert_eq!(saved.agents, settings.agents);
     assert_eq!(saved.repositories, settings.repositories);
+    assert_eq!(saved.time_zone, "America/New_York");
     assert!(!saved.defaults.automatic_agent_start);
     assert_eq!(
         saved.defaults.prompt,
@@ -642,18 +638,22 @@ fn global_policy_saves_preserve_libraries_legacy_choices_and_readiness() {
             .readiness
             .configuration_ready
     );
-    for (expression, timezone, capacity) in [
-        ("not cron", "UTC", 4),
-        ("0 0 0 * * *", "UTC", 4),
-        ("*/15 * * * *", "Mars/Olympus_Mons", 4),
-        ("*/15 * * * *", "UTC", 0),
+    for (schedule, timezone, capacity) in [
+        (Some("*/15 * * * *"), "UTC", 4),
+        (None, "Mars/Olympus_Mons", 4),
+        (None, "", 4),
+        (None, "UTC", 0),
     ] {
         let mut value = saved.global_preferences();
         value.capacity = capacity;
-        value.defaults.schedule = serde_json::from_value(json!({
-            "kind":"cron","expression":expression,"timezone":timezone
-        }))
-        .unwrap();
+        value.time_zone = timezone.into();
+        // A global schedule no longer exists to save.
+        value.defaults.schedule = schedule.map(|expression| {
+            serde_json::from_value(json!({
+                "kind":"cron","expression":expression,"timezone":"UTC"
+            }))
+            .unwrap()
+        });
         assert!(store
             .save_resource(ResourceEdit::Preferences {
                 expected: saved.global_preferences(),

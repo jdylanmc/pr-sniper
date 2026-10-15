@@ -419,8 +419,8 @@ test("external auth blur and retained URL entry preserve unsaved preferences and
   await page.goto("/");
   await tab(page, "Settings").click();
   await section(page, "Preferences");
-  const cron = page.getByLabel("Cron expression", { exact: true });
-  await cron.fill("*/23 * * * *");
+  const zone = page.locator("#global-timezone");
+  await zone.selectOption("Asia/Tokyo");
   await section(page, "GitHub");
   await page.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
@@ -445,7 +445,7 @@ test("external auth blur and retained URL entry preserve unsaved preferences and
     page.getByRole("button", { name: "Add repository by URL", exact: true }),
   ).toBeEnabled();
   await section(page, "Preferences");
-  await expect(cron).toHaveValue("*/23 * * * *");
+  await expect(zone).toHaveValue("Asia/Tokyo");
   expect((await store("snapshot")).settings).toEqual(before);
 });
 

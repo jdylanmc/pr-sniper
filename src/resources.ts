@@ -26,6 +26,8 @@ export interface Settings {
   launch_at_login: boolean;
   defaults: Policy;
   capacity: number;
+  /** IANA zone for every repository schedule. */
+  time_zone: string;
   rubber_duck?: DuckLimits;
   repositories?: Repository[];
   root_folder?: string;
@@ -56,6 +58,7 @@ export const doctrineCatalogLabel = (catalog?: DoctrineCatalog | null) =>
 export interface GlobalPreferences {
   defaults: Policy;
   capacity: number;
+  time_zone: string;
   root_folder: string | null;
   presets: NonNullable<Settings["presets"]>;
   default_review_preset: string | null;
@@ -160,6 +163,7 @@ export const saveResource = (edit: ResourceEdit, accountGeneration?: number) =>
 export const globalPreferences = (settings: Settings): GlobalPreferences => ({
   defaults: settings.defaults,
   capacity: settings.capacity,
+  time_zone: settings.time_zone,
   root_folder: settings.root_folder ?? null,
   presets: settings.presets ?? [],
   default_review_preset: settings.default_review_preset ?? null,
@@ -192,6 +196,7 @@ export function acceptResource(
   if (edit.kind === "preferences") {
     settings.defaults = committed.defaults;
     settings.capacity = committed.capacity;
+    settings.time_zone = committed.time_zone;
     settings.root_folder = committed.root_folder;
     settings.presets = committed.presets;
     settings.default_review_preset = committed.default_review_preset;

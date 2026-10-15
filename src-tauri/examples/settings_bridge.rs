@@ -465,6 +465,19 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         | "fixture_setup_preview"
         | "fixture_apply_setup" => setup_fixture(store, &request),
         "time_zones" => Ok(json!(pr_sniper_lib::policy::time_zones())),
+        "preview_schedule" => serde_json::to_value(pr_sniper_lib::schedule::preview_saved(
+            store,
+            serde_json::from_value(request.args["request"].clone())
+                .map_err(|_| "Invalid schedule request.")?,
+            // The fixture clock every other bridge command uses.
+            1_800_000_000,
+        )?)
+        .map_err(|e| e.to_string()),
+        "describe_schedules" => serde_json::to_value(pr_sniper_lib::schedule::describe(
+            &serde_json::from_value::<Vec<String>>(request.args["crons"].clone())
+                .map_err(|_| "Invalid schedules.")?,
+        ))
+        .map_err(|e| e.to_string()),
         "diagnostics" => serde_json::to_value(store.diagnostics()?)
             .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {

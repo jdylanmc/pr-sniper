@@ -158,15 +158,18 @@ async function capture(page, browserName, name) {
   await page.screenshot({ path: join(directory, `${name}.png`) });
 }
 
-test("compact saved controls persist exact cron, timezone and full u32 capacity without global action grants", async ({
+test("compact saved controls persist exact timezone and full u32 capacity without cron or global action grants", async ({
   page,
   store,
   browserName,
 }) => {
   const original = await seedAgent(store);
   await ready(page, store, true);
-  await expect(page.locator("#global-cron")).toHaveValue("*/15 * * * *");
-  await expect(page.locator("#cron-helper")).toHaveValue("*/15 * * * *");
+  await expect(
+    preferences(page).locator("#global-cron, #cron-helper"),
+  ).toHaveCount(0);
+  await expect(preferences(page).getByLabel("Cron expression")).toHaveCount(0);
+  await expect(preferences(page).getByLabel("Schedule helper")).toHaveCount(0);
   await expect(page.locator("#global-capacity")).toHaveValue("4");
   await expect(
     preferences(page).getByRole("switch", { name: /^Approve/ }),
@@ -175,7 +178,6 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
     preferences(page).getByRole("switch", { name: /^Merge/ }),
   ).toHaveCount(0);
   await capture(page, browserName, "saved-preferences");
-  await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
   await chooseTimeZone(page, "America/New_York");
   await expect(page.locator("#automatic-review-start")).toHaveCount(0);
   for (const capacity of [1, 20, 4294967295]) {
@@ -183,13 +185,8 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
     await savePreferences(page);
     const expected = structuredClone(original);
     expected.capacity = capacity;
-    expected.defaults.schedule = {
-      kind: "cron",
-      expression: "0 9 * * MON-FRI",
-      timezone: "America/New_York",
-    };
+    expected.time_zone = "America/New_York";
     expect((await store("snapshot")).settings).toEqual(expected);
-    await expect(page.locator("#cron-helper")).toHaveValue("0 9 * * MON-FRI");
     await expect(page.locator("#automatic-publication")).toHaveCount(0);
   }
   await page.reload();
@@ -200,7 +197,6 @@ test("compact saved controls persist exact cron, timezone and full u32 capacity 
   await expect(page.locator("#global-timezone")).toHaveValue(
     "America/New_York",
   );
-  await expect(page.locator("#cron-helper")).toHaveValue("0 9 * * MON-FRI");
   await capture(page, browserName, "maximum-capacity");
   await page.locator(".preferences-schedule").scrollIntoViewIfNeeded();
   await capture(page, browserName, "global-schedule");
@@ -241,8 +237,6 @@ for (const width of [408, 320]) {
     expect(layout.occluded).toBe(0);
     expect(layout.labels.map((label) => label.text)).toEqual([
       "AI capacity",
-      "Cron expression",
-      "Schedule helper",
       "Time zone",
     ]);
     for (const key of ["font", "weight", "field"])
@@ -275,16 +269,15 @@ for (const width of [408, 320]) {
     );
     await expect(page.locator("#save-status")).toHaveText("All changes saved");
     const rows = await page.evaluate(() =>
-      ["#global-cron", "#cron-helper", "#global-timezone"].map((id) => {
+      ["#global-capacity", "#global-timezone"].map((id) => {
         const label = document.querySelector(id).closest("label");
         const rect = label.getBoundingClientRect();
         return { top: rect.top, bottom: rect.bottom, width: rect.width };
       }),
     );
-    const [cron, helper, zone] = rows;
-    expect(zone.top).toBeGreaterThanOrEqual(helper.bottom - 0.5);
-    expect(helper.top).toBeGreaterThanOrEqual(cron.bottom - 0.5);
-    expect(zone.width).toBeCloseTo(cron.width, 0);
+    const [capacity, zone] = rows;
+    expect(zone.top).toBeGreaterThanOrEqual(capacity.bottom - 0.5);
+    expect(zone.width).toBeCloseTo(capacity.width, 0);
   });
 }
 
@@ -313,9 +306,7 @@ test("a saved time zone the host does not list stays selected and visibly unavai
   await chooseTimeZone(page, "Asia/Tokyo");
   await expect(select).not.toHaveAttribute("aria-invalid");
   await savePreferences(page);
-  expect((await store("snapshot")).settings.defaults.schedule.timezone).toBe(
-    "Asia/Tokyo",
-  );
+  expect((await store("snapshot")).settings.time_zone).toBe("Asia/Tokyo");
 });
 
 test("invalid capacity keeps each rejected draft and the previous configuration bytes", async ({
@@ -338,7 +329,7 @@ test("invalid capacity keeps each rejected draft and the previous configuration 
   }
 });
 
-test("legacy interval stays explicit and the helper follows exact custom draft expressions", async ({
+test("a legacy global interval becomes the saved time zone and leaves no cron control", async ({
   page,
   store,
 }) => {
@@ -349,25 +340,17 @@ test("legacy interval stays explicit and the helper follows exact custom draft e
     timezone: "Europe/London",
   };
   await store("seed_settings", settings);
+  const migrated = (await store("snapshot")).settings;
+  expect(migrated.defaults.schedule).toBeUndefined();
+  expect(migrated.time_zone).toBe("Europe/London");
   await ready(page, store);
-  await expect(page.locator("[data-readiness]")).toContainText(
-    "saved legacy interval is retained",
-  );
-  await expect(page.locator("#global-cron")).toHaveValue("");
-  await expect(page.locator("#cron-helper")).toHaveValue("");
+  await expect(page.locator("#global-timezone")).toHaveValue("Europe/London");
+  await expect(page.locator("#global-cron, #cron-helper")).toHaveCount(0);
   await page.locator("#global-capacity").fill("8");
   await savePreferences(page);
-  expect((await store("snapshot")).settings.defaults.schedule).toEqual(
-    settings.defaults.schedule,
-  );
-  await page.locator("#cron-helper").selectOption("0 * * * *");
-  await page.locator("#global-cron").fill("5 10 * * MON");
-  await expect(page.locator("#cron-helper")).toHaveValue("");
-  await savePreferences(page);
-  expect((await store("snapshot")).settings.defaults.schedule).toEqual({
-    kind: "cron",
-    expression: "5 10 * * MON",
-    timezone: "Europe/London",
+  expect((await store("snapshot")).settings).toEqual({
+    ...migrated,
+    capacity: 8,
   });
 });
 
@@ -379,7 +362,6 @@ test("failed preference and pause writes keep committed state and exact drafts",
 }) => {
   await ready(page, store, true);
   const before = await readFile(join(dataRoot, "config/settings.json"));
-  await page.locator("#global-cron").fill("5 * * * *");
   await chooseTimeZone(page, "Pacific/Auckland");
   await page.locator("#global-capacity").fill("33");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
@@ -388,7 +370,6 @@ test("failed preference and pause writes keep committed state and exact drafts",
   await page.evaluate(() => window.__settingsIdle());
   await expect(page.locator("#error")).toBeVisible();
   await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
-  await expect(page.locator("#global-cron")).toHaveValue("5 * * * *");
   await expect(page.locator("#global-timezone")).toHaveValue(
     "Pacific/Auckland",
   );
@@ -422,7 +403,6 @@ test("startup, notification and pause commit independently while newer keyboard 
   await ready(page, store, true);
   const original = (await store("snapshot")).settings;
   await page.locator("#global-capacity").fill("17");
-  await page.locator("#global-cron").fill("7 * * * *");
   await expect(page.locator("#automatic-publication")).toHaveCount(0);
   const held = ipc.holdNext("seed_settings");
   await page.locator("#login").click();
@@ -1057,11 +1037,9 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
   await ready(page, store, true);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 320, height: 300 });
-  const cron = page.locator("#global-cron");
-  await cron.fill("9 11 * * MON-FRI");
-  await cron.focus();
-  await page.keyboard.press("Tab");
-  await expect(page.locator("#cron-helper")).toBeFocused();
+  const capacity = page.locator("#global-capacity");
+  await capacity.fill("9");
+  await capacity.focus();
   await page.keyboard.press("Tab");
   await expect(page.locator("#global-timezone")).toBeFocused();
   await expect(page.locator("#global-timezone")).toBeInViewport();
@@ -1097,5 +1075,5 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
   await capture(page, browserName, "320x300-keyboard");
   await page.locator("#copy-diagnostics").focus();
   await expect(page.locator("#copy-diagnostics")).toBeInViewport();
-  await expect(cron).toHaveValue("9 11 * * MON-FRI");
+  await expect(capacity).toHaveValue("9");
 });

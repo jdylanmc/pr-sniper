@@ -41,6 +41,9 @@ interface Health {
   last_failure: string | null;
   last_error?: string | null;
   in_flight: boolean;
+  scheduled_run?: number;
+  scan_pending?: boolean;
+  scan_requested?: boolean;
   conversation_admission_pending?: boolean;
   manual_pending: boolean;
   operation: {
@@ -87,11 +90,6 @@ export interface MonitoringSnapshot {
     blocked: string | null;
   }[];
   mentions?: MentionRouting[];
-  global_scan?: {
-    schedule_key: string;
-    next_run: number;
-    pending: string[];
-  } | null;
   tracked?: {
     pull_request_id: string;
     lifecycle: "open" | "closed" | "merged";

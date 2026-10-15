@@ -371,8 +371,8 @@ from Chromium or worked around with skipped assertions.
 
 `preferences.spec.mjs` covers the compact V8 Preferences surface with the existing
 test-owned Store bridge and explicit synthetic native registration/authorization
-responses. It checks exact global cron/time-zone persistence, the full positive
-u32 capacity range, invalid and failed writes, legacy intervals, independent
+responses. It checks exact time-zone persistence (no cron or helper), the full positive
+u32 capacity range, invalid and failed writes, legacy schedule migration, independent
 automatic-start/comment gates, immediate startup/notification/pause boundaries,
 pending/rejected operations across unrelated saves, missing settings,
 redacted diagnostics, drafts, Back focus and
@@ -577,7 +577,7 @@ stable per-account deduplication, disabled durable intake, immediate configurati
 Save authorization and absence of local-discovery/scope controls. Its normal
 and compact screenshots use the actual app renderer and production Store bridge.
 `repositories-compact.spec.mjs` covers the production repository rows
-and editors, saved global schedule
+and editors, the migrated repository schedule
 versus unsaved Preferences, every Comment/Approve/Merge combination, automatic
 and explicit primary roles, seven separate assignments and retained normal-job
 identities. It also checks guarded unbind/write/conflict recovery,
@@ -612,10 +612,15 @@ It seeds nondefault legacy schedules, policies and presets and proves they
 remain unchanged by resource saves, without exposing scoped polling editors.
 `resources.spec.mjs` covers resource-scoped persistence, conflicting and failed
 writes with retained drafts, ordered doctrine selection, rename/deletion guards,
-global cron/time-zone/capacity controls, shared saved-resource readiness, primary
-selection and independent opt-in permissions. New assignments retain the saved
-global schedule even with invalid or different unsaved Preferences; existing
-assignment schedules and unrelated drafts remain untouched. `sidebar.spec.mjs` covers
+time-zone/capacity controls, shared saved-resource readiness, primary
+selection and independent opt-in permissions. New assignments carry no schedule
+even with invalid or different unsaved Preferences; existing legacy
+assignment schedules and unrelated drafts remain untouched.
+`repository-schedules.spec.mjs` covers the repository schedule builder: each
+mode saved through the real Store and reopened in the same mode, decode of saved
+crons (else Advanced), backend validation errors that block Save, the backend's
+next-three-runs preview in the saved time zone, list values, keyboard focus by
+stable id, 408/320 widths and Dark theme variables. `sidebar.spec.mjs` covers
 per-repository People, inert doctrine authoring, retained Agent references,
 opted-out Approve/notification controls and both desktop/mobile navigation.
 
@@ -651,12 +656,12 @@ temporarily disabling the other controls too. Independent permissions retain
 their prior values when a save fails. Corrections and production-CSS tests retain
 keyboard trapping, nested-modal focus restoration, stale reply rejection and
 scroll/viewport evidence using the current repository, Agent and doctrine
-editors. The global schedule helper must match the saved cron expression.
+editors. The repository schedule builder must match the saved cron expression.
 Review fixtures distinguish captured, planned, interrupted and legacy missing
 configuration without using today's library as historical evidence.
 
-`iterations.spec.mjs` passes the new queue envelope, tracking and global-scan
-fixtures through the native Store bridge. It verifies seven independent ordered
+`iterations.spec.mjs` passes the new queue envelope, tracking and per-repository
+schedule fixtures through the native Store bridge. It verifies seven independent ordered
 jobs, immutable admission versus current matching, separate pass/attempt counts,
 provider-confirmed terminal history, same-head reopened iterations, retained
 destination aliases and tracking with no assignments. These are presentation
