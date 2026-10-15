@@ -879,3 +879,60 @@ fn a_run_in_flight_at_merge_finishes_superseded_and_ends_next_cycle() {
     assert_quiet(&store, &monitor);
     no_failure_notice(&store, &monitor);
 }
+
+#[test]
+fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(&store, &run.operation.id, Err(base_changed(None)), NOW + 3).unwrap();
+    scan(&mut monitor, &store, vec![pull('b')], NOW + 100);
+    assert!(!dispatched(&store, NOW + 150).contains(&run.operation.id));
+    assert!(stored(&store, &run.operation.id)
+        .operation
+        .ended_superseded());
+    // A new revision superseded the old entries: they stay distinct, never runnable.
+    let work = crate::capacity::candidates(&store, NOW + 160).unwrap();
+    let superseded: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.waiting == WAITING_SUPERSEDED)
+        .collect();
+    assert_eq!(superseded.len(), 2);
+    for job in &superseded {
+        let id = key(job, job.assignment_id.as_deref().unwrap());
+        let entry = work
+            .iter()
+            .find(|w| w.key.id == id)
+            .expect("superseded entry listed");
+        assert!(entry.reason.is_some(), "superseded entries never dispatch");
+    }
+    assert_quiet(&store, &monitor);
+    // Once merged, every entry of the PR, superseded or not, leaves Running.
+    let mut merged = pull('b');
+    merged.state = Lifecycle::Merged;
+    scan(&mut monitor, &store, vec![merged], NOW + 200);
+    let work = crate::capacity::candidates(&store, NOW + 260).unwrap();
+    let merged: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.waiting == crate::monitoring::WAITING_MERGED)
+        .collect();
+    assert_eq!(merged.len(), 4);
+    // Only the new head's attempt already in flight stays listed until it finishes.
+    let in_flight: Vec<_> = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.operation.state == OperationState::Running)
+        .map(|r| r.key)
+        .collect();
+    assert_eq!(in_flight.len(), 1);
+    assert!(merged.iter().all(|j| {
+        let id = key(j, j.assignment_id.as_deref().unwrap());
+        in_flight.contains(&id) || !work.iter().any(|w| w.key.id == id)
+    }));
+    assert_eq!(work.len(), 1);
+}

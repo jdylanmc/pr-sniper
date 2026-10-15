@@ -171,8 +171,10 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         }) {
             continue;
         }
-        // Running lists only real work: a retired entry can never run.
+        // Running lists only real work: a retired entry can never run. A
+        // superseded entry stays listed, distinct, until its PR ends or is cleaned.
         if crate::monitoring::retired(&candidate.job)
+            && candidate.job.waiting != crate::monitoring::WAITING_SUPERSEDED
             && candidate
                 .run
                 .as_ref()
