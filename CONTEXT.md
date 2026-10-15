@@ -113,7 +113,7 @@ PR URL entered at **+ URL** resolves its repository and that exact PR. After a v
 _Avoid_: Manual scan, force review
 
 **Repository Schedule**:
-Each repository's five-field cron (new repositories: every 30 minutes), built in its editor (Every, Hourly, Daily, Advanced; days and hours), evaluated in the one saved **Time Zone**. No per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep occurrences collapse to one poll; no catch-up. Replaced the single global cron ([ADR 0024](docs/adr/0024-repository-schedules.md)); a saved global cron migrated onto every repository.
+Each repository's five-field cron (new repositories: every 30 minutes), built in its editor (Every, Hourly, Daily, Advanced; days of the week; no working hours), evaluated in the one saved **Time Zone**. No per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep occurrences collapse to one poll; no catch-up. Replaced the single global cron ([ADR 0024](docs/adr/0024-repository-schedules.md)); a saved global cron migrated onto every repository; a legacy interval or never-firing cron migrated repositories paused.
 _Avoid_: Global schedule, global scan, polling interval, assignment timer, per-Agent poll
 
 **Time Zone**:

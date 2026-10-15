@@ -24,11 +24,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Themes: Settings › Preferences › Appearance picks Light, Dark or OS. The
   choice applies right away in every window, and OS follows system changes
   live. Defaults to Light, which looks the same as before.
+- Per-repository schedules: the repository editor has a Schedule builder
+  (Every 5–30 min or 1–4 h, Hourly at :MM, Daily at listed times, each on chosen
+  days, or an Advanced cron) with the next three runs in your time zone.
+  Repository rows show each schedule. New repositories poll every 30 minutes.
 
 ### Changed
 
 - Time zone is a dedicated dropdown of host time zones; new profiles start in
-  the system time zone, falling back to UTC.
+  the system time zone, falling back to UTC. Every repository schedule runs in
+  it.
+- Upgrading moves the saved global cron onto each existing repository. A legacy
+  interval, or a cron that never runs, leaves repositories paused on Every
+  30 min until monitoring is turned back on.
 - Settings home groups into General (Accounts, Repositories, Preferences) and
   Review behavior (Agents, Doctrines, Voices); collections render as single
   lists.
@@ -45,16 +53,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - The in-app Changelog uses the shared page header and renders bold and code.
 - Counts use the singular for one item, such as "1 repository".
 - Repository polls no longer stay parked: an interrupted poll restarts after
-  relaunch, and a parked poll retries on the next scheduled scan or Check Now;
-  credential failures wait for reconnect.
+  relaunch, and a parked poll retries on its repository's next scheduled run or
+  Check Now; credential failures wait for reconnect.
 
 ### Removed
 
 - Settings test-notification destination and Send test notification controls.
 - The Status and Diagnostics screens and their tray items. Check Now stays in
   the tray; queue-item failures stay in Queue › Needs attention, and parked
-  repository polls recover on the next scheduled scan or Check Now.
+  repository polls recover on their repository's next scheduled run or Check
+  Now.
 - The Settings Global pause card; use the header Monitoring switch.
+- The global Cron expression and Schedule helper in Preferences; schedules
+  live on each repository.
 - The duplicate Concurrent reviews Settings entry; AI capacity stays in
   Preferences.
 

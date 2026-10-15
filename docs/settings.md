@@ -71,17 +71,17 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 - Repository editor **Schedule** card. **Repeat**: Every / Hourly / Daily / Advanced. Writes one cron per repository ([ADR 0024](adr/0024-repository-schedules.md)).
 
-| Mode     | Controls                                           | Cron                                  |
-| -------- | -------------------------------------------------- | ------------------------------------- |
-| Every    | Interval 5, 10, 15, 30 min; 1, 2, 4 h; Days; Hours | `*/15 9-17 * * 1-5`, `0 9-17/2 * * *` |
-| Hourly   | Minute; Days; Hours                                | `45 * * * *`, `5 10-17 * * 1-5`       |
-| Daily    | Times (HH:MM list, one minute × hour grid); Days   | `0,30 9,17 * * *`                     |
-| Advanced | Cron                                               | any valid five-field cron             |
+| Mode     | Controls                                         | Cron                             |
+| -------- | ------------------------------------------------ | -------------------------------- |
+| Every    | Interval 5, 10, 15, 30 min; 1, 2, 4 h; Days      | `*/15 * * * 1-5`, `0 */2 * * *`  |
+| Hourly   | Minute; Days                                     | `45 * * * *`, `5 * * * 0,6`      |
+| Daily    | Times (HH:MM list, one minute × hour grid); Days | `0,30 9,17 * * *`, `0 9 * * 1-5` |
+| Advanced | Cron                                             | any valid five-field cron        |
 
-- Hours `From`–`To`: `To` exclusive (9–18 = `9-17`). Not with Daily.
+- No working hours: hour ranges (`*/15 9-17 * * 1-5`) open as Advanced.
 - Opening decodes the saved cron into its mode; otherwise Advanced with the raw cron. Opening never rewrites an equivalent cron (`0 9 * * MON-FRI` stays).
 - **Next runs**: 3 times in the saved time zone from `preview_schedule`; update on every change. Invalid input shows the backend error, marks Advanced invalid and blocks Save.
-- New repositories: Every 30 min. Repository rows show the value (`Every 30 min`, `Mon–Fri 9–18 · every 15 min`, else the raw cron).
+- New repositories: Every 30 min. Repository rows show the value (`Every 30 min`, `Mon–Fri · every 15 min`, else the raw cron).
 
 ## Preferences
 
