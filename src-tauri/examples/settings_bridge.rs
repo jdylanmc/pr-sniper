@@ -420,6 +420,7 @@ fn explicit_intake_fixture(store: &Store, args: &Value) -> Result<Value, String>
         &expected,
         target,
         1_800_000_000,
+        1_800_000_000,
     )?;
     serde_json::to_value(result).map_err(|_| "Cannot encode synthetic PR intake.".into())
 }

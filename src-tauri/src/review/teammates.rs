@@ -102,8 +102,9 @@ pub(crate) fn blocker<C: Borrow<Candidate>>(
         if ready {
             return None;
         }
-        // An assignment with no entry yet is not enqueued for this PR: nothing to wait for.
-        let candidate = newest?;
+        // An assignment with no entry yet is not enqueued for this PR, and a
+        // retired entry can never report: nothing to wait for.
+        let candidate = newest.filter(|c| !monitoring::retired(&c.job))?;
         Some(TeammateRef {
             assignment_id: id,
             agent_name: candidate.agent_name.clone(),
@@ -141,7 +142,9 @@ pub(crate) fn entries(
     };
     let mut entries = Vec::new();
     for (_, newest) in peers {
-        let Some(candidate) = newest else { continue };
+        let Some(candidate) = newest.filter(|c| !monitoring::retired(&c.job)) else {
+            continue;
+        };
         let report = report(candidate).filter(|_| state_seq(candidate) == Some(seq));
         let Some(report) = report else {
             return Err(Failure::superseded(&format!(

@@ -240,7 +240,7 @@ fn failed(operation: &monitoring::JobOperation) -> bool {
     matches!(
         operation.state,
         OperationState::Failed | OperationState::ManualRetry
-    )
+    ) && !operation.ended_superseded()
 }
 
 /// Packet facts the state of a review needs beyond its own run.

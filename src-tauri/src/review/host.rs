@@ -58,7 +58,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 .find(|a| a.id == assignment.agent_id)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "Missing Agent".into());
-            let run = reviews.iter().rev().find(|r| r.key == key).cloned();
+            // A quietly ended run is history: revived work starts a new operation.
+            let run = reviews
+                .iter()
+                .rev()
+                .find(|r| r.key == key)
+                .filter(|r| !r.operation.ended_superseded())
+                .cloned();
             result.push(Candidate {
                 agent_name: run
                     .as_ref()
@@ -316,12 +322,19 @@ pub(crate) fn complete(
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
-    } else if outcome
+    } else if let Some(error) = outcome
         .as_ref()
         .err()
-        .is_some_and(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
+        .filter(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
     {
-        current.operation.requeue_superseded(now);
+        let wait = error.resume.as_deref().map(|resume| match resume {
+            super::Resume::NextPoll => None,
+            super::Resume::NewBase(base) => Some(base.clone()),
+        });
+        current.operation.requeue_superseded(
+            now,
+            wait.map(|base| monitoring::Supersession { at: now, base }),
+        );
         current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
@@ -456,8 +469,60 @@ fn remote_gate(
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
     let settings = store.load_settings().map_err(Failure::permanent)?;
-    monitoring::review_policy(&settings, &run.job, Some(&pull)).map_err(Failure::permanent)?;
+    pull_gate(&settings, &run.job, &pull)?;
     Ok(pull)
+}
+
+/// A moved head, closed or unadmitted PR, or changed assignment supersedes the
+/// attempt: no budget spent, no park. The next scan retargets or retires it.
+pub(crate) fn pull_gate(
+    settings: &crate::storage::Settings,
+    job: &QueueJob,
+    pull: &crate::github::metadata::PullRequest,
+) -> Result<(), Failure> {
+    monitoring::check_review_policy(settings, job, Some(pull))
+        .map(|_| ())
+        .map_err(Failure::policy)
+}
+
+/// A new base is a new revision: superseded, never parked. Before inference it
+/// waits for the next poll; after it, for a poll that observed a base other than
+/// `reviewed`, so each base gets at most one AI attempt.
+pub(crate) fn base_changed(reviewed: Option<&str>) -> Failure {
+    match reviewed {
+        Some(base) => {
+            Failure::superseded("Pull request base changed during review; result is stale.")
+                .after(super::Resume::NewBase(base.into()))
+        }
+        None => Failure::superseded("Pull request base changed; review context is stale.")
+            .after(super::Resume::NextPoll),
+    }
+}
+
+/// The fresh snapshot read before any setup: the same eligibility the remote gate
+/// applies, so a stale attempt never builds context, a packet or a session.
+pub(crate) fn snapshot_gate(
+    settings: &crate::storage::Settings,
+    job: &QueueJob,
+    snapshot: &crate::github::state::PrSnapshot,
+) -> Result<(), Failure> {
+    let review_drafts = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == job.configuration_id)
+        .is_some_and(|r| r.review_drafts);
+    let stale = if snapshot.state != "OPEN" {
+        Some("The PR is no longer open.")
+    } else if snapshot.head != job.head_sha {
+        Some("The PR head moved since the work was queued.")
+    } else if snapshot.draft && !review_drafts {
+        Some("The PR is a draft and Review drafts is off.")
+    } else {
+        None
+    };
+    stale.map_or(Ok(()), |message| {
+        Err(Failure::superseded(message).after(super::Resume::NextPoll))
+    })
 }
 
 pub(crate) async fn execute(
@@ -564,13 +629,14 @@ async fn execute_attempt(
         let snapshot = client
             .pr_snapshot(&repo, preparation_run.job.number)
             .map_err(Failure::from)?;
-        if snapshot.state != "OPEN" {
-            return Err(Failure::superseded("The PR is no longer open."));
-        }
-        if snapshot.head != preparation_run.job.head_sha {
-            return Err(Failure::superseded(
-                "The PR head moved since the work was queued.",
-            ));
+        {
+            let settings = host
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                .load_settings()
+                .map_err(Failure::permanent)?;
+            snapshot_gate(&settings, &preparation_run.job, &snapshot)?;
         }
         let context = client
             .review_context(
@@ -661,9 +727,7 @@ async fn execute_attempt(
     let before_send: runtime::Gate = Arc::new(move || {
         let pull = remote_gate(&remote_app, &remote_run)?;
         if pull.base_sha != send_base {
-            return Err(Failure::permanent(
-                "Pull request base changed; review context is stale.",
-            ));
+            return Err(base_changed(None));
         }
         Ok(())
     });
@@ -695,9 +759,7 @@ async fn execute_attempt(
         .await
         .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
     if pull.base_sha != expected_base {
-        return Err(Failure::permanent(
-            "Pull request base changed during review; result is stale.",
-        ));
+        return Err(base_changed(Some(&expected_base)));
     }
     // A local-only exit writes nothing, so the state it read must still be the state.
     if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
@@ -900,5 +962,7 @@ pub(crate) async fn cancel_review(
     .map_err(|_| "Review cancellation could not finish.".to_string())?
 }
 
+#[cfg(test)]
+mod stale_revision_tests;
 #[cfg(test)]
 mod tests;

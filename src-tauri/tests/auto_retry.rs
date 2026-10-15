@@ -45,6 +45,7 @@ fn failure(kind: OperationFailure, retry_after_seconds: Option<i64>) -> Failure 
         retry_after_seconds,
         origin: Origin::Github,
         duck_setup: false,
+        resume: Default::default(),
     }
 }
 

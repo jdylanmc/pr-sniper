@@ -363,8 +363,12 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         .iter()
         .find(|j| run.matches_job(j))
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
-    let current =
-        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
+    let current = Selection::resolve(&settings, job, &run.assignment_id).map_err(|error| {
+        match monitoring::check_review_policy(&settings, job, None) {
+            Err(rejection) if rejection.superseded() => Failure::policy(rejection),
+            _ => Failure::permanent(error),
+        }
+    })?;
     if !current.same_execution(&run.selection) {
         return Err(Failure::permanent(
             "Agent configuration changed; explicitly retry.",
@@ -377,10 +381,16 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    let now = crate::now_seconds()?;
+    let jobs = store.load_queue()?;
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
     for review in &mut reviews {
         if retire_legacy(review) {
+            changed = true;
+            continue;
+        }
+        if recover_parked_supersession(review, &jobs, now) {
             changed = true;
             continue;
         }
@@ -398,10 +408,84 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
         }
     }
+    changed |= end_retired_runs(&mut reviews, &jobs);
     if changed {
         store.save_reviews(&reviews)?;
     }
     Ok(())
+}
+
+/// Ends waiting runs whose queue entry a scan retired (merged, closed,
+/// superseded, out of scope, assignment removed): they can never run, so they
+/// leave Running quietly instead of waiting forever.
+pub fn end_retired(store: &Store) -> Result<(), String> {
+    let jobs = store.load_queue()?;
+    let mut reviews = store.load_reviews()?;
+    if end_retired_runs(&mut reviews, &jobs) {
+        store.save_reviews(&reviews)?;
+    }
+    Ok(())
+}
+
+fn retired_job(run: &ReviewRun, jobs: &[QueueJob]) -> bool {
+    jobs.iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::retired)
+}
+
+fn end_retired_runs(reviews: &mut [ReviewRun], jobs: &[QueueJob]) -> bool {
+    let mut changed = false;
+    for run in reviews {
+        if matches!(
+            run.operation.state,
+            OperationState::Queued | OperationState::Interrupted
+        ) && retired_job(run, jobs)
+        {
+            end_quietly(run);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn end_quietly(run: &mut ReviewRun) {
+    run.operation.end_superseded();
+    run.result = None;
+    run.error = None;
+    run.phase = "Superseded".into();
+}
+
+/// Builds before typed supersession parked a stale Iteration or assignment as a
+/// permanent failure. No typed cause was stored, so the exact retired texts
+/// identify those records; requeue them with a fresh budget so the queue
+/// retargets them like any superseded attempt, or ends them when retired.
+fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
+    const PARKED: [monitoring::PolicyRejection; 2] = [
+        monitoring::PolicyRejection::RevisionChanged,
+        monitoring::PolicyRejection::AssignmentChanged,
+    ];
+    if run.operation.state != OperationState::Failed
+        || run.operation.failure != Some(OperationFailure::Permanent)
+        || !PARKED
+            .iter()
+            .any(|rejection| run.error.as_deref() == Some(rejection.message()))
+    {
+        return false;
+    }
+    // Only live work earns a new attempt; work a scan retired just ends.
+    if !jobs
+        .iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::actionable)
+    {
+        end_quietly(run);
+        return true;
+    }
+    run.operation.requeue_fresh(now);
+    run.result = None;
+    run.error = None;
+    run.phase = "Waiting for current PR state".into();
+    true
 }
 
 /// The legacy review path is removed: unfinished legacy work is cancelled, never run.
@@ -567,6 +651,18 @@ pub struct Failure {
     pub origin: crate::backpressure::Origin,
     /// The primary's Rubber Duck could not be set up: typed provenance, never text.
     pub duck_setup: bool,
+    /// When a `Superseded` attempt may run again; `None` retries shortly (a local
+    /// race such as a teammate report landing). Boxed to keep `Failure` small.
+    pub resume: Option<Box<Resume>>,
+}
+
+/// When a superseded attempt may run again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resume {
+    /// After a poll observes the PR: only the provider state can change the outcome.
+    NextPoll,
+    /// After a poll observes a base other than the one an AI attempt reviewed.
+    NewBase(String),
 }
 
 impl Failure {
@@ -589,6 +685,7 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
             duck_setup: false,
+            resume: None,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -606,6 +703,7 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            resume: None,
         }
     }
     pub fn schema() -> Self {
@@ -628,6 +726,20 @@ impl Failure {
         Self {
             kind: OperationFailure::Superseded,
             ..Self::permanent(message)
+        }
+    }
+    /// A stale Iteration or assignment is superseded; other rejections need a human.
+    pub fn policy(rejection: monitoring::PolicyRejection) -> Self {
+        if rejection.superseded() {
+            Self::superseded(rejection.message()).after(Resume::NextPoll)
+        } else {
+            Self::permanent(rejection.message())
+        }
+    }
+    pub fn after(self, resume: Resume) -> Self {
+        Self {
+            resume: Some(Box::new(resume)),
+            ..self
         }
     }
     /// A result or write discarded because the PR state moved: retried through the budget.
@@ -670,6 +782,7 @@ impl Failure {
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
                 duck_setup: false,
+                resume: Default::default(),
             }
         }
     }
@@ -685,7 +798,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, resume: None }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -709,6 +822,7 @@ impl Failure {
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            resume: None,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
@@ -743,6 +857,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
                 duck_setup: false,
+                resume: None,
             },
             MonitoringError::Backpressure {
                 origin,
@@ -755,6 +870,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin,
                 duck_setup: false,
+                resume: None,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }

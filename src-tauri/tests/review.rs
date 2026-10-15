@@ -228,6 +228,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         retry_after_seconds: Some(900),
         origin: pr_sniper_lib::backpressure::Origin::Copilot,
         duck_setup: false,
+        resume: Default::default(),
     };
     // Beyond the retry window a rate limit still only waits: no park, no budget.
     operation.fail(&failure.monitoring(), 100);

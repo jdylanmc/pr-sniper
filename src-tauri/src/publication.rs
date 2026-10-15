@@ -785,5 +785,6 @@ fn unresolved() -> Failure {
         kind: OperationFailure::Network,
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
+        resume: Default::default(),
     }
 }

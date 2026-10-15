@@ -89,7 +89,7 @@ A non-primary assignment of a repository. Runs first, ends with `submit_report`,
 _Avoid_: Secondary agent, peer
 
 **Review drafts** (repository):
-Repository switch, default off. On: draft pull requests are reviewed too.
+Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
 **Include self** (Approve & Merge):
 Approve & Merge option, default off: the user's own PRs count. Inert until approve exits land.
@@ -153,7 +153,7 @@ The scheduled read of PR state for tracked open PRs. It only adds a PR to the qu
 Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
 
 **Consume** / **Toss**:
-A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved or PR closed before the run: superseded, no budget spent.
+A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved, PR closed, merged or no longer admitted, or assignment removed or replaced, before or during the run: superseded, no budget spent, never parked; the next scan queues the new revision or retires the work. A superseded run waits for the repository's next successful poll, never a timer. Waiting work whose entry a scan retired (merged, closed, superseded, out of scope, assignment removed) ends quietly as superseded and leaves Running; a primary never waits on such a teammate. Base moved: superseded, never parked; after an AI run it waits for a poll that saw another base, so each base gets at most one AI attempt.
 
 **Clean** (Reviewed):
 Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.

@@ -309,12 +309,14 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__denyNotifications = true;
+    window.__deniedOptIns = 0;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
       if (
         command === "set_notifications_enabled" &&
         args.enabled &&
         window.__denyNotifications
       ) {
+        window.__deniedOptIns += 1;
         throw "macOS denied notifications. Enable them in System Settings before opting in.";
       }
       const result = await original(command, args);
@@ -334,7 +336,10 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
     name: "Notifications",
     exact: true,
   });
-  await enabled.check();
+  // A denial reverts the switch as soon as the fresh read lands, which can
+  // beat check()'s own post-click read; click, then prove the opt-in was sent.
+  await enabled.click();
+  await expect.poll(() => page.evaluate(() => window.__deniedOptIns)).toBe(1);
   await expect(page.locator("#notification-error")).toContainText(
     "macOS denied notifications",
   );

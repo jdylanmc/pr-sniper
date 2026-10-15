@@ -145,6 +145,33 @@ pub struct JobOperation {
     /// Lens hash an automatic re-review of a discarded batch ran under; the once-per-lens marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rereview_lens: Option<String>,
+    /// A superseded run waits for a poll that observed its PR after this, not a timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<Supersession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Supersession {
+    pub at: i64,
+    /// Base an AI attempt reviewed before it moved: the next attempt needs a poll
+    /// that observed another base, so each base gets at most one AI attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+}
+
+impl Supersession {
+    /// A successful poll observed the PR after supersession (and, for a moved
+    /// base, observed a different base). Without one the run never re-dispatches.
+    pub fn cleared(&self, job: &QueueJob, tracked: &[TrackedPullRequest]) -> bool {
+        tracked
+            .iter()
+            .any(|t| t.matches(job) && t.observed_at > self.at)
+            && self
+                .base
+                .as_ref()
+                .is_none_or(|base| job.observed_base_sha.as_ref() != Some(base))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +610,9 @@ pub struct PollTicket {
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
     pub tracked: Vec<(String, u64)>,
+    /// When the ticket was prepared, before any fetch: what it observes is no
+    /// newer than this, so tracked observations are stamped with it.
+    pub prepared_at: i64,
 }
 
 pub struct PollResult {
@@ -1256,6 +1286,7 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         expected: &crate::storage::Repository,
         resolved: crate::github::intake::ResolvedTarget,
+        read_at: i64,
         now: i64,
     ) -> Result<ExplicitAdmission, String> {
         let settings = store.load_settings()?;
@@ -1326,6 +1357,7 @@ impl Monitor {
             account_generation: 0,
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
+            prepared_at: read_at,
         };
         let number = pull.number;
         let pull_id = pull.id.clone();
@@ -2147,6 +2179,7 @@ impl Monitor {
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect(),
+                prepared_at: now,
             });
         }
         tickets
@@ -2558,7 +2591,7 @@ impl Monitor {
                     iteration_id,
                     admission,
                     admitted_at: legacy.map(|j| j.detected_at).unwrap_or(now),
-                    observed_at: now,
+                    observed_at: ticket.prepared_at,
                 });
                 index = Some(queue.tracked.len() - 1);
                 mark_activation_admitted(&mut activation, &pull);
@@ -2583,7 +2616,8 @@ impl Monitor {
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
-            tracked.observed_at = now;
+            // Overlapping reads may finish out of order; never move it back.
+            tracked.observed_at = tracked.observed_at.max(ticket.prepared_at);
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -3156,6 +3190,7 @@ fn start_poll_operation(
         triggering_external_comment_id: None,
         confirmed_receipt: None,
         rereview_lens: None,
+        superseded: None,
     });
 }
 
@@ -3190,8 +3225,10 @@ impl JobOperation {
     }
 
     /// The state moved before the run could read it: not a failure, no attempt spent.
-    /// Retried shortly; the next heartbeat retargets or retires the work.
-    pub fn requeue_superseded(&mut self, now: i64) {
+    /// Retried shortly, or with `wait` only after a poll; the next heartbeat
+    /// retargets or retires the work.
+    pub fn requeue_superseded(&mut self, now: i64, wait: Option<Supersession>) {
+        self.superseded = wait;
         if self.ai_attempt.is_some() {
             self.restore_budget();
         } else if self.state == OperationState::Running {
@@ -3273,6 +3310,7 @@ impl JobOperation {
         self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
+        self.superseded = None;
     }
 
     fn schedule_resume(&mut self, now: i64) {
@@ -3343,6 +3381,28 @@ impl JobOperation {
         self.next_attempt_at = Some(next_attempt);
     }
 
+    /// Ends unstarted or waiting work quietly: superseded, not failed. The
+    /// attempt is handed back and nothing resumes it.
+    pub fn end_superseded(&mut self) {
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.state = OperationState::Failed;
+        self.failure = Some(OperationFailure::Superseded);
+        self.next_attempt_at = None;
+        self.superseded = None;
+        self.resume_at = None;
+        self.backpressure_until = None;
+        self.interruption = None;
+    }
+
+    /// Quietly ended by supersession: history, never a failure or Needs attention.
+    pub fn ended_superseded(&self) -> bool {
+        self.state == OperationState::Failed && self.failure == Some(OperationFailure::Superseded)
+    }
+
     pub fn parked(&self) -> bool {
         matches!(
             self.state,
@@ -3391,6 +3451,7 @@ impl JobOperation {
         self.state = OperationState::Running;
         self.next_attempt_at = None;
         self.backpressure_until = None;
+        self.superseded = None;
         Ok(())
     }
 
@@ -3422,6 +3483,7 @@ impl JobOperation {
             triggering_external_comment_id: None,
             confirmed_receipt: None,
             rereview_lens: None,
+            superseded: None,
         }
     }
 }
@@ -3462,6 +3524,22 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "scope_confirmation_required"
                 | "repository_configuration_required"
         )
+    )
+}
+
+/// A scan retired this entry: its PR moved on, closed, merged, left review
+/// scope, or lost its assignment or repository. No work for it can run again.
+pub fn retired(job: &QueueJob) -> bool {
+    matches!(
+        job.waiting.as_str(),
+        WAITING_SUPERSEDED
+            | WAITING_CLOSED
+            | WAITING_MERGED
+            | WAITING_INELIGIBLE
+            | WAITING_NO_LONGER_CURRENT
+            | WAITING_SCOPE_EXCLUDED
+            | WAITING_ASSIGNMENT_REMOVED
+            | WAITING_REPOSITORY_REMOVED
     )
 }
 
@@ -3592,15 +3670,68 @@ fn trigger_policy(
     .map_err(|_| ConnectionError::Configuration)
 }
 
+/// Why work may no longer run for its exact Iteration and assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyRejection {
+    RepositoryRemoved,
+    ConfigurationChanged,
+    /// The assignment was removed or now names another Agent. The next scheduled
+    /// poll retires this entry and queues the current configuration.
+    AssignmentChanged,
+    /// A new head, closure, merge, unadmitted draft or lost admission. The next
+    /// poll retires this entry and queues an eligible new revision.
+    RevisionChanged,
+    /// A scan already retired this entry: superseded, closed, merged or out of scope.
+    Retired,
+    /// The provider returned a different pull request or repository identity.
+    IdentityChanged,
+}
+
+impl PolicyRejection {
+    /// The attempt is stale rather than failed: the next scan retargets or retires it.
+    pub fn superseded(self) -> bool {
+        matches!(
+            self,
+            Self::RepositoryRemoved
+                | Self::AssignmentChanged
+                | Self::RevisionChanged
+                | Self::Retired
+        )
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RepositoryRemoved => "Repository was removed.",
+            Self::ConfigurationChanged | Self::Retired => {
+                "Review eligibility or repository configuration changed."
+            }
+            Self::AssignmentChanged => {
+                "This Agent assignment was removed or replaced; wait for the next scheduled poll."
+            }
+            Self::RevisionChanged | Self::IdentityChanged => {
+                "Pull request revision or eligibility changed; wait for the next poll."
+            }
+        }
+    }
+}
+
 pub fn review_policy(
     settings: &Settings,
     job: &QueueJob,
     pull: Option<&PullRequest>,
 ) -> Result<Policy, String> {
+    check_review_policy(settings, job, pull).map_err(|rejection| rejection.message().into())
+}
+
+pub fn check_review_policy(
+    settings: &Settings,
+    job: &QueueJob,
+    pull: Option<&PullRequest>,
+) -> Result<Policy, PolicyRejection> {
     let configuration = configured_schedules(settings)
         .into_iter()
         .find(|c| c.repository_id == job.configuration_id)
-        .ok_or("Repository was removed.")?;
+        .ok_or(PolicyRejection::RepositoryRemoved)?;
     if !configuration.enabled
         || !configuration.provider_supported
         || configuration.name != job.repository_name
@@ -3608,28 +3739,34 @@ pub fn review_policy(
         || configuration.provider_repository_id.as_deref() != Some(&job.repository_id)
         || (job.work.is_none()
             && configuration.trigger_policy.as_deref() != Some(&job.trigger_policy))
-        || !actionable(job)
     {
-        return Err("Review eligibility or repository configuration changed.".into());
+        return Err(PolicyRejection::ConfigurationChanged);
+    }
+    if !actionable(job) {
+        return Err(if retired(job) {
+            PolicyRejection::Retired
+        } else {
+            PolicyRejection::ConfigurationChanged
+        });
     }
     if let Some(work) = &job.work {
         if !configuration.assignments.iter().any(|a| {
             Some(a.assignment_id.as_str()) == job.assignment_id.as_deref()
                 && a.agent_id == work.agent_id
         }) {
-            return Err(
-                "This Agent assignment was removed or replaced; wait for the next scheduled poll."
-                    .into(),
-            );
+            return Err(PolicyRejection::AssignmentChanged);
         }
     }
     if let Some(pull) = pull {
         if pull.id != job.pull_request_id
             || pull.number != job.number
-            || pull.head_sha != job.head_sha
             || pull.base_repository_id != job.repository_id
+        {
+            return Err(PolicyRejection::IdentityChanged);
+        }
+        if pull.head_sha != job.head_sha
             || pull.state != Lifecycle::Open
-            || pull.draft
+            || (pull.draft && !configuration.review_drafts)
             || (job.work.is_none()
                 && !eligibility(
                     &configuration.watched_authors,
@@ -3640,9 +3777,7 @@ pub fn review_policy(
                 )
                 .admitted)
         {
-            return Err(
-                "Pull request revision or eligibility changed; wait for the next poll.".into(),
-            );
+            return Err(PolicyRejection::RevisionChanged);
         }
     }
     Ok(configuration.policy)
@@ -4205,6 +4340,7 @@ mod admission_tests {
             account_generation: 0,
             assignments: Vec::new(),
             tracked: Vec::new(),
+            prepared_at: 0,
         }
     }
 
