@@ -24,6 +24,12 @@ export interface AutomationSnapshot {
 
 export type FailureClass = "credentials" | "permission" | "network" | "other";
 
+// Rewriting unchanged text replaces the text node under the pointer; WebKit
+// then drops a click whose press landed on it. Only write real changes.
+function setText(element: Element, text: string) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
 export function mountAutomation(
   root: HTMLElement,
   onSnapshot?: (state: AutomationSnapshot | undefined) => void,
@@ -61,10 +67,12 @@ export function mountAutomation(
       if (options.compact) {
         button.setAttribute("aria-label", label);
         button.setAttribute("aria-pressed", String(!next.paused));
-        button.querySelector("[data-monitoring-label]")!.textContent =
-          next.paused ? "Paused" : "Monitoring";
+        setText(
+          button.querySelector("[data-monitoring-label]")!,
+          next.paused ? "Paused" : "Monitoring",
+        );
         button.title = status.textContent ?? "";
-      } else button.textContent = label;
+      } else setText(button, label);
       button.disabled = false;
       list?.replaceChildren(
         ...next.work.map((work) => {
@@ -82,8 +90,10 @@ export function mountAutomation(
       if (options.compact) {
         button.removeAttribute("aria-pressed");
         button.setAttribute("aria-label", "Monitoring unavailable");
-        button.querySelector("[data-monitoring-label]")!.textContent =
-          "Unavailable";
+        setText(
+          button.querySelector("[data-monitoring-label]")!,
+          "Unavailable",
+        );
         button.title = "Unavailable";
       }
       status.textContent = "Unavailable";

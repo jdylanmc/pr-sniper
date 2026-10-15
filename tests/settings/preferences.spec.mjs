@@ -903,6 +903,27 @@ for (const staleRead of ["success", "failure"]) {
   });
 }
 
+test("a background refresh between press and release never drops the Monitoring switch click", async ({
+  page,
+  store,
+}) => {
+  await page.clock.install();
+  await ready(page, store, true);
+  const button = headerAutomation(page).locator("[data-toggle-automation]");
+  const box = await button.boundingBox();
+  // Press on the label text, let a scheduled refresh land, then release.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.clock.fastForward(5000);
+  await page.evaluate(() => window.__settingsIdle());
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect
+    .poll(async () => (await store("automation_snapshot")).paused)
+    .toBe(true);
+  await expect(button).toHaveAccessibleName("Resume automation");
+});
+
 test("automation read recovery restores compact header status without a pause action", async ({
   page,
   store,
