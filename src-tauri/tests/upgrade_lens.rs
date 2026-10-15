@@ -250,17 +250,17 @@ fn real_changes_after_the_upgrade_still_change_the_lens() {
     let current = |settings: &Settings| Selection::resolve(settings, &job(), ASSIGNMENT).unwrap();
     assert!(current(&settings).same_lens(&captured));
     assert!(current(&settings).same_execution(&captured));
-    // Case-only title edits are not changes; real edits are.
-    let mut case = settings.clone();
-    case.doctrines[0].title = "CORRECTNESS".into();
-    assert!(current(&case).same_lens(&captured));
-    let edits: [fn(&mut Settings); 6] = [
+    // Titles render verbatim in the packet: case or spacing edits are changes.
+    let edits: [fn(&mut Settings); 9] = [
         |s| s.doctrines[0].body = "Edited.".into(),
         |s| s.doctrines[0].title = "State".into(),
+        |s| s.doctrines[0].title = "CORRECTNESS".into(),
+        |s| s.doctrines[0].title = "Correctness ".into(),
         |s| s.agents[0].doctrine_ids.reverse(),
         |s| s.agents[0].doctrine_ids.truncate(1),
         |s| s.agents[0].prompt = "Another lens.".into(),
         |s| s.agents[0].model = "another-model".into(),
+        |s| s.agents[0].ai_account.as_mut().unwrap().account_id = "44".into(),
     ];
     for edit in edits {
         let mut changed = settings.clone();
@@ -274,7 +274,18 @@ fn real_changes_after_the_upgrade_still_change_the_lens() {
     voiced.agents[0].voice_id = Some(voiced.voices[0].id.clone());
     assert!(!current(&voiced).same_lens(&captured));
     let before = current(&voiced);
-    voiced.voices[0].guardrails = false;
-    assert!(!current(&voiced).same_lens(&before));
-    assert!(!current(&voiced).same_execution(&before));
+    assert!(current(&voiced).same_lens(&before));
+    let voice_edits: [fn(&mut Settings); 5] = [
+        |s| s.voices[0].guardrails = false,
+        |s| s.voices[0].body = "Edited style.".into(),
+        |s| s.voices[0].title = "Grunt".into(),
+        |s| s.voices[0].title = "caveman".into(),
+        |s| s.agents[0].voice_id = Some(s.voices[1].id.clone()),
+    ];
+    for edit in voice_edits {
+        let mut changed = voiced.clone();
+        edit(&mut changed);
+        assert!(!current(&changed).same_lens(&before));
+        assert!(!current(&changed).same_execution(&before));
+    }
 }

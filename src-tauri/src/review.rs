@@ -44,10 +44,10 @@ pub struct ExecutionConfiguration {
     pub voice: Option<Voice>,
 }
 
-/// Case-folded title and exact body: what a library entry contributes to a run.
-/// Ids and title references are representations, not inputs.
+/// Exact title and body: what a library entry puts in the packet. Ids and
+/// Agent title/id references are representations, not inputs.
 fn entry_lens(title: &str, body: &str) -> (String, String) {
-    (title.trim().to_lowercase(), body.to_string())
+    (title.to_string(), body.to_string())
 }
 
 impl Selection {

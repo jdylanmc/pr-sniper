@@ -31,7 +31,7 @@ Owner decision (2026-10-14): Doctrines and Voices are prompt blurbs with an ID a
 - Agents reference by id: `doctrine_ids` (ordered), `voice_id`. Rename edits the entry only; no Agent rewrite. Delete refused while any Agent holds the id.
 - Dangling references persist and show as unavailable (never dropped or remapped). Agent saves may keep them, not add them. A job with one cannot start.
 - Migration on load (and on whole-settings saves): ids for id-less entries; legacy `doctrine`/`doctrines` titles to ids (trimmed, case-insensitive; list supersedes single as before). Unmatched title stays as its own reference (shows as unavailable with that title). Idempotent; written once. Pre-catalog reconciliation still runs first on titles. See [Local data](../local-data.md).
-- Job snapshots record `{id, title, body}`; older evidence keeps its title-only shape and is never rebuilt. Lens and execution checks compare content, not representation: the Agent without its references, then resolved Doctrines and the captured Voice as case-folded title and exact body (plus the guard flag). An upgrade alone never discards a review or fails queued work; real edits still do. Packet text unchanged (titles and bodies; ids internal), so no schema bump.
+- Job snapshots record `{id, title, body}`; older evidence keeps its title-only shape and is never rebuilt. Lens and execution checks compare content, not representation: the Agent without its references, then resolved Doctrines and the captured Voice as exact title and body (plus the guard flag), since titles render verbatim in the packet. An upgrade alone never discards a review or fails queued work; real edits still do. Packet text unchanged (titles and bodies; ids internal), so no schema bump.
 
 ## Consequences
 

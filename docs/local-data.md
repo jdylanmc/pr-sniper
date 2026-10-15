@@ -50,7 +50,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 - `doctrines[]`: `{id, title, body}`. `voices[]`: `{id, title, body, guardrails}`. `id` is a UUID v4, never changed.
 - Agents: `doctrine_ids` (ordered) and `voice_id`. Renames never rewrite Agents.
 - Load migration (idempotent, written once): ids for id-less entries; legacy Agent `doctrine` / `doctrines` titles to ids (trimmed, case-insensitive; list wins over single). An unmatched title is kept as the reference and shown as unavailable. Legacy fields are not written back.
-- Job evidence (`state/reviews.json`, `state/follow-ups.json`) keeps its recorded shape: older entries without ids or with title references load as recorded and compare by content (case-folded title, body), so they keep publishing and running.
+- Job evidence (`state/reviews.json`, `state/follow-ups.json`) keeps its recorded shape: older entries without ids or with title references load as recorded and compare by content (exact title, body), so they keep publishing and running.
 
 ## Atomic replace
 
