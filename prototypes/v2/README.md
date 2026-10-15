@@ -99,9 +99,12 @@ Personal GitHub and organization ownership are illustrated without credentials,
 network requests, or real access validation.
 
 This pass changes repository intake and navigation only. The older prototype's
-per-repository schedule editor and sample review trust behavior are historical,
-not current production requirements. Production uses a global cron and no
-per-revision trust prompt (#113). Existing-backlog activation is still an open
+sample review trust behavior is historical, not a current production
+requirement; production has no per-revision trust prompt (#113). Production
+schedules are per repository again ([ADR 0024](../../docs/adr/0024-repository-schedules.md)):
+a builder (Every, Hourly, Daily, Advanced; days and hours) writes one cron per
+repository, evaluated in the single Preferences time zone. The prototype's
+collapsed interval/cron editor approximates that builder. Existing-backlog activation is still an open
 product decision in #108; this prototype retains its new-PR-only scope mock.
 
 Run the focused interaction coverage with:
@@ -259,8 +262,8 @@ thread follow-up, or provider reconciliation. Cron validation checks five-field
 shape and IANA time zone, not execution semantics. File guides contain the complete
 three-file fixture, not a real repository inspection. Agent permissions stay on the Agent
 and the per-repository schedule, scope, and start/comment overrides stay in a
-collapsed prototype section; production assigns permissions per repository and
-uses a global schedule.
+collapsed prototype section; production assigns permissions per repository,
+edits each repository's schedule in its editor, and keeps one global time zone.
 
 Genie follows the shared-resource principle of the Configuration Wizard in #41,
 but is not that wizard's production implementation or proof of native acceptance.

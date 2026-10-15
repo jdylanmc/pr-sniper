@@ -46,7 +46,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [0011](adr/0011-separate-github-and-copilot-identities.md)          | Separate GitHub and Copilot identities                  |
 | [0012](adr/0012-resource-scoped-saves-and-save-as-authorization.md) | Save per resource; Save is the authorization            |
 | [0013](adr/0013-shared-ai-capacity.md)                              | One shared AI capacity pool; serial provider writes     |
-| [0014](adr/0014-single-global-cron-schedule.md)                     | One global cron schedule                                |
+| [0014](adr/0014-single-global-cron-schedule.md)                     | One global cron schedule (superseded by 0024)           |
 | [0015](adr/0015-local-only-results-and-retention-journal.md)        | Local-only results; retention journal                   |
 | [0016](adr/0016-revision-safe-publication.md)                       | Revision-safe, owned review batches                     |
 | [0017](adr/0017-opt-in-provider-actions.md)                         | Opt-in, primary-only, fail-closed provider actions      |
@@ -54,6 +54,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [0019](adr/0019-bounded-content-free-diagnostics.md)                | Bounded, content-free diagnostics                       |
 | [0020](adr/0020-constrained-host-owned-review-tools.md)             | Three host-owned review tools, not a sandbox            |
 | [0021](adr/0021-review-packet.md)                                   | Hand each agent one versioned review packet             |
+| [0024](adr/0024-repository-schedules.md)                            | Poll each repository on its own cron schedule           |
 
 ## Specs and design
 

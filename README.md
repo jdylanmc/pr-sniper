@@ -24,7 +24,7 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 
 ## How it works
 
-1. Poll enabled repos on one global schedule.
+1. Poll each enabled repo on its own schedule.
 2. Admission decides which PRs enter: **All** or ordered **Filtered** rules (assigned, mentioned, include/exclude users, include/exclude paths). First enabled matching rule wins.
 3. One review per head SHA. New push = new revision = another review. Same revision: agent only replies to new comments.
 4. Agents see description, changed files and all comments. They act only with explicit permissions: **Publish Comment**, **Reply Comment**, **Approve**, **& Merge**. New assignments start with every grant off.

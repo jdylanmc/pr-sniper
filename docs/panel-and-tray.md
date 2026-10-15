@@ -58,4 +58,4 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 ## Removed screens
 
-- No Status or Diagnostics screen (removed 2026-10-14). Queue-item failures: Queue > **Needs attention**. Parked repository polls recover on the next scheduled scan or tray **Check Now**. Diagnostics: Settings > Preferences **Copy diagnostics** ([diagnostics.md](diagnostics.md)).
+- No Status or Diagnostics screen (removed 2026-10-14). Queue-item failures: Queue > **Needs attention**. Parked repository polls recover at their repository's next scheduled run or tray **Check Now**. Diagnostics: Settings > Preferences **Copy diagnostics** ([diagnostics.md](diagnostics.md)).

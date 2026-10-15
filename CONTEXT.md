@@ -112,12 +112,15 @@ _Avoid_: Reviewer requests, People you watch, watch filter
 PR URL entered at **+ URL** resolves its repository and that exact PR. After a valid repository Save the PR is admitted at once, outside admission rules, with no schedule wait. Same URL and same Iteration reuse existing work. Normal gates still apply. A plain repository URL creates no PR work. Failed intake never undoes a committed Save.
 _Avoid_: Manual scan, force review
 
-**Global Schedule**:
-The single five-field cron plus explicit IANA time zone (default `*/15 * * * *`, `UTC`) scanning all enabled configured repositories. No per-repository or per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep ticks collapse to one check; no catch-up. Legacy interval choices are readable only and stay a visible setup issue until replaced.
-_Avoid_: Polling interval, assignment timer, per-Agent poll
+**Repository Schedule**:
+Each repository's five-field cron (new repositories: every 30 minutes), built in its editor (Every, Hourly, Daily, Advanced; days and hours), evaluated in the one saved **Time Zone**. No per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep occurrences collapse to one poll; no catch-up. Replaced the single global cron ([ADR 0024](docs/adr/0024-repository-schedules.md)); a saved global cron migrated onto every repository.
+_Avoid_: Global schedule, global scan, polling interval, assignment timer, per-Agent poll
+
+**Time Zone**:
+The single saved IANA zone (Preferences) that every **Repository Schedule** runs in.
 
 **Check Now**:
-Manual global scan. Coalesces to one pending scan. Never bypasses **Backpressure** or an existing **Retry budget**.
+Polls every enabled repository now and retries any parked poll. Coalesces with a running poll per repository. Never bypasses **Backpressure** or an existing **Retry budget**; keeps each **Repository Schedule**.
 
 **Pause Automation**:
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.
@@ -127,7 +130,7 @@ Machine-wide count of concurrent AI job slots, positive integer, default 4. Shar
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
-Global cron, time zone, **AI Capacity**, Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login apply natively; theme applies to the panel and persists on change. None use Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
+**Time Zone**, **AI Capacity**, Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login apply natively; theme applies to the panel and persists on change. None use Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
 _Avoid_: Startup checkbox as effective state
 
 ### Reviews and iterations

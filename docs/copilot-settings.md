@@ -63,7 +63,7 @@ Genie's repository scope choice remains unconfirmed until the combined final
 check. Scope choices are transient, not a second saved resource library: after
 an application restart, preview pending scope again. Final confirmation shows
 the effective repository and AI accounts separately, assignment permissions
-and primary designation, the global cron/time zone and capacity. It rechecks
+and primary designation, each repository's cron, the time zone and capacity. It rechecks
 assigned model availability and rejects changed native configuration or account
 state, including same-identity AI reconnects after an earlier catalog completes.
 The local commit locks connection generations before auth state; catalog and

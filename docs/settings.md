@@ -67,14 +67,30 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Agent editor: **Voice** row drills into None + library (radio). Default None. Missing selection stays visible as unavailable until changed.
 - Affects only primary text for humans. Packet rules: [ADR 0022](adr/0022-voices.md).
 
+## Repository schedule
+
+- Repository editor **Schedule** card. **Repeat**: Every / Hourly / Daily / Advanced. Writes one cron per repository ([ADR 0024](adr/0024-repository-schedules.md)).
+
+| Mode     | Controls                                           | Cron                                  |
+| -------- | -------------------------------------------------- | ------------------------------------- |
+| Every    | Interval 5, 10, 15, 30 min; 1, 2, 4 h; Days; Hours | `*/15 9-17 * * 1-5`, `0 9-17/2 * * *` |
+| Hourly   | Minute; Days; Hours                                | `45 * * * *`, `5 10-17 * * 1-5`       |
+| Daily    | Times (HH:MM list, one minute × hour grid); Days   | `0,30 9,17 * * *`                     |
+| Advanced | Cron                                               | any valid five-field cron             |
+
+- Hours `From`–`To`: `To` exclusive (9–18 = `9-17`). Not with Daily.
+- Opening decodes the saved cron into its mode; otherwise Advanced with the raw cron. Opening never rewrites an equivalent cron (`0 9 * * MON-FRI` stays).
+- **Next runs**: 3 times in the saved time zone from `preview_schedule`; update on every change. Invalid input shows the backend error, marks Advanced invalid and blocks Save.
+- New repositories: Every 30 min. Repository rows show the value (`Every 30 min`, `Mon–Fri 9–18 · every 15 min`, else the raw cron).
+
 ## Preferences
 
-- Saved: one global cron + timezone, machine AI capacity, comment-publication defaults.
+- Saved: one global time zone, machine AI capacity, comment-publication defaults. Card: **Capacity and time zone**. Schedules live on repositories ([Repository schedule](#repository-schedule)).
 - Immediate (outside Save/Reset): theme, notification opt-in, startup. Pause lives only in the panel header **Monitoring** switch.
 - Rubber duck group: Calls `1..32` (default 8), Timeout (s) `30..600` (180), Primary window (min) `5..120` (15). Stored as `rubber_duck`; absent = defaults.
 - Theme: Light (default), Dark, OS. OS follows the live system appearance. Light omits the stored field.
 - AI capacity: integer `1..4294967295`, default 4. Shared by normal, final-primary, reply and mention work. Admitted jobs drain independent of polling.
-- Cron helper shows the exact expression. Time zone: own row, dropdown of host IANA zones (`time_zones`, the list `Schedule::validate` accepts); host zone first. A saved zone missing from the list stays selected, marked unavailable. A brand-new profile starts in the host zone (valid `TZ`, else the `/etc/localtime` link; Windows/unknown: UTC); existing saved zones never change. No silent timezone or legacy-interval conversion. One schedule: [polling.md](polling.md).
+- Time zone: own row, dropdown of host IANA zones (`time_zones`, the list `Schedule::validate` accepts); host zone first. A saved zone missing from the list stays selected, marked unavailable. A brand-new profile starts in the host zone (valid `TZ`, else the `/etc/localtime` link; Windows/unknown: UTC); existing saved zones never change. Every repository schedule runs in it: [polling.md](polling.md).
 - Native controls keep pending/rejected ops across saves.
 - Startup shows the saved request, separate from actual registration. Unknown registration or notification authorization is never shown as enabled.
 - macOS startup status validates the owned plist and current executable. macOS Login Items may still disable it. App start only inspects; never enables, disables or reapplies.
@@ -86,7 +102,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Empty install opens **Welcome** with **Set up with Genie** and **I’ll set it up myself**. No invented data. Genie also opens from the Settings title icon after setup.
 - Genie opens the same editors as Settings. Each save is immediate. Closing hides the editor with no rollback. Unsaved fields are lost on quit. Reopen never resets libraries or monitoring.
 - Four readiness rows come from saved resources and native account/scope state, not visited steps.
-- Setup summary: both identities, effective assignments, primary and permissions, admission filters, schedule and timezone, AI capacity, global pause. It checks assigned models against catalogs, not subscriptions or inference.
+- Setup summary: both identities, effective assignments, primary and permissions, admission filters, each repository's cron, time zone, AI capacity, global pause. It checks assigned models against catalogs, not subscriptions or inference.
 - Back cancels summary preflight; it cannot undo a dispatched repo save. **Finish setup** only leaves the summary. Failed writes keep saved resources; retry.
 - Global pause is never resumed implicitly. All repos disabled, or no bindings/assignments, means intentionally inactive; the Queue stays empty.
 - A late onboarding read never replaces newer navigation. Repo and AI connection state fence setup reads.
