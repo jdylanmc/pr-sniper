@@ -436,7 +436,9 @@ fn claim(text: &str) -> crate::review::duck::DuckInput {
 }
 
 fn duck_packet(claim: &crate::review::duck::DuckInput, created_at: &str) -> Packet {
-    let base = input();
+    let mut base = input();
+    // Golden files keep no trailing whitespace: give the approvals line a value.
+    base.pr.approvals = vec!["maintainer".into()];
     let directive = Directive {
         doctrines: vec![("Correctness".into(), "Trace behavior.".into())],
         agent_prompt: "Check claims.".into(),
