@@ -49,17 +49,27 @@ const categoryLabel: Record<Category, string> = {
   final_review_cleared: "Final review cleared",
 };
 
-function permissionText(state: Snapshot) {
-  const permission = state.permission;
+// Healthy notifications show nothing beyond the switch; a problem shows one
+// short label. Unknown channels are never treated as muted.
+function permissionAlert(state: Snapshot): string | null {
   const os = state.platform === "windows" ? "Windows" : "macOS";
-  const channel = (value: boolean | null) =>
-    value === null ? "unknown" : value ? "on" : "off";
-  return `${state.enabled ? "On" : "Off"}; ${
-    permission
-      ? `${os} ${permission.authorization.replaceAll("_", " ")}; banners ${channel(permission.alerts_enabled)}; center ${channel(permission.center_enabled)}`
-      : `${os} unavailable`
-  }`;
+  const permission = state.permission;
+  if (!permission) return state.enabled ? `${os} unavailable` : null;
+  const { authorization } = permission;
+  if (authorization === "authorized_aggregate") return null;
+  if (authorization === "authorized" || authorization === "provisional")
+    return state.enabled &&
+      permission.alerts_enabled === false &&
+      permission.center_enabled === false
+      ? `Muted in ${os}`
+      : null;
+  if (["not_determined", "not_registered", "unknown"].includes(authorization))
+    return state.enabled ? `Blocked by ${os}` : null;
+  return `Blocked by ${os}`;
 }
+
+const alertIcon =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/></svg>';
 
 export function mountNotificationSettings(
   root: HTMLElement,
@@ -70,9 +80,9 @@ export function mountNotificationSettings(
     snapshot?: Snapshot;
   },
 ) {
-  root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
+  root.innerHTML = `<fieldset aria-label="Notifications">
     <label class="setting-row"><span>Notifications</span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
-    <p id="notification-permission" role="status">Loading</p>
+    <p id="notification-permission" class="notification-alert" role="status" hidden>${alertIcon}<span data-notification-alert></span></p>
     <p id="notification-error" role="alert" hidden></p>
     <fieldset id="notification-types" class="notification-types" hidden><legend>Notification types</legend>${(
       Object.keys(categoryLabel) as Category[]
@@ -86,6 +96,11 @@ export function mountNotificationSettings(
     "#notification-enabled",
   )!;
   const status = root.querySelector<HTMLElement>("#notification-permission")!;
+  const showAlert = (label: string | null) => {
+    status.querySelector("[data-notification-alert]")!.textContent =
+      label ?? "";
+    status.hidden = !label;
+  };
   const error = root.querySelector<HTMLElement>("#notification-error")!;
   const types = root.querySelector<HTMLElement>("#notification-types")!;
   const toggles = [
@@ -101,7 +116,7 @@ export function mountNotificationSettings(
     state = next;
     view.snapshot = next;
     enabled.checked = next.enabled;
-    status.textContent = permissionText(next);
+    showAlert(permissionAlert(next));
     error.textContent = [view.actionError, next.error]
       .filter(Boolean)
       .join("\n");
@@ -139,7 +154,7 @@ export function mountNotificationSettings(
       if (!root.isConnected || captured !== revision) return;
       state = undefined;
       view.snapshot = undefined;
-      status.textContent = "Unavailable";
+      showAlert(null);
       error.textContent = [view.actionError, "Unavailable"]
         .filter(Boolean)
         .join("\n");
@@ -164,10 +179,6 @@ export function mountNotificationSettings(
     error.hidden = true;
     revision++;
     updateControls();
-    status.textContent =
-      command === "set_notifications_enabled" && args.enabled
-        ? "Checking permission"
-        : "Updating";
     try {
       await invoke(command, args);
     } catch (cause) {
@@ -190,7 +201,6 @@ export function mountNotificationSettings(
   view.refresh = refresh;
   if (view.snapshot && !view.pending) apply(view.snapshot);
   updateControls();
-  if (view.pending) status.textContent = "Pending";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);

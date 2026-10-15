@@ -67,5 +67,6 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 - Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.
 - Review Queue > Notifications states: queued, submitting, accepted-unconfirmed, unknown, denied, failed, no-longer-current. Acceptance is not banner display; Focus may suppress. Missing or foreign-profile destination fails visibly. Denied/failed events stay in history, not replayed after permission change.
+- Settings card: the switch only while healthy. A problem shows one row: **Blocked by macOS/Windows** (denied or disabled) or **Muted in macOS** (banners and Notification Center both off). Unknown channels are never shown as muted.
 - Denied: System Settings > Notifications > PR Sniper.
 - Isolated profiles still need per-app macOS authorization. Procedure: [tests/macos-notifications.md](../tests/macos-notifications.md).

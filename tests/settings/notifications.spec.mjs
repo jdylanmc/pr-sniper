@@ -264,8 +264,12 @@ test("Windows aggregate permission never invents banner or center authorization"
   await page.goto("/?view=settings");
   await section(page, "Preferences");
   const status = page.locator("#notification-permission");
-  await expect(status).toHaveText(
-    "Off; Windows authorized aggregate; banners unknown; center unknown",
+  await expect(
+    page.getByRole("switch", { name: "Notifications", exact: true }),
+  ).toBeEnabled();
+  await expect(status).toBeHidden();
+  await expect(page.locator("#notification-settings")).not.toContainText(
+    /banner|center|Muted|Blocked/i,
   );
   await expect(
     page.getByRole("switch", { name: "Notifications", exact: true }),
@@ -336,9 +340,9 @@ test("denied permission leaves opt-in off and visible rather than claiming succe
   );
   await expect(enabled).not.toBeChecked();
   expect((await store("notification_snapshot")).enabled).toBe(false);
-  await expect(page.locator("#notification-permission")).toContainText(
-    /(macOS|Windows) denied; banners off; center off/,
-  );
+  await expect(
+    page.locator("#notification-permission [data-notification-alert]"),
+  ).toHaveText(/^Blocked by (macOS|Windows)$/);
   await page.evaluate(() => {
     window.__denyNotifications = false;
   });
@@ -381,3 +385,106 @@ test("persisted notification ledger survives unavailable queue data", async ({
   await page.goto("/?view=queue");
   await expect(page.locator("#error")).toHaveText("Failed");
 });
+
+const permissionScenarios = [
+  {
+    name: "healthy",
+    platform: "macos",
+    enabled: true,
+    permission: {
+      authorization: "authorized",
+      alerts_enabled: true,
+      center_enabled: false,
+    },
+    alert: null,
+  },
+  {
+    name: "muted",
+    platform: "macos",
+    enabled: true,
+    permission: {
+      authorization: "authorized",
+      alerts_enabled: false,
+      center_enabled: false,
+    },
+    alert: "Muted in macOS",
+  },
+  {
+    name: "blocked",
+    platform: "macos",
+    enabled: false,
+    permission: {
+      authorization: "denied",
+      alerts_enabled: false,
+      center_enabled: false,
+    },
+    alert: "Blocked by macOS",
+  },
+  {
+    name: "windows-blocked",
+    platform: "windows",
+    enabled: false,
+    permission: {
+      authorization: "disabled_for_user",
+      alerts_enabled: null,
+      center_enabled: null,
+    },
+    alert: "Blocked by Windows",
+  },
+];
+
+for (const width of [408, 320]) {
+  for (const scenario of permissionScenarios) {
+    test(`notification card shows only the switch unless there is a problem: ${scenario.name} at ${width}px`, async ({
+      page,
+    }) => {
+      await page.addInitScript((scenario) => {
+        const original = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+          const result = await original(command, args);
+          if (command === "notification_snapshot") {
+            result.platform = scenario.platform;
+            result.enabled = scenario.enabled;
+            result.permission = scenario.permission;
+          }
+          return result;
+        };
+      }, scenario);
+      await page.setViewportSize({ width, height: 744 });
+      await page.goto("/?view=settings");
+      await section(page, "Preferences");
+      const card = page.locator("#notification-settings");
+      const enabled = card.getByRole("switch", {
+        name: "Notifications",
+        exact: true,
+      });
+      await expect(enabled).toBeEnabled();
+      await expect(
+        page.getByRole("group", { name: "Notifications", exact: true }),
+      ).toBeVisible();
+      await expect(card.locator(":scope > fieldset > legend")).toHaveCount(0);
+      await expect(
+        card.getByText("Notifications", { exact: true }),
+      ).toHaveCount(1);
+      await expect(card).not.toContainText(/banners|center|authorized/i);
+      const row = card.locator("#notification-permission");
+      if (!scenario.alert) {
+        await expect(row).toBeHidden();
+        return;
+      }
+      await expect(row.locator("[data-notification-alert]")).toHaveText(
+        scenario.alert,
+      );
+      await expect(row.locator("svg")).toHaveCount(1);
+      const [rowBox, cardBox] = await Promise.all([
+        row.boundingBox(),
+        card.boundingBox(),
+      ]);
+      expect(rowBox.x).toBeGreaterThanOrEqual(cardBox.x);
+      expect(rowBox.x + rowBox.width).toBeLessThanOrEqual(
+        cardBox.x + cardBox.width,
+      );
+      expect(rowBox.height).toBeLessThan(40);
+    });
+  }
+}

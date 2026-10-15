@@ -70,8 +70,8 @@ test("Settings separates Accounts and Repositories without prototype or retired 
   await expect(notifications).toBeDisabled();
   notificationState.release();
   await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#notification-permission")).toContainText(/^Off;/);
   await expect(notifications).toBeEnabled();
+  await expect(page.locator("#notification-permission")).toBeHidden();
   await expect(notifications).not.toBeChecked();
   await expect(
     page.getByRole("button", { name: "Send test notification" }),

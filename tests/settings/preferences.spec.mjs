@@ -443,9 +443,9 @@ test("startup, notification and pause commit independently while newer keyboard 
   });
   await page.locator("#notification-enabled").check();
   await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#notification-permission")).toContainText(
-    /On; (macOS|Windows) authorized; banners unknown; center unknown/,
-  );
+  // Healthy: the switch alone; no status line.
+  await expect(page.locator("#notification-enabled")).toBeChecked();
+  await expect(page.locator("#notification-permission")).toBeHidden();
   expect((await store("notification_snapshot")).enabled).toBe(true);
   await headerAutomation(page)
     .getByRole("button", { name: "Pause automation" })
@@ -584,9 +584,9 @@ test("denied and unreadable native notifications stay explicit without saving pr
   await expect(page.locator("#notification-error")).toContainText(
     "Synthetic OS permission denied",
   );
-  await expect(page.locator("#notification-permission")).toContainText(
-    /Off; (macOS|Windows) denied; banners off; center off/,
-  );
+  await expect(
+    page.locator("#notification-permission [data-notification-alert]"),
+  ).toHaveText(/^Blocked by (macOS|Windows)$/);
   await page.locator("#notification-settings").scrollIntoViewIfNeeded();
   await capture(page, browserName, "permission-denied");
   await page.evaluate(() => {
@@ -599,9 +599,7 @@ test("denied and unreadable native notifications stay explicit without saving pr
   );
   await expect(page.locator("#notification-enabled")).toBeDisabled();
   await expect(page.locator("#notification-types")).toBeHidden();
-  await expect(page.locator("#notification-permission")).toHaveText(
-    "Unavailable",
-  );
+  await expect(page.locator("#notification-permission")).toBeHidden();
   await expect(page.locator("#global-capacity")).toHaveValue("21");
   expect((await store("notification_snapshot")).enabled).toBe(false);
   expect((await store("snapshot")).settings).toEqual(before);
@@ -629,9 +627,7 @@ test("an immediate notification operation and its rejection survive an unrelated
   await expect(page.locator("#notification-enabled")).toBeDisabled();
   await savePreferences(page);
   await expect(page.locator("#notification-enabled")).toBeDisabled();
-  await expect(page.locator("#notification-permission")).toContainText(
-    "Pending",
-  );
+  await expect(page.locator("#notification-permission")).toBeHidden();
   await page.evaluate(() => window.__rejectNotification());
   await expect(page.locator("#notification-error")).toContainText(
     "Synthetic pending native opt-in was denied.",
