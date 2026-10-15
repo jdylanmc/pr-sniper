@@ -31,6 +31,14 @@
 :root[data-theme="dark"] .genie-page {
   color-scheme: dark;
 }
+/* Chevron drawn for WebKit's restyled schedule selects (settings.css). */
+:root[data-theme="dark"]
+  .settings-window
+  .preferences-view
+  .preferences-schedule
+  select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a4b2c3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
 /* GENERATED:BEGIN (role-family-<Light hex>) */
 :root {
   --bg-neutral-a9b3a6: #a9b3a6;

@@ -110,7 +110,8 @@ function contrastFailures(page) {
       const layers = [];
       for (let e = element; e; e = e.parentElement) {
         const style = getComputedStyle(e);
-        if (style.backgroundImage !== "none") return null;
+        // Icon images (url) do not sit behind text; gradients do.
+        if (style.backgroundImage.includes("gradient")) return null;
         const color = parse(style.backgroundColor);
         if (color && color.a > 0) {
           layers.push(color);
