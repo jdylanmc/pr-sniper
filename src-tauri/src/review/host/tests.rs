@@ -587,17 +587,46 @@ fn duck_evidence_is_kept_with_a_consumed_result_and_never_outlives_a_moved_state
     assert_eq!(saved.result.unwrap().ducks, vec![duck_call()]);
     assert_eq!(saved.failed_duck, None);
 
+    // An exit-gate or post-run toss, and a state superseded before the run.
+    for error in [
+        Failure::tossed("PR state moved. Review discarded. Stop."),
+        Failure::superseded("The PR head moved since the work was queued."),
+    ] {
+        let (_root, store, template) = duck_fixture(15);
+        let run = running_packet(&store, &template, 100);
+        record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+        complete(&store, &run.operation.id, Err(error), 101).unwrap();
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert!(saved.result.is_none(), "verdicts of a moved state are gone");
+        assert!(
+            saved.attempt_ducks.is_empty(),
+            "verdicts of a moved state are gone"
+        );
+    }
+
+    // A result whose state moved by the time it is consumed.
     let (_root, store, template) = duck_fixture(15);
+    let binding = crate::retention::Binding::job(&template.job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    store.save_pr_states(&states).unwrap();
     let run = running_packet(&store, &template, 100);
-    complete(
-        &store,
-        &run.operation.id,
-        Err(Failure::tossed("PR state moved. Review discarded. Stop.")),
-        101,
-    )
-    .unwrap();
+    record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Stale."}));
+    result.ducks = vec![duck_call()];
+    complete(&store, &run.operation.id, Ok(result), 101).unwrap();
     let saved = store.load_reviews().unwrap().remove(0);
-    assert!(saved.result.is_none(), "verdicts of a moved state are gone");
+    assert!(saved.result.is_none());
+    assert!(saved.attempt_ducks.is_empty());
 }
 
 #[test]

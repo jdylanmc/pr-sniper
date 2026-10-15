@@ -547,3 +547,68 @@ async fn at_ai_capacity_one_the_duck_runs_inside_the_primarys_slot() {
         "still one slot, held by the primary alone"
     );
 }
+
+#[tokio::test]
+async fn a_primary_flooding_rubber_duck_past_the_limit_keeps_a_bounded_log() {
+    let (_root, result, _) = review("duck-flood", "verdict-ok", limits(1, 180), 600).await;
+    let ducks = result.unwrap().ducks;
+    assert_eq!(ducks.len(), 2, "one started call, one folded refusal");
+    assert!(matches!(ducks[0].outcome, DuckOutcome::Verdict { .. }));
+    assert_eq!(
+        ducks[1].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::LimitReached
+        }
+    );
+    assert_eq!(ducks[1].repeats, 98);
+    let persisted = serde_json::to_vec(&ducks).unwrap().len();
+    assert!(persisted < 8 * 1024, "{persisted} bytes");
+}
+
+#[tokio::test]
+async fn cancelling_the_primary_mid_call_stops_the_duck_and_leaves_no_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-slow",
+        limits(8, 180),
+        false,
+    );
+    let log = duck.setup.log.clone();
+    let operation = operation(600);
+    let cancel = operation.cancelled.clone();
+    let duck_root = root.path().join("duck");
+    let watcher = tokio::spawn(async move {
+        // Cancel (pause) once the duck turn is in flight.
+        loop {
+            if std::fs::read_to_string(duck_root.join("receipt.jsonl"))
+                .is_ok_and(|r| r.contains("fixture.turns"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let error = tokio::time::timeout(
+        Duration::from_secs(30),
+        execute(
+            options(root.path(), "duck-call"),
+            &identity(),
+            &operation,
+            primary_request(duck.setup),
+        ),
+    )
+    .await
+    .expect("cancellation ends the attempt")
+    .unwrap_err();
+    watcher.await.unwrap();
+    assert!(error.cancelled, "{}", error.message);
+    // The duck client is torn down with the primary: no duck process, no live turn.
+    stopped(&root.path().join("duck"));
+    stopped(root.path());
+    let calls = log.lock().unwrap().clone();
+    assert!(calls
+        .iter()
+        .all(|c| !matches!(c.outcome, DuckOutcome::Verdict { .. })));
+}

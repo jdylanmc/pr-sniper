@@ -227,7 +227,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
 
     fn record(&self, call: DuckCall) {
         if let Ok(mut calls) = self.engine.setup.log.lock() {
-            calls.push(call);
+            duck::log_call(&mut calls, call);
         }
     }
 
@@ -248,6 +248,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             tool_calls: 0,
             coverage: None,
             duration_ms: 0,
+            repeats: 0,
         }
     }
 

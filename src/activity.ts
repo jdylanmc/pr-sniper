@@ -26,7 +26,7 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
       call.outcome.outcome === "verdict"
         ? call.outcome.verdict.verdict
         : "failed";
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    counts.set(key, (counts.get(key) ?? 0) + 1 + (call.repeats ?? 0));
   }
   const place = (call: DuckCall) =>
     call.input.kind === "line"
@@ -38,7 +38,9 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
     kind: "duck",
     icon: paths.duck,
     verb: "Rubber duck",
-    value: String(ducks.length),
+    value: String(
+      ducks.reduce((sum, call) => sum + 1 + (call.repeats ?? 0), 0),
+    ),
     agent,
     facts: [
       ...(
@@ -57,7 +59,9 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
       nano:
         call.outcome.outcome === "verdict"
           ? `${call.outcome.verdict.verdict}: ${call.outcome.verdict.nano}`
-          : call.outcome.failure,
+          : call.repeats
+            ? `${call.outcome.failure} x${call.repeats + 1}`
+            : call.outcome.failure,
     })),
   };
 }

@@ -265,6 +265,8 @@ export interface DuckCall {
   input_tokens?: number;
   output_tokens?: number;
   duration_ms: number;
+  /** Further refusals folded into this entry. */
+  repeats?: number;
 }
 
 const time = (value: number | null) =>

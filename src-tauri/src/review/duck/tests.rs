@@ -145,6 +145,7 @@ fn the_result_is_fenced_agent_output() {
         tool_calls: 0,
         coverage: None,
         duration_ms: 0,
+        repeats: 0,
     };
     let text = result_text(&call, &verdict);
     assert!(text.starts_with("<untrusted source=\"rubber_duck\">"));
@@ -152,4 +153,72 @@ fn the_result_is_fenced_agent_output() {
     assert!(text.contains("\"state_id\":\"1:abc\""));
     let stored: DuckCall = serde_json::from_value(serde_json::to_value(&call).unwrap()).unwrap();
     assert_eq!(stored, call);
+}
+
+fn logged(failure: Option<DuckFailure>) -> DuckCall {
+    let input = DuckInput::parse(&line_input(), &changed(), &threads()).unwrap();
+    DuckCall {
+        ordinal: 1,
+        input,
+        outcome: match failure {
+            Some(failure) => DuckOutcome::Failure { failure },
+            None => DuckOutcome::Verdict {
+                verdict: Verdict::parse(&json!({"verdict":"confirmed","nano":"n"})).unwrap(),
+            },
+        },
+        limits: DuckLimits::default(),
+        agent: "Duck".into(),
+        model: "m".into(),
+        state_id: "1:abc".into(),
+        packet: failure.is_none().then(|| crate::packet::PacketRecord {
+            state_id: "1:abc".into(),
+            hash: "h".into(),
+            schema: 6,
+            tool_set: vec![],
+            exits_offered: vec![],
+            exits_denied: vec![],
+            state_hash: None,
+            state_marks: None,
+        }),
+        session_id: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        tool_calls: 0,
+        coverage: None,
+        duration_ms: 0,
+        repeats: 0,
+    }
+}
+
+#[test]
+fn repeated_refusals_fold_into_one_entry_without_bodies() {
+    let mut log = vec![logged(None)];
+    for _ in 0..100 {
+        log_call(&mut log, logged(Some(DuckFailure::LimitReached)));
+    }
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[1].repeats, 99);
+    assert!(log[1].input.proposed_body.is_empty());
+    assert!(
+        !log[0].input.proposed_body.is_empty(),
+        "started calls keep their body"
+    );
+}
+
+#[test]
+fn distinct_refusals_are_capped() {
+    let kinds = [
+        DuckFailure::LimitReached,
+        DuckFailure::BudgetExhausted,
+        DuckFailure::ExitTaken,
+        DuckFailure::RateLimited,
+        DuckFailure::Unavailable,
+    ];
+    let mut log = Vec::new();
+    for i in 0..1000 {
+        log_call(&mut log, logged(Some(kinds[i % kinds.len()])));
+    }
+    assert_eq!(log.len(), MAX_REFUSAL_ENTRIES);
+    let total: u32 = log.iter().map(|c| 1 + c.repeats).sum();
+    assert_eq!(total, 1000, "every refusal is still counted");
 }

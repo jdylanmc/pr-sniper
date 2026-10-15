@@ -260,7 +260,8 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 super::validate_execution_selection(&store, &run)?;
                 Ok(result)
             });
-            if outcome.is_err() {
+            // A moved state keeps no duck evidence: its verdicts are gone with it.
+            if outcome.as_ref().is_err_and(|error| !moved(error)) {
                 record_attempt_ducks(&store, &run.operation.id, ducks)?;
             }
             complete(&store, &run.operation.id, outcome, now_seconds()?)?;
@@ -321,6 +322,7 @@ pub(crate) fn complete(
         .is_some_and(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
     {
         current.operation.requeue_superseded(now);
+        current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
         current.error = None;
@@ -385,6 +387,9 @@ pub(crate) fn complete(
                             .map(|d| d.agent.name.clone())
                     })
                     .flatten();
+                if moved(&error) {
+                    current.attempt_ducks.clear();
+                }
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
@@ -395,6 +400,15 @@ pub(crate) fn complete(
         }
     }
     store.save_reviews(&reviews)
+}
+
+/// The PR state moved under the attempt (superseded before the run, tossed after).
+fn moved(error: &Failure) -> bool {
+    !error.cancelled
+        && matches!(
+            error.kind,
+            monitoring::OperationFailure::Tossed | monitoring::OperationFailure::Superseded
+        )
 }
 
 fn replace_run(reviews: &mut Vec<ReviewRun>, run: &ReviewRun) {

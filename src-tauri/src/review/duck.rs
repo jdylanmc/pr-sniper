@@ -15,6 +15,9 @@ pub const MAX_CLAIM_WORDS: usize = 100;
 pub const EXIT_RESERVE_SECONDS: u64 = 120;
 /// A call with less time than this left in its window is not started.
 pub const MIN_CALL_SECONDS: u64 = 60;
+/// Refused calls (no session) kept per attempt beyond the started ones; later
+/// refusals only raise the last refusal's `repeats`.
+pub const MAX_REFUSAL_ENTRIES: usize = 8;
 
 pub const DESCRIPTION: &str = "Ask the operator's Rubber Duck Agent to verify one finding before you post it. Fresh session, same PR state, read-only. Returns a verdict (confirmed, revise, rejected, unverifiable) as data. You decide. Bounded calls; one at a time.";
 pub const VERDICT_DESCRIPTION: &str =
@@ -197,6 +200,41 @@ pub struct DuckCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<super::ReadCoverage>,
     pub duration_ms: u64,
+    /// Further refusals folded into this one (same failure, or past the entry cap).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub repeats: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+impl DuckCall {
+    /// Refused before any session: no packet was built.
+    pub fn refused(&self) -> bool {
+        self.packet.is_none() && matches!(self.outcome, DuckOutcome::Failure { .. })
+    }
+}
+
+/// Append one call to an attempt's log, keeping it bounded: a refused call keeps only
+/// its target and claim, repeats of the last refusal fold into it, and at most
+/// [`MAX_REFUSAL_ENTRIES`] refusals are kept. Started calls are bounded by `max_calls`.
+pub fn log_call(log: &mut Vec<DuckCall>, mut call: DuckCall) {
+    if call.refused() {
+        call.input.proposed_body.clear();
+        call.input.evidence.clear();
+        let refusals = log.iter().filter(|c| c.refused()).count();
+        let same = log
+            .last()
+            .is_some_and(|last| last.refused() && last.outcome == call.outcome);
+        if same || refusals >= MAX_REFUSAL_ENTRIES {
+            if let Some(last) = log.iter_mut().rev().find(|c| c.refused()) {
+                last.repeats = last.repeats.saturating_add(1);
+                return;
+            }
+        }
+    }
+    log.push(call);
 }
 
 fn side_ok(side: &Option<String>) -> bool {

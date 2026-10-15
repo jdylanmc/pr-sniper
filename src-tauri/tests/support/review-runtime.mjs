@@ -31,6 +31,7 @@ const duckScenarios = {
   "duck-call": [duckArgs],
   "duck-sequential": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-then-error": [duckArgs],
+  "duck-flood": Array.from({ length: 100 }, () => duckArgs),
   "duck-parallel": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-invalid": [{ ...duckArgs, path: "unchanged.rs" }],
 };

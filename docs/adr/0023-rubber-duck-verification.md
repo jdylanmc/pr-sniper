@@ -112,7 +112,8 @@ Saved Preferences, `Settings.rubber_duck` (`DuckLimits`), serde default, user-tu
 ### Evidence and audit
 
 - **Execution Snapshot** gains the duck: Agent, account, model, intelligence, Doctrine bodies, captured at primary job start. Immutable; `same_execution` compares it. Missing in legacy records: absent, never rebuilt.
-- An attempt that ends without a result keeps its duck calls on the run (`attempt_ducks`, last attempt only, bounded by the call limit) so duck time use stays visible in Activity.
+- An attempt that ends without a result keeps its duck calls on the run (`attempt_ducks`, last attempt only) so duck time use stays visible in Activity. A moved state (superseded or tossed) keeps none: its verdicts are gone with it.
+- The per-attempt log is bounded: started calls by `max_calls`; a refused call (no session) keeps only its target and claim, repeats of the last refusal fold into one entry with a `repeats` count, and at most 8 refusal entries are kept.
 - Primary `ReviewResult.ducks[]`: ordinal, input, `duck_packet` record (content-free, hash), outcome (`Verdict` or typed `duck_failure`), session id, model, tokens, tool calls, read coverage, duration. Local-only, Clean-able ([ADR 0015](0015-local-only-results-and-retention-journal.md)).
 - Activity shows duck calls with the run like teammate reports. Diagnostics: `ToolName::RubberDuck`, content-free start/finish and failure kind ([ADR 0019](0019-bounded-content-free-diagnostics.md)).
 
