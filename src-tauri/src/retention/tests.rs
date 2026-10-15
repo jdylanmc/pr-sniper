@@ -123,6 +123,7 @@ fn completed(store: &Store, job: &QueueJob) -> ReviewRun {
         mode: crate::review::RunMode::Packet,
         packet: None,
         failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None, key: crate::review::key(job, ASSIGNMENT), assignment_id: ASSIGNMENT.into(),
         job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap(),
         operation, manual_start: true, trust_confirmed: true, phase: "Complete".into(), error: None,

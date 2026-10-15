@@ -56,6 +56,8 @@ Invalid or over-limit input: tool error result, no duck started, no call spent. 
 - **Tools.** The primary assignment's granted investigation tools, over the primary's `ReviewContext` and `ToolFacts`: same immutable base/head trees, same conversation snapshot. Never `rubber_duck` (no recursion), never an effect exit, never `submit_report`. Exit: `submit_verdict` only. Runtime catalog equality, `deny_all_permissions` and the PreToolUse hook apply unchanged ([ADR 0020](0020-constrained-host-owned-review-tools.md)).
 - **Identity.** The duck Agent's own Copilot AI Account and model, verified like any run ([ADR 0011](0011-separate-github-and-copilot-identities.md)): own credential, own CLI process. Never the primary's account by fallback.
 - **Serialized.** At most one duck call active per primary run. Parallel `rubber_duck` calls queue in call order.
+- **No orphan turns.** The duck session handle outlives its turn: a turn ended without a verdict (timeout, cancellation, gate, error) is aborted (2 s bound), and every duck session is closed after its call, so no duck inference continues once the primary resumes.
+- **Duck account.** The duck account's own operation (generation, cancellation) is checked before each call and while it runs; a change is `unavailable` for that call, no session started.
 - **Read coverage** of the duck is recorded on the duck call, never added to the primary's.
 
 ### Capacity and deadlock
@@ -83,7 +85,7 @@ Saved Preferences, `Settings.rubber_duck` (`DuckLimits`), serde default, user-tu
 
 ### Failures
 
-**Setup is a job error.** A primary with a Rubber Duck verifies the duck before its own inference: duck Agent has an account and model, credential, Copilot identity, model listed, intelligence valid, duck CLI started. Any failure fails the primary attempt through the normal path ([ADR 0007](0007-retry-then-park-single-inbox.md)): transient retries, credentials park until reconnect, permanent parks for the human, Queue › Needs attention. The run carries typed `failed_duck` (the duck Agent's name); never inferred from text. The primary never runs without its configured duck.
+**Setup is a job error.** A primary with a Rubber Duck verifies the duck before its own inference: duck Agent has an account and model, credential, Copilot identity, model listed, intelligence valid, duck CLI started. Any failure fails the primary attempt through the normal path ([ADR 0007](0007-retry-then-park-single-inbox.md)): transient retries, credentials park until the GitHub, primary or duck Copilot account reconnects, permanent parks for the human, Queue › Needs attention. The run carries typed `failed_duck` (the duck Agent's name); never inferred from text. The primary never runs without its configured duck.
 
 **A call failure is a tool error.** After setup, a failed call returns a typed error to the primary and never fails the run. The primary may proceed, retry the call (within bounds), drop the finding, or end on `ready_for_human`.
 
@@ -110,6 +112,7 @@ Saved Preferences, `Settings.rubber_duck` (`DuckLimits`), serde default, user-tu
 ### Evidence and audit
 
 - **Execution Snapshot** gains the duck: Agent, account, model, intelligence, Doctrine bodies, captured at primary job start. Immutable; `same_execution` compares it. Missing in legacy records: absent, never rebuilt.
+- An attempt that ends without a result keeps its duck calls on the run (`attempt_ducks`, last attempt only, bounded by the call limit) so duck time use stays visible in Activity.
 - Primary `ReviewResult.ducks[]`: ordinal, input, `duck_packet` record (content-free, hash), outcome (`Verdict` or typed `duck_failure`), session id, model, tokens, tool calls, read coverage, duration. Local-only, Clean-able ([ADR 0015](0015-local-only-results-and-retention-journal.md)).
 - Activity shows duck calls with the run like teammate reports. Diagnostics: `ToolName::RubberDuck`, content-free start/finish and failure kind ([ADR 0019](0019-bounded-content-free-diagnostics.md)).
 

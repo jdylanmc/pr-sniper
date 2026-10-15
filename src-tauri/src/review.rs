@@ -337,6 +337,10 @@ pub struct ReviewRun {
     /// The Rubber Duck Agent whose setup failed this run's last attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_duck: Option<String>,
+    /// Duck calls of the last attempt that ended without a result (bounded by the
+    /// call limit); a completed attempt keeps its calls on `result.ducks` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempt_ducks: Vec<duck::DuckCall>,
 }
 
 impl ReviewRun {

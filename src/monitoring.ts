@@ -205,6 +205,8 @@ export interface ReviewCandidate {
     } | null;
     // The Rubber Duck Agent whose setup failed the last attempt.
     failed_duck?: string | null;
+    // Duck calls of the last attempt that ended without a result.
+    attempt_ducks?: DuckCall[];
     result: {
       reviewed_base_sha?: string | null;
       output: {

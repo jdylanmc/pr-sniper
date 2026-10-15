@@ -177,6 +177,7 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),

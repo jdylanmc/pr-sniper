@@ -423,6 +423,7 @@ async function seedTeam(
     findings,
     consumedWrite = false,
     ducks,
+    failedDucks,
   },
 ) {
   const fixture = await queueFixture(store);
@@ -464,6 +465,17 @@ async function seedTeam(
   lead.key = "work-primary";
   lead.job = { ...lead.job, work: work("work-primary", first.id, 1) };
   if (ducks) lead.result.ducks = ducks;
+  if (failedDucks) {
+    lead.result = null;
+    lead.error = "Copilot review timed out.";
+    lead.operation = {
+      ...lead.operation,
+      state: "failed",
+      failure: "timeout",
+      next_attempt_at: null,
+    };
+    lead.attempt_ducks = failedDucks;
+  }
   const mate = packetRun(fixture, 25, { exit: "submit_report" });
   mate.key = "work-teammate";
   mate.assignment_id = secondAssignmentId;
@@ -695,4 +707,39 @@ test("the primary's rubber duck calls show verdicts and failures in Activity", a
     path: test.info().outputPath("packet-duck-activity.png"),
     fullPage: true,
   });
+});
+
+test("a failed attempt still shows its rubber duck calls in Activity", async ({
+  page,
+  store,
+}) => {
+  const call = (ordinal, input, outcome) => ({
+    ordinal,
+    input: { claim: "c", proposed_body: "b", ...input },
+    outcome,
+    limits: {
+      max_calls: 8,
+      call_timeout_seconds: 180,
+      primary_window_minutes: 15,
+    },
+    agent: "Duck",
+    model: "duck-model",
+    state_id: "0:hash",
+    duration_ms: 12,
+  });
+  const item = await seedTeam(store, {
+    findings: [],
+    failedDucks: [
+      call(1, { kind: "pr" }, { outcome: "failure", failure: "timed_out" }),
+    ],
+  });
+  await openDetail(page, store, item);
+  const duck = activity(page, "duck");
+  await expect(duck).toHaveCount(1);
+  await expect(duck.locator(".activity-value")).toHaveText("1");
+  const facts = await expand(duck);
+  await expect(fact(facts, "Failed")).toHaveText("1");
+  await expect(
+    facts.locator('[data-finding="PR"] .activity-finding-nano'),
+  ).toHaveText("timed_out");
 });

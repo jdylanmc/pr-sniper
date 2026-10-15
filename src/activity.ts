@@ -170,6 +170,8 @@ export function activityRows(
       !!run.packet ||
       !!result?.output.exit ||
       !!result?.output.report;
+    if (!result && run.attempt_ducks?.length)
+      rows.push(duckRow(run.attempt_ducks, agent));
     if (result && packet) {
       // Packet runs: coverage is the read record, the exit is the outcome.
       const coverage = result.coverage;

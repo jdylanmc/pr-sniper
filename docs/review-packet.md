@@ -191,7 +191,7 @@ Teammate failure shows in Needs attention: cause and which teammate failed, one 
 | Bounds   | Saved Preferences: calls, timeout, primary window. 120 s exit reserve.                                                                                    |
 | Failures | Typed tool error: `invalid_input`, `limit_reached`, `budget_exhausted`, `exit_taken`, `unavailable`, `rate_limited`, `timed_out`, `no_verdict`, `failed`. |
 | Setup    | Verified before primary inference; failure fails the attempt (`failed_duck`).                                                                             |
-| Evidence | `ReviewResult.ducks[]`; Activity row Rubber duck.                                                                                                         |
+| Evidence | `ReviewResult.ducks[]`; failed attempt: run `attempt_ducks`; Activity row Rubber duck.                                                                    |
 
 ## Packet pull tools
 

@@ -37,6 +37,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
         mode: Default::default(),
         packet: None,
         failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),
@@ -597,4 +598,25 @@ fn duck_evidence_is_kept_with_a_consumed_result_and_never_outlives_a_moved_state
     .unwrap();
     let saved = store.load_reviews().unwrap().remove(0);
     assert!(saved.result.is_none(), "verdicts of a moved state are gone");
+}
+
+#[test]
+fn a_failed_attempt_keeps_its_duck_calls_until_a_result_replaces_them() {
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+    complete(&store, &run.operation.id, Err(Failure::timeout()), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert!(saved.result.is_none());
+    assert_eq!(saved.attempt_ducks, vec![duck_call()]);
+    // A later completed attempt carries its own calls and clears the failed ones.
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.state = OperationState::Running;
+    store.save_reviews(&reviews).unwrap();
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Checked."}));
+    result.ducks = vec![duck_call()];
+    complete(&store, &run.operation.id, Ok(result), 102).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert!(saved.attempt_ducks.is_empty());
+    assert_eq!(saved.result.unwrap().ducks.len(), 1);
 }

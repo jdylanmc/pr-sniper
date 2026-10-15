@@ -158,6 +158,7 @@ pub(crate) fn request(
             mode: super::RunMode::Packet,
             packet: None,
             failed_duck: None,
+            attempt_ducks: Vec::new(),
             feedback_context: None,
             key: candidate.key,
             assignment_id: candidate.assignment_id,
@@ -228,7 +229,9 @@ pub(crate) fn prepare_dispatch(
 pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: Arc<AtomicBool>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = execute(app.clone(), run.clone(), cancelled).await;
+        let ducks: runtime::DuckLog = Default::default();
+        let outcome = execute(app.clone(), run.clone(), cancelled, ducks.clone()).await;
+        let ducks = ducks.lock().map(|d| d.clone()).unwrap_or_default();
         let host = app.state::<Host>();
         let saved = (|| {
             let generations = host
@@ -257,6 +260,9 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 super::validate_execution_selection(&store, &run)?;
                 Ok(result)
             });
+            if outcome.is_err() {
+                record_attempt_ducks(&store, &run.operation.id, ducks)?;
+            }
             complete(&store, &run.operation.id, outcome, now_seconds()?)?;
             let diagnostic = store.load_reviews().and_then(|reviews| {
                 let current = reviews
@@ -357,6 +363,7 @@ pub(crate) fn complete(
                         .map(|account| account.account_id.as_str()),
                 );
                 current.failed_duck = None;
+                current.attempt_ducks.clear();
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
@@ -443,13 +450,14 @@ pub(crate) async fn execute(
     app: tauri::AppHandle,
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
+    ducks: runtime::DuckLog,
 ) -> Result<(super::ReviewResult, u64), Failure> {
     let diagnostics =
         super::diagnostics::native(&app, &run.job, &run.operation, &run.selection.agent.model);
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::PreparingContext,
     });
-    let result = execute_attempt(app, run, cancelled, diagnostics.clone()).await;
+    let result = execute_attempt(app, run, cancelled, diagnostics.clone(), ducks).await;
     diagnostics.finish(
         crate::storage::diagnostics::CompletionStage::Attempt,
         result.as_ref().err(),
@@ -462,6 +470,7 @@ async fn execute_attempt(
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
     diagnostics: Arc<super::diagnostics::Trace>,
+    ducks: runtime::DuckLog,
 ) -> Result<(super::ReviewResult, u64), Failure> {
     let remaining = run
         .operation
@@ -644,7 +653,7 @@ async fn execute_attempt(
         }
         Ok(())
     });
-    let duck = duck_setup(&app, &run, packet.duck)?;
+    let duck = duck_setup(&app, &run, packet.duck, ducks)?;
     let integration = app.state::<Host>().copilot.clone();
     let read_hash = packet.packet.record.state_hash.clone();
     let client_after = client.clone();
@@ -708,6 +717,7 @@ fn duck_setup(
     app: &tauri::AppHandle,
     run: &ReviewRun,
     prep: Option<runtime::DuckPrep>,
+    log: runtime::DuckLog,
 ) -> Result<Option<runtime::DuckSetup>, Failure> {
     let Some(prep) = prep else {
         return Ok(None);
@@ -772,7 +782,27 @@ fn duck_setup(
         launch: runtime::DuckLaunch::Pending,
         rate_limited,
         gated,
+        account: None,
+        log,
     }))
+}
+
+/// Keeps the duck calls of an attempt that ended without a result, replacing those of
+/// an earlier attempt. Evidence only; a completed result carries its own.
+pub(crate) fn record_attempt_ducks(
+    store: &crate::storage::Store,
+    id: &str,
+    ducks: Vec<crate::review::duck::DuckCall>,
+) -> Result<(), String> {
+    let mut reviews = store.load_reviews()?;
+    let Some(current) = reviews.iter_mut().find(|r| r.operation.id == id) else {
+        return Ok(());
+    };
+    if current.operation.state != OperationState::Running || current.attempt_ducks == ducks {
+        return Ok(());
+    }
+    current.attempt_ducks = ducks;
+    store.save_reviews(&reviews)
 }
 
 #[tauri::command]

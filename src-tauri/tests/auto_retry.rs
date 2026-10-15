@@ -233,6 +233,7 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
         selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
