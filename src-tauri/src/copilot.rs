@@ -82,10 +82,12 @@ impl Integration {
             .map_err(Failure::operation)?;
         let mut request = request;
         if let Some(duck) = request.duck.as_mut() {
-            duck.launch = self
+            let (launch, account) = self
                 .duck_launch(&duck.selection, &operation)
                 .await
                 .map_err(Failure::duck_setup)?;
+            duck.launch = launch;
+            duck.account = Some(account);
         }
         let final_operation = operation.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
@@ -112,7 +114,7 @@ impl Integration {
         &self,
         selection: &crate::review::Selection,
         primary: &Operation,
-    ) -> Result<crate::review::runtime::DuckLaunch, crate::review::Failure> {
+    ) -> Result<(crate::review::runtime::DuckLaunch, Operation), crate::review::Failure> {
         use crate::review::Failure;
         let id = selection
             .agent
@@ -132,7 +134,10 @@ impl Integration {
             .credential(&id, &operation)
             .await
             .map_err(Failure::operation)?;
-        Ok(crate::review::runtime::DuckLaunch::Credential { identity, pair })
+        Ok((
+            crate::review::runtime::DuckLaunch::Credential { identity, pair },
+            operation,
+        ))
     }
 }
 

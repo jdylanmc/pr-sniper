@@ -82,6 +82,8 @@ fn duck(root: &Path, scenario: &str, limits: DuckLimits, gated: bool) -> Duck {
             },
             rate_limited: Arc::new(move |after| sink.lock().unwrap().push(after)),
             gated: Arc::new(move || gated),
+            account: None,
+            log: Default::default(),
         },
         paced,
     }
@@ -252,9 +254,16 @@ async fn invalid_input_is_a_tool_error_and_spends_no_call() {
     assert_eq!(methods(&root.path().join("duck"), "session.create"), 0);
 }
 
+fn records(root: &Path, method: &str) -> Vec<Value> {
+    receipt(root)
+        .into_iter()
+        .filter(|r| r["method"] == method)
+        .collect()
+}
+
 #[tokio::test]
-async fn a_slow_duck_times_out_and_the_primary_still_exits() {
-    let (_root, result, _) = review("duck-call", "verdict-slow", limits(8, 1), 600).await;
+async fn a_slow_duck_times_out_is_aborted_and_closed_and_the_primary_still_exits() {
+    let (root, result, _) = review("duck-call", "verdict-slow", limits(8, 1), 600).await;
     let result = result.unwrap();
     assert!(result.output.exit.is_some());
     assert_eq!(
@@ -263,6 +272,120 @@ async fn a_slow_duck_times_out_and_the_primary_still_exits() {
             failure: DuckFailure::TimedOut
         }
     );
+    let duck = root.path().join("duck");
+    assert_eq!(methods(&duck, "session.abort"), 1);
+    assert_eq!(
+        methods(&duck, "session.create"),
+        methods(&duck, "session.detach")
+    );
+}
+
+#[tokio::test]
+async fn timed_out_turns_are_aborted_before_the_primary_resumes_and_never_overlap() {
+    let (root, result, _) = review("duck-sequential", "verdict-slow", limits(8, 1), 600).await;
+    let ducks = result.unwrap().ducks;
+    assert_eq!(ducks.len(), 2);
+    let duck = root.path().join("duck");
+    // Each call's turn is aborted; the second starts with no live duck turn.
+    let aborted = records(&duck, "fixture.aborted");
+    assert_eq!(aborted.len(), 2);
+    let turns: Vec<_> = records(&duck, "fixture.turns")
+        .iter()
+        .map(|r| r["active"].as_u64().unwrap())
+        .collect();
+    assert_eq!(turns, vec![0, 0]);
+    assert_eq!(
+        methods(&duck, "session.create"),
+        methods(&duck, "session.detach")
+    );
+    // The primary gets each result only after that duck turn was aborted.
+    let results = records(root.path(), "fixture.duck");
+    for (abort, result) in aborted.iter().zip(&results) {
+        assert!(abort["at"].as_u64().unwrap() <= result["at"].as_u64().unwrap());
+    }
+}
+
+#[tokio::test]
+async fn a_verdict_session_is_closed_without_an_abort() {
+    let (root, result, _) = review("duck-sequential", "verdict-ok", limits(8, 180), 600).await;
+    assert_eq!(result.unwrap().ducks.len(), 2);
+    let duck = root.path().join("duck");
+    assert_eq!(methods(&duck, "session.abort"), 0);
+    assert_eq!(methods(&duck, "session.create"), 2);
+    assert_eq!(methods(&duck, "session.detach"), 2);
+}
+
+#[tokio::test]
+async fn a_changed_duck_account_makes_the_next_call_unavailable_without_a_session() {
+    let root = tempfile::tempdir().unwrap();
+    let mut duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let account = Arc::new(crate::copilot::operation::AccountWork::default());
+    duck.setup.account = Some(
+        Operation::new(
+            account.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            Instant::now() + Duration::from_secs(600),
+        )
+        .unwrap(),
+    );
+    // The rate-limit check runs right before each call: the account changes there
+    // after the first call finished.
+    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    duck.setup.gated = Arc::new(move || {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            account.invalidate(|| Ok(())).unwrap();
+        }
+        false
+    });
+    let result = execute(
+        options(root.path(), "duck-sequential"),
+        &identity(),
+        &operation(600),
+        primary_request(duck.setup),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result.ducks[0].outcome,
+        DuckOutcome::Verdict { .. }
+    ));
+    assert_eq!(
+        result.ducks[1].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::Unavailable
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 1);
+    assert!(duck_results(root.path())[1].contains("duck_failure: unavailable"));
+}
+
+#[tokio::test]
+async fn a_failed_attempt_keeps_its_duck_calls_in_the_shared_log() {
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let log = duck.setup.log.clone();
+    let error = execute(
+        options(root.path(), "duck-then-error"),
+        &identity(),
+        &operation(600),
+        primary_request(duck.setup),
+    )
+    .await
+    .unwrap_err();
+    assert!(!error.duck_setup);
+    let calls = log.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(calls[0].outcome, DuckOutcome::Verdict { .. }));
 }
 
 #[tokio::test]

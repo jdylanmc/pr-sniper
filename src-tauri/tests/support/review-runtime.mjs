@@ -29,11 +29,24 @@ const exitScenarios = [
 const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
 const duckScenarios = {
   "duck-call": [duckArgs],
+  "duck-sequential": [duckArgs, { ...duckArgs, claim: "second claim" }],
+  "duck-then-error": [duckArgs],
   "duck-parallel": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-invalid": [{ ...duckArgs, path: "unchanged.rs" }],
 };
 const duckCalls = duckScenarios[scenario];
 let duckResults = 0;
+// Sequential scenarios call the next duck only after the previous result.
+const sequential = ["duck-sequential"].includes(scenario);
+// Duck turns that started and neither ended nor were aborted.
+let activeTurns = 0;
+const duckCall = (index) => {
+  event("tool.execution_start", { toolName: "rubber_duck" });
+  event("external_tool.requested", {
+    sessionId, requestId: `duck-${index + 1}`, toolCallId: `duck-${index + 1}`,
+    toolName: "rubber_duck", arguments: duckCalls[index],
+  });
+};
 const isExit = exitScenarios.includes(scenario);
 const longNano = Array.from({ length: 120 }, () => "word").join(" ");
 const okReport = {
@@ -70,6 +83,7 @@ const handOver = () => toolCall("ready_for_human", { summary: "Synthetic review 
 const endTurn = () => {
   if (exitEnded) return;
   exitEnded = true;
+  activeTurns = Math.max(0, activeTurns - 1);
   event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
   event("session.idle", {});
 };
@@ -213,15 +227,15 @@ process.stdin.on("data", (chunk) => {
         receipt({ method: "fixture.prompt", prompt: request.params.prompt ?? null });
         if (duckCalls) {
           setTimeout(() => {
-            duckCalls.forEach((args, index) => {
-              event("tool.execution_start", { toolName: "rubber_duck" });
-              event("external_tool.requested", {
-                sessionId, requestId: `duck-${index + 1}`, toolCallId: `duck-${index + 1}`,
-                toolName: "rubber_duck", arguments: args,
-              });
-            });
+            if (sequential) duckCall(0);
+            else duckCalls.forEach((_, index) => duckCall(index));
           }, 10);
           break;
+        }
+        if (scenario.startsWith("verdict-")) {
+          receipt({ method: "fixture.turns", active: activeTurns });
+          activeTurns += 1;
+          exitEnded = false;
         }
         if (scenario === "verdict-slow") break;
         if (scenario === "verdict-none") {
@@ -296,8 +310,15 @@ process.stdin.on("data", (chunk) => {
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
         if (String(request.params.requestId).startsWith("duck-")) {
-          receipt({ method: "fixture.duck", requestId: request.params.requestId, result: request.params.result });
-          if (++duckResults === duckCalls.length) handOver();
+          receipt({ method: "fixture.duck", requestId: request.params.requestId, result: request.params.result, at: Date.now() });
+          ++duckResults;
+          if (duckResults < duckCalls.length) {
+            if (sequential) duckCall(duckResults);
+          } else if (scenario === "duck-then-error") {
+            event("session.error", { statusCode: 500 });
+          } else {
+            handOver();
+          }
           break;
         }
         if (String(request.params.requestId).startsWith("exit-")) {
@@ -348,6 +369,8 @@ process.stdin.on("data", (chunk) => {
         }
         break;
       case "session.abort":
+        receipt({ method: "fixture.aborted", at: Date.now(), active: activeTurns });
+        activeTurns = Math.max(0, activeTurns - 1);
         if (scenario.endsWith("-held-abort")) {
           const held = setInterval(() => {
             if (!existsSync(process.env.TEST_ABORT_RELEASE)) return;

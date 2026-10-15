@@ -36,7 +36,7 @@ use std::{
 
 mod duck_tool;
 mod exit_tools;
-pub(crate) use duck_tool::{DuckLaunch, DuckPrep, DuckSetup, Gated, Pacing};
+pub(crate) use duck_tool::{DuckLaunch, DuckLog, DuckPrep, DuckSetup, Gated, Pacing};
 use exit_tools::ExitState;
 pub(crate) use exit_tools::{ExitGate, Refusal};
 
@@ -1148,7 +1148,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 })?;
             result.intelligence = Some(intelligence);
             if let Some(duck) = &duck {
-                result.ducks = duck.take_calls();
+                result.ducks = duck.calls();
             }
             result.byte_coverage = read == paths.len();
             result.coverage = Some(crate::review::ReadCoverage {

@@ -63,6 +63,8 @@ pub(crate) enum DuckLaunch {
 }
 
 pub(crate) type Pacing = Arc<dyn Fn(Option<i64>) + Send + Sync>;
+/// Every duck call of one attempt, shared with the host so a failed attempt keeps them.
+pub(crate) type DuckLog = Arc<Mutex<Vec<DuckCall>>>;
 pub(crate) type Gated = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(crate) struct DuckSetup {
@@ -75,6 +77,10 @@ pub(crate) struct DuckSetup {
     pub rate_limited: Pacing,
     /// The duck account is behind a rate-limit gate now.
     pub gated: Gated,
+    /// The duck account's own operation: its generation and cancellation. A change
+    /// (disconnect, reconnect, account edit) makes later calls `unavailable`.
+    pub account: Option<Operation>,
+    pub log: DuckLog,
 }
 
 /// A verified, started duck client. Setup failures are job errors (`duck_setup`).
@@ -85,6 +91,14 @@ pub(super) struct DuckEngine {
 }
 
 impl DuckEngine {
+    /// The duck account is still the one this attempt verified.
+    fn account_ok(&self) -> bool {
+        self.setup
+            .account
+            .as_ref()
+            .is_none_or(|operation| operation.check().is_ok())
+    }
+
     pub async fn start(mut setup: DuckSetup, operation: &Operation) -> Result<Self, Failure> {
         let agent = &setup.selection.agent;
         if agent.model.trim().is_empty()
@@ -167,7 +181,6 @@ pub(super) struct DuckTool<T: Transport> {
     pub operation: Operation,
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-    pub calls: Mutex<Vec<DuckCall>>,
     serial: tokio::sync::Mutex<()>,
     started: AtomicU32,
     tool_calls: AtomicU64,
@@ -197,22 +210,23 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             operation,
             local_gate,
             diagnostics,
-            calls: Mutex::new(Vec::new()),
             serial: tokio::sync::Mutex::new(()),
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
         }
     }
 
-    pub fn take_calls(&self) -> Vec<DuckCall> {
-        self.calls
+    pub fn calls(&self) -> Vec<DuckCall> {
+        self.engine
+            .setup
+            .log
             .lock()
-            .map(|mut calls| std::mem::take(&mut *calls))
+            .map(|calls| calls.clone())
             .unwrap_or_default()
     }
 
     fn record(&self, call: DuckCall) {
-        if let Ok(mut calls) = self.calls.lock() {
+        if let Ok(mut calls) = self.engine.setup.log.lock() {
             calls.push(call);
         }
     }
@@ -270,6 +284,9 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         if (setup.gated)() {
             return refuse(DuckFailure::RateLimited, input);
         }
+        if !self.engine.account_ok() {
+            return refuse(DuckFailure::Unavailable, input);
+        }
         self.started.store(ordinal, Ordering::SeqCst);
         let mut call = self.blank(ordinal, input, DuckFailure::Failed);
         let packet = crate::packet::duck::build(&crate::packet::duck::DuckPacketInput {
@@ -283,11 +300,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         });
         call.packet = Some(packet.record.clone());
         let started = Instant::now();
-        let outcome = tokio::select! {
-            biased;
-            outcome = self.session(packet.text, &mut call) => outcome,
-            failure = self.watch(call_end) => Err(failure),
-        };
+        let outcome = self.session(packet.text, call_end, &mut call).await;
         call.duration_ms = started.elapsed().as_millis() as u64;
         let result = match outcome {
             Ok(verdict) => {
@@ -310,16 +323,23 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             if Instant::now() >= call_end {
                 return DuckFailure::TimedOut;
             }
-            if self.operation.check().is_err() || (self.local_gate)().is_err() {
+            if self.operation.check().is_err()
+                || (self.local_gate)().is_err()
+                || !self.engine.account_ok()
+            {
                 return DuckFailure::Unavailable;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
+    /// One duck session. The session handle outlives the turn: whatever ends the
+    /// turn (timeout, gate, error), a turn without a verdict is aborted, and every
+    /// session is closed, so no duck inference continues once the primary resumes.
     async fn session(
         &self,
         packet_text: String,
+        call_end: Instant,
         call: &mut DuckCall,
     ) -> Result<Verdict, DuckFailure> {
         let setup = &self.engine.setup;
@@ -339,26 +359,30 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             Arc::new(|_: &ExitCall| Ok(())),
             None,
         ));
-        let session = self
-            .engine
-            .client
-            .create_session(config_with(
-                &setup.selection,
-                reads.clone(),
-                &names,
-                exits.clone(),
-                None,
-                DUCK_SYSTEM,
-            ))
-            .await
-            .map_err(|_| DuckFailure::Failed)?;
+        let create = self.engine.client.create_session(config_with(
+            &setup.selection,
+            reads.clone(),
+            &names,
+            exits.clone(),
+            None,
+            DUCK_SYSTEM,
+        ));
+        // No turn has started before the session exists: nothing to abort here.
+        let session = tokio::select! {
+            biased;
+            created = create => created.map_err(|_| DuckFailure::Failed)?,
+            failure = self.watch(call_end) => return Err(failure),
+        };
         call.session_id = Some(session.id().to_string());
-        let result = self
-            .converse(&session, packet_text, &names, &reads, &exits)
-            .await;
+        let result = tokio::select! {
+            biased;
+            result = self.converse(&session, packet_text, &names, &reads, &exits) => result,
+            failure = self.watch(call_end) => Err(failure),
+        };
         if result.is_err() {
             let _ = tokio::time::timeout(Duration::from_secs(2), session.abort()).await;
         }
+        let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect()).await;
         let read = reads.read.lock().map(|r| r.len()).unwrap_or(0);
         call.coverage = Some(ReadCoverage {
             read: u32::try_from(read).unwrap_or(u32::MAX),
