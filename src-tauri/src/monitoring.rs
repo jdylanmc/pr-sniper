@@ -598,6 +598,9 @@ pub struct PollTicket {
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
     pub tracked: Vec<(String, u64)>,
+    /// When the ticket was prepared, before any fetch: what it observes is no
+    /// newer than this, so tracked observations are stamped with it.
+    pub prepared_at: i64,
 }
 
 pub struct PollResult {
@@ -1259,6 +1262,7 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         expected: &crate::storage::Repository,
         resolved: crate::github::intake::ResolvedTarget,
+        read_at: i64,
         now: i64,
     ) -> Result<ExplicitAdmission, String> {
         let settings = store.load_settings()?;
@@ -1329,6 +1333,7 @@ impl Monitor {
             account_generation: 0,
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
+            prepared_at: read_at,
         };
         let number = pull.number;
         let pull_id = pull.id.clone();
@@ -2161,6 +2166,7 @@ impl Monitor {
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect(),
+                prepared_at: now,
             });
         }
         tickets
@@ -2576,7 +2582,7 @@ impl Monitor {
                     iteration_id,
                     admission,
                     admitted_at: legacy.map(|j| j.detected_at).unwrap_or(now),
-                    observed_at: now,
+                    observed_at: ticket.prepared_at,
                 });
                 index = Some(queue.tracked.len() - 1);
                 mark_activation_admitted(&mut activation, &pull);
@@ -2601,7 +2607,7 @@ impl Monitor {
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
-            tracked.observed_at = now;
+            tracked.observed_at = ticket.prepared_at;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -4250,6 +4256,7 @@ mod admission_tests {
             account_generation: 0,
             assignments: Vec::new(),
             tracked: Vec::new(),
+            prepared_at: 0,
         }
     }
 

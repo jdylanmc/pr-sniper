@@ -167,6 +167,7 @@ fn explicit(
             pull_request: Some(pull),
         },
         NOW,
+        NOW,
     )
 }
 
@@ -331,6 +332,7 @@ fn explicit_pr_rejects_stale_saved_configuration_without_queueing_work() {
                 pull_request: Some(pull('a')),
             },
             NOW,
+            NOW,
         )
         .unwrap_err();
     assert!(error.contains("configuration changed"));
@@ -371,6 +373,7 @@ fn explicit_pr_cannot_bypass_disabled_account_agent_or_revision_gates() {
                 connection: resolved.connection,
                 pull_request: Some(pull('a')),
             },
+            NOW,
             NOW
         )
         .unwrap_err()

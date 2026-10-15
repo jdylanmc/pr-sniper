@@ -2110,6 +2110,7 @@ async fn admit_explicit_pull_request(
         if expected.provider != storage::ProviderId::Github || number == 0 {
             return Err("Use a supported GitHub pull request URL.".into());
         }
+        let read_at = now_seconds()?;
         let (resolved, read_generation) = repository_read(
             &host.github_generations,
             &host.github_auth,
@@ -2149,6 +2150,7 @@ async fn admit_explicit_pull_request(
                 &auth.monitoring_accounts(),
                 &expected,
                 resolved,
+                read_at,
                 now,
             )?;
         let batch = if admission.queued {

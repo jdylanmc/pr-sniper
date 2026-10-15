@@ -98,7 +98,13 @@ fn pull(head: char) -> PullRequest {
 
 fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) {
     let ticket = monitor.prepare_checks(store, at, true).unwrap().remove(0);
-    let result = PollResult {
+    monitor
+        .finish(store, ticket, Ok(poll_result(pulls)), at + 1)
+        .unwrap();
+}
+
+fn poll_result(pulls: Vec<PullRequest>) -> PollResult {
+    PollResult {
         states: Default::default(),
         connection: Connection {
             identity: Identity {
@@ -115,8 +121,7 @@ fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) 
             },
         },
         pull_requests: pulls,
-    };
-    monitor.finish(store, ticket, Ok(result), at + 1).unwrap();
+    }
 }
 
 /// The assignment's current entry, dispatched into a running attempt.
@@ -487,4 +492,59 @@ fn a_legacy_parked_revision_change_recovers_at_startup() {
     let next = prepare_dispatch(&store, &run.key, NOW + 10).unwrap();
     assert_eq!(next.operation.id, run.operation.id);
     assert_eq!(next.operation.attempt_count, 1);
+}
+
+#[test]
+fn a_poll_fetched_before_supersession_never_releases_the_run() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    // Prepared (and fetched) at t-1, finished at t+3; the run is superseded at t+1.
+    let t = NOW + 10;
+    let in_flight = monitor
+        .prepare_checks(&store, t - 1, true)
+        .unwrap()
+        .remove(0);
+    complete(&store, &run.operation.id, Err(base_changed(None)), t + 1).unwrap();
+    monitor
+        .finish(&store, in_flight, Ok(poll_result(vec![pull('a')])), t + 3)
+        .unwrap();
+    assert!(!dispatched(&store, t + 60).contains(&run.operation.id));
+    assert_eq!(
+        reason(&store, &run.key, t + 60).as_deref(),
+        Some(crate::capacity::WAITING_FOR_POLL)
+    );
+    // The next poll, prepared after supersession, releases it.
+    scan(&mut monitor, &store, vec![pull('a')], t + 100);
+    assert!(dispatched(&store, t + 160).contains(&run.operation.id));
+}
+
+#[test]
+fn a_superseded_run_whose_pr_is_eligible_again_runs_after_the_next_poll() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    // The gate saw a transient draft; the same head is ready again by the next poll.
+    let mut draft = pull('a');
+    draft.draft = true;
+    let settings = store.load_settings().unwrap();
+    let error = pull_gate(&settings, &run.job, &draft).unwrap_err();
+    assert_eq!(
+        error.resume.as_deref(),
+        Some(&crate::review::Resume::NextPoll)
+    );
+    complete(&store, &run.operation.id, Err(error), NOW + 3).unwrap();
+    assert!(!dispatched(&store, NOW + 60).contains(&run.operation.id));
+
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 100);
+    let started = dispatched(&store, NOW + 160);
+    assert_eq!(
+        started.iter().filter(|id| **id == run.operation.id).count(),
+        1
+    );
+    let resumed = stored(&store, &run.operation.id);
+    assert_eq!(resumed.operation.state, OperationState::Running);
+    assert_eq!(resumed.operation.attempt_count, 1);
+    assert_eq!(resumed.job.head_sha, pull('a').head_sha);
+    assert_quiet(&store, &monitor);
 }
