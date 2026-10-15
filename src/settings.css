@@ -4020,3 +4020,15 @@
   background-position: right 9px center;
   background-size: 12px;
 }
+
+/* Focus rings (3px outline, 2px offset) paint outside full-width controls.
+   Editor bodies scroll, so their overflow clips at the padding box: give them
+   inline room for the ring without moving the content. */
+.panel-shell .settings-dialog.shared-resource-editor .dialog-body {
+  padding-inline: 6px;
+  margin-inline: -6px;
+}
+/* The prompt bleeds to its card's clipped, rounded edges: ring inside. */
+.panel-shell .shared-resource-editor .agent-section textarea:focus-visible {
+  outline-offset: -3px;
+}
