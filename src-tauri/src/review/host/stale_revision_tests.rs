@@ -542,9 +542,55 @@ fn a_superseded_run_whose_pr_is_eligible_again_runs_after_the_next_poll() {
         started.iter().filter(|id| **id == run.operation.id).count(),
         1
     );
+    for later in [NOW + 161, NOW + 400] {
+        assert!(!dispatched(&store, later).contains(&run.operation.id));
+    }
     let resumed = stored(&store, &run.operation.id);
     assert_eq!(resumed.operation.state, OperationState::Running);
     assert_eq!(resumed.operation.attempt_count, 1);
     assert_eq!(resumed.job.head_sha, pull('a').head_sha);
     assert_quiet(&store, &monitor);
+}
+
+#[test]
+fn an_older_intake_read_never_moves_the_observation_back() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(&store, &run.operation.id, Err(base_changed(None)), NOW + 60).unwrap();
+    // A scheduled poll prepared after supersession releases the run.
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 100);
+    assert_eq!(reason(&store, &run.key, NOW + 150), None);
+    // A +URL intake whose read began before supersession lands afterwards.
+    let expected = store.load_settings().unwrap().repositories.remove(0);
+    monitor
+        .admit_explicit_pull_request(
+            &store,
+            &BTreeMap::from([(
+                "22".into(),
+                crate::monitoring::AccountAvailability {
+                    login: "acting-account".into(),
+                    connected: true,
+                },
+            )]),
+            &expected,
+            crate::github::intake::ResolvedTarget {
+                connection: poll_result(vec![]).connection,
+                pull_request: Some(pull('a')),
+            },
+            NOW + 50,
+            NOW + 150,
+        )
+        .unwrap();
+    let observed = store
+        .load_queue_state()
+        .unwrap()
+        .tracked
+        .into_iter()
+        .find(|t| t.pull_request_id == "9")
+        .unwrap()
+        .observed_at;
+    assert_eq!(observed, NOW + 100);
+    assert_eq!(reason(&store, &run.key, NOW + 160), None);
+    assert!(dispatched(&store, NOW + 160).contains(&run.operation.id));
 }

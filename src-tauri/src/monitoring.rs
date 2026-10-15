@@ -2607,7 +2607,8 @@ impl Monitor {
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
-            tracked.observed_at = ticket.prepared_at;
+            // Overlapping reads may finish out of order; never move it back.
+            tracked.observed_at = tracked.observed_at.max(ticket.prepared_at);
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
