@@ -18,6 +18,9 @@ const paths = {
   duck: "M9 7.5a3.5 3.5 0 1 1 6.2 2.2L18 11l-2.6 1.1M4 13h7.5c1.6 0 3-.5 4.3-1.3.9 3.6-1.7 7.3-6.3 7.3C6 19 4 16.5 4 13Z",
 };
 
+const folded = (others?: Record<string, number>) =>
+  Object.values(others ?? {}).reduce((sum, count) => sum + count, 0);
+
 // Duck calls, one stacked line each: target above verdict or failure id.
 function duckRow(ducks: DuckCall[], agent: string): Row {
   const counts = new Map<string, number>();
@@ -27,6 +30,8 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
         ? call.outcome.verdict.verdict
         : "failed";
     counts.set(key, (counts.get(key) ?? 0) + 1 + (call.repeats ?? 0));
+    const others = folded(call.others);
+    if (others) counts.set("failed", (counts.get("failed") ?? 0) + others);
   }
   const place = (call: DuckCall) =>
     call.input.kind === "line"
@@ -39,7 +44,10 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
     icon: paths.duck,
     verb: "Rubber duck",
     value: String(
-      ducks.reduce((sum, call) => sum + 1 + (call.repeats ?? 0), 0),
+      ducks.reduce(
+        (sum, call) => sum + 1 + (call.repeats ?? 0) + folded(call.others),
+        0,
+      ),
     ),
     agent,
     facts: [
@@ -59,9 +67,11 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
       nano:
         call.outcome.outcome === "verdict"
           ? `${call.outcome.verdict.verdict}: ${call.outcome.verdict.nano}`
-          : call.repeats
-            ? `${call.outcome.failure} x${call.repeats + 1}`
-            : call.outcome.failure,
+          : folded(call.others)
+            ? `mixed x${1 + (call.repeats ?? 0) + folded(call.others)}`
+            : call.repeats
+              ? `${call.outcome.failure} x${call.repeats + 1}`
+              : call.outcome.failure,
     })),
   };
 }

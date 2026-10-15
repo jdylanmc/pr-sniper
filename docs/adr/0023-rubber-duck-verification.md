@@ -28,7 +28,7 @@ Status: accepted (owner, 2026-10-14). Plan: [Rubber duck plan](../agent/design/r
 | `end_line`      | integer >= `line`                  | optional range                                                              |
 | `side`          | `base` \| `head`                   | default `head`                                                              |
 | `thread_id`     | string                             | `thread`: required, a thread of this packet                                 |
-| `claim`         | string                             | required; the defect asserted; <= 100 words, caveman                        |
+| `claim`         | string                             | required; the defect asserted; <= 100 words and 1 KB, caveman               |
 | `proposed_body` | string                             | required; the comment as it would be posted; <= 16 KB (`MAX_COMMENT_BYTES`) |
 | `evidence`      | `[{path, side, line?, end_line?}]` | <= 10 refs the primary relies on                                            |
 
@@ -39,7 +39,7 @@ Invalid or over-limit input: tool error result, no duck started, no call spent. 
 | Field          | Type                                                    | Bound / rule                             |
 | -------------- | ------------------------------------------------------- | ---------------------------------------- |
 | `verdict`      | `confirmed` \| `revise` \| `rejected` \| `unverifiable` | required                                 |
-| `nano`         | string                                                  | required; <= 100 words, caveman          |
+| `nano`         | string                                                  | required; <= 100 words and 1 KB, caveman |
 | `full`         | string                                                  | optional; <= 4 KB, caveman               |
 | `evidence`     | `[{path, side, line?, end_line?}]`                      | <= 10 refs the duck read                 |
 | `revised_body` | string                                                  | `revise` only, required there; <= 16 KB  |
@@ -113,7 +113,8 @@ Saved Preferences, `Settings.rubber_duck` (`DuckLimits`), serde default, user-tu
 
 - **Execution Snapshot** gains the duck: Agent, account, model, intelligence, Doctrine bodies, captured at primary job start. Immutable; `same_execution` compares it. Missing in legacy records: absent, never rebuilt.
 - An attempt that ends without a result keeps its duck calls on the run (`attempt_ducks`, last attempt only) so duck time use stays visible in Activity. A moved state (superseded or tossed) keeps none: its verdicts are gone with it.
-- The per-attempt log is bounded: started calls by `max_calls`; a refused call (no session) keeps only its target and claim, repeats of the last refusal fold into one entry with a `repeats` count, and at most 8 refusal entries are kept.
+- The per-attempt log is bounded: started calls by `max_calls`; a refused call (no session) keeps only its target and claim, repeats of the last refusal fold into one entry with a `repeats` count, and at most 8 refusal entries are kept; past that cap other kinds are counted per kind (`others`), never relabelled. Every field is byte-capped, so an attempt's log is bounded in bytes. `path`, `line`, `end_line` and `side` only with kind `line`; `thread_id` only with kind `thread`.
+- Teardown lets an in-flight call settle (up to 5 s): it sees the cancellation or the primary's exit, aborts its turn and records itself before the duck client stops.
 - Primary `ReviewResult.ducks[]`: ordinal, input, `duck_packet` record (content-free, hash), outcome (`Verdict` or typed `duck_failure`), session id, model, tokens, tool calls, read coverage, duration. Local-only, Clean-able ([ADR 0015](0015-local-only-results-and-retention-journal.md)).
 - Activity shows duck calls with the run like teammate reports. Diagnostics: `ToolName::RubberDuck`, content-free start/finish and failure kind ([ADR 0019](0019-bounded-content-free-diagnostics.md)).
 

@@ -739,18 +739,30 @@ test("a failed attempt still shows its rubber duck calls in Activity", async ({
         ),
         repeats: 4,
       },
+      {
+        ...call(
+          3,
+          { kind: "line", path: "src/b.rs", line: 9 },
+          { outcome: "failure", failure: "exit_taken" },
+        ),
+        repeats: 1,
+        others: { rate_limited: 2 },
+      },
     ],
   });
   await openDetail(page, store, item);
   const duck = activity(page, "duck");
   await expect(duck).toHaveCount(1);
-  await expect(duck.locator(".activity-value")).toHaveText("6");
+  await expect(duck.locator(".activity-value")).toHaveText("10");
   const facts = await expand(duck);
-  await expect(fact(facts, "Failed")).toHaveText("6");
+  await expect(fact(facts, "Failed")).toHaveText("10");
   await expect(
     facts.locator('[data-finding="PR"] .activity-finding-nano'),
   ).toHaveText("timed_out");
   await expect(
     facts.locator('[data-finding="src/a.rs:3"] .activity-finding-nano'),
   ).toHaveText("limit_reached x5");
+  await expect(
+    facts.locator('[data-finding="src/b.rs:9"] .activity-finding-nano'),
+  ).toHaveText("mixed x4");
 });

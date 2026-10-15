@@ -1203,6 +1203,8 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     };
     let shutdown = crate::copilot::runtime::shutdown(&client).await;
     if let Some(engine) = duck_engine {
+        // An in-flight call sees the cancellation, aborts its turn and records itself.
+        let _ = tokio::time::timeout(Duration::from_secs(5), engine.serial.lock()).await;
         crate::copilot::runtime::shutdown(&engine.client).await;
     }
     if let Some(trace) = &diagnostics {

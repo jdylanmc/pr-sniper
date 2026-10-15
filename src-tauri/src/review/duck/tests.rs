@@ -146,6 +146,7 @@ fn the_result_is_fenced_agent_output() {
         coverage: None,
         duration_ms: 0,
         repeats: 0,
+        others: Default::default(),
     };
     let text = result_text(&call, &verdict);
     assert!(text.starts_with("<untrusted source=\"rubber_duck\">"));
@@ -187,6 +188,7 @@ fn logged(failure: Option<DuckFailure>) -> DuckCall {
         coverage: None,
         duration_ms: 0,
         repeats: 0,
+        others: Default::default(),
     }
 }
 
@@ -219,6 +221,114 @@ fn distinct_refusals_are_capped() {
         log_call(&mut log, logged(Some(kinds[i % kinds.len()])));
     }
     assert_eq!(log.len(), MAX_REFUSAL_ENTRIES);
-    let total: u32 = log.iter().map(|c| 1 + c.repeats).sum();
+    let total: u32 = log
+        .iter()
+        .map(|c| 1 + c.repeats + c.others.values().sum::<u32>())
+        .sum();
     assert_eq!(total, 1000, "every refusal is still counted");
+    // Folded entries keep each kind's own count: no refusal is relabelled.
+    let last = log.last().unwrap();
+    let DuckOutcome::Failure { failure } = last.outcome else {
+        panic!()
+    };
+    assert!(!last.others.contains_key(&failure));
+    assert!(last.others.len() >= 2, "{:?}", last.others);
+}
+
+#[test]
+fn byte_caps_hold_where_word_caps_cannot() {
+    let mut long = line_input();
+    long["claim"] = json!("x".repeat(MAX_CLAIM_BYTES + 1));
+    assert!(
+        DuckInput::parse(&long, &changed(), &threads()).is_err(),
+        "one long word"
+    );
+    long["claim"] = json!("x".repeat(MAX_CLAIM_BYTES));
+    assert!(DuckInput::parse(&long, &changed(), &threads()).is_ok());
+    let nano = json!({"verdict":"rejected","nano":"x".repeat(MAX_VERDICT_NANO_BYTES + 1)});
+    assert!(Verdict::parse(&nano).is_err());
+    for (kind, extra) in [
+        ("pr", json!({"path": "x".repeat(10_000)})),
+        ("pr", json!({"line": 3})),
+        ("pr", json!({"side": "head"})),
+        ("pr", json!({"thread_id": "T_1"})),
+        ("thread", json!({"thread_id": "T_1", "path": "src/a.rs"})),
+        (
+            "line",
+            json!({"path": "src/a.rs", "line": 3, "thread_id": "T_1"}),
+        ),
+    ] {
+        let mut args = json!({"kind": kind, "claim": "c", "proposed_body": "b"});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        assert!(
+            DuckInput::parse(&args, &changed(), &threads()).is_err(),
+            "{args}"
+        );
+    }
+}
+
+/// The largest call the contract admits: every bounded field at its cap.
+fn largest(started: bool, path: &str) -> DuckCall {
+    let refs: Vec<_> = (0..MAX_EVIDENCE)
+        .map(|_| json!({"path":"p".repeat(MAX_PATH_BYTES),"side":"head","line":1,"end_line":2}))
+        .collect();
+    let input = DuckInput::parse(
+        &json!({"kind":"line","path":path,"line":1,"end_line":2,"side":"head",
+            "claim":"c".repeat(MAX_CLAIM_BYTES),
+            "proposed_body":"b".repeat(MAX_COMMENT_BYTES),"evidence":refs}),
+        &[path.to_string()],
+        &[],
+    )
+    .unwrap();
+    let verdict = Verdict::parse(&json!({"verdict":"revise",
+        "nano":"n".repeat(MAX_VERDICT_NANO_BYTES),"full":"f".repeat(MAX_FULL_BYTES),
+        "evidence":refs,"revised_body":"r".repeat(MAX_COMMENT_BYTES),
+        "revised_line":{"path":"p".repeat(MAX_PATH_BYTES),"line":1,"end_line":2,"side":"head"}}))
+    .unwrap();
+    let mut call = logged(if started {
+        None
+    } else {
+        Some(DuckFailure::LimitReached)
+    });
+    call.input = input;
+    if started {
+        call.outcome = DuckOutcome::Verdict { verdict };
+    }
+    call
+}
+
+#[test]
+fn the_per_attempt_log_has_a_byte_bound() {
+    let path = "s".repeat(MAX_PATH_BYTES);
+    let max_calls = *DuckLimits::MAX_CALLS.end() as usize;
+    let mut log = Vec::new();
+    for _ in 0..max_calls {
+        log_call(&mut log, largest(true, &path));
+    }
+    let kinds = [
+        DuckFailure::LimitReached,
+        DuckFailure::BudgetExhausted,
+        DuckFailure::ExitTaken,
+        DuckFailure::RateLimited,
+        DuckFailure::Unavailable,
+    ];
+    for i in 0..10_000 {
+        let mut refused = largest(false, &path);
+        refused.outcome = DuckOutcome::Failure {
+            failure: kinds[i % kinds.len()],
+        };
+        log_call(&mut log, refused);
+    }
+    assert_eq!(log.len(), max_calls + MAX_REFUSAL_ENTRIES);
+    let started = serde_json::to_vec(&log[0]).unwrap().len();
+    let refused = serde_json::to_vec(&log[max_calls]).unwrap().len();
+    assert!(started < 64 * 1024, "{started}");
+    assert!(refused < 4 * 1024, "{refused}");
+    let total = serde_json::to_vec(&log).unwrap().len();
+    assert!(
+        total < max_calls * 64 * 1024 + MAX_REFUSAL_ENTRIES * 4 * 1024,
+        "{total}"
+    );
 }

@@ -180,18 +180,18 @@ Teammate failure shows in Needs attention: cause and which teammate failed, one 
 
 [ADR 0023](adr/0023-rubber-duck-verification.md). Primary only, when its assignment has a Rubber Duck.
 
-| Aspect   | Behavior                                                                                                                                                  |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Input    | `kind` (line, thread, pr), `path`, `line`, `end_line`, `side`, `thread_id`, `claim` <= 100 words, `proposed_body` <= 16 KB, `evidence` <= 10 refs         |
-| Run      | Fresh duck session, same PR state and trees, primary's granted read tools + `submit_verdict`. No `rubber_duck`, no effect exits.                          |
-| Packet   | Meta (primary `state_id`, `packet_hash`, call), duck rules, Pull request, Files, Claim (fenced), duck Directive, Exits. No Voice.                         |
-| Verdict  | `confirmed`, `revise` (+`revised_body` <= 16 KB, `revised_line`), `rejected`, `unverifiable`; `nano` <= 100 words, `full` <= 4 KB, `evidence`.            |
-| Result   | Fenced `<untrusted source="rubber_duck">` JSON. Data. The primary decides.                                                                                |
-| Capacity | Inside the primary's slot. One call at a time.                                                                                                            |
-| Bounds   | Saved Preferences: calls, timeout, primary window. 120 s exit reserve.                                                                                    |
-| Failures | Typed tool error: `invalid_input`, `limit_reached`, `budget_exhausted`, `exit_taken`, `unavailable`, `rate_limited`, `timed_out`, `no_verdict`, `failed`. |
-| Setup    | Verified before primary inference; failure fails the attempt (`failed_duck`).                                                                             |
-| Evidence | `ReviewResult.ducks[]`; failed attempt: run `attempt_ducks`; Activity row Rubber duck.                                                                    |
+| Aspect   | Behavior                                                                                                                                                                                       |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Input    | `kind` (line, thread, pr), `path`, `line`, `end_line`, `side`, `thread_id`, `claim` <= 100 words and 1 KB (target fields only for their kind), `proposed_body` <= 16 KB, `evidence` <= 10 refs |
+| Run      | Fresh duck session, same PR state and trees, primary's granted read tools + `submit_verdict`. No `rubber_duck`, no effect exits.                                                               |
+| Packet   | Meta (primary `state_id`, `packet_hash`, call), duck rules, Pull request, Files, Claim (fenced), duck Directive, Exits. No Voice.                                                              |
+| Verdict  | `confirmed`, `revise` (+`revised_body` <= 16 KB, `revised_line`), `rejected`, `unverifiable`; `nano` <= 100 words, `full` <= 4 KB, `evidence`.                                                 |
+| Result   | Fenced `<untrusted source="rubber_duck">` JSON. Data. The primary decides.                                                                                                                     |
+| Capacity | Inside the primary's slot. One call at a time.                                                                                                                                                 |
+| Bounds   | Saved Preferences: calls, timeout, primary window. 120 s exit reserve.                                                                                                                         |
+| Failures | Typed tool error: `invalid_input`, `limit_reached`, `budget_exhausted`, `exit_taken`, `unavailable`, `rate_limited`, `timed_out`, `no_verdict`, `failed`.                                      |
+| Setup    | Verified before primary inference; failure fails the attempt (`failed_duck`).                                                                                                                  |
+| Evidence | `ReviewResult.ducks[]`; failed attempt: run `attempt_ducks`; Activity row Rubber duck.                                                                                                         |
 
 ## Packet pull tools
 

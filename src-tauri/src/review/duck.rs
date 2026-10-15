@@ -6,11 +6,15 @@ use crate::exits::{MAX_COMMENT_BYTES, MAX_FULL_BYTES, MAX_NANO_WORDS, MAX_PATH_B
 use crate::storage::{Agent, Doctrine, DuckLimits};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 /// The primary's tool id. Never offered to teammates or to the duck itself.
 pub const TOOL: &str = "rubber_duck";
 pub const MAX_EVIDENCE: usize = 10;
 pub const MAX_CLAIM_WORDS: usize = 100;
+/// Byte caps beside the word caps: one "word" can be arbitrarily long.
+pub const MAX_CLAIM_BYTES: usize = 1024;
+pub const MAX_VERDICT_NANO_BYTES: usize = 1024;
 /// Primary time kept free for its exit after a duck call.
 pub const EXIT_RESERVE_SECONDS: u64 = 120;
 /// A call with less time than this left in its window is not started.
@@ -113,7 +117,7 @@ pub struct Verdict {
 }
 
 /// Why a duck call returned no verdict. Typed; the primary sees the id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DuckFailure {
     InvalidInput,
@@ -200,9 +204,12 @@ pub struct DuckCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<super::ReadCoverage>,
     pub duration_ms: u64,
-    /// Further refusals folded into this one (same failure, or past the entry cap).
+    /// Further refusals with this entry's failure folded into it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeats: u32,
+    /// Refusals of other kinds folded in once the refusal entry cap was reached.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub others: BTreeMap<DuckFailure, u32>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -229,7 +236,12 @@ pub fn log_call(log: &mut Vec<DuckCall>, mut call: DuckCall) {
             .is_some_and(|last| last.refused() && last.outcome == call.outcome);
         if same || refusals >= MAX_REFUSAL_ENTRIES {
             if let Some(last) = log.iter_mut().rev().find(|c| c.refused()) {
-                last.repeats = last.repeats.saturating_add(1);
+                if last.outcome == call.outcome {
+                    last.repeats = last.repeats.saturating_add(1);
+                } else if let DuckOutcome::Failure { failure } = call.outcome {
+                    let count = last.others.entry(failure).or_default();
+                    *count = count.saturating_add(1);
+                }
                 return;
             }
         }
@@ -285,9 +297,12 @@ impl DuckInput {
         let input: Self = serde_json::from_value(args.clone()).map_err(|_| {
             "Malformed rubber_duck arguments; match the schema exactly.".to_string()
         })?;
-        if input.claim.trim().is_empty() || words(&input.claim) > MAX_CLAIM_WORDS {
+        if input.claim.trim().is_empty()
+            || words(&input.claim) > MAX_CLAIM_WORDS
+            || input.claim.len() > MAX_CLAIM_BYTES
+        {
             return Err(format!(
-                "claim is empty or over {MAX_CLAIM_WORDS} words. Caveman."
+                "claim is empty or over {MAX_CLAIM_WORDS} words or {MAX_CLAIM_BYTES} bytes. Caveman."
             ));
         }
         text(&input.proposed_body, MAX_COMMENT_BYTES, "proposed_body")?;
@@ -307,16 +322,24 @@ impl DuckInput {
                     return Err("path is not a changed file. Use a Files path.".into());
                 }
             }
-            TargetKind::Thread => {
-                let id = input
-                    .thread_id
-                    .as_deref()
-                    .ok_or("kind thread needs thread_id.")?;
-                if !threads.iter().any(|t| t == id) {
-                    return Err("Unknown thread_id. Copy it from the Conversation section.".into());
+            TargetKind::Thread | TargetKind::Pr => {
+                if input.path.is_some()
+                    || input.line.is_some()
+                    || input.end_line.is_some()
+                    || input.side.is_some()
+                {
+                    return Err("path, line, end_line and side only with kind line.".into());
                 }
             }
-            TargetKind::Pr => {}
+        }
+        match (input.kind, input.thread_id.as_deref()) {
+            (TargetKind::Thread, Some(id)) if threads.iter().any(|t| t == id) => {}
+            (TargetKind::Thread, Some(_)) => {
+                return Err("Unknown thread_id. Copy it from the Conversation section.".into())
+            }
+            (TargetKind::Thread, None) => return Err("kind thread needs thread_id.".into()),
+            (_, Some(_)) => return Err("thread_id only with kind thread.".into()),
+            (_, None) => {}
         }
         Ok(input)
     }
@@ -369,7 +392,10 @@ impl Verdict {
         let verdict: Self = serde_json::from_value(args.clone()).map_err(|_| {
             "Malformed submit_verdict arguments; match the schema exactly.".to_string()
         })?;
-        if verdict.nano.trim().is_empty() || words(&verdict.nano) > MAX_NANO_WORDS {
+        if verdict.nano.trim().is_empty()
+            || words(&verdict.nano) > MAX_NANO_WORDS
+            || verdict.nano.len() > MAX_VERDICT_NANO_BYTES
+        {
             return Err(format!(
                 "nano is empty or over {MAX_NANO_WORDS} words. Shorten, do not cut mid-thought."
             ));
@@ -402,7 +428,7 @@ impl Verdict {
 
 fn reference_schema() -> Value {
     json!({"type":"object","additionalProperties":false,
-        "properties":{"path":{"type":"string"},"side":{"type":"string","enum":["base","head"]},
+        "properties":{"path":{"type":"string","maxLength":1024},"side":{"type":"string","enum":["base","head"]},
             "line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},
         "required":["path"]})
 }
@@ -412,13 +438,13 @@ pub fn input_schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "properties":{
             "kind":{"type":"string","enum":["line","thread","pr"],"description":"line: inline comment; thread: reply; pr: review body point."},
-            "path":{"type":"string","description":"kind line: a changed file."},
+            "path":{"type":"string","maxLength":1024,"description":"kind line only: a changed file."},
             "line":{"type":"integer","minimum":1},
             "end_line":{"type":"integer","minimum":1},
             "side":{"type":"string","enum":["base","head"]},
-            "thread_id":{"type":"string","description":"kind thread: a thread id."},
-            "claim":{"type":"string","description":"The defect you assert. At most 100 words, caveman."},
-            "proposed_body":{"type":"string","description":"The comment as you would post it. At most 16384 bytes."},
+            "thread_id":{"type":"string","maxLength":1024,"description":"kind thread only: a thread id."},
+            "claim":{"type":"string","maxLength":1024,"description":"The defect you assert. At most 100 words and 1024 bytes, caveman."},
+            "proposed_body":{"type":"string","maxLength":16384,"description":"The comment as you would post it. At most 16384 bytes."},
             "evidence":{"type":"array","items":reference_schema(),"description":"At most 10 refs you rely on."}},
         "required":["kind","claim","proposed_body"]})
 }
@@ -428,12 +454,12 @@ pub fn verdict_schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "properties":{
             "verdict":{"type":"string","enum":["confirmed","revise","rejected","unverifiable"]},
-            "nano":{"type":"string","description":"Why. At most 100 words, caveman."},
-            "full":{"type":"string","description":"At most 4096 bytes, caveman."},
+            "nano":{"type":"string","maxLength":1024,"description":"Why. At most 100 words and 1024 bytes, caveman."},
+            "full":{"type":"string","maxLength":4096,"description":"At most 4096 bytes, caveman."},
             "evidence":{"type":"array","items":reference_schema(),"description":"At most 10 refs you read."},
-            "revised_body":{"type":"string","description":"revise only: better comment. At most 16384 bytes."},
+            "revised_body":{"type":"string","maxLength":16384,"description":"revise only: better comment. At most 16384 bytes."},
             "revised_line":{"type":"object","additionalProperties":false,
-                "properties":{"path":{"type":"string"},"line":{"type":"integer","minimum":1},
+                "properties":{"path":{"type":"string","maxLength":1024},"line":{"type":"integer","minimum":1},
                     "end_line":{"type":"integer","minimum":1},"side":{"type":"string","enum":["base","head"]}},
                 "required":["path","line"]}},
         "required":["verdict","nano"]})

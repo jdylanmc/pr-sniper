@@ -267,6 +267,8 @@ export interface DuckCall {
   duration_ms: number;
   /** Further refusals folded into this entry. */
   repeats?: number;
+  /** Refusals of other kinds folded in past the entry cap, by failure id. */
+  others?: Record<string, number>;
 }
 
 const time = (value: number | null) =>

@@ -607,8 +607,16 @@ async fn cancelling_the_primary_mid_call_stops_the_duck_and_leaves_no_turn() {
     // The duck client is torn down with the primary: no duck process, no live turn.
     stopped(&root.path().join("duck"));
     stopped(root.path());
+    // The in-flight call is recorded as stopped, with its session, never as a verdict.
     let calls = log.lock().unwrap().clone();
-    assert!(calls
-        .iter()
-        .all(|c| !matches!(c.outcome, DuckOutcome::Verdict { .. })));
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].ordinal, 1);
+    assert!(calls[0].packet.is_some() && calls[0].session_id.is_some());
+    assert_eq!(
+        calls[0].outcome,
+        DuckOutcome::Failure {
+            failure: DuckFailure::Unavailable
+        }
+    );
+    assert_eq!(methods(&root.path().join("duck"), "session.abort"), 1);
 }

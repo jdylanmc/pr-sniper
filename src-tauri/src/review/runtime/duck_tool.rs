@@ -88,6 +88,8 @@ pub(super) struct DuckEngine {
     pub client: Client,
     setup: DuckSetup,
     version: String,
+    /// Held for the whole of a call; teardown takes it to let an in-flight call settle.
+    pub serial: tokio::sync::Mutex<()>,
 }
 
 impl DuckEngine {
@@ -127,6 +129,7 @@ impl DuckEngine {
             client,
             setup,
             version: String::new(),
+            serial: tokio::sync::Mutex::new(()),
         };
         match engine.verify(&identity).await {
             Ok(version) => Ok(Self { version, ..engine }),
@@ -181,7 +184,6 @@ pub(super) struct DuckTool<T: Transport> {
     pub operation: Operation,
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-    serial: tokio::sync::Mutex<()>,
     started: AtomicU32,
     tool_calls: AtomicU64,
 }
@@ -210,7 +212,6 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             operation,
             local_gate,
             diagnostics,
-            serial: tokio::sync::Mutex::new(()),
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
         }
@@ -249,6 +250,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             coverage: None,
             duration_ms: 0,
             repeats: 0,
+            others: Default::default(),
         }
     }
 
@@ -260,7 +262,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         let setup = &self.engine.setup;
         let input = DuckInput::parse(args, &setup.prep.changed, &setup.prep.threads)
             .map_err(|reason| DuckFailure::InvalidInput.message(Some(&reason)))?;
-        let _serial = self.serial.lock().await;
+        let _serial = self.engine.serial.lock().await;
         let ordinal = self.started.load(Ordering::SeqCst) + 1;
         let refuse = |failure: DuckFailure, input: DuckInput| {
             self.record(self.blank(ordinal, input, failure));
@@ -323,6 +325,9 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         loop {
             if Instant::now() >= call_end {
                 return DuckFailure::TimedOut;
+            }
+            if self.primary_exit.taken() {
+                return DuckFailure::ExitTaken;
             }
             if self.operation.check().is_err()
                 || (self.local_gate)().is_err()
