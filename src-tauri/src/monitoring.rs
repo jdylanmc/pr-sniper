@@ -3924,6 +3924,13 @@ impl Monitor {
                     .agent
                     .ai_account
                     .as_ref()
+                    .is_some_and(|ai| reconnected.contains(&ai.account_id))
+                || run
+                    .selection
+                    .configuration
+                    .as_ref()
+                    .and_then(|c| c.rubber_duck.as_ref())
+                    .and_then(|duck| duck.agent.ai_account.as_ref())
                     .is_some_and(|ai| reconnected.contains(&ai.account_id));
             if run.operation.auto_resume(account, now) {
                 run.error = None;

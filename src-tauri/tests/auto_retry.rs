@@ -605,3 +605,30 @@ fn parked_permanent_admission_failures_from_the_old_build_are_requeued_once() {
     let kept = Monitor::restore(&store).unwrap().snapshot().remove(0);
     assert_eq!(kept.operation.unwrap().state, OperationState::Failed);
 }
+
+#[test]
+fn a_duck_credentials_park_resumes_when_only_the_duck_account_reconnects() {
+    let mut run = parked_review(OperationFailure::Credentials, OperationState::Failed);
+    run.failed_duck = Some("Duck".into());
+    let mut duck = run.selection.agent.clone();
+    duck.name = "Duck".into();
+    duck.ai_account.as_mut().unwrap().account_id = "77".into();
+    run.selection.configuration.as_mut().unwrap().rubber_duck = Some(review::duck::DuckSnapshot {
+        agent: duck,
+        doctrines: vec![],
+    });
+    let (_root, store) = store_with(&run);
+    let mut monitor = Monitor::default();
+    // GitHub and the primary's Copilot account stay disconnected throughout.
+    let mut connected = accounts(false);
+    let duck_account = |connected: bool| AccountAvailability {
+        login: "duck".into(),
+        connected,
+    };
+    connected.insert("77".into(), duck_account(false));
+    assert_eq!(monitor.auto_resume(&store, &connected, 10).unwrap(), 0);
+    connected.insert("77".into(), duck_account(true));
+    assert_eq!(monitor.auto_resume(&store, &connected, 20).unwrap(), 1);
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+}
