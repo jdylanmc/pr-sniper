@@ -83,7 +83,7 @@ export function mountNotificationSettings(
 ) {
   root.innerHTML = `<fieldset aria-label="Notifications">
     <label class="setting-row"><span>Notifications</span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
-    <p id="notification-permission" class="notification-alert" role="status" hidden>${alertIcon}<span data-notification-alert></span></p>
+    <p id="notification-permission" class="notification-alert" hidden>${alertIcon}<span data-notification-alert></span></p><span class="sr-only" role="status" data-notification-announce></span>
     <p id="notification-error" role="alert" hidden></p>
     <fieldset id="notification-types" class="notification-types" hidden><legend>Notification types</legend>${(
       Object.keys(categoryLabel) as Category[]
@@ -100,6 +100,8 @@ export function mountNotificationSettings(
   const showAlert = (label: string | null) => {
     setText(status.querySelector("[data-notification-alert]")!, label ?? "");
     status.hidden = !label;
+    // The live region stays rendered so a new problem is announced.
+    setText(root.querySelector("[data-notification-announce]")!, label ?? "");
   };
   const error = root.querySelector<HTMLElement>("#notification-error")!;
   const types = root.querySelector<HTMLElement>("#notification-types")!;

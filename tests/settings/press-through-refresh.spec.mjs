@@ -11,27 +11,34 @@ const tab = (page, name) =>
     .getByRole("navigation", { name: "Application destinations" })
     .getByRole("button", { name, exact: true });
 
+// The page clock is paused at `start`, so 5 s pollers fire exactly at
+// start + 5 s, 10 s, ...; a press spans the next tick and stays well inside
+// the bounded deferral.
+const start = new Date("2026-10-14T12:00:00Z");
+let elapsed = 0;
+async function advanceTo(page, ms) {
+  await page.clock.fastForward(ms - elapsed);
+  elapsed = ms;
+}
+
 async function pressThroughRefresh(page, target, during) {
   await expect(target).toBeVisible();
   const box = await target.boundingBox();
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  await page.mouse.move(x, y);
+  const tick = (Math.floor(elapsed / 5000) + 1) * 5000;
+  await advanceTo(page, tick - 100);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  const pressed = await page.evaluateHandle(
-    ([x, y]) => document.elementFromPoint(x, y),
-    [x, y],
-  );
   await during?.();
-  await page.clock.fastForward(5000);
+  await advanceTo(page, tick + 100);
   await page.evaluate(() => window.__settingsIdle());
   await page.mouse.up();
   await page.evaluate(() => window.__settingsIdle());
-  await pressed.dispose();
 }
 
 async function open(page, store) {
-  await page.clock.install();
+  elapsed = 0;
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
   await store("panel_snapshot");
   await page.goto("/");
   await page.evaluate(() => window.__settingsIdle());
@@ -129,4 +136,46 @@ test("a Retry button keeps its click when another row changes", async ({
     .toBeGreaterThan(0);
   // The deferred redraw still lands once the press ends.
   await expect(page.locator("#handoff-queue")).toContainText(retitled);
+});
+
+test("a secondary-button press never defers background redraws", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  await open(page, store);
+  await showQueueGroup(page, "ready");
+  const card = page
+    .locator('[data-queue-group="ready"] .queue-card-open')
+    .first();
+  const box = await card.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // A context menu can swallow the release; the redraw must not wait for it.
+  await page.mouse.down({ button: "right" });
+  await retitle(store, fixture, 2)();
+  await advanceTo(page, 5100);
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("#handoff-queue")).toContainText(retitled);
+  await page.mouse.up({ button: "right" });
+});
+
+test("a press held past the bound still lets the background redraw land", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  await open(page, store);
+  const heading = await page.locator("[data-panel-heading]").boundingBox();
+  await advanceTo(page, 4900);
+  await page.mouse.move(heading.x + 4, heading.y + 4);
+  await page.mouse.down();
+  await retitle(store, fixture, 2)();
+  await advanceTo(page, 5100);
+  await page.evaluate(() => window.__settingsIdle());
+  // Deferred while pressed...
+  await expect(page.locator("#handoff-queue")).not.toContainText(retitled);
+  // ...but never past the bound (1.5 s), even without a release.
+  await advanceTo(page, 6500);
+  await expect(page.locator("#handoff-queue")).toContainText(retitled);
+  await page.mouse.up();
 });

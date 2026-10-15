@@ -18,7 +18,7 @@ import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
 import { terseError } from "./errors";
 import { inlineMarkdown } from "./markdown";
-import { setText, whenReleased } from "./stable-dom";
+import { drawNow, setText, whenReleased } from "./stable-dom";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -600,9 +600,11 @@ export async function mountPanel(app: HTMLElement) {
     running: () => render("running", pendingRows.get("running") ?? []),
     reviewed: () => render("reviewed", pendingRows.get("reviewed") ?? []),
   };
-  function draw(tab: "running" | "reviewed", rows: Row[]) {
+  // `now`: user-initiated redraws (Show more, opening a tab) never wait.
+  function draw(tab: "running" | "reviewed", rows: Row[], now = false) {
     pendingRows.set(tab, rows);
-    whenReleased(drawers[tab]);
+    if (now) drawNow(drawers[tab]);
+    else whenReleased(drawers[tab]);
   }
   function render(tab: "running" | "reviewed", rows: Row[]) {
     const limit = tab === "reviewed" ? reviewedLimit : rows.length;
@@ -652,7 +654,7 @@ export async function mountPanel(app: HTMLElement) {
       more.onclick = () => {
         const first = limit;
         reviewedLimit = limit + REVIEWED_PAGE;
-        drawLists();
+        drawLists(true);
         const target =
           root.querySelectorAll<HTMLButtonElement>(".work-row")[first];
         if (!target) return;
@@ -831,7 +833,7 @@ export async function mountPanel(app: HTMLElement) {
         ),
     ).length;
   }
-  function drawLists() {
+  function drawLists(now = false) {
     if (!automation) {
       views.running.querySelector<HTMLElement>(
         "[data-running-list]",
@@ -875,7 +877,7 @@ export async function mountPanel(app: HTMLElement) {
             !["failed", "manual_retry"].includes(row.work?.state ?? "")),
       );
       rows.splice(0, rows.length, ...running);
-      draw("running", rows);
+      draw("running", rows, now);
     }
     if (!snapshot) {
       views.reviewed.textContent = "Unavailable";
@@ -926,7 +928,7 @@ export async function mountPanel(app: HTMLElement) {
         });
       }
     }
-    draw("reviewed", rows);
+    draw("reviewed", rows, now);
   }
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
@@ -1056,7 +1058,7 @@ export async function mountPanel(app: HTMLElement) {
     intent++;
     if (next.tab === "reviewed" && tabIntent !== "reviewed") {
       reviewedLimit = REVIEWED_PAGE;
-      drawLists();
+      drawLists(true);
     }
     tabIntent = next.tab;
     // Capture activation before a queue redraw detaches the actual row button.

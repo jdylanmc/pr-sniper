@@ -221,3 +221,29 @@ test("Reviewed shows 50 rows, appends 50 per Show more, keeps Clean all last and
   await tab(page, "Reviewed").click();
   await expect(rows).toHaveCount(50);
 });
+
+for (const activation of ["keyboard", "programmatic"]) {
+  test(`Show more renders and focuses at once while a pointer press is held (${activation})`, async ({
+    page,
+    store,
+  }) => {
+    test.slow();
+    await seedMany(store, 127);
+    await page.goto("/");
+    await tab(page, "Reviewed").click();
+    const rows = reviewed(page).locator("[data-job-id]");
+    await expect(rows).toHaveCount(50, { timeout: 20_000 });
+    const more = reviewed(page).getByRole("button", { name: "Show 50 more" });
+    // A primary press elsewhere that never releases (e.g. a lost mouseup).
+    const heading = await page.locator("[data-panel-heading]").boundingBox();
+    await page.mouse.move(heading.x + 4, heading.y + 4);
+    await page.mouse.down();
+    if (activation === "keyboard") {
+      await more.focus();
+      await page.keyboard.press("Enter");
+    } else await more.evaluate((button) => button.click());
+    await expect(rows).toHaveCount(100);
+    await expect(rows.nth(50).locator(".work-row")).toBeFocused();
+    await page.mouse.up();
+  });
+}

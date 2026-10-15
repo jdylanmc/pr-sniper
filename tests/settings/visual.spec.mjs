@@ -495,6 +495,56 @@ test("completion removes its row, capacity refills immediately and failed work l
   );
 });
 
+test("a job evidence control keeps its click while the job's automation state changes", async ({
+  page,
+  store,
+}) => {
+  await workFixture(store);
+  await nativeCapacity(page, ["visual-work-1"]);
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__opened = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "open_queue_destination") {
+        window.__opened.push(args.itemId);
+        return Promise.resolve(null);
+      }
+      return original(command, args);
+    };
+  });
+  // Paused clock: the 5 s automation poll lands exactly at start + 5 s.
+  const start = new Date("2026-10-14T12:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
+  await tab(page, "Running").click();
+  await page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button", { name: "Open job" })
+    .click();
+  await page.evaluate(() => window.__settingsIdle());
+  const link = page.locator(".job-provider-link");
+  await expect(link).toBeVisible();
+  const evidence = page.locator("[data-item-evidence]");
+  const before = await evidence.innerText();
+  const box = await link.boundingBox();
+  await page.clock.fastForward(4900);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // The job's capacity state changes: its evidence redraws on the next poll.
+  await page.evaluate(() => {
+    window.__capacityUnavailable = true;
+  });
+  await page.clock.fastForward(200);
+  await page.evaluate(() => window.__settingsIdle());
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect.poll(() => page.evaluate(() => window.__opened.length)).toBe(1);
+  // The deferred redraw still lands once the press ends.
+  await expect.poll(() => evidence.innerText()).not.toBe(before);
+});
+
 test("captured full configuration survives current Agent and doctrine edits without relabeling history", async ({
   page,
   store,

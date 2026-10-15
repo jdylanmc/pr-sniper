@@ -302,7 +302,7 @@ export function renderMonitoring(
     (value) => {
       automation = value;
       options.onAutomation?.(value);
-      renderEvidence();
+      whenReleased(renderEvidence);
     },
     { compact: options.panel, onError: options.panel ? showError : undefined },
   );

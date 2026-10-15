@@ -467,7 +467,13 @@ for (const width of [408, 320]) {
         card.getByText("Notifications", { exact: true }),
       ).toHaveCount(1);
       await expect(card).not.toContainText(/banners|center|authorized/i);
+      // The live region stays rendered (never `hidden`) so changes announce.
+      const announce = card.locator("[data-notification-announce]");
+      await expect(announce).toHaveAttribute("role", "status");
+      expect(await announce.evaluate((element) => element.hidden)).toBe(false);
+      await expect(announce).toHaveText(scenario.alert ?? "");
       const row = card.locator("#notification-permission");
+      await expect(row).not.toHaveAttribute("role", "status");
       if (!scenario.alert) {
         await expect(row).toBeHidden();
         return;
