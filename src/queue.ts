@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { whenReleased } from "./stable-dom";
 import { renderActions, type ActionStatus } from "./actions";
 import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
@@ -79,6 +80,8 @@ export interface QueueItem {
     agent_name: string;
     cause: TeammateCause;
   } | null;
+  // The primary's Rubber Duck could not be set up: its Agent name.
+  failed_duck?: string | null;
   // The primary waits for this teammate's report.
   blocked_by?: {
     teammate: { assignment_id: string; agent_name: string };
@@ -589,10 +592,14 @@ export function renderQueue(
   window.addEventListener("hashchange", () => {
     if (root.isConnected && !options.externalSelection) choose(fromUrl(), true);
   });
+  // Background updates redraw after a press ends so its click survives.
+  const redraw = () => {
+    if (JSON.stringify([items, selected]) !== signature) draw(false);
+  };
   const update = (next: QueueItem[]) => {
     items = next;
     loaded = true;
-    if (JSON.stringify([items, selected]) !== signature) draw(false);
+    whenReleased(redraw);
   };
   return Object.assign(update, {
     invalidate: () => {

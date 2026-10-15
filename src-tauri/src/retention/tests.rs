@@ -122,6 +122,8 @@ fn completed(store: &Store, job: &QueueJob) -> ReviewRun {
     ReviewRun {
         mode: crate::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None, key: crate::review::key(job, ASSIGNMENT), assignment_id: ASSIGNMENT.into(),
         job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap(),
         operation, manual_start: true, trust_confirmed: true, phase: "Complete".into(), error: None,
@@ -415,15 +417,24 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
     let settings = std::fs::read(root.path().join("config/settings.json")).unwrap();
     let item = crate::queue::item_id(&review.job);
     let mut notices = store.load_notifications().unwrap();
-    notices.enabled = true;
-    let notice = notices
-        .enqueue_test(
-            crate::notifications::Destination::QueueItem {
-                item_id: item.clone(),
-            },
+    notices.enable(&[], NOW).unwrap();
+    notices
+        .observe(
+            &[crate::notifications::Frame {
+                source: format!("queue:{item}"),
+                event: Some(crate::notifications::Event {
+                    category: crate::notifications::Category::Ready,
+                    destination: crate::notifications::Destination::QueueItem {
+                        item_id: item.clone(),
+                    },
+                    cause: "review".into(),
+                    group: "group".into(),
+                }),
+            }],
             NOW,
         )
         .unwrap();
+    let notice = notices.notices.last().unwrap().id.clone();
     store.save_notifications(&notices).unwrap();
     scan(
         &store,

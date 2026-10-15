@@ -265,7 +265,6 @@ pub(crate) fn cleaned(
     Ok(load(store)?.receipts.iter().any(|r| match destination {
         crate::panel::Detail::Item {item_id} => r.items.contains(item_id),
         crate::panel::Detail::Job {kind, id} => r.work.contains(&WorkId {kind:*kind,id:id.clone()}),
-        _ => false,
     }).then_some("Detail for this exact destination was cleaned after provider-confirmed closure or merge. No other PR or iteration was selected."))
 }
 

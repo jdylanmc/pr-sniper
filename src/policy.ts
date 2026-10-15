@@ -4,7 +4,8 @@ export type Schedule =
 export type Selector =
   { kind: "default" } | { kind: "model" | "agent"; value: string };
 export interface Policy {
-  schedule: Schedule;
+  /** Legacy global schedule; moved onto repositories on load, never saved. */
+  schedule?: Schedule;
   watched_authors: { id: string; login: string }[];
   reviewer_assignment: boolean;
   adapter: "copilot";
@@ -19,22 +20,36 @@ export interface WatchedIdentity {
   id: string;
   login: string;
 }
-/** A named review principle. Its title is also its slug -- there is no
- * separate id. Plain text, ~500 words recommended, never enforced. */
+/** A review principle: stable id, display title and plain-text body
+ * (~500 words recommended, never enforced). Agents reference the id. The id is
+ * absent only on job evidence recorded before ids. */
 export interface Doctrine {
+  id: string;
   title: string;
   body: string;
 }
-/** A reusable review profile: model + ordered doctrines + prompt +
- * signature. Agents are referenced by id from repository assignments. */
+/** A writing style for human-facing text: stable id, title, body.
+ * `guardrails` adds the host's fixed tone guard; default on. */
+export interface Voice {
+  id: string;
+  title: string;
+  body: string;
+  guardrails: boolean;
+}
+/** A reusable review profile: model + ordered doctrines + optional Voice +
+ * prompt + signature. Agents are referenced by id from repository assignments. */
 export interface Agent {
   id: string;
   name: string;
   model: string;
   intelligence?: AgentIntelligence;
   ai_account?: AiAccount;
+  /** Legacy title references; only in job evidence recorded before ids. */
   doctrine?: string;
   doctrines?: string[];
+  /** Ordered Doctrine ids; an id missing from the library is unavailable. */
+  doctrine_ids?: string[];
+  voice_id?: string;
   prompt: string;
   signature: string;
 }
@@ -51,7 +66,8 @@ export interface AiAccount {
 export interface Assignment {
   id: string;
   agent_id: string;
-  schedule: Schedule;
+  /** Legacy; never written for new assignments. */
+  schedule?: Schedule;
   comment: boolean;
   approve: boolean;
   actions?: {
@@ -62,6 +78,8 @@ export interface Assignment {
   };
   /** Absent = the role default (`defaultTools`). */
   tools?: PacketTool[];
+  /** Rubber Duck Agent id. Honored on the primary only. */
+  rubber_duck?: string;
 }
 
 /** Mirrors `PACKET_TOOLS` in src-tauri/src/storage.rs (checked by a Rust test). */
@@ -73,6 +91,7 @@ export const PACKET_TOOLS = [
   "read_check_log",
   "list_tree",
   "search_code",
+  "rubber_duck",
   "leave_comments",
   "ready_for_human",
   "approve_pull_request",
@@ -82,14 +101,16 @@ export const PACKET_TOOLS = [
 ] as const;
 export type PacketTool = (typeof PACKET_TOOLS)[number];
 
-/** Role default when `tools` is unset. Mirrors `default_tools` in storage.rs. */
+/** Role default when `tools` is unset. Mirrors `Repository::assignment_tools` in storage.rs. */
 export function defaultTools(
   primary: boolean,
   grants: { comment: boolean; approve: boolean; merge: boolean },
+  duck = false,
 ): PacketTool[] {
   const tools: PacketTool[] = [
-    ...PACKET_TOOLS.slice(0, PACKET_TOOLS.indexOf("leave_comments")),
+    ...PACKET_TOOLS.slice(0, PACKET_TOOLS.indexOf("rubber_duck")),
   ];
+  if (primary && duck) tools.push("rubber_duck");
   if (primary) {
     if (grants.comment) tools.push("leave_comments");
     tools.push("ready_for_human");
@@ -100,8 +121,13 @@ export function defaultTools(
   return tools;
 }
 
-export const doctrineTitles = (agent: Agent): string[] =>
-  agent.doctrines ?? (agent.doctrine ? [agent.doctrine] : []);
+export const doctrineIds = (agent: Agent): string[] => agent.doctrine_ids ?? [];
+
+/** Agent-ordered Doctrine titles; a dangling reference shows as unavailable. */
+export const doctrineTitles = (agent: Agent, library: Doctrine[]): string[] =>
+  doctrineIds(agent).map(
+    (id) => library.find((d) => d.id === id)?.title ?? `${id} (unavailable)`,
+  );
 
 export function effectivePolicy(
   defaults: Policy,

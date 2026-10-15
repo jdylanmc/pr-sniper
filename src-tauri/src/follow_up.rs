@@ -457,11 +457,7 @@ impl FollowUp {
         }
     }
     pub fn same_result_lens(&self, current: &Selection) -> bool {
-        self.context.selection.agent == current.agent
-            && self.context.selection.doctrine == current.doctrine
-            && self.context.selection.preset == current.preset
-            && self.context.selection.policy.prompt == current.policy.prompt
-            && self.context.selection.policy.adapter == current.policy.adapter
+        self.context.selection.same_lens(current)
     }
     pub fn same_analysis_execution(&self, current: &Selection) -> bool {
         self.context.selection.same_execution(current)
@@ -1150,6 +1146,8 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 message: "Reply outcome is unresolved; no replacement reply will be posted.".into(),
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Github,
+                duck_setup: false,
+                resume: Default::default(),
             });
         }
         let gate = env.gate(run, &current)?;

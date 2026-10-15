@@ -1,4 +1,4 @@
-use pr_sniper_lib::storage::{Settings, Store};
+use pr_sniper_lib::storage::{Settings, Store, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
@@ -224,7 +224,6 @@ fn panel_dispatch(
                 .map_err(|_| "Invalid panel route.")?,
         ),
         "open_settings" => Some(Route::tab(Tab::Settings)),
-        "open_diagnostics" => Some(Route::utility(true)),
         "open_queue_item" => Some(Route::item(
             request.args["itemId"]
                 .as_str()
@@ -421,6 +420,7 @@ fn explicit_intake_fixture(store: &Store, args: &Value) -> Result<Value, String>
         &expected,
         target,
         1_800_000_000,
+        1_800_000_000,
     )?;
     serde_json::to_value(result).map_err(|_| "Cannot encode synthetic PR intake.".into())
 }
@@ -465,6 +465,20 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         | "fixture_setup_review"
         | "fixture_setup_preview"
         | "fixture_apply_setup" => setup_fixture(store, &request),
+        "time_zones" => Ok(json!(pr_sniper_lib::policy::time_zones())),
+        "preview_schedule" => serde_json::to_value(pr_sniper_lib::schedule::preview_saved(
+            store,
+            serde_json::from_value(request.args["request"].clone())
+                .map_err(|_| "Invalid schedule request.")?,
+            // The fixture clock every other bridge command uses.
+            1_800_000_000,
+        )?)
+        .map_err(|e| e.to_string()),
+        "describe_schedules" => serde_json::to_value(pr_sniper_lib::schedule::describe(
+            &serde_json::from_value::<Vec<String>>(request.args["crons"].clone())
+                .map_err(|_| "Invalid schedules.")?,
+        ))
+        .map_err(|e| e.to_string()),
         "diagnostics" => serde_json::to_value(store.diagnostics()?)
             .map_err(|_| "Cannot encode diagnostics.".into()),
         "seed_action_observation" => {
@@ -584,6 +598,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             })?;
             Ok(Value::Null)
         }
+        "save_theme" => {
+            let theme: Theme = serde_json::from_value(request.args["theme"].clone())
+                .map_err(|_| "Unsupported theme.".to_string())?;
+            store.save_theme(theme)?;
+            Ok(Value::Null)
+        }
         "seed_settings" => {
             let settings: Settings = serde_json::from_value(request.args)
                 .map_err(|_| "Invalid settings test fixture.".to_string())?;
@@ -684,11 +704,32 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         )?)
         .map_err(|_| "Cannot encode notification test state.".into()),
         "set_notifications_enabled" => {
-            let mut ledger = store.load_notifications()?;
-            ledger.enabled = request.args["enabled"]
+            let enabled = request.args["enabled"]
                 .as_bool()
                 .ok_or("Enabled flag required.")?;
+            let mut ledger = store.load_notifications()?;
+            if enabled {
+                let snapshot = pr_sniper_lib::queue::snapshot(store, vec![])?;
+                ledger.enable(
+                    &pr_sniper_lib::notifications::frames(&snapshot),
+                    1_800_000_000,
+                )?;
+            } else {
+                ledger.disable();
+            }
             store.save_notifications(&ledger)?;
+            Ok(Value::Null)
+        }
+        "set_notification_category" => {
+            let category = serde_json::from_value(request.args["category"].clone())
+                .map_err(|_| "Notification type required.")?;
+            let enabled = request.args["enabled"]
+                .as_bool()
+                .ok_or("Enabled flag required.")?;
+            let mut ledger = store.load_notifications()?;
+            if ledger.set_category(category, enabled)? {
+                store.save_notifications(&ledger)?;
+            }
             Ok(Value::Null)
         }
         "seed_notifications" => {
@@ -706,20 +747,6 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             store.save_notifications(&ledger)?;
             Ok(json!(ledger))
-        }
-        "test_notification" => {
-            let destination = if let Some(item_id) = request.args["itemId"].as_str() {
-                pr_sniper_lib::queue::destination(store, item_id, None)?;
-                pr_sniper_lib::notifications::Destination::QueueItem {
-                    item_id: item_id.into(),
-                }
-            } else {
-                pr_sniper_lib::notifications::Destination::Settings
-            };
-            let mut ledger = store.load_notifications()?;
-            let id = ledger.enqueue_test(destination, 1_800_000_000)?;
-            store.save_notifications(&ledger)?;
-            Ok(json!(id))
         }
         "notification_destination" => Ok(json!(pr_sniper_lib::notifications::destination(
             store,
@@ -839,7 +866,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | "panel_navigate"
                 | "hide_panel"
                 | "open_settings"
-                | "open_diagnostics"
                 | "open_queue_item"
                 | "fixture_show_panel"
         ) {

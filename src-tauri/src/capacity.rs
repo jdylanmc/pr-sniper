@@ -139,11 +139,15 @@ fn due(operation: &JobOperation, now: i64) -> bool {
     ) && operation.next_attempt_at.is_some_and(|n| n <= now)
 }
 
+/// A superseded run waits for its repository's next successful poll, never a timer.
+pub const WAITING_FOR_POLL: &str = "Waiting for the next poll.";
+
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
     let gates = store.load_backpressure()?;
     let reviews = review::host::candidates(store)?;
     let repositories = store.load_settings()?.repositories;
+    let tracked = store.load_queue_state()?.tracked;
     let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
         .iter()
         .filter(|c| {
@@ -162,10 +166,19 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         })
         .collect();
     for candidate in reviews {
-        if candidate
-            .run
-            .as_ref()
-            .is_some_and(|r| r.operation.state == OperationState::Completed)
+        if candidate.run.as_ref().is_some_and(|r| {
+            r.operation.state == OperationState::Completed || r.operation.ended_superseded()
+        }) {
+            continue;
+        }
+        // Running lists only real work: a retired entry can never run. A
+        // superseded entry stays listed, distinct, until its PR ends or is cleaned.
+        if crate::monitoring::retired(&candidate.job)
+            && candidate.job.waiting != crate::monitoring::WAITING_SUPERSEDED
+            && candidate
+                .run
+                .as_ref()
+                .is_none_or(|r| r.operation.state != OperationState::Running)
         {
             continue;
         }
@@ -191,6 +204,16 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                             .clone()
                             .unwrap_or_else(|| "Manual retry required.".into()),
                     )
+                }
+                Some(run)
+                    if run.operation.state != OperationState::Running
+                        && run
+                            .operation
+                            .superseded
+                            .as_ref()
+                            .is_some_and(|s| !s.cleared(&candidate.job, &tracked)) =>
+                {
+                    Some(WAITING_FOR_POLL.into())
                 }
                 Some(run)
                     if run.operation.state != OperationState::Running
@@ -336,6 +359,7 @@ impl Coordinator {
 
     /// Called under the Host Store lock, including by deterministic worker tests.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
+        review::end_retired(store)?;
         let settings = store.load_settings()?;
         let paused = store.load_automation()?.paused;
         let mut active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;

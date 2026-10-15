@@ -1,4 +1,5 @@
 pub(crate) mod diagnostics;
+pub mod duck;
 pub(crate) mod host;
 pub(crate) mod packet_run;
 pub(crate) mod runtime;
@@ -9,7 +10,7 @@ use crate::{
     github::ConnectionError,
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
-    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store},
+    storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store, Voice},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,14 +32,101 @@ pub struct Selection {
 pub struct ExecutionConfiguration {
     pub repository: Repository,
     pub authority: AssignmentAuthority,
-    /// In Agent-selected order, with the exact saved title and full body.
+    /// In Agent-selected order, with the exact saved id, title and full body
+    /// (no id on jobs that predate Doctrine ids).
     pub doctrines: Vec<Doctrine>,
     /// Absent on older jobs; never inferred from a later library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_catalog: Option<crate::storage::DoctrineCatalog>,
+    /// The primary Agent's Voice with its exact title, body and guard flag, as
+    /// sent in the packet. Absent for teammates, Agents without a Voice and jobs
+    /// that predate Voices; never inferred later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Voice>,
+    /// The primary's Rubber Duck at job start. Absent when none is set and on
+    /// jobs that predate it; never rebuilt from later settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubber_duck: Option<duck::DuckSnapshot>,
+}
+
+/// Exact title and body: what a library entry puts in the packet. Ids and
+/// Agent title/id references are representations, not inputs.
+fn entry_lens(title: &str, body: &str) -> (String, String) {
+    (title.to_string(), body.to_string())
+}
+
+/// An Agent without its library references (compared by content elsewhere).
+fn library_free(agent: &Agent) -> Agent {
+    let mut agent = agent.clone();
+    agent.doctrine = None;
+    agent.doctrines = None;
+    agent.doctrine_ids = Vec::new();
+    agent.voice_id = None;
+    agent
 }
 
 impl Selection {
+    /// The Agent without its library references, which [`Self::doctrine_lens`]
+    /// and the captured Voice compare by content. Pre-id evidence (title
+    /// references) and current settings (id references) then compare equal
+    /// when nothing real changed.
+    fn agent_lens(&self) -> Agent {
+        library_free(&self.agent)
+    }
+
+    /// Ordered resolved Doctrines when captured; else the composed legacy text.
+    fn doctrine_lens(&self) -> Result<Vec<(String, String)>, Option<&String>> {
+        match &self.configuration {
+            Some(configuration) => Ok(configuration
+                .doctrines
+                .iter()
+                .map(|d| entry_lens(&d.title, &d.body))
+                .collect()),
+            None => Err(self.doctrine.as_ref()),
+        }
+    }
+
+    fn same_doctrines(&self, other: &Self) -> bool {
+        match (self.doctrine_lens(), other.doctrine_lens()) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => self.doctrine == other.doctrine,
+        }
+    }
+
+    fn voice_lens(&self) -> Option<(String, String, bool)> {
+        self.configuration
+            .as_ref()
+            .and_then(|c| c.voice.as_ref())
+            .map(|v| {
+                let (title, body) = entry_lens(&v.title, &v.body);
+                (title, body, v.guardrails)
+            })
+    }
+
+    /// The Rubber Duck as it ran: its Agent without library references and its
+    /// Doctrines by content. A duck never runs with a Voice, so none is compared.
+    fn duck_lens(&self) -> Option<(Agent, Vec<(String, String)>)> {
+        let duck = self.configuration.as_ref()?.rubber_duck.as_ref()?;
+        Some((
+            library_free(&duck.agent),
+            duck.doctrines
+                .iter()
+                .map(|d| entry_lens(&d.title, &d.body))
+                .collect(),
+        ))
+    }
+
+    /// The reviewed lens: Agent, Doctrines, Voice, preset and prompt, compared
+    /// on normalized content so a storage upgrade is never a change.
+    pub fn same_lens(&self, other: &Self) -> bool {
+        self.agent_lens() == other.agent_lens()
+            && self.same_doctrines(other)
+            && self.voice_lens() == other.voice_lens()
+            && self.preset == other.preset
+            && self.policy.prompt == other.policy.prompt
+            && self.policy.adapter == other.policy.adapter
+    }
+
     /// Compare execution inputs and effective authority, not sibling assignment archives.
     /// Callers must still revalidate the job, account and permission gates.
     pub fn same_execution(&self, other: &Self) -> bool {
@@ -46,9 +134,9 @@ impl Selection {
         let mut policy = self.policy.clone();
         policy.automatic_agent_start = other.policy.automatic_agent_start;
         policy.automatic_comment_publication = other.policy.automatic_comment_publication;
-        self.agent == other.agent
+        self.agent_lens() == other.agent_lens()
             && policy == other.policy
-            && self.doctrine == other.doctrine
+            && self.same_doctrines(other)
             && self.preset == other.preset
             && match (&self.configuration, &other.configuration) {
                 (Some(left), Some(right)) => {
@@ -60,7 +148,8 @@ impl Selection {
                         b.overrides.automatic_comment_publication;
                     // Role/capability evidence is archival, not a read-only
                     // execution grant. Provider stages revalidate current authority.
-                    left.doctrines == right.doctrines
+                    self.voice_lens() == other.voice_lens()
+                        && self.duck_lens() == other.duck_lens()
                         && a.id == b.id
                         && a.provider == b.provider
                         && a.name == b.name
@@ -115,18 +204,37 @@ impl Selection {
                 "Choose a Copilot account and account-returned model for this Agent.".into(),
             );
         }
-        let doctrines = agent
-            .doctrine_titles()
-            .into_iter()
-            .map(|title| {
-                settings
-                    .doctrines
+        let doctrines = doctrine_bodies(settings, &agent)?;
+        let rubber_duck = repository
+            .assignment_duck(assignment)
+            .map(|id| {
+                let agent = settings
+                    .agents
                     .iter()
-                    .find(|d| d.title.trim().to_lowercase() == title.trim().to_lowercase())
-                    .cloned()
-                    .ok_or("The Agent's doctrine is unavailable.")
+                    .find(|a| a.id == id)
+                    .ok_or("The Rubber duck Agent is unavailable.")?
+                    .clone();
+                Ok::<_, String>(duck::DuckSnapshot {
+                    doctrines: doctrine_bodies(settings, &agent)?,
+                    agent,
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .transpose()?;
+        let voice = agent
+            .voice_id
+            .as_ref()
+            .map(|id| {
+                settings
+                    .voices
+                    .iter()
+                    .find(|v| &v.id == id)
+                    .cloned()
+                    .ok_or("The Agent's Voice is unavailable.")
+            })
+            .transpose()?;
+        let authority = repository.assignment_authority(assignment);
+        // Only a primary packet carries the Voice; teammates send caveman reports.
+        let voice = voice.filter(|_| authority.primary);
         let doctrine = match doctrines.as_slice() {
             [] => None,
             [single] => Some(single.body.clone()),
@@ -157,12 +265,31 @@ impl Selection {
             preset,
             configuration: Some(ExecutionConfiguration {
                 repository: repository.clone(),
-                authority: repository.assignment_authority(assignment),
+                authority,
                 doctrines,
                 doctrine_catalog: Some(settings.doctrine_catalog()),
+                voice,
+                rubber_duck,
             }),
         })
     }
+}
+
+/// The Agent's Doctrines in its order, resolved by stable id, with exact saved id,
+/// title and body.
+fn doctrine_bodies(settings: &Settings, agent: &Agent) -> Result<Vec<Doctrine>, String> {
+    agent
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            settings
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .cloned()
+                .ok_or_else(|| "The Agent's doctrine is unavailable.".into())
+        })
+        .collect()
 }
 
 pub fn key(job: &QueueJob, assignment_id: &str) -> String {
@@ -207,6 +334,13 @@ pub struct ReviewRun {
     /// Content-free record of the packet this run was given (Packet mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packet: Option<crate::packet::PacketRecord>,
+    /// The Rubber Duck Agent whose setup failed this run's last attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_duck: Option<String>,
+    /// Duck calls of the last attempt that ended without a result (bounded by the
+    /// call limit); a completed attempt keeps its calls on `result.ducks` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempt_ducks: Vec<duck::DuckCall>,
 }
 
 impl ReviewRun {
@@ -229,8 +363,12 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
         .iter()
         .find(|j| run.matches_job(j))
         .ok_or_else(|| Failure::permanent("Review detection is no longer available."))?;
-    let current =
-        Selection::resolve(&settings, job, &run.assignment_id).map_err(Failure::permanent)?;
+    let current = Selection::resolve(&settings, job, &run.assignment_id).map_err(|error| {
+        match monitoring::check_review_policy(&settings, job, None) {
+            Err(rejection) if rejection.superseded() => Failure::policy(rejection),
+            _ => Failure::permanent(error),
+        }
+    })?;
     if !current.same_execution(&run.selection) {
         return Err(Failure::permanent(
             "Agent configuration changed; explicitly retry.",
@@ -243,10 +381,16 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    let now = crate::now_seconds()?;
+    let jobs = store.load_queue()?;
     let mut reviews = store.load_reviews()?;
     let mut changed = false;
     for review in &mut reviews {
         if retire_legacy(review) {
+            changed = true;
+            continue;
+        }
+        if recover_parked_supersession(review, &jobs, now) {
             changed = true;
             continue;
         }
@@ -264,10 +408,84 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
         }
     }
+    changed |= end_retired_runs(&mut reviews, &jobs);
     if changed {
         store.save_reviews(&reviews)?;
     }
     Ok(())
+}
+
+/// Ends waiting runs whose queue entry a scan retired (merged, closed,
+/// superseded, out of scope, assignment removed): they can never run, so they
+/// leave Running quietly instead of waiting forever.
+pub fn end_retired(store: &Store) -> Result<(), String> {
+    let jobs = store.load_queue()?;
+    let mut reviews = store.load_reviews()?;
+    if end_retired_runs(&mut reviews, &jobs) {
+        store.save_reviews(&reviews)?;
+    }
+    Ok(())
+}
+
+fn retired_job(run: &ReviewRun, jobs: &[QueueJob]) -> bool {
+    jobs.iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::retired)
+}
+
+fn end_retired_runs(reviews: &mut [ReviewRun], jobs: &[QueueJob]) -> bool {
+    let mut changed = false;
+    for run in reviews {
+        if matches!(
+            run.operation.state,
+            OperationState::Queued | OperationState::Interrupted
+        ) && retired_job(run, jobs)
+        {
+            end_quietly(run);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn end_quietly(run: &mut ReviewRun) {
+    run.operation.end_superseded();
+    run.result = None;
+    run.error = None;
+    run.phase = "Superseded".into();
+}
+
+/// Builds before typed supersession parked a stale Iteration or assignment as a
+/// permanent failure. No typed cause was stored, so the exact retired texts
+/// identify those records; requeue them with a fresh budget so the queue
+/// retargets them like any superseded attempt, or ends them when retired.
+fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
+    const PARKED: [monitoring::PolicyRejection; 2] = [
+        monitoring::PolicyRejection::RevisionChanged,
+        monitoring::PolicyRejection::AssignmentChanged,
+    ];
+    if run.operation.state != OperationState::Failed
+        || run.operation.failure != Some(OperationFailure::Permanent)
+        || !PARKED
+            .iter()
+            .any(|rejection| run.error.as_deref() == Some(rejection.message()))
+    {
+        return false;
+    }
+    // Only live work earns a new attempt; work a scan retired just ends.
+    if !jobs
+        .iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::actionable)
+    {
+        end_quietly(run);
+        return true;
+    }
+    run.operation.requeue_fresh(now);
+    run.result = None;
+    run.error = None;
+    run.phase = "Waiting for current PR state".into();
+    true
 }
 
 /// The legacy review path is removed: unfinished legacy work is cancelled, never run.
@@ -411,6 +629,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// Informational count of changed files read in full; never a gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<ReadCoverage>,
+    /// Rubber duck calls of this attempt, in call order. Evidence only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ducks: Vec<duck::DuckCall>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,6 +649,20 @@ pub struct Failure {
     pub retry_after_seconds: Option<i64>,
     /// Provider that signalled a rate limit; meaningful only for `RateLimited`.
     pub origin: crate::backpressure::Origin,
+    /// The primary's Rubber Duck could not be set up: typed provenance, never text.
+    pub duck_setup: bool,
+    /// When a `Superseded` attempt may run again; `None` retries shortly (a local
+    /// race such as a teammate report landing). Boxed to keep `Failure` small.
+    pub resume: Option<Box<Resume>>,
+}
+
+/// When a superseded attempt may run again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resume {
+    /// After a poll observes the PR: only the provider state can change the outcome.
+    NextPoll,
+    /// After a poll observes a base other than the one an AI attempt reviewed.
+    NewBase(String),
 }
 
 impl Failure {
@@ -449,6 +684,8 @@ impl Failure {
             message: message.into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
+            duck_setup: false,
+            resume: None,
         }
     }
     /// Agent-quality rejections are transient: a fresh attempt may succeed.
@@ -465,6 +702,8 @@ impl Failure {
             message: "Copilot review timed out.".into(),
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
+            duck_setup: false,
+            resume: None,
         }
     }
     pub fn schema() -> Self {
@@ -489,11 +728,32 @@ impl Failure {
             ..Self::permanent(message)
         }
     }
+    /// A stale Iteration or assignment is superseded; other rejections need a human.
+    pub fn policy(rejection: monitoring::PolicyRejection) -> Self {
+        if rejection.superseded() {
+            Self::superseded(rejection.message()).after(Resume::NextPoll)
+        } else {
+            Self::permanent(rejection.message())
+        }
+    }
+    pub fn after(self, resume: Resume) -> Self {
+        Self {
+            resume: Some(Box::new(resume)),
+            ..self
+        }
+    }
     /// A result or write discarded because the PR state moved: retried through the budget.
     pub fn tossed(message: &str) -> Self {
         Self {
             kind: OperationFailure::Tossed,
             ..Self::permanent(message)
+        }
+    }
+    /// This failure came from setting up the primary's Rubber Duck.
+    pub fn duck_setup(self) -> Self {
+        Self {
+            duck_setup: true,
+            ..self
         }
     }
     pub fn operation(message: String) -> Self {
@@ -521,6 +781,8 @@ impl Failure {
                 message,
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
+                duck_setup: false,
+                resume: Default::default(),
             }
         }
     }
@@ -536,7 +798,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, resume: None }
     }
     fn event(data: &Value) -> Self {
         let kind = match data["statusCode"].as_u64() {
@@ -559,6 +821,8 @@ impl Failure {
             message: "Copilot reported an execution failure; no review result was accepted.".into(),
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
+            duck_setup: false,
+            resume: None,
         }
     }
     pub fn monitoring(&self) -> MonitoringError {
@@ -592,6 +856,8 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
+                duck_setup: false,
+                resume: None,
             },
             MonitoringError::Backpressure {
                 origin,
@@ -603,6 +869,8 @@ impl From<ConnectionError> for Failure {
                 message,
                 retry_after_seconds,
                 origin,
+                duck_setup: false,
+                resume: None,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
         }
@@ -681,6 +949,7 @@ impl Events {
             tool_calls: self.tool_calls,
             byte_coverage: false,
             coverage: None,
+            ducks: Vec::new(),
         })
     }
 }

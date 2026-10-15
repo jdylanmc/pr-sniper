@@ -36,7 +36,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 - Evidence: ordered changed-file guide, findings, conversations, acting account, receipts, mutation recovery. Human comments and reviews stay on GitHub.
 - Item detail: **Activity** rows under the status block (Reviewed · files, Findings, Commented · inline, Replied, Final, Retried · Nx, Approved · head, Merged); tap expands key/value facts (IDs copy on tap), GitHub arrow opens the PR. Collapsed Details: Agent / Result / Provider key/value groups. CI is not in the snapshot, so no CI row.
-- Gated start, confirm and retry controls. **Open Settings**, **Open Diagnostics**, schedule recovery stay available.
+- Gated start, confirm and retry controls. Check Now lives in the tray menu.
 - Selection persists in private `state/queue-selection.json` (isolated profiles too). Unavailable identity: missing-destination message.
 - Open-PR and file links resolve from saved native queue identity. File links open the anchor in the current PR diff (deleted/renamed ok). They are not the immutable saved review: compare the displayed reviewed head with GitHub's current revision, browser account and merge requirements.
 - One handoff per account/repo PR. Confirmed approval is not a personal review. Confirmed-merged PRs are not actionable.
@@ -49,7 +49,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Legacy runs (JSON decision) load as history. Unfinished ones are cancelled on startup (`Legacy review retired.`); **Retry review** starts a packet run.
 - Requests persist before capacity wait. Unexecuted initial requests may wait over 15 min and still get a first budget.
 - **Cancel review** stops inference; **Retry review** is explicit. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
-- Pause: **Pause automation** (Queue or Settings) halts polling, AI and writes. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
+- Pause: the panel header **Monitoring** switch (Pause/Resume automation) halts polling, AI and writes. No Settings pause card. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).
 - Green Copilot check = sign-in only. No seat, subscription or inference proof.
@@ -60,11 +60,13 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 
 macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the packaged app; `npm run bundle` applies the local ad-hoc signature that binds `Info.plist` to the app identifier.
 
-- Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Existing attention states notify once after opt-in.
-- Notifies: confirmation, human input, ready for final review, failures. Not: routine queued/reviewing, author waits.
+- Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Opt-in is from now forward: states that exist at opt-in, or arose while off, never notify. Turning on sends one confirmation (opens Settings).
+- Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
+- Types: while on, each type has its own switch (default on, including older profiles). A type turned back on never replays what happened while it was off.
 - Click opens the exact saved queue item, or Settings for a scheduling/account failure with no PR.
-- Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions; an accepted request may still show.
+- Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.
 - Review Queue > Notifications states: queued, submitting, accepted-unconfirmed, unknown, denied, failed, no-longer-current. Acceptance is not banner display; Focus may suppress. Missing or foreign-profile destination fails visibly. Denied/failed events stay in history, not replayed after permission change.
-- **Send test notification**: chosen queue item or Settings; runs no review. Denied: System Settings > Notifications > PR Sniper.
+- Settings card: the switch only while healthy. A problem shows one row: **Blocked by macOS/Windows** (denied or disabled) or **Muted in macOS** (banners and Notification Center both off). Unknown channels are never shown as muted.
+- Denied: System Settings > Notifications > PR Sniper.
 - Isolated profiles still need per-app macOS authorization. Procedure: [tests/macos-notifications.md](../tests/macos-notifications.md).

@@ -162,6 +162,8 @@ pub fn review(
     let mut operation = JobOperation::review(&job, 100);
     operation.state = OperationState::Completed;
     ReviewRun {
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         feedback_context: None,

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Confirmation,
@@ -32,7 +32,7 @@ impl Category {
             Self::HumanInput => "Review needs your input",
             Self::Ready => "Ready for your final review",
             Self::Failure => "PR Sniper needs attention",
-            Self::Test => "PR Sniper test notification",
+            Self::Test => "PR Sniper notifications are on",
             Self::Approved => "Automated approval confirmed; personal review remains",
             Self::Merged => "PR merged on GitHub",
             Self::FinalReviewCleared => "Primary final full review cleared",
@@ -45,12 +45,23 @@ impl Category {
             Self::HumanInput => "Automated review needs your judgment. Open the exact queue item for the conversation and evidence.",
             Self::Ready => "Automated review completed. Open the exact queue item for your final review and merge decision. This is not approval.",
             Self::Failure => "A review or monitoring operation needs recovery. Open the saved destination for details; no success is implied.",
-            Self::Test => "Open to verify the selected in-app destination. No review will start and nothing will be published.",
+            Self::Test => "Alerts for review events will appear here.",
             Self::Approved => "GitHub recorded the acting account's automated approval. This unmerged PR still needs your personal review; one account is one vote.",
             Self::Merged => "GitHub confirmed merge. Open saved evidence for action attribution; human review is not inferred.",
             Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
         }
     }
+
+    /// Event categories a user can turn off; `Test` confirms opt-in and always sends.
+    pub const SELECTABLE: [Self; 7] = [
+        Self::Confirmation,
+        Self::HumanInput,
+        Self::Ready,
+        Self::Failure,
+        Self::Approved,
+        Self::Merged,
+        Self::FinalReviewCleared,
+    ];
 
     fn priority(self) -> u8 {
         match self {
@@ -300,18 +311,23 @@ pub struct Observation {
 pub struct Ledger {
     pub profile_id: String,
     pub enabled: bool,
+    /// Turned-off categories; absent in older files, so every category defaults on.
+    #[serde(default)]
+    pub muted: BTreeSet<Category>,
     pub observations: BTreeMap<String, Observation>,
     pub notices: Vec<Notice>,
 }
 
 #[cfg(windows)]
 pub(crate) const WINDOWS_SETUP_SOURCE: &str = "windows-permission-setup";
+pub(crate) const ENABLED_SOURCE: &str = "notifications-enabled";
 
 impl Default for Ledger {
     fn default() -> Self {
         Self {
             profile_id: uuid::Uuid::new_v4().to_string(),
             enabled: false,
+            muted: BTreeSet::new(),
             observations: BTreeMap::new(),
             notices: vec![],
         }
@@ -328,6 +344,9 @@ impl Ledger {
         {
             return Err("Notification identities are invalid; no notices were sent.".into());
         }
+        if self.muted.contains(&Category::Test) {
+            return Err("Notification preferences are invalid; no notices were sent.".into());
+        }
         let unique: BTreeSet<_> = self.notices.iter().map(|n| &n.id).collect();
         if unique.len() != self.notices.len() {
             return Err("Duplicate notification identities; no notices were sent.".into());
@@ -339,6 +358,12 @@ impl Ledger {
         if !self.enabled {
             return Ok(false);
         }
+        self.record(frames, now, true)
+    }
+
+    /// Tracks every source's current event. Muted categories still advance the
+    /// baseline, so turning one back on never replays what happened while off.
+    fn record(&mut self, frames: &[Frame], now: i64, notify: bool) -> Result<bool, String> {
         let mut changed = false;
         let mut sources = BTreeSet::new();
         for frame in frames {
@@ -357,6 +382,9 @@ impl Ledger {
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
+                if !notify || self.muted.contains(&event.category) {
+                    continue;
+                }
                 self.notices.push(Notice {
                     id: format!("pr-sniper:{}:{}", self.profile_id, uuid::Uuid::new_v4()),
                     source: frame.source.clone(),
@@ -379,11 +407,67 @@ impl Ledger {
         Ok(changed)
     }
 
-    pub fn enqueue_test(&mut self, destination: Destination, now: i64) -> Result<String, String> {
-        if !self.enabled {
-            return Err("Enable notifications before sending a test.".into());
+    /// Turns notifications on from now forward: current events become a silent
+    /// baseline and one confirmation is queued. Returns `None` when already on.
+    pub fn enable(&mut self, frames: &[Frame], now: i64) -> Result<Option<String>, String> {
+        if self.enabled {
+            return Ok(None);
         }
-        Ok(self.push_test(destination, now, "test", Phase::Queued))
+        self.drop_queued(
+            |_| true,
+            "Notifications were turned off before this was sent.",
+        );
+        self.record(frames, now, false)?;
+        self.enabled = true;
+        Ok(Some(self.push_test(
+            Destination::Settings,
+            now,
+            ENABLED_SOURCE,
+            Phase::Queued,
+        )))
+    }
+
+    /// Returns whether the preference changed.
+    pub fn disable(&mut self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.enabled = false;
+        self.drop_queued(
+            |_| true,
+            "Notifications were turned off before this was sent.",
+        );
+        true
+    }
+
+    /// Returns whether the preference changed. Turning a category off drops its
+    /// unsent notices; turning it on relies on the continuously kept baseline.
+    pub fn set_category(&mut self, category: Category, enabled: bool) -> Result<bool, String> {
+        if !Category::SELECTABLE.contains(&category) {
+            return Err("This notification type cannot be changed.".into());
+        }
+        if enabled {
+            return Ok(self.muted.remove(&category));
+        }
+        if !self.muted.insert(category) {
+            return Ok(false);
+        }
+        self.drop_queued(
+            |notice| notice.event.category == category,
+            "This notification type was turned off before this was sent.",
+        );
+        Ok(true)
+    }
+
+    fn drop_queued(&mut self, matches: impl Fn(&Notice) -> bool, reason: &str) {
+        for notice in self
+            .notices
+            .iter_mut()
+            .filter(|n| n.phase == Phase::Queued && matches(n))
+        {
+            notice.phase = Phase::NotSent;
+            notice.error = Some(reason.into());
+        }
     }
 
     #[cfg(windows)]
@@ -445,6 +529,7 @@ impl Ledger {
 
     pub fn current(&self, notice: &Notice) -> bool {
         self.enabled
+            && !self.muted.contains(&notice.event.category)
             && (notice.event.category == Category::Test
                 || self.observations.get(&notice.source).is_some_and(|o| {
                     o.fingerprint.as_ref() == Some(&notice.fingerprint)
@@ -610,6 +695,48 @@ pub fn prepare(store: &Store, frames: &[Frame], id: &str, now: i64) -> Result<No
     }
     store.save_notifications(&ledger)?;
     Ok(notice)
+}
+
+pub(crate) const SUPERSEDED: &str = "A newer notification preference replaced this request.";
+
+/// Saves the opt-in preference only if `current()` still holds once storage is
+/// held, so a superseded request neither persists nor queues a confirmation.
+pub(crate) fn save_preference(
+    store: &Store,
+    enabled: bool,
+    baseline: &[Frame],
+    now: i64,
+    current: impl Fn() -> bool,
+) -> Result<Option<String>, String> {
+    if !current() {
+        return Err(SUPERSEDED.into());
+    }
+    let mut ledger = store.load_notifications()?;
+    let confirmation = if enabled {
+        ledger.enable(baseline, now)?
+    } else {
+        ledger.disable();
+        None
+    };
+    store.save_notifications(&ledger)?;
+    Ok(confirmation)
+}
+
+/// Per-type counterpart of [`save_preference`].
+pub(crate) fn save_category(
+    store: &Store,
+    category: Category,
+    enabled: bool,
+    current: impl Fn() -> bool,
+) -> Result<(), String> {
+    if !current() {
+        return Err(SUPERSEDED.into());
+    }
+    let mut ledger = store.load_notifications()?;
+    if ledger.set_category(category, enabled)? {
+        store.save_notifications(&ledger)?;
+    }
+    Ok(())
 }
 
 pub fn complete(

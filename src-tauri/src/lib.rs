@@ -3,7 +3,6 @@ pub mod admission;
 pub mod backpressure;
 pub mod capacity;
 mod copilot;
-mod doctrine_seeds;
 pub mod exit_writes;
 pub mod exits;
 pub mod feedback;
@@ -21,6 +20,8 @@ pub mod publication;
 pub mod queue;
 pub mod retention;
 pub mod review;
+pub mod schedule;
+mod seeds;
 pub mod startup;
 pub mod storage;
 mod storage_state;
@@ -2110,6 +2111,7 @@ async fn admit_explicit_pull_request(
         if expected.provider != storage::ProviderId::Github || number == 0 {
             return Err("Use a supported GitHub pull request URL.".into());
         }
+        let read_at = now_seconds()?;
         let (resolved, read_generation) = repository_read(
             &host.github_generations,
             &host.github_auth,
@@ -2149,6 +2151,7 @@ async fn admit_explicit_pull_request(
                 &auth.monitoring_accounts(),
                 &expected,
                 resolved,
+                read_at,
                 now,
             )?;
         let batch = if admission.queued {
@@ -3587,6 +3590,14 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_theme(host: State<'_, Host>, theme: storage::Theme) -> Result<(), String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    store.save_theme(theme)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn save_defaults(
     host: State<'_, Host>,
     policy: serde_json::Value,
@@ -4063,11 +4074,79 @@ async fn read_provider_metadata(
     result
 }
 
+/// Secondary tray menu above the separator, in order: (id, label).
+const TRAY_MENU: &[(&str, &str)] = &[
+    ("queue", "Review Queue"),
+    ("check", "Check Now"),
+    ("settings", "Settings"),
+    ("close-panel", "Close Panel"),
+];
+/// Below the separator; the only exit.
+const TRAY_QUIT: (&str, &str) = ("quit", "Quit PR Sniper");
+
+/// Panel destination for a navigating tray item; other items act directly.
+fn tray_route(id: &str) -> Option<panel::Route> {
+    match id {
+        "queue" => Some(panel::Route::tab(panel::Tab::Queue)),
+        "settings" => Some(panel::Route::tab(panel::Tab::Settings)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::{panel, tray_route, TRAY_MENU, TRAY_QUIT};
+
+    #[test]
+    fn tray_menu_lists_only_the_retained_entries_in_order() {
+        assert_eq!(
+            TRAY_MENU,
+            &[
+                ("queue", "Review Queue"),
+                ("check", "Check Now"),
+                ("settings", "Settings"),
+                ("close-panel", "Close Panel"),
+            ]
+        );
+        assert_eq!(TRAY_QUIT, ("quit", "Quit PR Sniper"));
+    }
+
+    #[test]
+    fn removed_status_and_diagnostics_entries_have_no_tray_route() {
+        for (removed_id, removed_label) in [("status", "Status"), ("diagnostics", "Diagnostics")] {
+            assert!(TRAY_MENU
+                .iter()
+                .all(|(id, label)| *id != removed_id && *label != removed_label));
+            assert_eq!(tray_route(removed_id), None);
+        }
+        assert_eq!(
+            tray_route("queue"),
+            Some(panel::Route::tab(panel::Tab::Queue))
+        );
+        assert_eq!(
+            tray_route("settings"),
+            Some(panel::Route::tab(panel::Tab::Settings))
+        );
+    }
+}
+
 #[tauri::command]
-async fn open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    panel::show(&app, Some(panel::Route::utility(true)))
-        .await
-        .map(|_| ())
+fn time_zones() -> Vec<&'static str> {
+    policy::time_zones()
+}
+
+#[tauri::command]
+fn preview_schedule(
+    host: State<'_, Host>,
+    request: schedule::PreviewRequest,
+) -> Result<schedule::Preview, String> {
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    schedule::preview_saved(&store, request, now_seconds()?)
+}
+
+#[tauri::command]
+fn describe_schedules(crons: Vec<String>) -> Vec<Option<schedule::Builder>> {
+    schedule::describe(&crons)
 }
 
 #[tauri::command]
@@ -4229,6 +4308,7 @@ pub fn run() {
             resolve_provider_repository,
             admit_explicit_pull_request,
             save_login,
+            save_theme,
             save_defaults,
             save_repository_policy,
             verify_provider_connection,
@@ -4247,8 +4327,10 @@ pub fn run() {
             copilot::list_copilot_models,
             copilot::cancel_copilot_models,
             diagnostics,
-            open_diagnostics,
             open_settings,
+            time_zones,
+            preview_schedule,
+            describe_schedules,
             open_queue_destination,
             open_queue_item,
             panel::panel_snapshot,
@@ -4258,7 +4340,7 @@ pub fn run() {
             select_queue_item,
             notifications::host::notification_snapshot,
             notifications::host::set_notifications_enabled,
-            notifications::host::test_notification,
+            notifications::host::set_notification_category,
             notifications::host::open_notification,
             monitoring_snapshot,
             retry_monitoring_operation,
@@ -4323,7 +4405,7 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root.clone());
+            let store = Store::new(root.clone()).with_initial_time_zone(policy::host_time_zone());
             retention::recover(&store).map_err(std::io::Error::other)?;
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
@@ -4397,29 +4479,18 @@ pub fn run() {
                     notifications::host::Coordinator::pump(&scheduler_app);
                 }
             });
-            let status = MenuItem::with_id(app, "status", "Status", true, None::<&str>)?;
-            let queue = MenuItem::with_id(app, "queue", "Review Queue", true, None::<&str>)?;
-            let check = MenuItem::with_id(app, "check", "Check Now", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-            let diagnostics =
-                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
-            let close_panel =
-                MenuItem::with_id(app, "close-panel", "Close Panel", true, None::<&str>)?;
-            let separator = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit PR Sniper", true, Some("CmdOrCtrl+Q"))?;
-            let menu = Menu::with_items(
+            let menu = Menu::new(app)?;
+            for (id, label) in TRAY_MENU {
+                menu.append(&MenuItem::with_id(app, *id, *label, true, None::<&str>)?)?;
+            }
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+            menu.append(&MenuItem::with_id(
                 app,
-                &[
-                    &status,
-                    &queue,
-                    &check,
-                    &settings,
-                    &diagnostics,
-                    &close_panel,
-                    &separator,
-                    &quit,
-                ],
-            )?;
+                TRAY_QUIT.0,
+                TRAY_QUIT.1,
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?)?;
             TrayIconBuilder::with_id("pr-sniper")
                 .icon(tauri::image::Image::from_bytes(if cfg!(windows) {
                     include_bytes!("../icons/icon.png")
@@ -4518,12 +4589,8 @@ pub fn run() {
                         return;
                     }
 
-                    let target = match event.id.as_ref() {
-                        "status" => panel::Route::utility(false),
-                        "diagnostics" => panel::Route::utility(true),
-                        "queue" => panel::Route::tab(panel::Tab::Queue),
-                        "settings" => panel::Route::tab(panel::Tab::Settings),
-                        _ => return,
+                    let Some(target) = tray_route(event.id.as_ref()) else {
+                        return;
                     };
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -4700,6 +4767,7 @@ mod github_auth_tests {
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),
             enabled: true,
+            cron: "*/15 * * * *".into(),
             provider_account_id: Some("22".into()),
             legacy_installation_id: None,
             provider_repository_id: Some("100".into()),

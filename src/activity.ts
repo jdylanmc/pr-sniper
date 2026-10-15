@@ -1,4 +1,4 @@
-import type { ExitOutcome, MonitoringSnapshot } from "./monitoring";
+import type { DuckCall, ExitOutcome, MonitoringSnapshot } from "./monitoring";
 import { keyValues, type KeyValue } from "./key-values";
 import { compactDuration, openDestination, type QueueItem } from "./queue";
 import { exitPresentation, progressPresentation, type ExitName } from "./exits";
@@ -15,7 +15,66 @@ const paths = {
   merge: "M6 3v12m0 0a3 3 0 1 0 .01 0M18 9a3 3 0 1 0 .01 0M18 12c0 3-3 3-12 3",
   retry: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   open: "M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6v6m0-6-9 9",
+  duck: "M9 7.5a3.5 3.5 0 1 1 6.2 2.2L18 11l-2.6 1.1M4 13h7.5c1.6 0 3-.5 4.3-1.3.9 3.6-1.7 7.3-6.3 7.3C6 19 4 16.5 4 13Z",
 };
+
+const folded = (others?: Record<string, number>) =>
+  Object.values(others ?? {}).reduce((sum, count) => sum + count, 0);
+
+// Duck calls, one stacked line each: target above verdict or failure id.
+function duckRow(ducks: DuckCall[], agent: string): Row {
+  const counts = new Map<string, number>();
+  for (const call of ducks) {
+    const key =
+      call.outcome.outcome === "verdict"
+        ? call.outcome.verdict.verdict
+        : "failed";
+    counts.set(key, (counts.get(key) ?? 0) + 1 + (call.repeats ?? 0));
+    const others = folded(call.others);
+    if (others) counts.set("failed", (counts.get("failed") ?? 0) + others);
+  }
+  const place = (call: DuckCall) =>
+    call.input.kind === "line"
+      ? `${call.input.path}:${call.input.line}`
+      : call.input.kind === "thread"
+        ? `thread ${call.input.thread_id}`
+        : "PR";
+  return {
+    kind: "duck",
+    icon: paths.duck,
+    verb: "Rubber duck",
+    value: String(
+      ducks.reduce(
+        (sum, call) => sum + 1 + (call.repeats ?? 0) + folded(call.others),
+        0,
+      ),
+    ),
+    agent,
+    facts: [
+      ...(
+        ["confirmed", "revise", "rejected", "unverifiable", "failed"] as const
+      )
+        .filter((key) => counts.has(key))
+        .map((key): KeyValue => [
+          key[0].toUpperCase() + key.slice(1),
+          String(counts.get(key)),
+        ]),
+      ["Duck", ducks[0].agent],
+      ["Model", ducks[0].model],
+    ],
+    findings: ducks.map((call) => ({
+      place: place(call),
+      nano:
+        call.outcome.outcome === "verdict"
+          ? `${call.outcome.verdict.verdict}: ${call.outcome.verdict.nano}`
+          : folded(call.others)
+            ? `mixed x${1 + (call.repeats ?? 0) + folded(call.others)}`
+            : call.repeats
+              ? `${call.outcome.failure} x${call.repeats + 1}`
+              : call.outcome.failure,
+    })),
+  };
+}
 
 function icon(path: string) {
   return `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
@@ -125,6 +184,8 @@ export function activityRows(
       !!run.packet ||
       !!result?.output.exit ||
       !!result?.output.report;
+    if (!result && run.attempt_ducks?.length)
+      rows.push(duckRow(run.attempt_ducks, agent));
     if (result && packet) {
       // Packet runs: coverage is the read record, the exit is the outcome.
       const coverage = result.coverage;
@@ -150,6 +211,7 @@ export function activityRows(
           ["Run", run.operation.id, true],
         ],
       });
+      if (result.ducks?.length) rows.push(duckRow(result.ducks, agent));
       const exit = result.output.exit;
       if (exit && exit.exit !== "submit_report")
         rows.push(exitRow(item, snapshot, run.operation.id, exit, agent));

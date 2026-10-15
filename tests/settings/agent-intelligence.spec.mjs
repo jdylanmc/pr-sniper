@@ -1,6 +1,7 @@
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { copyDiagnostics, recordClipboard } from "./diagnostics-copy.mjs";
 
 const capable = {
   id: "deep-model",
@@ -338,23 +339,20 @@ test("job details retain captured requested and actual intelligence after later 
   await expect(captured).toContainText("Requested reasoning effort");
   await expect(captured).toContainText("long_context");
   await expect(captured).not.toContainText("later-model");
-  await page.goto("/?view=diagnostics");
-  let diagnostics = page.locator("[data-intelligence-diagnostics]");
-  await diagnostics.locator("summary").click();
-  await expect(diagnostics).toContainText(
-    "Effort: high; context: long_context",
+  await recordClipboard(page);
+  await page.goto("/?view=settings");
+  let diagnostics = await copyDiagnostics(page);
+  expect(diagnostics).toContain(
+    "Actual Intelligence: Effort: high; context: long_context",
   );
-  await expect(diagnostics).not.toContainText("later-model");
-  await store("panel_navigate", {
-    route: { tab: "running", detail: { type: "diagnostics" } },
-  });
+  expect(diagnostics).not.toContain("later-model");
+  await store("panel_navigate", { route: { tab: "settings" } });
   await page.goto("/");
-  diagnostics = page.locator("[data-intelligence-diagnostics]");
-  await diagnostics.locator("summary").click();
-  await expect(diagnostics).toContainText(
-    "Effort: high; context: long_context",
+  diagnostics = await copyDiagnostics(page, { panel: true });
+  expect(diagnostics).toContain(
+    "Actual Intelligence: Effort: high; context: long_context",
   );
-  await expect(diagnostics).not.toContainText("later-model");
+  expect(diagnostics).not.toContain("later-model");
   delete review.selection.agent.intelligence;
   delete review.result.intelligence;
   await store("seed_queue_state", {

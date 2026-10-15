@@ -1313,9 +1313,12 @@ test("incomplete observation admission stays visibly blocked after retry clears 
   await expect(page.locator("#handoff-queue")).toContainText(
     "Conversation observations are not fully admitted",
   );
-  await expect(
-    page.getByText("Admission pending", { exact: false }),
-  ).toBeVisible();
+  // The queue blocker above is the visible state; the repository-level
+  // Admission pending label left with the Status screen.
+  expect(
+    (await store("monitoring_snapshot")).health[0]
+      .conversation_admission_pending,
+  ).toBe(true);
   await page.reload();
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for your final review",

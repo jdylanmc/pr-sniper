@@ -1,11 +1,4 @@
 .genie-page {
-  --panel-navy: #243247;
-  --panel-teal: #64b8be;
-  --panel-accent: #f68743;
-  --panel-paper: #ffffff;
-  --panel-mist: #eff2f5;
-  --panel-ink: #202b3b;
-  --panel-muted: #52647b;
   color: var(--panel-ink);
   font:
     13px/1.5 -apple-system,
@@ -18,7 +11,7 @@
 .genie-card {
   margin: 0 0 12px;
   padding: 19px;
-  border: 1px solid #dfe5ed;
+  border: 1px solid var(--line-slate-dfe5ed);
   border-radius: 14px;
   background: var(--panel-paper);
 }
@@ -59,8 +52,8 @@
   height: 42px;
   flex: none;
   border-radius: 13px;
-  color: #a65321;
-  background: #fff0e4;
+  color: var(--text-orange-a65321);
+  background: var(--bg-orange-fff0e4);
 }
 .genie-symbol svg {
   width: 25px;
@@ -73,7 +66,7 @@
   margin-top: 15px;
   padding: 12px;
   background: var(--panel-accent);
-  color: var(--panel-ink);
+  color: var(--text-on-accent-ink);
   border: 0;
   border-radius: 10px;
   font-size: 12px;
@@ -88,14 +81,14 @@
   scroll-margin: 8px;
 }
 .genie-page :is(button, input):focus-visible {
-  outline: 3px solid #176773;
+  outline: 3px solid var(--focus-teal-176773);
   outline-offset: 2px;
 }
 .panel-shell .genie-text,
 .genie-page .genie-text {
   padding: 8px 0;
   background: transparent;
-  color: #245a70;
+  color: var(--text-teal-245a70);
   font-size: 11px;
   text-align: left;
 }
@@ -120,7 +113,7 @@
   height: 4px;
   border-radius: 2px;
   flex: 1;
-  background: #d7e0e8;
+  background: var(--bg-slate-d7e0e8);
 }
 .genie-progress i.complete {
   background: var(--panel-teal);
@@ -129,12 +122,12 @@
   list-style: none;
   padding: 0;
   margin: 0;
-  border: 1px solid #dfe5ed;
+  border: 1px solid var(--line-slate-dfe5ed);
   border-radius: 13px;
   overflow: hidden;
 }
 .genie-checklist li + li {
-  border-top: 1px solid #e9eef4;
+  border-top: 1px solid var(--line-slate-e9eef4);
 }
 .genie-page .genie-checklist button {
   display: flex;
@@ -143,7 +136,7 @@
   width: 100%;
   padding: 13px;
   color: var(--panel-ink);
-  background: white;
+  background: var(--panel-paper);
   border-radius: 0;
   text-align: left;
 }
@@ -178,8 +171,8 @@
   font-size: 11px;
 }
 .genie-step.complete {
-  background: #e1f0ed;
-  color: #176b68;
+  background: var(--bg-teal-e1f0ed);
+  color: var(--text-teal-176b68);
 }
 .genie-page .genie-note {
   font-size: 11px;
@@ -191,8 +184,8 @@
   gap: 4px;
   padding: 3px 7px;
   border-radius: 5px;
-  color: #176b68;
-  background: #e1f0ed;
+  color: var(--text-teal-176b68);
+  background: var(--bg-teal-e1f0ed);
   font-size: 10px;
 }
 .genie-review-label svg {
@@ -215,7 +208,7 @@
   margin-top: 13px;
   padding: 11px;
   border-radius: 9px;
-  background: #f3f6f8;
+  background: var(--bg-slate-f3f6f8);
   font-size: 12px;
 }
 .genie-agent-summary p {
@@ -234,8 +227,8 @@
 }
 .genie-error {
   padding: 10px;
-  color: #7d1e12;
-  background: #ffeae5;
+  color: var(--text-red-7d1e12);
+  background: var(--bg-red-ffeae5);
   border-radius: 8px;
 }
 .settings-genie-entry {
@@ -283,7 +276,7 @@
 }
 .panel-shell [data-setup-needed] {
   font-size: 10px;
-  color: #d0d9e5;
+  color: var(--text-slate-d0d9e5);
 }
 @media (max-width: 350px) {
   .genie-card {

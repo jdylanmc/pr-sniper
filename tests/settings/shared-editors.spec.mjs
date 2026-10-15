@@ -76,8 +76,17 @@ async function seed(page, store, count = 36) {
   await page.goto("/");
   await tab(page, "Settings").click();
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
-  return settings;
+  // Stored shape: library ids assigned, title references migrated to ids.
+  return (await store("snapshot")).settings;
 }
+
+/** The first Agent's Doctrine references (ids) as titles, in its order. */
+const agentDoctrines = async (store) => {
+  const settings = (await store("snapshot")).settings;
+  return (settings.agents[0].doctrine_ids ?? []).map(
+    (id) => settings.doctrines.find((d) => d.id === id)?.title ?? id,
+  );
+};
 
 async function capture(page, testInfo, name) {
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
@@ -200,10 +209,7 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Principle 01",
-    "Principle 36",
-  ]);
+  expect(await agentDoctrines(store)).toEqual(["Principle 01", "Principle 36"]);
   await page.reload();
   modal = await openAgent(page);
   await openPicker(page, modal);
@@ -211,9 +217,7 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   await closePicker(page, modal);
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Principle 36",
-  ]);
+  expect(await agentDoctrines(store)).toEqual(["Principle 36"]);
   modal = await openAgent(page);
   await openPicker(page, modal);
   await modal.locator(`input[name=doctrine][value="Principle 36"]`).uncheck();
@@ -222,7 +226,7 @@ test("mouse and keyboard reach scrolling doctrines and preserve zero, one and ma
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await page.reload();
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([]);
+  expect(await agentDoctrines(store)).toEqual([]);
 });
 
 for (const query of ["03", "no match"]) {
@@ -237,11 +241,14 @@ for (const query of ["03", "no match"]) {
     await page.reload();
     await page.evaluate(() => window.__settingsIdle());
     const original = (await store("snapshot")).settings;
+    const intendedTitles = ["Principle 03", "Principle 02", "Principle 04"];
     const intended = {
       ...original.agents[0],
       prompt: "Keep these unfinished review instructions.",
       signature: "Deliberately saved signature",
-      doctrines: ["Principle 03", "Principle 02", "Principle 04"],
+      doctrine_ids: intendedTitles.map(
+        (title) => original.doctrines.find((d) => d.title === title).id,
+      ),
     };
 
     for (const action of ["Cancel", "Save agent"]) {
@@ -298,7 +305,7 @@ for (const query of ["03", "no match"]) {
       ).toEqual(
         original.doctrines.map(({ title }) => ({
           title,
-          checked: intended.doctrines.includes(title),
+          checked: intendedTitles.includes(title),
           hidden: !title.includes(query),
         })),
       );
@@ -406,6 +413,7 @@ test("Cancel and Back discard only unsaved fields while saved shared resources a
     prompt: "Successfully saved prompt.",
   });
   expect(saved.doctrines[0]).toEqual({
+    id: initial.doctrines[0].id,
     title: "Principle 01",
     body: "Saved edited principles.",
   });

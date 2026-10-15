@@ -47,6 +47,8 @@ fn origin() -> Publication {
     let review=ReviewRun {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,
@@ -146,6 +148,7 @@ fn prepared(origin: &Publication) -> FollowUp {
         tool_calls: 1,
         byte_coverage: false,
         coverage: None,
+        ducks: vec![],
     });
     run.analysis = Some(run.operation("thread_analysis", 100));
     run.analysis.as_mut().unwrap().state = OperationState::Completed;

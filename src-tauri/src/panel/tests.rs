@@ -329,7 +329,12 @@ fn unavailable_exact_routes_remain_requested_and_profile_scoped_without_substitu
         store.load_queue_selection().unwrap().as_deref(),
         Some("missing-exact-iteration")
     );
-    assert!(missing(&store, &Route::utility(true)).unwrap().is_none());
+    for removed in ["status", "diagnostics"] {
+        assert!(serde_json::from_value::<Route>(
+            json!({"tab":"settings","detail":{"type":removed}})
+        )
+        .is_err());
+    }
     assert!(Route::item(String::new()).validate().is_err());
     assert!(serde_json::from_value::<Route>(
         json!({"tab":"queue","url":"https://external.example/"})

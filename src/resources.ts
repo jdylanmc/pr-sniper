@@ -1,21 +1,46 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Agent, Doctrine, Policy, WatchedIdentity } from "./policy";
+import type { Agent, Doctrine, Policy, Voice, WatchedIdentity } from "./policy";
 import type { Repository } from "./repositories";
+import type { Theme } from "./theme";
+
+/** Saved Preferences bounding Rubber Duck use per primary attempt. */
+export interface DuckLimits {
+  max_calls: number;
+  call_timeout_seconds: number;
+  primary_window_minutes: number;
+}
+export const DUCK_LIMITS: DuckLimits = {
+  max_calls: 8,
+  call_timeout_seconds: 180,
+  primary_window_minutes: 15,
+};
+/** Inclusive ranges; mirror `DuckLimits` in storage.rs. */
+export const DUCK_RANGES: Record<keyof DuckLimits, [number, number]> = {
+  max_calls: [1, 32],
+  call_timeout_seconds: [30, 600],
+  primary_window_minutes: [5, 120],
+};
 
 export interface Settings {
   capability_notice?: string;
   launch_at_login: boolean;
   defaults: Policy;
   capacity: number;
+  /** IANA zone for every repository schedule. */
+  time_zone: string;
+  rubber_duck?: DuckLimits;
   repositories?: Repository[];
   root_folder?: string;
   doctrines?: Doctrine[];
+  voices?: Voice[];
   agents?: Agent[];
   presets?: { id: string; name: string; body: string }[];
   default_review_preset?: string;
   doctrine_catalog_version?: number;
+  voice_catalog_version?: number;
   admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
+  theme?: Theme;
 }
 
 export interface DoctrineCatalog {
@@ -33,18 +58,26 @@ export const doctrineCatalogLabel = (catalog?: DoctrineCatalog | null) =>
 export interface GlobalPreferences {
   defaults: Policy;
   capacity: number;
+  time_zone: string;
   root_folder: string | null;
   presets: NonNullable<Settings["presets"]>;
   default_review_preset: string | null;
+  rubber_duck: DuckLimits;
 }
 
 export type ResourceEdit =
   | { kind: "agent"; id: string; expected: Agent | null; value: Agent | null }
   | {
       kind: "doctrine";
-      title: string;
+      id: string;
       expected: Doctrine | null;
       value: Doctrine | null;
+    }
+  | {
+      kind: "voice";
+      id: string;
+      expected: Voice | null;
+      value: Voice | null;
     }
   | {
       kind: "repository";
@@ -130,9 +163,11 @@ export const saveResource = (edit: ResourceEdit, accountGeneration?: number) =>
 export const globalPreferences = (settings: Settings): GlobalPreferences => ({
   defaults: settings.defaults,
   capacity: settings.capacity,
+  time_zone: settings.time_zone,
   root_folder: settings.root_folder ?? null,
   presets: settings.presets ?? [],
   default_review_preset: settings.default_review_preset ?? null,
+  rubber_duck: settings.rubber_duck ?? { ...DUCK_LIMITS },
 });
 
 export interface ReviewSelection {
@@ -145,10 +180,13 @@ export interface ReviewSelection {
     authority: AssignmentAuthority;
     doctrines: Doctrine[];
     doctrine_catalog?: DoctrineCatalog;
+    voice?: Voice;
+    rubber_duck?: { agent: Agent; doctrines: Doctrine[] };
   };
 }
 
-/** Update only the committed resource and its rename references. Other draft
+/** Update only the committed resource (library entries by id; Agents are
+ * never rewritten by a rename). Other draft
  * values and their compare-and-save baselines deliberately stay untouched. */
 export function acceptResource(
   settings: Settings,
@@ -158,9 +196,11 @@ export function acceptResource(
   if (edit.kind === "preferences") {
     settings.defaults = committed.defaults;
     settings.capacity = committed.capacity;
+    settings.time_zone = committed.time_zone;
     settings.root_folder = committed.root_folder;
     settings.presets = committed.presets;
     settings.default_review_preset = committed.default_review_preset;
+    settings.rubber_duck = committed.rubber_duck;
   } else if (edit.kind === "agent") {
     const value = committed.agents?.find((a) => a.id === edit.id);
     const index = (settings.agents ??= []).findIndex((a) => a.id === edit.id);
@@ -179,27 +219,19 @@ export function acceptResource(
       Object.assign(current, value);
     } else if (index >= 0) settings.repositories.splice(index, 1);
     else if (value) settings.repositories.push(value);
+  } else if (edit.kind === "voice") {
+    // By id: a rename never touches Agents, which reference the id.
+    const value = committed.voices?.find((v) => v.id === edit.id);
+    const index = (settings.voices ??= []).findIndex((v) => v.id === edit.id);
+    if (index >= 0) settings.voices.splice(index, 1, ...(value ? [value] : []));
+    else if (value) settings.voices.push(value);
   } else {
-    const key = (title: string) => title.trim().toLowerCase();
-    const value = committed.doctrines?.find(
-      (d) => key(d.title) === key(edit.value?.title ?? edit.title),
-    );
+    const value = committed.doctrines?.find((d) => d.id === edit.id);
     const index = (settings.doctrines ??= []).findIndex(
-      (d) => key(d.title) === key(edit.title),
+      (d) => d.id === edit.id,
     );
     if (index >= 0)
       settings.doctrines.splice(index, 1, ...(value ? [value] : []));
     else if (value) settings.doctrines.push(value);
-    if (edit.value) {
-      const title = edit.value.title;
-      for (const agent of settings.agents ?? []) {
-        if (agent.doctrine && key(agent.doctrine) === key(edit.title))
-          agent.doctrine = title;
-        if (agent.doctrines)
-          agent.doctrines = agent.doctrines.map((d) =>
-            key(d) === key(edit.title) ? title : d,
-          );
-      }
-    }
   }
 }

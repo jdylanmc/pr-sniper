@@ -151,7 +151,7 @@ export function mountGenie(
         )
         .join("")}</ol>
       <button type="button" class="genie-text" data-genie-edit="doctrines" data-genie-focus="doctrines">Manage shared doctrines</button>
-      <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit global schedule and capacity</button>`
+      <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit time zone and capacity</button>`
       }
       <button type="button" class="genie-text" data-genie-refresh data-genie-focus="refresh" ${applying ? "disabled" : ""}>Refresh saved setup</button>`;
     root
@@ -188,7 +188,6 @@ export function mountGenie(
   function reviewMarkup() {
     if (!state) return '<section class="genie-card"><h2>Loading</h2></section>';
     const { settings, readiness } = state.resources;
-    const schedule = settings.defaults.schedule;
     const allReady =
       progress().every(Boolean) && checkedModelsFor === state.confirmation;
     return `<section class="genie-card"><span class="genie-review-label">${spark} Genie’s final check</span><h2>Final check</h2></section>
@@ -208,6 +207,7 @@ export function mountGenie(
           return `<section class="genie-card genie-repository"><h3>${escape(repository.name)}</h3><dl>
           <dt>GitHub identity</dt><dd>${escape(account?.login ?? "Not connected")} (${escape(repository.provider_account_id ?? "unbound")})${account?.connected ? "" : " / Reconnect required"}</dd>
           <dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not bound")}</dd>
+          <dt>Schedule</dt><dd><code>${escape(repository.cron)}</code></dd>
           <dt>Monitoring</dt><dd>${!repository.enabled ? "Disabled" : scope?.active ? "Authorized" : "Not authorized"}</dd>
           <dt>Pull requests</dt><dd>${scope?.mode === "all_open_and_future" ? "All open and future" : scope?.active ? "Legacy" : "Not configured"}</dd>
           <dt>Authors</dt><dd>${watched.length ? escape(watched.map((a) => `${a.login} (${a.id})`).join(", ")) : "All authors"}</dd>
@@ -222,17 +222,17 @@ export function mountGenie(
               const rights = authority?.assignments.find(
                 ([id]) => id === assignment.id,
               )?.[1];
-              return `<div class="genie-agent-summary"><strong>${escape(agent?.name ?? "Missing Agent")}${rights?.primary ? ` / Primary${repository.assignments?.length === 1 ? " (sole Agent)" : ""}` : " / Secondary"}</strong><p>${escape(agent?.model ?? "No model")} / Copilot: ${escape(ai?.login ?? "Not connected")} (${escape(agent?.ai_account?.account_id ?? "unselected")})${ai?.connected ? "" : " / Reconnect required"}</p><p>Publish Comment: ${rights?.comment ? "allowed" : "off"} / Reply Comment: ${rights?.reply ? "allowed" : "off"} / ${rights?.merge ? "Approve & Merge: allowed" : `Approve: ${rights?.approve ? "allowed" : "off"}`}</p><p>Doctrines: ${escape(agent ? doctrineTitles(agent).join(", ") || "None" : "Unavailable")}</p></div>`;
+              return `<div class="genie-agent-summary"><strong>${escape(agent?.name ?? "Missing Agent")}${rights?.primary ? ` / Primary${repository.assignments?.length === 1 ? " (sole Agent)" : ""}` : " / Secondary"}</strong><p>${escape(agent?.model ?? "No model")} / Copilot: ${escape(ai?.login ?? "Not connected")} (${escape(agent?.ai_account?.account_id ?? "unselected")})${ai?.connected ? "" : " / Reconnect required"}</p><p>Publish Comment: ${rights?.comment ? "allowed" : "off"} / Reply Comment: ${rights?.reply ? "allowed" : "off"} / ${rights?.merge ? "Approve & Merge: allowed" : `Approve: ${rights?.approve ? "allowed" : "off"}`}</p><p>Doctrines: ${escape(agent ? doctrineTitles(agent, settings.doctrines ?? []).join(", ") || "None" : "Unavailable")}</p></div>`;
             })
             .join("")}
           ${!authority?.primary_assignment_id ? '<p class="genie-note">No primary</p>' : ""}
           <button class="genie-text" type="button" data-genie-edit="repositories" data-genie-focus="repository-${escape(repository.id)}">Edit repositories</button></section>`;
         })
         .join("")}
-      <section class="genie-card"><h3>Schedule</h3><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes`} / ${escape(schedule.timezone)}</p>
+      <section class="genie-card"><h3>Time zone</h3><p>${escape(settings.time_zone)}</p>
       <h3>Capacity</h3><p><strong>${settings.capacity} AI tasks</strong></p>
       <p>Automation: <strong>${state.paused ? "Paused" : "Running"}</strong></p>
-      <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit schedule and capacity</button></section>
+      <button type="button" class="genie-text" data-genie-edit="preferences" data-genie-focus="preferences">Edit time zone and capacity</button></section>
       <section class="genie-card">
       <button type="button" class="genie-action" data-genie-activate data-genie-focus="activate" ${!allReady || applying ? "disabled" : ""}>${applying ? "Checking" : "Finish setup"}</button></section>`;
   }

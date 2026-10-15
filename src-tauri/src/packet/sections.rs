@@ -1,5 +1,5 @@
 //! Section renderers. Fixed order: Meta, Rules, Pull request, Conversation, Files,
-//! Teammate reports, Directive, Exits. Data is fenced; nothing is cut without a marker.
+//! Teammate reports, Directive, Voice, Exits. Data is fenced; nothing is cut without a marker.
 
 use super::{rules, AuthorRelation, CommentFact, PacketInput, Role, ThreadFact, SCHEMA};
 use crate::exits::gates::Offer;
@@ -14,10 +14,15 @@ pub const MAX_INLINE_COMMENTS: usize = 40;
 /// Defuse tag-like `<untrusted` or `</untrusted` so content cannot close or open a fence.
 /// Everything else passes through unchanged.
 pub fn defuse(text: &str) -> String {
+    defuse_tag(text, "untrusted")
+}
+
+/// Defuse tag-like `<tag` or `</tag` (ASCII, case-insensitive).
+fn defuse_tag(text: &str, tag: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let mut safe = String::with_capacity(text.len());
     let mut last = 0;
-    for (at, _) in lower.match_indices("untrusted") {
+    for (at, _) in lower.match_indices(tag) {
         let before = &lower[..at];
         let start = if before.ends_with("</") {
             at - 2
@@ -74,9 +79,15 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
     meta(&mut out, input, packet_id, with_time);
     out.push_str("\n## Rules\n");
     let can_read_logs = input.tools.iter().any(|t| t == "read_check_log");
-    for (index, rule) in rules::rules(input.role, !input.teammates.is_empty(), can_read_logs)
-        .iter()
-        .enumerate()
+    let can_duck = input.tools.iter().any(|t| t == crate::review::duck::TOOL);
+    for (index, rule) in rules::rules(
+        input.role,
+        !input.teammates.is_empty(),
+        can_read_logs,
+        can_duck,
+    )
+    .iter()
+    .enumerate()
     {
         let _ = writeln!(out, "{}. {rule}", index + 1);
     }
@@ -85,6 +96,7 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
     files(&mut out, input);
     teammates(&mut out, input);
     directive(&mut out, input);
+    voice(&mut out, input);
     exits(&mut out, input);
     out
 }
@@ -110,13 +122,14 @@ fn meta(out: &mut String, input: &PacketInput, packet_id: &str, with_time: bool)
         match input.role {
             Role::Primary => "primary",
             Role::Teammate => "teammate",
+            Role::Duck => "rubber_duck",
         }
     );
     let _ = writeln!(out, "{}", rules::INTRO);
     let _ = writeln!(out, "tools: {}", input.tools.join(", "));
 }
 
-fn pull_request(out: &mut String, input: &PacketInput) {
+pub(super) fn pull_request(out: &mut String, input: &PacketInput) {
     let pr = &input.pr;
     out.push_str("\n## Pull request\n");
     out.push_str(&fence("pull_request.title", &pr.title));
@@ -242,7 +255,7 @@ fn conversation(out: &mut String, input: &PacketInput) {
     }
 }
 
-fn files(out: &mut String, input: &PacketInput) {
+pub(super) fn files(out: &mut String, input: &PacketInput) {
     out.push_str("\n## Files\n");
     let _ = writeln!(out, "changed_files: {}", input.files.len());
     out.push_str("Read with read_changes (patch, before, after) and read_source. Paged, up to 32000 bytes per chunk. The host records what you read; reading is never enforced.\n");
@@ -349,6 +362,30 @@ fn directive(out: &mut String, input: &PacketInput) {
         let _ = writeln!(out, "preset:\n{preset}");
     }
     let _ = writeln!(out, "signature: {}", d.signature);
+}
+
+/// Operator-configured style for human-facing text. Primary only; the host's
+/// rules, gates and exits stay in force whatever the body says.
+fn voice(out: &mut String, input: &PacketInput) {
+    let Some(voice) = input.directive.voice.as_ref() else {
+        return;
+    };
+    if input.role != Role::Primary {
+        return;
+    }
+    out.push_str("\n## Voice\n");
+    out.push_str(rules::VOICE_RULE);
+    out.push('\n');
+    let _ = writeln!(
+        out,
+        "<voice name=\"{}\">\n{}\n</voice>",
+        label(&voice.title),
+        defuse(&defuse_tag(&voice.body, "voice"))
+    );
+    if voice.guardrails {
+        out.push_str(rules::VOICE_GUARD);
+        out.push('\n');
+    }
 }
 
 fn exits(out: &mut String, input: &PacketInput) {

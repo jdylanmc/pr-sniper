@@ -19,7 +19,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 | Path                                                                                | Holds                                                                                          |
 | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `config/settings.json`                                                              | Non-secret saved config: repos, startup request, other saved settings                          |
+| `config/settings.json`                                                              | Non-secret saved config: repos (with `cron`), `time_zone`, startup request, other settings     |
 | `state/queue.json`                                                                  | Tracked lifecycle, iterations, immutable work identity + admission cause, order, pass ordinals |
 | `state/pr-state.json`                                                               | Per-PR heartbeat baseline, pending state, `state_seq`, error count, local summary              |
 | `state/queue-selection.json`                                                        | Selected queue item                                                                            |
@@ -44,6 +44,14 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 - Invalid or unreadable settings are reported, never reset or overwritten. Save is refused until repaired.
 - Failed config write is visible. Config committed but diagnostics write failed: committed state plus a separate warning.
 - Older builds may not read newer config. No downgrade migration.
+- Schedule migration (load and whole-settings saves; idempotent, written once): a saved global `defaults.schedule` cron becomes every repository's `cron`, its zone becomes `time_zone`, and the global field is dropped. No `time_zone` in the file = pre-0024 file; without a saved schedule it ran on `*/15 * * * *` UTC. A legacy interval, or a legacy cron that never fires, moves its zone and leaves every repository paused (`enabled: false`) on `*/30 * * * *`. New repositories get `*/30 * * * *` ([ADR 0024](adr/0024-repository-schedules.md)).
+
+## Library references
+
+- `doctrines[]`: `{id, title, body}`. `voices[]`: `{id, title, body, guardrails}`. `id` is a UUID v4, never changed.
+- Agents: `doctrine_ids` (ordered) and `voice_id`. Renames never rewrite Agents.
+- Load migration (idempotent, written once): ids for id-less entries; legacy Agent `doctrine` / `doctrines` titles to ids (trimmed, case-insensitive; list wins over single). An unmatched title is kept as the reference and shown as unavailable. Legacy fields are not written back.
+- Job evidence (`state/reviews.json`, `state/follow-ups.json`) keeps its recorded shape: older entries without ids or with title references load as recorded and compare by content (exact title, body), so they keep publishing and running.
 
 ## Atomic replace
 

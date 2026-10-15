@@ -169,6 +169,12 @@ async function check(engine, name) {
 
     await settings();
     await snapshot("settings");
+    assert.equal(
+      await page.locator('.settings-row[data-page="capacity"]').count(),
+      0,
+    );
+    await page.locator('[data-page="preferences"]').click();
+    await settle();
     await page.locator('[data-page="capacity"]').click();
     await settle();
     await page.locator('input[name="limit"]').fill("2");

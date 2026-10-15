@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { whenReleased } from "./stable-dom";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -26,6 +27,7 @@ import type {
   Doctrine,
   Assignment,
   PacketTool,
+  Voice,
   WatchedIdentity,
 } from "./policy";
 import {
@@ -36,13 +38,16 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
 } from "./repositories";
-import { defaultTools, doctrineTitles } from "./policy";
+import { defaultTools, doctrineIds } from "./policy";
 import {
   type Settings,
   type DoctrineCatalog,
   doctrineCatalogLabel,
   type ResourceEdit,
   acceptResource,
+  DUCK_LIMITS,
+  DUCK_RANGES,
+  type DuckLimits,
   globalPreferences,
   savedResources,
   saveResource,
@@ -51,7 +56,23 @@ import {
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
-import { mountAutomation, type AutomationSnapshot } from "./automation";
+import { copyDiagnostics } from "./diagnostics";
+import type { AutomationSnapshot } from "./automation";
+import { applyTheme, currentTheme, isTheme, themeOptions } from "./theme";
+import {
+  ALL_DAYS,
+  DAY_NAMES,
+  DEFAULT_CRON,
+  EVERY_MINUTES,
+  WEEK,
+  describeSchedules,
+  everyLabel,
+  formatRun,
+  previewSchedule,
+  scheduleSummary,
+  type SchedulePreview,
+  type ScheduleRequest,
+} from "./schedule";
 
 interface ConfiguredRepository extends Repository {
   watched_authors?: WatchedIdentity[];
@@ -95,8 +116,8 @@ type Section =
   | "copilot"
   | "github"
   | "repositories"
-  | "capacity"
   | "doctrines"
+  | "voices"
   | "agents"
   | "preferences";
 
@@ -128,8 +149,8 @@ const sections: Record<Section, string> = {
   copilot: "GitHub Copilot",
   github: "GitHub",
   repositories: "Repositories",
-  capacity: "Concurrent reviews",
   doctrines: "Doctrines",
+  voices: "Voices",
   agents: "Agents",
   preferences: "Preferences",
 };
@@ -145,6 +166,8 @@ const promptTokens: [string, string][] = [
   ["changed_file_count", "Number of changed files"],
   ["agent_name", "This agent's name"],
 ];
+const DUCK_PATH =
+  '<path d="M9 7.5a3.5 3.5 0 1 1 6.2 2.2L18 11l-2.6 1.1M4 13h7.5c1.6 0 3-.5 4.3-1.3.9 3.6-1.7 7.3-6.3 7.3C6 19 4 16.5 4 13z"/><circle cx="12.4" cy="7.2" r=".6"/>';
 const iconPaths = {
   back: '<path d="m14 6-6 6 6 6M8 12h12"/>',
   brain:
@@ -157,13 +180,16 @@ const iconPaths = {
   up: '<path d="m6 14 6-6 6 6"/>',
   down: '<path d="m6 10 6 6 6-6"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+  check: '<path d="m5 12 5 5 9-10"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
   accounts:
     '<circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6m2 4a6 6 0 0 1 3 4v3"/>',
   repositories: '<path d="M3 6h7l2 2h9v12H3zM3 6V4h7l2 2"/>',
-  capacity: '<path d="M2 12h5l3-9 4 18 3-9h5"/>',
   integrations:
     '<circle cx="8" cy="8" r="3.4"/><circle cx="17" cy="17" r="3.4"/><path d="M10.4 10.4 14.6 14.6"/>',
+  voices:
+    '<g fill="currentColor" stroke="none"><path d="M2.8 7.2C4.4 4.4 8.2 3.5 11 6.1 8.3 5.1 5.4 5.5 2.8 7.2zM21.2 7.2C19.6 4.4 15.8 3.5 13 6.1c2.7-1 5.6-.6 8.2 1.1z"/><path d="M4.8 9.4c1.4-1.5 4-1.6 5.8-.3-1.6 1.4-4.2 1.5-5.8.3zM19.2 9.4c-1.4-1.5-4-1.6-5.8-.3 1.6 1.4 4.2 1.5 5.8.3z"/><path d="M12 13.2c-1.5-1-4-.8-5.5.9-.9 1-2.1.9-2.7 0 .4 1.9 2.4 2.3 4 1.3 1.4-.8 3-1 4.2-.4 1.2-.6 2.8-.4 4.2.4 1.6 1 3.6.6 4-1.3-.6.9-1.8 1-2.7 0-1.5-1.7-4-1.9-5.5-.9z"/><path d="M11.2 17.4c.1 1.6.3 3.2.8 4.4.5-1.2.7-2.8.8-4.4z"/></g>',
   doctrines:
     '<path d="M12 5c-2-1.3-5-1.6-7-1v14c2-.6 5-.3 7 1 2-1.3 5-1.6 7-1V4c-2-.6-5-.3-7 1Z"/><path d="M12 5v14"/>',
   agents:
@@ -219,6 +245,12 @@ const toolRows: Record<
     detail: "Search repository code",
     path: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
   },
+  rubber_duck: {
+    name: "Rubber duck",
+    detail: "Second Agent checks one finding",
+    scope: "primary",
+    path: DUCK_PATH,
+  },
   leave_comments: {
     name: "Comment",
     detail: "Post, reply, resolve own threads",
@@ -257,6 +289,37 @@ const toolRows: Record<
 };
 const icon = (key: keyof typeof iconPaths) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[key]}</svg>`;
+let timeZoneList: Promise<string[]> | undefined;
+const timeZones = () =>
+  (timeZoneList ??= invoke<string[]>("time_zones").catch((cause) => {
+    timeZoneList = undefined;
+    throw cause;
+  }));
+// The host zone leads the backend's alphabetical list; a saved zone the host
+// no longer accepts stays selected and visibly unavailable.
+function fillTimeZones(
+  select: HTMLSelectElement,
+  zones: string[],
+  selected: string,
+) {
+  const system = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const ordered = zones.includes(system)
+    ? [system, ...zones.filter((zone) => zone !== system)]
+    : zones;
+  const options = ordered.map((zone) => new Option(zone, zone));
+  const known = zones.includes(selected);
+  if (!known) {
+    const missing = new Option(`${selected} (unavailable)`, selected);
+    missing.dataset.unavailable = "true";
+    options.unshift(missing);
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+  if (known) select.removeAttribute("aria-invalid");
+  else select.setAttribute("aria-invalid", "true");
+}
+const countLabel = (count: number, one: string, many: string) =>
+  `${count} ${count === 1 ? one : many}`;
 const escape = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -360,9 +423,14 @@ export async function mountSettings(
     app.className = "settings-window";
   }
   const legacySections = Object.entries(sections).filter(([key]) =>
-    ["accounts", "repositories", "agents", "doctrines", "preferences"].includes(
-      key,
-    ),
+    [
+      "accounts",
+      "repositories",
+      "agents",
+      "doctrines",
+      "voices",
+      "preferences",
+    ].includes(key),
   );
   app.innerHTML = `${
     options.embedded
@@ -429,6 +497,8 @@ export async function mountSettings(
   let busy = false;
   let startupPending = false;
   let startupError = "";
+  let themePending = false;
+  let themeError = "";
   let conflict = false;
   let catalogConflict = false;
   let revision = 0;
@@ -481,8 +551,7 @@ export async function mountSettings(
     () => revision++,
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
-  const notificationView = { target: "" };
-  const automationView = {};
+  const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
   const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);
   const preferencesDirty = () =>
@@ -505,7 +574,9 @@ export async function mountSettings(
     error.textContent = "";
   };
   const repositories = () => draft.repositories ?? [];
+  const scheduleSummaries = new Map<string, string>();
   const doctrines = () => draft.doctrines ?? [];
+  const voices = () => draft.voices ?? [];
   const agents = () => draft.agents ?? [];
   function restoreControl(
     opener: HTMLElement,
@@ -566,7 +637,12 @@ export async function mountSettings(
     retainRepositoryDraft = false,
   ) {
     if (busy) throw "Busy";
-    if (catalogConflict && (edit.kind === "agent" || edit.kind === "doctrine"))
+    if (
+      catalogConflict &&
+      (edit.kind === "agent" ||
+        edit.kind === "doctrine" ||
+        edit.kind === "voice")
+    )
       throw "Resource changed in another window";
     busy = true;
     const currentDraft =
@@ -597,10 +673,16 @@ export async function mountSettings(
         result.settings.agents ?? [],
       );
       for (const settings of [saved, draft]) {
-        if (catalogConflict && edit.kind === "doctrine") continue;
+        if (
+          catalogConflict &&
+          (edit.kind === "doctrine" || edit.kind === "voice")
+        )
+          continue;
         acceptResource(settings, clone(result.settings), edit);
-        if (!catalogConflict)
+        if (!catalogConflict) {
           settings.doctrines = clone(result.settings.doctrines ?? []);
+          settings.voices = clone(result.settings.voices ?? []);
+        }
       }
       if (retained && edit.kind === "repository") {
         const committed = draft.repositories?.find((r) => r.id === edit.id);
@@ -758,7 +840,9 @@ export async function mountSettings(
       (!!options.embedded &&
         (section === "home" ||
           accountOverview ||
-          ["copilot", "github", "agents", "doctrines"].includes(section)));
+          ["copilot", "github", "agents", "doctrines", "voices"].includes(
+            section,
+          )));
     settingsHeading.hidden = section === "home";
     if (options.embedded)
       app.dispatchEvent(
@@ -772,13 +856,12 @@ export async function mountSettings(
     app.dataset.resourceLibrary =
       section === "repositories"
         ? "repositories"
-        : section === "agents" || section === "doctrines"
+        : section === "agents" ||
+            section === "doctrines" ||
+            section === "voices"
           ? section
           : "";
-    app.toggleAttribute(
-      "data-preferences",
-      section === "preferences" || section === "capacity",
-    );
+    app.toggleAttribute("data-preferences", section === "preferences");
     app
       .querySelectorAll<HTMLButtonElement>("[data-section]")
       .forEach((button) => {
@@ -799,13 +882,13 @@ export async function mountSettings(
     if (section === "copilot" || section === "github") renderAccounts();
     if (section === "repositories") renderRepositories();
     if (section === "doctrines") renderDoctrines();
+    if (section === "voices") renderVoices();
     if (section === "agents")
       renderAgents(() => {
         if (awaitingAgentAccess && document.activeElement === focusAfterRender)
           restoreFocus();
       });
-    if (section === "preferences" || section === "capacity")
-      renderPreferences();
+    if (section === "preferences") renderPreferences();
     changed();
     content.scrollTop = scroll;
     restoreFocus();
@@ -821,10 +904,7 @@ export async function mountSettings(
     homeOpener = next;
     navigate(next);
     content.scrollTop = 0;
-    (next === "capacity"
-      ? content.querySelector<HTMLElement>("#global-capacity")
-      : settingsHeading.querySelector<HTMLElement>("h1")
-    )?.focus();
+    settingsHeading.querySelector<HTMLElement>("h1")?.focus();
   }
   settingsBack.onclick = () => {
     if (busy) return;
@@ -867,20 +947,24 @@ export async function mountSettings(
         | "agents"
         | "repositories"
         | "doctrines"
-        | "capacity"
+        | "voices"
         | "preferences",
       value = "",
     ) => overviewRow(key, value, key === "preferences" ? "home" : key);
+    // Group headings sit inside their cards so the first card, not a heading,
+    // overlaps the title band.
     content.innerHTML = `<div class="settings-overview">
-      <nav aria-label="Review setup" class="settings-home-group">
+      <nav aria-labelledby="settings-group-general" class="settings-home-group" data-settings-group="general">
+        <h2 class="settings-home-heading" id="settings-group-general">General</h2>
         ${row("accounts", "Reading...")}
-        ${row("agents", String(saved.agents?.length ?? 0))}
         ${row("repositories", String(saved.repositories?.length ?? 0))}
-        ${row("doctrines", String(saved.doctrines?.length ?? 0))}
-      </nav>
-      <nav aria-label="Application preferences" class="settings-home-group">
-        ${row("capacity", String(saved.capacity))}
         ${row("preferences")}
+      </nav>
+      <nav aria-labelledby="settings-group-behavior" class="settings-home-group" data-settings-group="behavior">
+        <h2 class="settings-home-heading" id="settings-group-behavior">Review behavior</h2>
+        ${row("agents", String(saved.agents?.length ?? 0))}
+        ${row("doctrines", String(saved.doctrines?.length ?? 0))}
+        ${row("voices", String(saved.voices?.length ?? 0))}
       </nav>
       ${options.openGenie ? `<button type="button" data-home-genie data-focus-key="settings:genie" aria-label="Set up with Genie" title="Set up with Genie">${icon("genie")}</button>` : ""}
     </div>`;
@@ -971,12 +1055,9 @@ export async function mountSettings(
   // ---------------------------------------------------------------- Doctrines
 
   const doctrineUsers = (doctrine: Doctrine) =>
-    agents().filter((agent) =>
-      doctrineTitles(agent).some(
-        (title) =>
-          title.trim().toLowerCase() === doctrine.title.trim().toLowerCase(),
-      ),
-    );
+    agents().filter((agent) => doctrineIds(agent).includes(doctrine.id));
+  const savedDoctrine = (id?: string) =>
+    clone(saved.doctrines?.find((d) => d.id === id) ?? null);
   const agentRepositories = (agent: Agent) =>
     repositories().filter((repository) =>
       (repository.assignments ?? []).some(
@@ -1222,7 +1303,10 @@ export async function mountSettings(
       }
     };
   }
-  const resourceActions = (kind: "agent" | "doctrine", existing: boolean) =>
+  const resourceActions = (
+    kind: "agent" | "doctrine" | "voice",
+    existing: boolean,
+  ) =>
     `<p role="alert" hidden></p><div class="resource-actions"><button class="primary">Save ${kind}</button><button type="button" data-cancel-resource>Cancel</button></div>
     ${existing ? `<button type="button" class="resource-delete" data-delete-resource>Delete ${kind}</button><div data-delete-confirmation hidden><div class="resource-actions"><button type="button" data-confirm-delete>Confirm deletion</button><button type="button" data-keep-resource>Keep ${kind}</button></div></div>` : ""}`;
 
@@ -1232,10 +1316,10 @@ export async function mountSettings(
     for (const doctrine of doctrines()) {
       const row = document.createElement("article");
       row.className = "doctrine-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${doctrineUsers(doctrine).length} Agents</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("doctrines")}</span><div class="resource-copy"><h3>${escape(doctrine.title)}</h3><p class="resource-preview">${escape(doctrine.body)}</p><p class="word-count">${words(doctrine.body)} words / ${countLabel(doctrineUsers(doctrine).length, "Agent", "Agents")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
-          `doctrine:${doctrine.title}:${action}`;
+          `doctrine:${doctrine.id}:${action}`;
       row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
         editDoctrine(event.currentTarget as HTMLButtonElement, doctrine);
       row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
@@ -1259,9 +1343,8 @@ export async function mountSettings(
         try {
           await commitResource({
             kind: "doctrine",
-            title: doctrine.title,
-            expected:
-              saved.doctrines?.find((d) => d.title === doctrine.title) ?? null,
+            id: doctrine.id,
+            expected: savedDoctrine(doctrine.id),
             value: null,
           });
           render();
@@ -1285,7 +1368,7 @@ export async function mountSettings(
     const modal = dialog(
       existing ? `Editing ${existing.title}` : "New doctrine",
       `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. bounded-context" /></label><label>Principles<textarea name="body" rows="10" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${words(existing?.body ?? "")} words</p>
-      <p class="resource-impact">${users.length ? `Shared by ${users.length} Agents: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("doctrine", !!existing)}</form>`,
+      <p class="resource-impact">${users.length ? `Shared by ${countLabel(users.length, "Agent", "Agents")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("doctrine", !!existing)}</form>`,
       opener,
     );
     resourceEditor(
@@ -1294,10 +1377,8 @@ export async function mountSettings(
         ? {
             edit: {
               kind: "doctrine",
-              title: existing.title,
-              expected:
-                saved.doctrines?.find((d) => d.title === existing.title) ??
-                null,
+              id: existing.id,
+              expected: savedDoctrine(existing.id),
               value: null,
             },
             blocked: users.length ? "In use by an Agent" : "",
@@ -1320,23 +1401,157 @@ export async function mountSettings(
         if (
           doctrines().some(
             (d) =>
-              d !== existing && d.title.toLowerCase() === title.toLowerCase(),
+              d.id !== existing?.id &&
+              d.title.trim().toLowerCase() === title.toLowerCase(),
+          )
+        )
+          throw "Title already used";
+        const value: Doctrine = {
+          id: existing?.id ?? newIdentity(),
+          title,
+          body: body.value,
+        };
+        await commitResource(
+          {
+            kind: "doctrine",
+            id: value.id,
+            expected: savedDoctrine(existing?.id),
+            value,
+          },
+          modal,
+        );
+        modal.close();
+        if (onDone) onDone(value);
+        else render();
+      } catch (cause) {
+        alert.textContent = typeof cause === "string" ? cause : reason(cause);
+        alert.hidden = false;
+      }
+    };
+  }
+
+  // ------------------------------------------------------------------- Voices
+
+  const voiceUsers = (voice: Voice) =>
+    agents().filter((agent) => agent.voice_id === voice.id);
+  const savedVoice = (id?: string) =>
+    clone(saved.voices?.find((v) => v.id === id) ?? null);
+  const guardrailsLabel =
+    "Fixed guardrails: tone only; critique code, never people";
+
+  function renderVoices() {
+    content.innerHTML = `<div class="voice-list resource-library"></div><div class="section-actions resource-toolbar voice-footer"><button class="primary" id="new-voice">New voice</button></div>`;
+    const list = content.querySelector(".voice-list")!;
+    for (const voice of voices()) {
+      const row = document.createElement("article");
+      row.className = "voice-card resource-card";
+      row.innerHTML = `<span class="resource-symbol">${icon("voices")}</span><div class="resource-copy"><h3>${escape(voice.title)}</h3><p class="resource-preview">${escape(voice.body)}</p><p class="word-count">${countLabel(words(voice.body), "word", "words")} / ${countLabel(voiceUsers(voice).length, "Agent", "Agents")}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      for (const action of ["edit", "remove"])
+        row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
+          `voice:${voice.id}:${action}`;
+      row.querySelector<HTMLButtonElement>("[data-edit]")!.onclick = (event) =>
+        editVoice(event.currentTarget as HTMLButtonElement, voice);
+      row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = async (
+        event,
+      ) => {
+        const opener = event.currentTarget as HTMLButtonElement;
+        if (voiceUsers(voice).length) {
+          showError("In use by an Agent");
+          return;
+        }
+        if (
+          !(await confirmDialog(
+            "Delete this voice?",
+            `Delete "${escape(voice.title)}"?`,
+            "Delete voice",
+            opener,
+          ))
+        )
+          return;
+        try {
+          await commitResource({
+            kind: "voice",
+            id: voice.id,
+            expected: savedVoice(voice.id),
+            value: null,
+          });
+          render();
+        } catch (cause) {
+          showError(reason(cause));
+        }
+      };
+      list.append(row);
+    }
+    content.querySelector<HTMLButtonElement>("#new-voice")!.onclick = (event) =>
+      editVoice(event.currentTarget as HTMLButtonElement);
+  }
+
+  function editVoice(
+    opener: HTMLElement,
+    existing?: Voice,
+    onDone?: (saved: Voice) => void,
+  ) {
+    const users = existing ? voiceUsers(existing) : [];
+    const modal = dialog(
+      existing ? `Editing ${existing.title}` : "New voice",
+      `<form><label>Title<input name="title" required maxlength="100" value="${escape(existing?.title ?? "")}" placeholder="e.g. Caveman" /></label><label>Style<textarea name="body" rows="8" required>${escape(existing?.body ?? "")}</textarea></label><p class="word-count" data-count>${countLabel(words(existing?.body ?? ""), "word", "words")}</p>
+      <label class="voice-guardrails"><input type="checkbox" name="guardrails" ${existing?.guardrails === false ? "" : "checked"} /><span>${guardrailsLabel}</span></label>
+      <p class="resource-impact">${users.length ? `Shared by ${countLabel(users.length, "Agent", "Agents")}: ${escape(users.map((agent) => agent.name).join(", "))}` : "Unused"}</p>${resourceActions("voice", !!existing)}</form>`,
+      opener,
+    );
+    resourceEditor(
+      modal,
+      existing
+        ? {
+            edit: {
+              kind: "voice",
+              id: existing.id,
+              expected: savedVoice(existing.id),
+              value: null,
+            },
+            blocked: users.length ? "In use by an Agent" : "",
+          }
+        : undefined,
+    );
+    const body = modal.querySelector<HTMLTextAreaElement>("[name=body]")!;
+    const count = modal.querySelector<HTMLElement>("[data-count]")!;
+    body.oninput = () => {
+      count.textContent = countLabel(words(body.value), "word", "words");
+    };
+    modal.querySelector("form")!.onsubmit = async (event) => {
+      event.preventDefault();
+      const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+      const title = modal
+        .querySelector<HTMLInputElement>("[name=title]")!
+        .value.trim();
+      const value: Voice = {
+        id: existing?.id ?? newIdentity(),
+        title,
+        body: body.value,
+        guardrails:
+          modal.querySelector<HTMLInputElement>("[name=guardrails]")!.checked,
+      };
+      try {
+        if (!title || !body.value.trim()) throw "Title and style required";
+        if (
+          voices().some(
+            (v) =>
+              v.id !== existing?.id &&
+              v.title.trim().toLowerCase() === title.toLowerCase(),
           )
         )
           throw "Title already used";
         await commitResource(
           {
-            kind: "doctrine",
-            title: existing?.title ?? title,
-            expected:
-              saved.doctrines?.find((d) => d.title === existing?.title) ?? null,
-            value: { title, body: body.value },
+            kind: "voice",
+            id: value.id,
+            expected: savedVoice(existing?.id),
+            value,
           },
           modal,
         );
-        if (existing) opener.dataset.focusKey = `doctrine:${title}:edit`;
         modal.close();
-        if (onDone) onDone({ title, body: body.value });
+        if (onDone) onDone(value);
         else render();
       } catch (cause) {
         alert.textContent = typeof cause === "string" ? cause : reason(cause);
@@ -1356,7 +1571,7 @@ export async function mountSettings(
       );
       const row = document.createElement("article");
       row.className = "agent-card resource-card";
-      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${agentRepositories(agent).length} repositories</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${agent.ai_account ? (account?.state === "connected" ? "" : "Reconnect required") : "Unconfigured"}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
+      row.innerHTML = `<span class="resource-symbol">${icon("agents")}</span><div class="resource-copy"><h3>${escape(agent.name)}</h3><p class="resource-meta">${escape(agent.model)} / ${countLabel(agentRepositories(agent).length, "repository", "repositories")}</p><p class="resource-preview">${escape(agent.prompt)}</p><p data-account-state>${agent.ai_account ? (account?.state === "connected" ? "" : "Reconnect required") : "Unconfigured"}</p></div><div class="card-actions"><button data-edit>Edit</button><button data-remove aria-label="Delete" title="Delete">${icon("trash")}</button></div>`;
       row.dataset.agentId = agent.id;
       for (const action of ["edit", "remove"])
         row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
@@ -1444,8 +1659,39 @@ export async function mountSettings(
       .replace(/^-+|-+$/g, "") || fallback;
   const defaultSignature = (name: string, model: string) =>
     `\u{1F52B} pr-sniper(${slug(name, "agent")}:${slug(model, "model")})`;
-  const doctrineChoice = (title: string, checked: boolean) =>
-    `<label data-doctrine-choice><input type="checkbox" name="doctrine" value="${escape(title)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span><button type="button" data-edit-doctrine="${escape(title)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button></label>`;
+  const voiceChoice = (
+    id: string,
+    label: string,
+    checked: boolean,
+    available = true,
+  ) =>
+    `<div data-voice-choice ${available ? "" : "data-unavailable"}><label><input type="radio" name="voice" value="${escape(id)}" ${checked ? "checked" : ""} ${available ? "" : "disabled"} /><span>${escape(label)}</span></label>${id && available ? `<button type="button" data-edit-voice="${escape(id)}" aria-label="Edit voice ${escape(label)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`;
+  /** None first, then the library; a missing selection stays visible. */
+  const voiceChoices = (selected: string) =>
+    voiceChoice("", "None", !selected) +
+    voices()
+      .map((v) => voiceChoice(v.id, v.title, v.id === selected))
+      .join("") +
+    (selected && !voices().some((v) => v.id === selected)
+      ? voiceChoice(selected, `${selected} (unavailable)`, true, false)
+      : "");
+  /** `value` is the title (filtering); `data-doctrine-id` is the reference. */
+  const doctrineChoice = (
+    id: string,
+    title: string,
+    checked: boolean,
+    available = true,
+  ) =>
+    `<label data-doctrine-choice ${available ? "" : "data-unavailable"}><input type="checkbox" name="doctrine" value="${escape(title)}" data-doctrine-id="${escape(id)}" ${checked ? "checked" : ""} /><span>${escape(title)}</span>${available ? `<button type="button" data-edit-doctrine="${escape(id)}" aria-label="Edit doctrine ${escape(title)}" title="Edit doctrine">${icon("pencil")}</button>` : ""}</label>`;
+  /** Library order, then the Agent's unavailable references (kept checked). */
+  const doctrineChoices = (selected: string[]) =>
+    doctrines()
+      .map((d) => doctrineChoice(d.id, d.title, selected.includes(d.id)))
+      .join("") +
+    selected
+      .filter((id) => !doctrines().some((d) => d.id === id))
+      .map((id) => doctrineChoice(id, `${id} (unavailable)`, true, false))
+      .join("");
 
   function editAgent(
     opener: HTMLElement,
@@ -1466,21 +1712,11 @@ export async function mountSettings(
         <label>Context window<select name="context-tier" aria-label="Context window" disabled></select></label>
         <label>Reasoning effort<select name="reasoning-effort" aria-label="Reasoning effort" disabled></select></label>
         <p data-intelligence-status aria-live="polite"></p></section>
-        <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrines()
-          .map((d) =>
-            doctrineChoice(
-              d.title,
-              !!existing &&
-                doctrineTitles(existing).some(
-                  (t) =>
-                    t.trim().toLowerCase() === d.title.trim().toLowerCase(),
-                ),
-            ),
-          )
-          .join("")}</div><p data-no-doctrines hidden></p></fieldset>
+        <section class="agent-section"><button type="button" class="doctrine-row" data-open-doctrines aria-label="Choose doctrines"><span>Doctrines</span><span class="doctrine-summary" data-doctrine-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-doctrines"><legend class="sr-only">Doctrines</legend><label>Filter doctrines<input type="search" data-doctrine-filter placeholder="Find principles..." /></label><div class="doctrine-choices" role="group" aria-label="Available doctrines">${doctrineChoices(existing ? doctrineIds(existing) : [])}</div><p data-no-doctrines hidden></p></fieldset>
+        <button type="button" class="doctrine-row" data-open-voices aria-label="Choose voice"><span>Voice</span><span class="doctrine-summary" data-voice-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><fieldset class="resource-voices"><legend class="sr-only">Voice</legend><div class="voice-choices" role="radiogroup" aria-label="Available voices">${voiceChoices(existing?.voice_id ?? "")}</div></fieldset>
         <label><span class="prompt-label">Prompt<button type="button" class="info-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button><span class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips"><strong>Tokens</strong><span class="token-list">${promptTokens.map(([token, hint]) => `<button type="button" data-token="${token}"><code>{{${token}}}</code><span>${escape(hint)}</span></button>`).join("")}</span></span></span><textarea name="prompt" aria-label="Prompt" rows="4" required>${escape(existing?.prompt ?? "Review this pull request for correctness, risk, and readability.")}</textarea></label>
         <label><span class="model-label">Signature<button type="button" data-reset-signature aria-label="Reset signature to default" title="Reset to default">${icon("reset")}</button></span><input name="signature" aria-label="Signature" required maxlength="200" value="${escape(existing?.signature ?? defaultSignature(existing?.name ?? "", existing?.model ?? ""))}" /></label></section>
-        <p class="resource-impact">${assigned.length ? `Shared by ${assigned.length} repositories: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
+        <p class="resource-impact">${assigned.length ? `Shared by ${countLabel(assigned.length, "repository", "repositories")}: ${escape(assigned.map((repository) => repository.name).join(", "))}` : "Unassigned"}</p>${resourceActions("agent", !!existing)}</form>`,
       opener,
     );
     const promptField = modal.querySelector<HTMLTextAreaElement>(
@@ -1540,6 +1776,10 @@ export async function mountSettings(
       "[data-doctrine-filter]",
     )!;
     const list = modal.querySelector<HTMLElement>(".doctrine-choices")!;
+    const checkedDoctrines = () =>
+      [
+        ...list.querySelectorAll<HTMLInputElement>("[name=doctrine]:checked"),
+      ].map((input) => input.dataset.doctrineId!);
     let choices = [
       ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
     ];
@@ -1592,22 +1832,60 @@ export async function mountSettings(
         "[data-edit-doctrine]",
       );
       if (!pencil) return;
-      const title = pencil.dataset.editDoctrine!;
-      const doctrine = doctrines().find((d) => d.title === title);
+      const doctrine = doctrines().find(
+        (d) => d.id === pencil.dataset.editDoctrine,
+      );
       if (!doctrine) return;
-      editDoctrine(pencil, doctrine, (updated) => {
-        const checked = new Set(
-          [...list.querySelectorAll<HTMLInputElement>("input:checked")].map(
-            (i) => (i.value === title ? updated.title : i.value),
-          ),
-        );
-        list.innerHTML = doctrines()
-          .map((d) => doctrineChoice(d.title, checked.has(d.title)))
-          .join("");
+      editDoctrine(pencil, doctrine, () => {
+        list.innerHTML = doctrineChoices(checkedDoctrines());
         choices = [
           ...modal.querySelectorAll<HTMLElement>("[data-doctrine-choice]"),
         ];
         updateChoices();
+      });
+    });
+    const voiceList = modal.querySelector<HTMLElement>(".voice-choices")!;
+    const voiceRow =
+      modal.querySelector<HTMLButtonElement>("[data-open-voices]")!;
+    const selectedVoice = () =>
+      voiceList.querySelector<HTMLInputElement>("input:checked")?.value ?? "";
+    const updateVoice = () => {
+      const id = selectedVoice();
+      modal.querySelector("[data-voice-summary]")!.textContent = !id
+        ? "None"
+        : (voices().find((v) => v.id === id)?.title ?? `${id} (unavailable)`);
+    };
+    voiceList.addEventListener("change", updateVoice);
+    updateVoice();
+    const closeVoices = () => {
+      delete agentForm.dataset.view;
+      dropEditor((e) => e.modal === modal && e.title === "Voice");
+      voiceRow.focus({ preventScroll: true });
+    };
+    voiceRow.onclick = () => {
+      agentForm.dataset.view = "voices";
+      if (options.embedded) {
+        editorStack.push({ modal, title: "Voice", back: closeVoices });
+        announceEditor();
+      }
+      // A disabled (unavailable) selection cannot take focus.
+      (
+        voiceList.querySelector<HTMLInputElement>(
+          "input:checked:not(:disabled)",
+        ) ?? voiceList.querySelector<HTMLInputElement>("input:not(:disabled)")
+      )?.focus({ preventScroll: true });
+    };
+    voiceList.addEventListener("click", (event) => {
+      const pencil = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-edit-voice]",
+      );
+      if (!pencil) return;
+      event.preventDefault();
+      const voice = voices().find((v) => v.id === pencil.dataset.editVoice);
+      if (!voice) return;
+      editVoice(pencil, voice, () => {
+        voiceList.innerHTML = voiceChoices(selectedVoice());
+        updateVoice();
       });
     });
     const accountSelect =
@@ -1953,20 +2231,14 @@ export async function mountSettings(
         .value.trim();
       const model =
         modal.querySelector<HTMLSelectElement>("[name=model]")!.value;
-      const selectedDoctrines = [
-        ...modal.querySelectorAll<HTMLInputElement>("[name=doctrine]:checked"),
-      ].map((input) => input.value);
-      const previousTitles = existing ? doctrineTitles(existing) : [];
-      const sameTitle = (a: string, b: string) =>
-        a.trim().toLowerCase() === b.trim().toLowerCase();
-      const selectedTitles = [
-        ...previousTitles.filter((title) =>
-          selectedDoctrines.some((d) => sameTitle(d, title)),
-        ),
-        ...selectedDoctrines.filter(
-          (title) => !previousTitles.some((d) => sameTitle(d, title)),
-        ),
+      // Agent-selected order by stable id: kept ones first, then additions.
+      const checked = checkedDoctrines();
+      const previous = existing ? doctrineIds(existing) : [];
+      const doctrineSelection = [
+        ...previous.filter((id) => checked.includes(id)),
+        ...checked.filter((id) => !previous.includes(id)),
       ];
+      const voice = selectedVoice();
       const prompt =
         modal.querySelector<HTMLTextAreaElement>("[name=prompt]")!.value;
       const signature = modal
@@ -2021,13 +2293,10 @@ export async function mountSettings(
             : {}),
           prompt,
           signature,
-          ...(existing &&
-          existing.doctrines === undefined &&
-          JSON.stringify(selectedTitles) === JSON.stringify(previousTitles)
-            ? existing.doctrine
-              ? { doctrine: existing.doctrine }
-              : {}
-            : { doctrines: selectedTitles }),
+          ...(doctrineSelection.length
+            ? { doctrine_ids: doctrineSelection }
+            : {}),
+          ...(voice ? { voice_id: voice } : {}),
         };
         await commitResource(
           {
@@ -2096,6 +2365,28 @@ export async function mountSettings(
       });
   }
 
+  /** Compact values for saved crons; the backend decodes them. */
+  async function refreshScheduleSummaries() {
+    const missing = [
+      ...new Set(repositories().map((repository) => repository.cron)),
+    ].filter((cron) => !scheduleSummaries.has(cron));
+    if (missing.length) {
+      const builders = await describeSchedules(missing).catch(() => []);
+      missing.forEach((cron, index) =>
+        scheduleSummaries.set(cron, scheduleSummary(builders[index], cron)),
+      );
+    }
+    content
+      .querySelectorAll<HTMLElement>("[data-repository-schedule]")
+      .forEach((node) => {
+        const repository = repositories().find(
+          (r) => r.id === node.dataset.repositorySchedule,
+        );
+        if (repository)
+          node.textContent = scheduleSummaries.get(repository.cron) ?? "";
+      });
+  }
+
   function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
@@ -2141,7 +2432,7 @@ export async function mountSettings(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2221,6 +2512,7 @@ export async function mountSettings(
             );
         });
       restore();
+      void refreshScheduleSummaries();
     };
     const updateMonitoringDetails = () => {
       content
@@ -2233,7 +2525,7 @@ export async function mountSettings(
             detail.textContent = repositoryMonitoringDetail(committed);
         });
     };
-    refreshRepositoryRows = rows;
+    refreshRepositoryRows = () => whenReleased(rows);
     renderAccounts();
     if (accountContent) accountParking.append(accountContent);
     content.querySelector<HTMLButtonElement>("#add-repository")!.onclick = (
@@ -2274,6 +2566,7 @@ export async function mountSettings(
         id: newIdentity(),
         name: resolved.repository.name,
         enabled: false,
+        cron: DEFAULT_CRON,
         provider: "github",
         provider_account_id: accountId,
         provider_repository_id: resolved.repository.id,
@@ -2595,12 +2888,12 @@ export async function mountSettings(
         .join("");
       if (loaded && owner.value)
         status.textContent = incomplete
-          ? `${results.length} repositories; incomplete`
+          ? `${countLabel(results.length, "repository", "repositories")}; incomplete`
           : !results.length
             ? "None"
             : !filtered.length
               ? "No matches"
-              : `${results.length} repositories`;
+              : countLabel(results.length, "repository", "repositories");
       list
         .querySelectorAll<HTMLButtonElement>("[data-pick]")
         .forEach((button) => {
@@ -2787,11 +3080,272 @@ export async function mountSettings(
     void load();
   }
 
+  type ScheduleMode = "every" | "hourly" | "daily" | "advanced";
+  interface ScheduleState {
+    mode: ScheduleMode;
+    every: number;
+    minute: number;
+    times: string[];
+    days: number[];
+    cron: string;
+  }
+  const scheduleModes: [ScheduleMode, string][] = [
+    ["every", "Every"],
+    ["hourly", "Hourly"],
+    ["daily", "Daily"],
+    ["advanced", "Advanced"],
+  ];
+
+  function scheduleState(preview: SchedulePreview): ScheduleState {
+    const state: ScheduleState = {
+      mode: "advanced",
+      every: 30,
+      minute: 0,
+      times: ["09:00"],
+      days: [...ALL_DAYS],
+      cron: preview.cron,
+    };
+    const builder = preview.builder;
+    if (!builder) return state;
+    state.days = [...builder.days];
+    const cadence = builder.cadence;
+    state.mode = cadence.kind;
+    if (cadence.kind === "every") state.every = cadence.minutes;
+    else if (cadence.kind === "hourly") state.minute = cadence.minute;
+    else state.times = [...cadence.times];
+    return state;
+  }
+
+  function scheduleRequest(state: ScheduleState): ScheduleRequest {
+    if (state.mode === "advanced") return { kind: "cron", cron: state.cron };
+    const cadence =
+      state.mode === "every"
+        ? { kind: "every" as const, minutes: state.every }
+        : state.mode === "hourly"
+          ? { kind: "hourly" as const, minute: state.minute }
+          : { kind: "daily" as const, times: state.times };
+    return {
+      kind: "builder",
+      builder: {
+        cadence,
+        days: state.days,
+      },
+    };
+  }
+
+  /** The repository editor's schedule. The backend encodes, decodes and
+   * validates the cron and computes the preview in the saved time zone. */
+  function scheduleBuilder(modal: HTMLDialogElement, repository: Repository) {
+    const section = modal.querySelector<HTMLElement>("[data-schedule]")!;
+    const body = section.querySelector<HTMLElement>("[data-schedule-body]")!;
+    const alert = section.querySelector<HTMLElement>("[data-schedule-error]")!;
+    const runs = section.querySelector<HTMLElement>("[data-schedule-runs]")!;
+    let state: ScheduleState | undefined;
+    let read = 0;
+    let pending: Promise<void> = Promise.resolve();
+    let failure: string | undefined;
+
+    const show = (preview: SchedulePreview) => {
+      failure = undefined;
+      alert.hidden = true;
+      alert.textContent = "";
+      body
+        .querySelectorAll("[aria-invalid]")
+        .forEach((control) => control.removeAttribute("aria-invalid"));
+      runs.innerHTML = preview.next_runs
+        .map(
+          (run) =>
+            `<li><time datetime="${new Date(run * 1000).toISOString()}">${escape(formatRun(run, saved.time_zone))}</time></li>`,
+        )
+        .join("");
+    };
+    const fail = (message: string) => {
+      failure = message;
+      alert.textContent = message;
+      alert.hidden = false;
+      runs.innerHTML = "";
+      if (state?.mode === "advanced")
+        body
+          .querySelector("#schedule-cron")
+          ?.setAttribute("aria-invalid", "true");
+    };
+    const request = (
+      value: ScheduleRequest,
+      accept: (preview: SchedulePreview) => void,
+    ) => {
+      const current = ++read;
+      section.setAttribute("aria-busy", "true");
+      pending = previewSchedule(value).then(
+        (preview) => {
+          if (current !== read || !section.isConnected) return;
+          accept(preview);
+          show(preview);
+        },
+        (cause) => {
+          if (current !== read || !section.isConnected) return;
+          fail(reason(cause));
+        },
+      );
+      void pending.finally(() => {
+        if (current === read) section.removeAttribute("aria-busy");
+      });
+    };
+    // The latest edit's cron, by edit sequence. A concurrent repository
+    // commit (the Monitor switch) restores its older draft copy; `reassert`
+    // puts this edit back afterwards.
+    let edits = 0;
+    let intended: { edit: number; cron: string } | undefined;
+    const update = () => {
+      if (!state) return;
+      const edit = ++edits;
+      if (state.mode === "advanced") {
+        // Saved as typed; the backend rejects an invalid cron on Save too.
+        intended = { edit, cron: state.cron.trim() };
+        repository.cron = intended.cron;
+        changed();
+      }
+      request(scheduleRequest(state), (preview) => {
+        if (edit !== edits) return;
+        intended = { edit, cron: preview.cron };
+        repository.cron = preview.cron;
+        changed();
+      });
+    };
+    const render = () => {
+      if (!state) return;
+      const restore = rememberControl(
+        body,
+        body.querySelector<HTMLElement>("#schedule-add-time") ?? undefined,
+      );
+      const mode = state.mode;
+      const fields: string[] = [
+        `<fieldset class="schedule-field"><legend>Repeat</legend><div class="schedule-segments" data-value="${mode}">${scheduleModes
+          .map(
+            ([value, label]) =>
+              `<label class="segment"><input type="radio" name="schedule-mode" id="schedule-mode-${value}" value="${value}" ${value === mode ? "checked" : ""} /><span>${label}</span></label>`,
+          )
+          .join("")}</div></fieldset>`,
+      ];
+      if (mode === "every")
+        fields.push(
+          `<label class="schedule-row"><span>Interval</span><select id="schedule-every">${EVERY_MINUTES.map(
+            (minutes) =>
+              `<option value="${minutes}" ${minutes === state!.every ? "selected" : ""}>${everyLabel(minutes)}</option>`,
+          ).join("")}</select></label>`,
+        );
+      if (mode === "hourly")
+        fields.push(
+          `<label class="schedule-row"><span>Minute</span><input id="schedule-minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="${state.minute}" /></label>`,
+        );
+      if (mode === "daily")
+        fields.push(
+          `<fieldset class="schedule-field"><legend>Times</legend><div class="schedule-times">${state.times
+            .map(
+              (time, index) =>
+                `<div class="schedule-time"><input type="time" step="60" id="schedule-time-${index}" aria-label="Time ${index + 1}" value="${escape(time)}" /><button type="button" id="schedule-remove-time-${index}" data-remove-time="${index}" aria-label="Remove time ${index + 1}" title="Remove time" ${state!.times.length === 1 ? "disabled" : ""}>${icon("trash")}</button></div>`,
+            )
+            .join(
+              "",
+            )}</div><button type="button" id="schedule-add-time" aria-label="Add time" title="Add time">+ Time</button></fieldset>`,
+        );
+      if (mode === "advanced")
+        fields.push(
+          `<label class="schedule-row"><span>Cron</span><input id="schedule-cron" value="${escape(state.cron)}" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="schedule-error" /></label>`,
+        );
+      else {
+        fields.push(
+          `<fieldset class="schedule-field"><legend>Days</legend><div class="schedule-days">${WEEK.map(
+            (day) =>
+              `<label class="schedule-day"><input type="checkbox" id="schedule-day-${day}" value="${day}" ${state!.days.includes(day) ? "checked" : ""} /><span>${DAY_NAMES[day]}</span></label>`,
+          ).join("")}</div></fieldset>`,
+        );
+      }
+      body.innerHTML = fields.join("");
+      restore();
+    };
+    body.addEventListener("change", (event) => {
+      const target = event.target as HTMLInputElement | HTMLSelectElement;
+      if (!state) return;
+      if (target.name === "schedule-mode") {
+        if (target.value === "advanced") state.cron = repository.cron;
+        state.mode = target.value as ScheduleMode;
+        render();
+      } else if (target.id === "schedule-every")
+        state.every = Number(target.value);
+      else if (target.id.startsWith("schedule-day-"))
+        state.days = ALL_DAYS.filter(
+          (day) =>
+            body.querySelector<HTMLInputElement>(`#schedule-day-${day}`)
+              ?.checked,
+        );
+      else if (target.id.startsWith("schedule-time-"))
+        state.times[Number(target.id.slice("schedule-time-".length))] =
+          target.value;
+      else return;
+      update();
+    });
+    body.addEventListener("input", (event) => {
+      const target = event.target as HTMLInputElement;
+      if (!state) return;
+      if (target.id === "schedule-minute") {
+        const minute = Number(target.value);
+        // Out-of-range input still reaches the backend, which rejects it.
+        state.minute =
+          target.value.trim() && Number.isInteger(minute) && minute >= 0
+            ? minute
+            : 60;
+      } else if (target.id === "schedule-cron") state.cron = target.value;
+      else return;
+      update();
+    });
+    body.addEventListener("click", (event) => {
+      const button = (event.target as HTMLElement).closest("button");
+      if (!state || !button) return;
+      if (button.id === "schedule-add-time") {
+        const last = state.times[state.times.length - 1] ?? "08:00";
+        const hour = (Number(last.slice(0, 2)) + 1) % 24;
+        state.times.push(`${String(hour).padStart(2, "0")}${last.slice(2)}`);
+        render();
+        body
+          .querySelector<HTMLElement>(
+            `#schedule-time-${state.times.length - 1}`,
+          )
+          ?.focus();
+      } else if (button.dataset.removeTime) {
+        const index = Number(button.dataset.removeTime);
+        state.times.splice(index, 1);
+        render();
+        body
+          .querySelector<HTMLElement>(
+            `#schedule-time-${Math.min(index, state.times.length - 1)}`,
+          )
+          ?.focus();
+      } else return;
+      update();
+    });
+    request({ kind: "cron", cron: repository.cron }, (preview) => {
+      state = scheduleState(preview);
+      render();
+    });
+    return {
+      /** The builder's validation error once the latest preview settles. */
+      async settled() {
+        await pending;
+        return failure;
+      },
+      /** Restore the latest edit after another write replaced the draft. */
+      reassert() {
+        if (!intended || repository.cron === intended.cron) return;
+        repository.cron = intended.cron;
+        changed();
+      },
+    };
+  }
+
   function repositoryDialog(
     repository: ConfiguredRepository,
     opener: HTMLElement,
   ) {
-    const schedule = saved.defaults.schedule;
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       repository.name,
@@ -2801,7 +3355,7 @@ export async function mountSettings(
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
-        </section><section class="repository-group" data-global-schedule><h2>Saved global schedule</h2><p>${schedule.kind === "cron" ? `<code>${escape(schedule.expression)}</code>` : `Every ${schedule.minutes} minutes`} / ${escape(schedule.timezone)}</p></section>
+        </section><section class="repository-group schedule-builder" data-schedule aria-labelledby="schedule-heading" aria-busy="true"><h2 id="schedule-heading">Schedule</h2><div data-schedule-body></div><p role="alert" id="schedule-error" data-schedule-error hidden></p><div class="schedule-preview"><small data-schedule-zone>${escape(saved.time_zone)}</small><ol class="schedule-runs" aria-label="Next runs" data-schedule-runs></ol></div></section>
         <details class="repository-group"><summary>Repository</summary><dl class="repository-binding-details"><dt>Account ID</dt><dd>${escape(repository.provider_account_id ?? "Unbound")}</dd><dt>Repository ID</dt><dd>${escape(repository.provider_repository_id ?? "Not verified")}</dd></dl><div class="settings-actions"><button data-unbind-repository ${repository.provider_account_id ? "" : "disabled"}>Unbind account</button></div><div class="repository-remove"><input type="text" data-remove-confirm aria-label="Type repository name to confirm" placeholder="${escape(repository.name)}" autocomplete="off" /><button type="button" id="remove-repository" aria-label="Remove repository" title="Remove repository" disabled>${icon("trash")}</button></div><div class="connection"></div></details>
         <p role="status" data-explicit-pr-status ${pendingPull ? "" : "hidden"}>${pendingPull ? `PR #${pendingPull.number} queued on Save` : ""}</p>
         <p role="alert" data-earlier-intake-error hidden></p>
@@ -2810,6 +3364,7 @@ export async function mountSettings(
     );
     compactEditor(modal, "Back");
     modal.classList.add("repository-editor");
+    const schedule = scheduleBuilder(modal, repository);
     const currentEditor = () =>
       modal.open &&
       modal.isConnected &&
@@ -2918,6 +3473,7 @@ export async function mountSettings(
       alert.hidden = true;
       try {
         await toggleRepositoryMonitoring(repository.id, enabled, modal);
+        schedule.reassert();
         monitoring.checked = repository.enabled;
         updateMonitoring();
         refreshRepositoryRows?.();
@@ -2933,6 +3489,8 @@ export async function mountSettings(
         const requestedPull = pendingPullRequests.get(repository.id);
         const saveRoute = routeGeneration;
         try {
+          const scheduleFailure = await schedule.settled();
+          if (scheduleFailure) throw scheduleFailure;
           const proposed = clone(repository);
           proposed.enabled = monitoring.checked;
           await commitResource(repositoryEdit(repository, proposed), modal);
@@ -3139,7 +3697,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${primary && assignment.rubber_duck ? " \u00b7 Rubber duck" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -3429,12 +3987,14 @@ export async function mountSettings(
     const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
-      `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" />
+      `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" /><input type="hidden" name="duck" value="${escape(isPrimary ? (existing?.rubber_duck ?? "") : "")}" />
         <section class="repository-group" data-assign-main><button type="button" class="doctrine-row" data-open-agent aria-label="Choose Agent"><span>Agent</span><span class="doctrine-summary" data-agent-summary></span>${chevron}</button>
         <label class="repository-check"><input type="checkbox" role="switch" name="primary" aria-label="Primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary</span></label>
+        <button type="button" class="doctrine-row" data-open-duck aria-label="Rubber duck" ${isPrimary ? "" : "hidden"}><span>Rubber duck</span><span class="doctrine-summary" data-duck-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-tools aria-label="Tools"><span>Tools</span><span class="doctrine-summary" data-tool-summary></span>${chevron}</button></section>
         <section class="repository-group" data-assign-agents hidden><div data-agent-choices role="radiogroup" aria-label="Agent"></div><div class="resource-actions"><button type="button" data-create-agent>Create new Agent</button></div></section>
+        <section class="repository-group" data-assign-duck hidden><div data-duck-choices role="radiogroup" aria-label="Rubber duck"></div></section>
         <section class="repository-group" data-assign-permissions hidden>
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
@@ -3457,7 +4017,15 @@ export async function mountSettings(
     const openTools =
       modal.querySelector<HTMLButtonElement>("[data-open-tools]")!;
     const choices = modal.querySelector<HTMLElement>("[data-agent-choices]")!;
+    const duckInput = modal.querySelector<HTMLInputElement>("[name=duck]")!;
+    const openDuck =
+      modal.querySelector<HTMLButtonElement>("[data-open-duck]")!;
+    const duckChoices = modal.querySelector<HTMLElement>(
+      "[data-duck-choices]",
+    )!;
+    let lastDuck = duckInput.value;
     const sections = {
+      duck: modal.querySelector<HTMLElement>("[data-assign-duck]")!,
       tools: modal.querySelector<HTMLElement>("[data-assign-tools]")!,
       agent: modal.querySelector<HTMLElement>("[data-assign-agents]")!,
       permissions: modal.querySelector<HTMLElement>(
@@ -3469,6 +4037,7 @@ export async function mountSettings(
         "[name=comment]:checked, [name=reply]:checked, [name=action]:checked:not([value=none])",
       ).length;
     const viewTitles = {
+      duck: "Rubber duck",
       agent: "Agent",
       permissions: "Permissions",
       tools: "Tools",
@@ -3484,16 +4053,25 @@ export async function mountSettings(
       const action = modal.querySelector<HTMLInputElement>(
         "[name=action]:checked",
       )!.value;
+      const duck = isPrimaryNow && !!duckInput.value;
       const granted: Partial<Record<PacketTool, boolean>> = {
+        rubber_duck: duck,
         leave_comments: checked("comment"),
         approve_pull_request: action !== "none",
         approve_and_merge: action === "merge",
       };
-      const defaults = defaultTools(isPrimaryNow, {
-        comment: !!granted.leave_comments,
-        approve: !!granted.approve_pull_request,
-        merge: !!granted.approve_and_merge,
-      });
+      const defaults = defaultTools(
+        isPrimaryNow,
+        {
+          comment: !!granted.leave_comments,
+          approve: !!granted.approve_pull_request,
+          merge: !!granted.approve_and_merge,
+        },
+        duck,
+      );
+      // Choosing a duck turns its tool on in an explicit list too.
+      const duckAdded = duck && duckInput.value !== lastDuck;
+      lastDuck = isPrimaryNow ? duckInput.value : "";
       let count = 0;
       for (const row of modal.querySelectorAll<HTMLElement>(
         "[data-tool-row]",
@@ -3502,6 +4080,7 @@ export async function mountSettings(
         const scope = toolRows[id].scope;
         const input = row.querySelector<HTMLInputElement>("input")!;
         if (!toolsExplicit) input.checked = defaults.includes(id);
+        else if (id === "rubber_duck" && duckAdded) input.checked = true;
         row.hidden =
           (scope === "primary" && !isPrimaryNow) ||
           (scope === "secondary" && isPrimaryNow);
@@ -3552,6 +4131,36 @@ export async function mountSettings(
         );
       openAgent.querySelector("[data-agent-summary]")!.textContent =
         selected && !agent ? "Unavailable" : (agent?.name ?? "");
+      const duckId = duckInput.value;
+      const duckAgent = agents().find((a) => a.id === duckId);
+      const duckRows = [
+        "",
+        ...agents().map((a) => `${a.id}\u0000${a.name}`),
+        ...(duckId && !duckAgent ? ["missing"] : []),
+      ].join("\n");
+      // Rows are kept across refreshes so a checked radio stays the same element.
+      if (duckChoices.dataset.rows !== duckRows) {
+        duckChoices.dataset.rows = duckRows;
+        duckChoices.innerHTML = [
+          `<label class="repository-check"><span>None</span><input type="radio" name="duck-choice" value="" aria-label="None" ${duckId ? "" : "checked"} /></label>`,
+          ...agents().map(
+            (a) =>
+              `<label class="repository-check"><span>${escape(a.name)}</span><input type="radio" name="duck-choice" value="${escape(a.id)}" aria-label="${escape(a.name)}" ${a.id === duckId ? "checked" : ""} /></label>`,
+          ),
+          ...(duckId && !duckAgent
+            ? [
+                `<label class="repository-check" data-duck-missing><span>Unavailable</span><input type="radio" name="duck-choice" checked disabled /></label>`,
+              ]
+            : []),
+        ].join("");
+      }
+      for (const radio of duckChoices.querySelectorAll<HTMLInputElement>(
+        "input[name=duck-choice]:not(:disabled)",
+      ))
+        radio.checked = radio.value === duckId;
+      openDuck.querySelector("[data-duck-summary]")!.textContent = duckId
+        ? (duckAgent?.name ?? "Unavailable")
+        : "None";
       const checkedAction = modal.querySelector<HTMLInputElement>(
         "[name=action]:checked",
       );
@@ -3571,9 +4180,14 @@ export async function mountSettings(
       modal.querySelector<HTMLElement>("[data-assign-actions]")!.hidden = false;
       dropEditor((e) => e.modal === modal && e.title === viewTitles[view]);
       refreshSelection();
-      ({ agent: openAgent, permissions: openPermissions, tools: openTools })[
-        view
-      ].focus({
+      (
+        ({
+          duck: openDuck,
+          agent: openAgent,
+          permissions: openPermissions,
+          tools: openTools,
+        }) as const
+      )[view].focus({
         preventScroll: true,
       });
     };
@@ -3604,6 +4218,13 @@ export async function mountSettings(
     openAgent.onclick = () => openView("agent", "Agent");
     openPermissions.onclick = () => openView("permissions", "Permissions");
     openTools.onclick = () => openView("tools", "Tools");
+    openDuck.onclick = () => openView("duck", "Rubber duck");
+    duckChoices.onchange = (event) => {
+      const input = event.target as HTMLInputElement;
+      if (input.name !== "duck-choice") return;
+      duckInput.value = input.value;
+      closeView();
+    };
     const agentSaved = (agent?: Agent) => {
       if (!modal.isConnected) return;
       refreshSelection(agent?.id ?? agentInput.value);
@@ -3642,6 +4263,8 @@ export async function mountSettings(
     primary.onchange = () => {
       modal.querySelector<HTMLElement>("[data-primary-permissions]")!.hidden =
         !primary.checked;
+      openDuck.hidden = !primary.checked;
+      if (!primary.checked) duckInput.value = "";
       if (!primary.checked) {
         modal.querySelector<HTMLInputElement>("[name=reply]")!.checked = false;
         modal.querySelector<HTMLInputElement>(
@@ -3664,7 +4287,7 @@ export async function mountSettings(
         const value: Assignment = {
           id: assignmentId,
           agent_id: agentId,
-          schedule: existing?.schedule ?? clone(saved.defaults.schedule),
+          ...(existing?.schedule ? { schedule: existing.schedule } : {}),
           comment:
             modal.querySelector<HTMLInputElement>("[name=comment]")!.checked,
           approve: existing?.approve ?? false,
@@ -3686,6 +4309,11 @@ export async function mountSettings(
           ...modal.querySelectorAll<HTMLInputElement>("[name=tool]:checked"),
         ].map((input) => input.value as PacketTool);
         if (toolsExplicit && tools.length) value.tools = tools;
+        if (primary.checked && duckInput.value) {
+          if (!agents().some((agent) => agent.id === duckInput.value))
+            throw "Rubber duck unavailable";
+          value.rubber_duck = duckInput.value;
+        }
         const next = clone(repository);
         if (existing)
           next.assignments = (next.assignments ?? []).map((a) =>
@@ -3798,60 +4426,100 @@ export async function mountSettings(
       : `${saved.launch_at_login ? "On" : "Off"}; registration ${snapshot.login_registration ?? "unavailable"}${snapshot.isolated ? "; isolated" : ""}`;
   }
 
+  /** Saved Rubber Duck limits: one self-contained group. */
+  function duckPreferences() {
+    const limits = draft.rubber_duck ?? DUCK_LIMITS;
+    const field = (key: keyof DuckLimits, label: string) =>
+      `<label>${label}<input data-duck-limit="${key}" type="number" step="1" min="${DUCK_RANGES[key][0]}" max="${DUCK_RANGES[key][1]}" value="${limits[key]}" /></label>`;
+    return `<div class="settings-group preferences-duck"><fieldset aria-label="Rubber duck"><legend>Rubber duck</legend><div class="preferences-duck-limits">${field("max_calls", "Calls")}${field("call_timeout_seconds", "Timeout (s)")}${field("primary_window_minutes", "Primary window (min)")}</div></fieldset></div>`;
+  }
+
+  function mountDuckPreferences() {
+    content
+      .querySelectorAll<HTMLInputElement>("[data-duck-limit]")
+      .forEach((input) => {
+        input.oninput = () => {
+          draft.rubber_duck = {
+            ...(draft.rubber_duck ?? DUCK_LIMITS),
+            [input.dataset.duckLimit as keyof DuckLimits]: Number(input.value),
+          };
+          changed();
+        };
+      });
+  }
+
+  function updateTheme() {
+    const select = content.querySelector<HTMLSelectElement>("#theme");
+    const error = content.querySelector<HTMLElement>("#theme-error");
+    if (!select || !error) return;
+    select.value = themePending ? currentTheme() : (saved.theme ?? "light");
+    select.disabled = themePending;
+    error.textContent = themeError;
+    error.hidden = !themeError;
+  }
+
+  // Theme is an Immediate Control: it applies and persists on change, outside Save/Reset.
+  async function saveTheme(value: string) {
+    if (themePending || !isTheme(value)) return;
+    const previous = saved.theme ?? "light";
+    themePending = true;
+    themeError = "";
+    applyTheme(value);
+    updateTheme();
+    try {
+      await invoke("save_theme", { theme: value });
+      for (const settings of [saved, draft]) {
+        // Mirror native storage, which omits the Light default.
+        if (value === "light") delete settings.theme;
+        else settings.theme = value;
+      }
+    } catch (cause) {
+      applyTheme(previous);
+      themeError = typeof cause === "string" ? cause : "Theme change failed";
+    } finally {
+      themePending = false;
+      updateTheme();
+      changed();
+    }
+  }
+
   function renderPreferences() {
-    const schedule = draft.defaults.schedule;
     content.innerHTML = `<div class="preferences-view">
-      <div class="preferences-boundary"><h2>Saved preferences</h2></div>
-      <div class="settings-group preferences-saved"><fieldset aria-label="Global polling and capacity"><legend>Global polling and capacity</legend>
-      <label class="preferences-capacity">AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
+      <div class="settings-group preferences-saved"><fieldset aria-label="Capacity and time zone"><legend>Capacity and time zone</legend>
       <div class="preferences-schedule">
-      <label>Cron expression<input id="global-cron" value="${escape(schedule.kind === "cron" ? schedule.expression : "")}" placeholder="*/15 * * * *" /></label>
-      <label>Schedule helper<select id="cron-helper"><option value="">Custom</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 9 * * MON-FRI">Weekdays at 09:00</option></select></label>
-      <label>Time zone<input id="global-timezone" value="${escape(schedule.timezone)}" /></label>
+      <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
+      <label>Time zone<select id="global-timezone"><option value="${escape(draft.time_zone)}">${escape(draft.time_zone)}</option></select></label>
       </div></fieldset></div>
+      ${duckPreferences()}
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
-      <div class="settings-group" id="automation-settings"></div>
+      <div class="settings-group"><fieldset aria-label="Appearance"><legend>Appearance</legend><label class="setting-row"><span>Theme</span><select id="theme" aria-label="Theme">${themeOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><p id="theme-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
-      <div class="settings-group"><fieldset aria-label="Status and recovery"><legend>Status and recovery</legend><button id="preferences-status" type="button">Open status and recovery</button>
-      <button id="diagnostics" type="button">Open redacted diagnostics</button>
+      <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
-    const cron = content.querySelector<HTMLInputElement>("#global-cron")!;
-    const helper = content.querySelector<HTMLSelectElement>("#cron-helper")!;
-    const syncHelper = () => {
-      helper.value = [...helper.options].some(
-        (option) => option.value === cron.value,
-      )
-        ? cron.value
-        : "";
-    };
-    syncHelper();
+    updateTheme();
+    content.querySelector<HTMLSelectElement>("#theme")!.onchange = (event) =>
+      void saveTheme((event.target as HTMLSelectElement).value);
     const timezone =
-      content.querySelector<HTMLInputElement>("#global-timezone")!;
-    const updateSchedule = () => {
-      draft.defaults.schedule = {
-        kind: "cron",
-        expression: cron.value,
-        timezone: timezone.value,
-      };
-      syncHelper();
+      content.querySelector<HTMLSelectElement>("#global-timezone")!;
+    void timeZones().then(
+      (zones) => {
+        if (timezone.isConnected)
+          fillTimeZones(timezone, zones, draft.time_zone);
+      },
+      (cause) => {
+        if (timezone.isConnected) showError(reason(cause));
+      },
+    );
+    timezone.onchange = () => {
+      draft.time_zone = timezone.value;
+      if (timezone.selectedOptions[0]?.dataset.unavailable)
+        timezone.setAttribute("aria-invalid", "true");
+      else timezone.removeAttribute("aria-invalid");
       changed();
     };
-    cron.oninput = updateSchedule;
-    timezone.oninput = () => {
-      draft.defaults.schedule.timezone = timezone.value;
-      changed();
-    };
-    content.querySelector<HTMLSelectElement>("#cron-helper")!.onchange = (
-      event,
-    ) => {
-      const expression = (event.target as HTMLSelectElement).value;
-      if (expression) {
-        cron.value = expression;
-        updateSchedule();
-      }
-    };
+    mountDuckPreferences();
     content.querySelector<HTMLInputElement>("#global-capacity")!.oninput = (
       event,
     ) => {
@@ -3877,11 +4545,6 @@ export async function mountSettings(
     mountNotificationSettings(
       content.querySelector<HTMLElement>("#notification-settings")!,
       notificationView,
-    );
-    mountAutomation(
-      content.querySelector<HTMLElement>("#automation-settings")!,
-      undefined,
-      { preferences: true, view: automationView },
     );
     content
       .querySelectorAll<HTMLDetailsElement>("details[id]")
@@ -3931,28 +4594,19 @@ export async function mountSettings(
         if (errors.length) showError(errors.join("\n"));
       }
     };
-    content.querySelector<HTMLButtonElement>("#preferences-status")!.onclick =
-      async (event) => {
-        (event.currentTarget as HTMLButtonElement).focus({
-          preventScroll: true,
-        });
-        try {
-          await invoke("panel_navigate", {
-            route: { tab: "settings", detail: { type: "status" } },
-          });
-        } catch (cause) {
-          showError(typeof cause === "string" ? cause : "Failed");
-        }
-      };
-    content.querySelector<HTMLButtonElement>("#diagnostics")!.onclick = async (
-      event,
-    ) => {
-      (event.currentTarget as HTMLButtonElement).focus({ preventScroll: true });
-      try {
-        await invoke("open_diagnostics");
-      } catch {
-        showError("Failed");
-      }
+    const copy = content.querySelector<HTMLButtonElement>("#copy-diagnostics")!;
+    copy.onclick = async () => {
+      if (copy.getAttribute("aria-busy") === "true") return;
+      copy.setAttribute("aria-busy", "true");
+      delete copy.dataset.state;
+      const outcome = await copyDiagnostics();
+      copy.removeAttribute("aria-busy");
+      if (!copy.isConnected) return;
+      copy.dataset.state = outcome.ok ? "copied" : "failed";
+      copy.querySelector("svg")!.outerHTML = icon(
+        outcome.ok ? "check" : "copy",
+      );
+      if (!outcome.ok) showError(outcome.error);
     };
   }
 
@@ -4013,6 +4667,8 @@ export async function mountSettings(
         for (const settings of [saved, draft]) {
           settings.agents = clone(state.settings.agents ?? []);
           settings.doctrines = clone(state.settings.doctrines ?? []);
+          settings.voices = clone(state.settings.voices ?? []);
+          settings.voice_catalog_version = state.settings.voice_catalog_version;
           settings.doctrine_catalog_version =
             state.settings.doctrine_catalog_version;
           settings.doctrine_reset = state.settings.doctrine_reset
@@ -4071,6 +4727,7 @@ export async function mountSettings(
         sameResource(saved, state.settings);
       saved = clone(state.settings);
       draft = clone(saved);
+      if (!themePending) applyTheme(saved.theme);
       conflict = false;
       if (state.error) showError(state.error);
       if (retainAccounts) {

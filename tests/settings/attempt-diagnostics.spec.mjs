@@ -1,20 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "./fixtures.mjs";
+import {
+  clipboardWrites,
+  copyDiagnostics,
+  recordClipboard,
+} from "./diagnostics-copy.mjs";
 
 for (const surface of ["panel", "standalone"]) {
-  test(`${surface} Diagnostics distinguishes an empty journal from unavailable evidence`, async ({
+  const panel = surface === "panel";
+  test(`${surface} Copy diagnostics distinguishes an empty journal from unavailable evidence`, async ({
     page,
     store,
   }) => {
     expect(await store("diagnostics")).toEqual([]);
-    await page.goto(surface === "panel" ? "/" : "/?view=diagnostics");
-    if (surface === "panel")
-      await page.locator("[data-panel-diagnostics]").click();
-    const log = page.locator(
-      surface === "panel" ? '[data-panel-view="utility"] pre' : "#log",
-    );
-    await expect(log).toHaveText(/\n\nNo events$/);
+    await recordClipboard(page);
+    await page.goto(panel ? "/" : "/?view=settings");
+    const text = await copyDiagnostics(page, { panel });
+    expect(text).toMatch(/\n\nNo events\n\nRecorded job Intelligence\nNone\n$/);
     await page.evaluate(() => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) =>
@@ -22,25 +25,32 @@ for (const surface of ["panel", "standalone"]) {
           ? Promise.reject("Synthetic diagnostic journal read failure")
           : original(command, args);
     });
-    await page
-      .getByRole("button", {
-        name: surface === "panel" ? "Refresh diagnostics" : "Refresh",
-        exact: true,
-      })
-      .click();
-    await expect(
-      page.locator(surface === "panel" ? "[data-panel-error]" : "#error"),
-    ).toHaveText("Failed");
-    if (surface === "panel")
-      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
-        "title",
-        "Synthetic diagnostic journal read failure",
-      );
-    if (surface === "panel") await expect(log).toHaveCount(0);
-    else await expect(log).toHaveText("");
+    const button = page.getByRole("button", { name: "Copy diagnostics" });
+    await button.click();
+    await expect(button).toHaveAttribute("data-state", "failed");
+    await expect(page.locator("#error")).toHaveAttribute(
+      "title",
+      "Synthetic diagnostic journal read failure",
+    );
+    expect(await clipboardWrites(page)).toEqual([text]);
   });
 
-  test(`${surface} Diagnostics renders persisted host and attempt evidence as text`, async ({
+  test(`${surface} Copy diagnostics surfaces a denied clipboard without a success state`, async ({
+    page,
+  }) => {
+    await recordClipboard(page, { fail: true });
+    await page.goto(panel ? "/" : "/?view=settings");
+    expect(await copyDiagnostics(page, { panel })).toBeUndefined();
+    await expect(
+      page.getByRole("button", { name: "Copy diagnostics" }),
+    ).toHaveAttribute("data-state", "failed");
+    await expect(page.locator("#error")).toHaveAttribute(
+      "title",
+      "Copy failed",
+    );
+  });
+
+  test(`${surface} Copy diagnostics exports persisted host and attempt evidence as text`, async ({
     page,
     store,
     dataRoot,
@@ -98,21 +108,18 @@ for (const surface of ["panel", "standalone"]) {
       join(dataRoot, "state", "diagnostics.jsonl"),
       JSON.stringify({ timestamp_secs: 999, event: "window_opened" }) + "\n",
     );
-    await page.goto(surface === "panel" ? "/" : "/?view=diagnostics");
-    if (surface === "panel")
-      await page.locator("[data-panel-diagnostics]").click();
-    const log = page.locator(
-      surface === "panel" ? '[data-panel-view="utility"] pre' : "#log",
-    );
-    await expect(log).toContainText("attempt-153");
-    await expect(log).toContainText("1970-01-01T00:16:39.000Z  window_opened");
-    await expect(log).toContainText("incomplete_coverage");
-    await expect(log).toContainText("1 of 1 files read");
-    await expect(log).toContainText("0 of 1 files read");
-    await expect(log).toContainText("not_exposed");
-    await expect(log).toContainText("1234");
-    await expect(log).toContainText(paths.paths[0]);
-    await expect(log).not.toContainText("No events");
-    await expect(log.locator("img")).toHaveCount(0);
+    await recordClipboard(page);
+    await page.goto(panel ? "/" : "/?view=settings");
+    const log = await copyDiagnostics(page, { panel });
+    expect(log).toContain("attempt-153");
+    expect(log).toContain("1970-01-01T00:16:39.000Z  window_opened");
+    expect(log).toContain("incomplete_coverage");
+    expect(log).toContain("1 of 1 files read");
+    expect(log).toContain("0 of 1 files read");
+    expect(log).toContain("not_exposed");
+    expect(log).toContain("1234");
+    expect(log).toContain(paths.paths[0]);
+    expect(log).not.toContain("No events");
+    await expect(page.locator("img[src=x]")).toHaveCount(0);
   });
 }

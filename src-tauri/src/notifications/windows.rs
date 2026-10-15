@@ -562,10 +562,7 @@ mod tests {
     fn cold_start_requires_exact_saved_notice_and_isolated_credential_identity() {
         let (_root, registration, store) = profile();
         let mut ledger = store.load_notifications().unwrap();
-        ledger.enabled = true;
-        let id = ledger
-            .enqueue_test(super::super::Destination::Settings, 100)
-            .unwrap();
+        let id = ledger.enable(&[], 100).unwrap().unwrap();
         store.save_notifications(&ledger).unwrap();
         validate_saved(&registration, Some(&id)).unwrap();
         let missing = format!(

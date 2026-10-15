@@ -1,8 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   type DoctrineCatalog,
   type Settings,
   doctrineCatalogLabel,
 } from "./resources";
+import type { MonitoringSnapshot } from "./monitoring";
+import { intelligenceDiagnostics } from "./work-presentation";
 
 export interface Diagnostic {
   timestamp_secs: number;
@@ -51,4 +54,68 @@ export function diagnosticLog(entries: Diagnostic[]): string {
         )
         .join("\n")
     : "No events";
+}
+
+interface DiagnosticSnapshot {
+  version: string;
+  isolated: boolean;
+  doctrine_catalog?: DoctrineCatalog | null;
+  settings: Pick<Settings, "doctrine_reset"> | null;
+}
+
+// The content-free export: host journal, doctrine catalog and recorded job
+// Intelligence only (ADR 0019). Never provider bodies or credentials.
+export async function diagnosticsExport(): Promise<string> {
+  const [state, entries, jobs] = await Promise.all([
+    invoke<DiagnosticSnapshot>("snapshot"),
+    invoke<Diagnostic[]>("diagnostics"),
+    invoke<MonitoringSnapshot>("monitoring_snapshot"),
+  ]);
+  return (
+    `PR Sniper ${state.version}${state.isolated ? " \u00b7 Isolated" : ""}\n\n` +
+    doctrineDiagnostics(
+      state.doctrine_catalog,
+      state.settings?.doctrine_reset,
+    ) +
+    diagnosticLog(entries) +
+    `\n\n${intelligenceDiagnostics(jobs)}\n`
+  );
+}
+
+type CopyOutcome = { ok: true } | { ok: false; error: string };
+
+// WebKit only allows clipboard writes inside the click's activation, so the
+// export is handed over as a pending ClipboardItem before any native read.
+function writeClipboard(text: Promise<string>): Promise<void> {
+  const clipboard = navigator.clipboard;
+  if (!clipboard) return Promise.reject(new Error("Clipboard unavailable"));
+  if (typeof ClipboardItem === "function" && clipboard.write)
+    return clipboard.write([
+      new ClipboardItem({
+        "text/plain": text.then(
+          (value) => new Blob([value], { type: "text/plain" }),
+        ),
+      }),
+    ]);
+  return text.then((value) => clipboard.writeText(value));
+}
+
+export async function copyDiagnostics(): Promise<CopyOutcome> {
+  const text = diagnosticsExport();
+  const written = writeClipboard(text);
+  try {
+    await text;
+  } catch (cause) {
+    written.catch(() => undefined);
+    return {
+      ok: false,
+      error: typeof cause === "string" ? cause : "Diagnostics unavailable",
+    };
+  }
+  try {
+    await written;
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Copy failed" };
+  }
 }

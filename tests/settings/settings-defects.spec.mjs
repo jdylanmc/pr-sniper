@@ -8,6 +8,7 @@ import {
   closeDialog,
   editAgent,
   section,
+  repositorySettings,
 } from "./navigation.mjs";
 
 test("a settings conflict keeps the draft until explicit discard and reload", async ({
@@ -48,26 +49,36 @@ test("a settings conflict keeps the draft until explicit discard and reload", as
   );
 });
 
-test("global schedule helper matches the displayed and saved draft", async ({
+test("repository schedule builder matches the displayed and saved draft", async ({
   page,
   store,
 }) => {
   await seedAgent(store);
   await store("save_repository", { repository: "fixture/project" });
+  const settings = (await store("snapshot")).settings;
+  settings.repositories[0].enabled = false;
+  await store("seed_settings", settings);
   await page.goto("/?view=settings");
-  await section(page, "Preferences");
-  await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
-  await expect(page.locator("#global-cron")).toHaveValue("0 9 * * MON-FRI");
-  await page.locator("#global-timezone").fill("Europe/London");
-  await saveChanges(page);
-  expect((await store("snapshot")).settings.defaults.schedule).toEqual({
-    kind: "cron",
-    expression: "0 9 * * MON-FRI",
-    timezone: "Europe/London",
-  });
+  let editor = await repositorySettings(page, "fixture/project");
+  await expect(editor.locator("#schedule-mode-every")).toBeChecked();
+  await expect(editor.locator("#schedule-every")).toHaveValue("30");
+  await editor.locator("#schedule-mode-daily").check();
+  await editor.locator("#schedule-time-0").fill("09:00");
+  for (const day of [0, 6])
+    await editor.locator(`#schedule-day-${day}`).uncheck();
+  await expect(editor.locator("[data-schedule-runs] li")).toHaveCount(3);
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor).toHaveCount(0);
+  expect((await store("snapshot")).settings.repositories[0].cron).toBe(
+    "0 9 * * 1-5",
+  );
 
   await page.reload();
-  await section(page, "Preferences");
-  await expect(page.locator("#global-cron")).toHaveValue("0 9 * * MON-FRI");
-  await expect(page.locator("#global-timezone")).toHaveValue("Europe/London");
+  editor = await repositorySettings(page, "fixture/project");
+  await expect(editor.locator("#schedule-mode-daily")).toBeChecked();
+  await expect(editor.locator("#schedule-time-0")).toHaveValue("09:00");
+  await expect(editor.locator("#schedule-day-0")).not.toBeChecked();
+  await expect(editor.locator("#schedule-day-1")).toBeChecked();
 });

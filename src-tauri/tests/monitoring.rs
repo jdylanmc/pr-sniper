@@ -27,6 +27,7 @@ use std::{
 const ACCOUNT_ID: &str = "22";
 const REPOSITORY_ID: &str = "100";
 const REPOSITORY_NAME: &str = "example/repo";
+const REPOSITORY_KEY: &str = "00000000-0000-4000-8000-000000000001";
 const HEAD_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -37,6 +38,7 @@ fn repository(enabled: bool) -> Repository {
         provider: ProviderId::Github,
         name: REPOSITORY_NAME.into(),
         enabled,
+        cron: "*/15 * * * *".into(),
         provider_account_id: Some(ACCOUNT_ID.into()),
         legacy_installation_id: None,
         provider_repository_id: Some(REPOSITORY_ID.into()),
@@ -419,10 +421,7 @@ fn disabled_resource_save_and_global_edits_suppress_scans_without_closing_or_del
         .unwrap();
     let mut preferences = disabled.global_preferences();
     preferences.capacity = 7;
-    preferences.defaults.schedule = Schedule::Cron {
-        expression: "* * * * *".into(),
-        timezone: "UTC".into(),
-    };
+    preferences.time_zone = "America/New_York".into();
     store
         .save_resource(pr_sniper_lib::storage::ResourceEdit::Preferences {
             expected: disabled.global_preferences(),
@@ -1631,8 +1630,9 @@ fn interrupted_poll_recovers_with_the_same_budget_and_identity() {
 }
 
 #[test]
-fn interrupted_poll_past_its_deadline_requires_manual_retry() {
+fn interrupted_poll_past_its_deadline_requeues_as_a_fresh_poll() {
     let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
     let mut monitor = Monitor::restore(&store).unwrap();
     assert_eq!(
         monitor
@@ -1643,18 +1643,358 @@ fn interrupted_poll_past_its_deadline_requires_manual_retry() {
     );
     drop(monitor);
 
+    // Quit or reboot mid-poll, relaunch after the retry window: not a failure.
     let mut restored = Monitor::restore(&store).unwrap();
-    assert!(restored
-        .prepare_checks(&store, 1_800_000_901, false)
-        .unwrap()
-        .is_empty());
+    restored
+        .synchronize_configuration(&store, &accounts, 1_800_000_901)
+        .unwrap();
     let health = &restored.snapshot()[0];
     let operation = health.operation.as_ref().unwrap();
-    assert_eq!(operation.state, OperationState::ManualRetry);
-    assert_eq!(operation.failure, Some(OperationFailure::Permanent));
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.retry_deadline, 1_800_001_801);
+    assert!(health.schedule_available);
+    assert_eq!(
+        restored
+            .prepare_checks(&store, 1_800_000_902, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+fn fail_poll(
+    monitor: &mut Monitor,
+    store: &Store,
+    at: i64,
+    check_now: bool,
+    error: ConnectionError,
+) -> String {
+    let mut tickets = monitor.prepare_checks(store, at, check_now).unwrap();
+    assert_eq!(tickets.len(), 1, "one poll at {at}");
+    let id = monitor.snapshot()[0].operation.as_ref().unwrap().id.clone();
+    let _ = monitor.finish(store, tickets.remove(0), Err(error), at + 1);
+    id
+}
+
+fn poll_operation(monitor: &Monitor) -> pr_sniper_lib::monitoring::JobOperation {
+    monitor.snapshot()[0].operation.clone().unwrap()
+}
+
+#[test]
+fn parked_permanent_poll_requeues_once_per_scheduled_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let rejected = || ConnectionError::ProviderRejectedStatus(422);
+    let first = fail_poll(&mut monitor, &store, 1_800_000_000, true, rejected());
+    assert_eq!(
+        poll_operation(&monitor).failure,
+        Some(OperationFailure::Permanent)
+    );
+    assert!(poll_operation(&monitor).parked());
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_100, false)
+        .unwrap()
+        .is_empty());
+
+    // The next scheduled scan starts a fresh poll; it does not stay parked.
+    let second = fail_poll(&mut monitor, &store, 1_800_000_900, false, rejected());
+    assert_ne!(second, first);
+    assert!(poll_operation(&monitor).parked());
+    for at in [1_800_000_902, 1_800_001_000, 1_800_001_799] {
+        assert!(
+            monitor
+                .prepare_checks(&store, at, false)
+                .unwrap()
+                .is_empty(),
+            "at most one retry per scan ({at})"
+        );
+    }
+    fail_poll(&mut monitor, &store, 1_800_001_800, false, rejected());
+}
+
+#[test]
+fn exhausted_cooldown_poll_requeues_on_the_next_scheduled_scan() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut now = 1_800_000_000;
+    for attempt in 1..=3 {
+        fail_poll(
+            &mut monitor,
+            &store,
+            now,
+            attempt == 1,
+            ConnectionError::Network,
+        );
+        if attempt < 3 {
+            now = poll_operation(&monitor).next_attempt_at.unwrap();
+        }
+    }
+    assert_eq!(poll_operation(&monitor).state, OperationState::ManualRetry);
+    let mut state = store.load_monitoring_state().unwrap();
+    let operation = state
+        .health
+        .values_mut()
+        .next()
+        .unwrap()
+        .operation
+        .as_mut()
+        .unwrap();
+    operation.resume_cycle = 5;
+    operation.resume_at = None;
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert_eq!(monitor.auto_resume(&store, &accounts, now + 10).unwrap(), 0);
+    assert!(monitor
+        .prepare_checks(&store, now + 10, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_900, false)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(poll_operation(&monitor).state, OperationState::Running);
+}
+
+#[test]
+fn check_now_retries_any_parked_repository_poll() {
+    for error in [
+        ConnectionError::ProviderRejectedStatus(422),
+        ConnectionError::MissingScope,
+        ConnectionError::MissingReadPermission,
+    ] {
+        let (_root, store) = store();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let parked = fail_poll(&mut monitor, &store, 1_800_000_000, true, error);
+        assert!(poll_operation(&monitor).parked());
+        let tickets = monitor.prepare_checks(&store, 1_800_000_010, true).unwrap();
+        assert_eq!(tickets.len(), 1);
+        let operation = poll_operation(&monitor);
+        assert_ne!(operation.id, parked);
+        assert_eq!(operation.state, OperationState::Running);
+        assert_eq!(operation.attempt_count, 1);
+    }
+}
+
+#[test]
+fn credential_poll_failure_waits_for_reconnect_not_the_scheduled_scan() {
+    let (_root, store) = store();
+    let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::MissingScope,
+    );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_900, false)
+        .unwrap()
+        .is_empty());
+    let operation = poll_operation(&monitor);
+    assert!(operation.parked());
+    assert_eq!(operation.failure, Some(OperationFailure::Credentials));
+    // A connected account (first tick or a reconnect) resumes it.
+    assert_eq!(
+        monitor
+            .auto_resume(&store, &accounts, 1_800_000_901)
+            .unwrap(),
+        1
+    );
+    assert_eq!(poll_operation(&monitor).state, OperationState::Queued);
+}
+
+#[test]
+fn rate_limit_deferral_spends_no_attempt_across_a_scheduled_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let id = fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::RateLimitedAfter(1_800),
+    );
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_900, false)
+        .unwrap()
+        .is_empty());
+    let operation = poll_operation(&monitor);
+    assert_eq!(operation.id, id);
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.attempt_count, 0);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.backpressure_until, Some(1_800_001_801));
+}
+
+#[test]
+fn queued_poll_relaunched_after_its_deadline_keeps_its_cause_and_runs_in_the_due_scan() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::Network,
+    );
+    let waiting = poll_operation(&monitor);
+    assert_eq!(waiting.state, OperationState::Queued);
+    assert_eq!(waiting.retry_deadline, 1_800_000_900);
+    drop(monitor);
+
+    // Quit while the retry delay was pending; relaunch after the window.
+    let mut restored = Monitor::restore(&store).unwrap();
+    let tickets = restored
+        .prepare_checks(&store, 1_800_000_901, false)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    let operation = poll_operation(&restored);
+    assert_eq!(operation.id, waiting.id);
+    assert_eq!(operation.state, OperationState::Running);
     assert_eq!(operation.attempt_count, 1);
-    assert_eq!(health.next_run, 0);
-    assert!(!health.schedule_available);
+    assert_eq!(operation.failure, Some(OperationFailure::Network));
+    assert_eq!(operation.retry_deadline, 1_800_001_801);
+}
+
+fn second_repository(store: &Store, account_id: &str) {
+    let mut settings = store.load_settings().unwrap();
+    let mut second = repository(true);
+    second.id = "00000000-0000-4000-8000-000000000002".into();
+    second.name = "example/other".into();
+    second.provider_account_id = Some(account_id.into());
+    second.provider_repository_id = Some("101".into());
+    second.assignments = settings.repositories[0].assignments.clone();
+    settings.repositories.push(second);
+    set_settings(store, &settings);
+    activate_repository(
+        store,
+        "00000000-0000-4000-8000-000000000002",
+        0,
+        BTreeMap::new(),
+    );
+}
+
+fn operation_for(monitor: &Monitor, name: &str) -> pr_sniper_lib::monitoring::JobOperation {
+    monitor
+        .snapshot()
+        .into_iter()
+        .find(|health| health.name == name)
+        .and_then(|health| health.operation)
+        .unwrap()
+}
+
+#[test]
+fn a_sibling_rate_limit_never_expires_a_waiting_poll_to_permanent() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    assert_eq!(tickets.len(), 2);
+    for ticket in tickets {
+        let error = if ticket.name == REPOSITORY_NAME {
+            ConnectionError::RateLimitedAfter(1_800)
+        } else {
+            ConnectionError::Network
+        };
+        let _ = monitor.finish(&store, ticket, Err(error), 1_800_000_001);
+    }
+    for at in [1_800_000_100, 1_800_000_901, 1_800_001_500, 1_800_001_800] {
+        assert!(
+            monitor
+                .prepare_checks(&store, at, false)
+                .unwrap()
+                .is_empty(),
+            "account still rate-limited at {at}"
+        );
+        let waiting = operation_for(&monitor, "example/other");
+        assert_eq!(waiting.state, OperationState::Queued, "at {at}");
+        assert_eq!(waiting.failure, Some(OperationFailure::Network));
+        // The account wait extends the window (gate 1_800_001_801 + 15 min);
+        // the attempt budget is untouched rather than restarted.
+        assert_eq!(waiting.retry_deadline, 1_800_002_701, "at {at}");
+        assert_eq!(waiting.attempt_count, 1, "at {at}");
+    }
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_001_801, false)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_saved_stopped_scan_restarts_and_recovers_parked_polls_at_the_next_occurrence() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    fail_poll(
+        &mut monitor,
+        &store,
+        1_800_000_000,
+        true,
+        ConnectionError::ProviderRejectedStatus(422),
+    );
+    drop(monitor);
+    // State written by the build that stopped the scan once all were parked.
+    let mut state = store.load_monitoring_state().unwrap();
+    for health in state.health.values_mut() {
+        health.scheduled_run = 0;
+    }
+    store.save_monitoring_state(&state).unwrap();
+
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, 1_800_000_100, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.load_monitoring_state().unwrap().health[REPOSITORY_KEY].scheduled_run,
+        1_800_000_900
+    );
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, 1_800_000_900, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn parked_polls_across_repositories_retry_once_per_scan() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut at = 1_800_000_000;
+    for scan in 0..3 {
+        let tickets = monitor.prepare_checks(&store, at, scan == 0).unwrap();
+        assert_eq!(tickets.len(), 2, "scan {scan}");
+        for ticket in tickets {
+            let _ = monitor.finish(
+                &store,
+                ticket,
+                Err(ConnectionError::ProviderRejectedStatus(422)),
+                at + 1,
+            );
+        }
+        for later in [at + 2, at + 450, at + 899] {
+            assert!(
+                monitor
+                    .prepare_checks(&store, later, false)
+                    .unwrap()
+                    .is_empty(),
+                "scan {scan} at {later}"
+            );
+        }
+        at += 900;
+    }
 }
 
 #[test]
@@ -1710,7 +2050,7 @@ fn transient_poll_failures_park_after_three_failed_attempts_and_manual_retry_res
 }
 
 #[test]
-fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
+fn valid_repository_cron_clears_stale_schedule_error_while_manual_retry_remains() {
     let (_root, store) = store();
     let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
     let mut monitor = Monitor::restore(&store).unwrap();
@@ -1741,24 +2081,13 @@ fn valid_global_cron_clears_stale_schedule_error_while_manual_retry_remains() {
         OperationState::ManualRetry
     );
 
+    // Failure recorded by a build whose global schedule was a legacy interval.
+    let mut state = store.load_monitoring_state().unwrap();
+    state.health.values_mut().next().unwrap().last_failure = Some("invalid_global_cron".into());
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
     let mut settings = store.load_settings().unwrap();
-    settings.defaults.schedule = Schedule::Interval {
-        minutes: 15,
-        timezone: "UTC".into(),
-    };
-    set_settings(&store, &settings);
-    monitor
-        .synchronize_configuration(&store, &accounts, now + 2)
-        .unwrap();
-    assert_eq!(
-        monitor.snapshot()[0].last_failure.as_deref(),
-        Some("invalid_global_cron")
-    );
-
-    settings.defaults.schedule = Schedule::Cron {
-        expression: "*/10 * * * *".into(),
-        timezone: "UTC".into(),
-    };
+    settings.repositories[0].cron = "*/10 * * * *".into();
     set_settings(&store, &settings);
     monitor
         .synchronize_configuration(&store, &accounts, now + 3)
@@ -1998,6 +2327,8 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        doctrine_ids: vec![],
+        voice_id: None,
         prompt: "review".into(),
         signature: "sig-a".into(),
     });
@@ -2009,30 +2340,34 @@ fn legacy_assignment_schedules_do_not_create_timers_or_repeated_repository_reads
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        doctrine_ids: vec![],
+        voice_id: None,
         prompt: "review".into(),
         signature: "sig-b".into(),
     });
     settings.repositories[0].assignments = vec![
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: "00000000-0000-4000-8000-000000000020".into(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 5,
                 timezone: "America/New_York".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
         },
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: "00000000-0000-4000-8000-000000000021".into(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 15,
                 timezone: "America/New_York".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
@@ -2756,6 +3091,8 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            doctrine_ids: vec![],
+            voice_id: None,
             prompt: "review".into(),
             signature: "sig-a".into(),
         },
@@ -2767,31 +3104,35 @@ fn assignment_changes_preserve_one_repository_health_and_the_global_clock() {
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            doctrine_ids: vec![],
+            voice_id: None,
             prompt: "review".into(),
             signature: "sig-b".into(),
         },
     ];
     settings.repositories[0].assignments = vec![
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: settings.agents[0].id.clone(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 5,
                 timezone: "UTC".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
         },
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: settings.agents[1].id.clone(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 15,
                 timezone: "UTC".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
@@ -2839,17 +3180,20 @@ fn removed_inflight_schedule_keeps_exclusion_until_the_read_finishes() {
         ai_account: None,
         doctrine: None,
         doctrines: None,
+        doctrine_ids: vec![],
+        voice_id: None,
         prompt: "review".into(),
         signature: "sig".into(),
     });
     settings.repositories[0].assignments.push(Assignment {
+        rubber_duck: None,
         tools: None,
         id: "00000000-0000-4000-8000-000000000010".into(),
         agent_id: settings.agents[0].id.clone(),
-        schedule: Schedule::Interval {
+        schedule: Some(Schedule::Interval {
             minutes: 5,
             timezone: "UTC".into(),
-        },
+        }),
         comment: false,
         approve: false,
         actions: None,
@@ -2925,10 +3269,10 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
     assert!(!disabled.enabled);
     assert!(!disabled.schedule_available);
     assert_eq!(disabled.next_run, 0);
-    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
-    assert_eq!(global_scan.next_run, 0);
-    assert!(global_scan.pending.is_empty());
-    assert!(!global_scan.requested);
+    let health = &store.load_monitoring_state().unwrap().health[REPOSITORY_KEY];
+    assert_eq!(health.scheduled_run, 0);
+    assert!(!health.scan_pending);
+    assert!(!health.scan_requested);
     assert!(monitor
         .prepare_checks(&store, 1_800_000_700, false)
         .unwrap()
@@ -2945,12 +3289,7 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
         Some(CONFIGURATION_SAVE_REQUIRED)
     );
     assert_eq!(
-        store
-            .load_monitoring_state()
-            .unwrap()
-            .global_scan
-            .unwrap()
-            .next_run,
+        store.load_monitoring_state().unwrap().health[REPOSITORY_KEY].scheduled_run,
         0,
         "enabled but unconfirmed scope is not eligible for a provider scan"
     );
@@ -2960,8 +3299,9 @@ fn disable_reenable_and_rebind_reset_health_and_cursor_honestly() {
         .synchronize_configuration(&store, &accounts, 1_800_000_021)
         .unwrap();
     assert!(monitor.snapshot()[0].schedule_available);
-    let global_scan = store.load_monitoring_state().unwrap().global_scan.unwrap();
-    assert!(global_scan.next_run > 1_800_000_021);
+    assert!(
+        store.load_monitoring_state().unwrap().health[REPOSITORY_KEY].scheduled_run > 1_800_000_021
+    );
 
     settings.repositories[0].provider_account_id = Some("23".into());
     set_settings(&store, &settings);
@@ -2992,31 +3332,35 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
             ai_account: None,
             doctrine: None,
             doctrines: None,
+            doctrine_ids: vec![],
+            voice_id: None,
             prompt: "review".into(),
             signature: "sig".into(),
         })
         .collect();
     settings.repositories[0].assignments = vec![
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000010".into(),
             agent_id: settings.agents[0].id.clone(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 5,
                 timezone: "UTC".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
         },
         Assignment {
+            rubber_duck: None,
             tools: None,
             id: "00000000-0000-4000-8000-000000000011".into(),
             agent_id: settings.agents[1].id.clone(),
-            schedule: Schedule::Interval {
+            schedule: Some(Schedule::Interval {
                 minutes: 10,
                 timezone: "UTC".into(),
-            },
+            }),
             comment: false,
             approve: false,
             actions: None,
@@ -3026,13 +3370,14 @@ fn one_manual_request_reads_each_account_binding_once_and_captures_all_assignmen
     second.id = "00000000-0000-4000-8000-000000000002".into();
     second.provider_account_id = Some("23".into());
     second.assignments.push(Assignment {
+        rubber_duck: None,
         tools: None,
         id: "00000000-0000-4000-8000-000000000012".into(),
         agent_id: settings.agents[2].id.clone(),
-        schedule: Schedule::Interval {
+        schedule: Some(Schedule::Interval {
             minutes: 15,
             timezone: "UTC".into(),
-        },
+        }),
         comment: false,
         approve: false,
         actions: None,
@@ -3395,4 +3740,262 @@ fn activation_preview_counts_all_1800_matching_open_pull_requests() {
     assert!(requests.contains(
         &"/repos/example/repo/pulls?state=all&sort=created&direction=desc&per_page=1".into()
     ));
+}
+
+const SECOND_NAME: &str = "example/other";
+const SECOND_KEY: &str = "00000000-0000-4000-8000-000000000002";
+// 1_800_000_000 is on an hour boundary in UTC.
+const HOUR: i64 = 1_800_000_000;
+
+/// Repository 1 every 15 minutes, repository 2 hourly, one account.
+fn two_schedules() -> (tempfile::TempDir, Store, Monitor) {
+    let (root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[1].cron = "0 * * * *".into();
+    set_settings(&store, &settings);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, HOUR, false)
+        .unwrap()
+        .is_empty());
+    (root, store, monitor)
+}
+
+fn polled_names(monitor: &mut Monitor, store: &Store, at: i64, check_now: bool) -> Vec<String> {
+    let tickets = monitor.prepare_checks(store, at, check_now).unwrap();
+    let mut names: Vec<_> = tickets.iter().map(|t| t.name.clone()).collect();
+    for ticket in tickets {
+        let result = if ticket.name == REPOSITORY_NAME {
+            poll_result(Vec::new(), "current-login")
+        } else {
+            poll_result_for(ACCOUNT_ID, "101", SECOND_NAME, Vec::new(), "current-login")
+        };
+        monitor.finish(store, ticket, Ok(result), at + 1).unwrap();
+    }
+    names.sort();
+    names
+}
+
+#[test]
+fn repositories_poll_independently_on_their_own_schedules() {
+    let (_root, store, mut monitor) = two_schedules();
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 3_600);
+    assert_eq!(health[SECOND_KEY].schedule_key, "cron:0 * * * *:UTC");
+    for (at, expected) in [
+        (HOUR + 899, vec![]),
+        (HOUR + 900, vec![REPOSITORY_NAME]),
+        (HOUR + 1_000, vec![]),
+        (HOUR + 1_800, vec![REPOSITORY_NAME]),
+        (HOUR + 2_700, vec![REPOSITORY_NAME]),
+        (HOUR + 3_600, vec![SECOND_NAME, REPOSITORY_NAME]),
+    ] {
+        assert_eq!(
+            polled_names(&mut monitor, &store, at, false),
+            expected,
+            "at {at}"
+        );
+    }
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 4_500);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 7_200);
+    assert!(!health[REPOSITORY_KEY].scan_pending && !health[SECOND_KEY].scan_pending);
+}
+
+#[test]
+fn check_now_polls_every_enabled_repository_and_keeps_each_schedule() {
+    let (_root, store, mut monitor) = two_schedules();
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 10, true),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 3_600);
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 900, false),
+        vec![REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn pause_stops_every_repository_schedule_until_resumed() {
+    let (_root, store, mut monitor) = two_schedules();
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    for (at, check_now) in [(HOUR + 3_600, false), (HOUR + 3_601, true)] {
+        assert!(monitor
+            .prepare_checks(&store, at, check_now)
+            .unwrap()
+            .is_empty());
+    }
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    // Missed occurrences collapse into one poll per repository.
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 3_700, false),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn a_parked_poll_retries_once_per_occurrence_of_its_own_repository() {
+    let (_root, store, mut monitor) = two_schedules();
+    let rejected = || Err(ConnectionError::ProviderRejectedStatus(422));
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let _ = monitor.finish(&store, ticket, rejected(), HOUR + 11);
+    }
+    assert!(operation_for(&monitor, REPOSITORY_NAME).parked());
+    assert!(operation_for(&monitor, SECOND_NAME).parked());
+    let parked_second = operation_for(&monitor, SECOND_NAME).id;
+    for quarter in 1..=3 {
+        let at = HOUR + 900 * quarter;
+        let tickets = monitor.prepare_checks(&store, at, false).unwrap();
+        assert_eq!(
+            tickets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            vec![REPOSITORY_NAME],
+            "only the 15-minute repository retries at {at}"
+        );
+        for ticket in tickets {
+            let _ = monitor.finish(&store, ticket, rejected(), at + 1);
+        }
+        assert!(monitor
+            .prepare_checks(&store, at + 2, false)
+            .unwrap()
+            .is_empty());
+        assert_eq!(operation_for(&monitor, SECOND_NAME).id, parked_second);
+    }
+    let tickets = monitor.prepare_checks(&store, HOUR + 3_600, false).unwrap();
+    assert_eq!(tickets.len(), 2);
+    assert_ne!(operation_for(&monitor, SECOND_NAME).id, parked_second);
+}
+
+#[test]
+fn a_credential_park_waits_for_reconnect_through_its_repository_occurrences() {
+    let (_root, store, mut monitor) = two_schedules();
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let error = if ticket.name == SECOND_NAME {
+            ConnectionError::MissingScope
+        } else {
+            ConnectionError::ProviderRejectedStatus(422)
+        };
+        let _ = monitor.finish(&store, ticket, Err(error), HOUR + 11);
+    }
+    let tickets = monitor.prepare_checks(&store, HOUR + 3_600, false).unwrap();
+    assert_eq!(
+        tickets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        vec![REPOSITORY_NAME]
+    );
+    let waiting = operation_for(&monitor, SECOND_NAME);
+    assert!(waiting.parked());
+    assert_eq!(waiting.failure, Some(OperationFailure::Credentials));
+}
+
+#[test]
+fn a_rate_limit_extends_a_sibling_on_another_schedule() {
+    let (_root, store, mut monitor) = two_schedules();
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let error = if ticket.name == REPOSITORY_NAME {
+            ConnectionError::RateLimitedAfter(1_800)
+        } else {
+            ConnectionError::Network
+        };
+        let _ = monitor.finish(&store, ticket, Err(error), HOUR + 11);
+    }
+    for at in [HOUR + 900, HOUR + 1_810] {
+        assert!(
+            monitor
+                .prepare_checks(&store, at, false)
+                .unwrap()
+                .is_empty(),
+            "at {at}"
+        );
+        let waiting = operation_for(&monitor, SECOND_NAME);
+        assert_eq!(waiting.state, OperationState::Queued);
+        assert_eq!(waiting.retry_deadline, HOUR + 1_811 + 900);
+        assert_eq!(waiting.attempt_count, 1);
+    }
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 1_811, false),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn editing_one_repository_cron_retimes_only_that_repository() {
+    let (_root, store, mut monitor) = two_schedules();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[1].cron = "*/5 * * * *".into();
+    set_settings(&store, &settings);
+    assert!(monitor
+        .prepare_checks(&store, HOUR + 60, false)
+        .unwrap()
+        .is_empty());
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 300);
+    assert_eq!(health[SECOND_KEY].schedule_key, "cron:*/5 * * * *:UTC");
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 300, false),
+        vec![SECOND_NAME]
+    );
+}
+
+#[test]
+fn the_saved_time_zone_drives_every_repository_schedule() {
+    let (_root, store, mut monitor) = two_schedules();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[1].cron = "0 9 * * *".into();
+    settings.time_zone = "Asia/Kolkata".into();
+    set_settings(&store, &settings);
+    assert!(monitor
+        .prepare_checks(&store, HOUR + 60, false)
+        .unwrap()
+        .is_empty());
+    let health = &store.load_monitoring_state().unwrap().health;
+    let next = chrono_tz::Asia::Kolkata
+        .timestamp_opt(health[SECOND_KEY].scheduled_run, 0)
+        .unwrap();
+    assert_eq!(next.format("%H:%M").to_string(), "09:00");
+    assert_eq!(
+        health[SECOND_KEY].schedule_key,
+        "cron:0 9 * * *:Asia/Kolkata"
+    );
+    // Kolkata is UTC+05:30, so a quarter-hour cron still lands on quarters.
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+}
+
+#[test]
+fn legacy_global_scan_state_moves_into_repository_health_once() {
+    let (root, store, monitor) = two_schedules();
+    drop(monitor);
+    let path = root.path().join("state/monitoring.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for health in state["health"].as_object_mut().unwrap().values_mut() {
+        let health = health.as_object_mut().unwrap();
+        for field in ["scheduled_run", "scan_pending", "scan_requested"] {
+            health.remove(field);
+        }
+    }
+    state["global_scan"] = json!({
+        "schedule_key":"cron:*/15 * * * *:UTC","next_run": HOUR + 900,
+        "pending":[SECOND_KEY],"requested":true
+    });
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    Monitor::restore(&store).unwrap();
+    let migrated: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(migrated.get("global_scan").is_none());
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 900);
+    assert!(!health[REPOSITORY_KEY].scan_pending);
+    assert!(health[SECOND_KEY].scan_pending && health[SECOND_KEY].scan_requested);
+    let bytes = std::fs::read(&path).unwrap();
+    Monitor::restore(&store).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "idempotent");
 }

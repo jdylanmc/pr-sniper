@@ -208,15 +208,16 @@ test("grouped overview uses saved counts and all six destinations return focus a
   await tab(page, "Settings").click();
   await expect(page.locator(".settings-overview")).toBeVisible();
   await expect(page.locator("[data-panel-heading]")).toHaveText("Settings");
-  await expect(
-    page.getByRole("navigation", { name: "Review setup", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("navigation", {
-      name: "Application preferences",
-      exact: true,
-    }),
-  ).toBeVisible();
+  for (const [group, rows] of [
+    ["General", ["Accounts", "Repositories", "Preferences"]],
+    ["Review behavior", ["Agents", "Doctrines", "Voices"]],
+  ]) {
+    const nav = page.getByRole("navigation", { name: group, exact: true });
+    await expect(nav.getByRole("heading", { level: 2 })).toHaveText(group);
+    await expect(nav.locator(".settings-home-row")).toHaveText(
+      rows.map((name) => new RegExp(`^${name}`)),
+    );
+  }
   await expect(
     page.getByLabel("Settings section", { exact: true }),
   ).toHaveCount(0);
@@ -226,7 +227,7 @@ test("grouped overview uses saved counts and all six destinations return focus a
     agents: String(saved.agents.length),
     repositories: String(saved.repositories.length),
     doctrines: String(saved.doctrines.length),
-    capacity: String(saved.capacity),
+    voices: String(saved.voices.length),
   })) {
     await expect(page.locator(`[data-settings-count="${key}"]`)).toHaveText(
       value,
@@ -249,8 +250,8 @@ test("grouped overview uses saved counts and all six destinations return focus a
       "Doctrines",
       page.getByRole("button", { name: "New doctrine", exact: true }),
     ],
-    ["Concurrent reviews", page.getByLabel("AI capacity", { exact: true })],
-    ["Preferences", page.getByLabel("Cron expression", { exact: true })],
+    ["Voices", page.getByRole("button", { name: "New voice", exact: true })],
+    ["Preferences", page.locator("#global-timezone")],
   ]) {
     await row(page, name).scrollIntoViewIfNeeded();
     const scroll = await page
@@ -293,6 +294,65 @@ test("grouped overview uses saved counts and all six destinations return focus a
   await expect(row(page, "Agents")).toBeFocused();
 });
 
+for (const width of [408, 320]) {
+  test(`Settings home groups lead with a card and keep keyboard order visual at ${width}px`, async ({
+    page,
+    store,
+  }) => {
+    await queueFixture(store);
+    await page.setViewportSize({ width, height: 744 });
+    await page.goto("/");
+    await tab(page, "Settings").click();
+    await expect(page.locator(".settings-overview")).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const band = document
+        .querySelector(".panel-context")
+        .getBoundingClientRect();
+      const overview = document.querySelector(".settings-overview");
+      const groups = [...overview.querySelectorAll(".settings-home-group")];
+      return {
+        firstIsGroup: overview.firstElementChild === groups[0],
+        overlap: band.bottom - groups[0].getBoundingClientRect().top,
+        // A heading over the band must sit on its white card, never bare.
+        bare: [...overview.querySelectorAll("h2")].filter((heading) => {
+          const rect = heading.getBoundingClientRect();
+          const card = heading
+            .closest(".settings-home-group")
+            ?.getBoundingClientRect();
+          return (
+            rect.top < band.bottom &&
+            (!card || rect.top < card.top || rect.bottom > card.bottom)
+          );
+        }).length,
+        stacked:
+          groups[1].getBoundingClientRect().top >=
+          groups[0].getBoundingClientRect().bottom,
+      };
+    });
+    expect(layout.firstIsGroup).toBe(true);
+    expect(layout.overlap).toBeCloseTo(23, 0);
+    expect(layout.bare).toBe(0);
+    expect(layout.stacked).toBe(true);
+    const order = [
+      "Accounts",
+      "Repositories",
+      "Preferences",
+      "Agents",
+      "Doctrines",
+    ];
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await row(page, order[0]).focus();
+    for (const name of order.slice(1)) {
+      await page.keyboard.press(nextKey);
+      await expect(row(page, name)).toBeFocused();
+    }
+  });
+}
+
 test("overview retains preference and repository drafts without claiming them in saved summaries", async ({
   page,
   store,
@@ -303,13 +363,10 @@ test("overview retains preference and repository drafts without claiming them in
   await tab(page, "Settings").click();
   await section(page, "Preferences");
   await page.getByLabel("AI capacity", { exact: true }).fill("7");
-  await page
-    .getByLabel("Cron expression", { exact: true })
-    .fill("*/23 * * * *");
+  await page.locator("#global-timezone").selectOption("Asia/Tokyo");
   await back(page).click();
-  await expect(page.locator('[data-settings-count="capacity"]')).toHaveText(
-    String(saved.capacity),
-  );
+  await expect(page.locator('[data-settings-count="capacity"]')).toHaveCount(0);
+  await expect(row(page, "Concurrent reviews")).toHaveCount(0);
   await section(page, "Repositories");
   await page
     .locator("[data-repository]")
@@ -330,17 +387,13 @@ test("overview retains preference and repository drafts without claiming them in
   await expect(page.getByLabel("AI capacity", { exact: true })).toHaveValue(
     "7",
   );
-  await expect(page.getByLabel("Cron expression", { exact: true })).toHaveValue(
-    "*/23 * * * *",
-  );
+  await expect(page.locator("#global-timezone")).toHaveValue("Asia/Tokyo");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
   await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
+  expect((await store("snapshot")).settings.capacity).toBe(7);
   await back(page).click();
-  await expect(page.locator('[data-settings-count="capacity"]')).toHaveText(
-    "7",
-  );
   await section(page, "Repositories");
   await page
     .locator("[data-repository]")
@@ -495,7 +548,7 @@ test("Accounts retains the mounted sign-in flow and reports actual connected and
 });
 
 for (const metadata of ["native", "missing", "rejected"]) {
-  test(`footer ${metadata} version remains inline across every tab with working utility controls`, async ({
+  test(`footer ${metadata} version remains inline across every tab and retries from the version link`, async ({
     page,
     store,
     ipc,
@@ -531,24 +584,21 @@ for (const metadata of ["native", "missing", "rejected"]) {
     navigation.release();
     await expect(page.locator(".settings-overview")).toBeVisible();
     await page.evaluate(() => window.__settingsIdle());
-    await page.locator("[data-panel-status]").focus();
-    await expect(page.locator("[data-panel-status]")).toBeFocused();
+    await expect(page.locator("[data-panel-status]")).toHaveCount(0);
+    await version.focus();
+    await expect(version).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(page.locator("[data-panel-heading]")).toHaveText("Status");
+    await expect(page.locator("[data-panel-heading]")).toHaveText("Changelog");
     await expect(version).toHaveText(`v${nativeVersion}`);
-    await page.locator("[data-panel-diagnostics]").click();
-    await expect(page.locator("[data-panel-heading]")).toHaveText(
-      "Diagnostics",
-    );
-    await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-      /\nNo events$/,
-    );
+    await page.keyboard.press("Enter");
+    await expect(page.locator("[data-panel-diagnostics]")).toHaveCount(0);
+    await expect(page.locator(".panel-footer > *")).toHaveCount(1);
     await expect(version).toHaveText(`v${nativeVersion}`);
     await expect(version).toBeVisible();
   });
 }
 
-test("late missing metadata cannot replace a running version already read through Status", async ({
+test("late missing metadata cannot replace a running version already re-read through the version link", async ({
   page,
   store,
   ipc,
@@ -569,7 +619,7 @@ test("late missing metadata cannot replace a running version already read throug
   try {
     await page.goto("/");
     await held.arrived;
-    await page.locator("[data-panel-status]").click();
+    await page.locator("[data-panel-version]").click();
     await expect(page.locator("[data-panel-version]")).toHaveText(
       `v${nativeVersion}`,
     );
@@ -604,11 +654,7 @@ for (const size of [
       await page.locator(".panel-footer").evaluate((element, value) => {
         element.style.zoom = value;
       }, zoom);
-      for (const selector of [
-        "[data-panel-status]",
-        "[data-panel-diagnostics]",
-        "[data-panel-version]",
-      ]) {
+      for (const selector of ["[data-panel-version]"]) {
         const element = page.locator(selector);
         await expect(element).toBeInViewport({ ratio: 1 });
         expect(

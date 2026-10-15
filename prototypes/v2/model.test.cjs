@@ -1124,3 +1124,75 @@ test("detection and trust honor admission rules", () => {
   state = M.update(state, "detect");
   assert(state.reviews.some((review) => review.number >= 500));
 });
+
+test("notification types default on, migrate older saves and validate", () => {
+  const state = plain(M.seed());
+  assert.deepEqual(
+    Object.keys(state.preferences.notificationTypes),
+    plain(M.notificationTypeKeys),
+  );
+  assert.ok(Object.values(state.preferences.notificationTypes).every(Boolean));
+  delete state.preferences.notificationTypes;
+  assert.throws(() => M.validate(plain(state)), /Invalid saved preferences/);
+  const migrated = M.validate(M.migrate(plain(state)));
+  assert.equal(migrated.preferences.notificationTypes.failure, true);
+  const muted = M.update(migrated, "preferences", {
+    preferences: {
+      ...migrated.preferences,
+      notificationTypes: {
+        ...migrated.preferences.notificationTypes,
+        failure: false,
+      },
+    },
+  });
+  assert.equal(muted.preferences.notificationTypes.failure, false);
+  assert.equal(muted.preferences.notificationTypes.ready, true);
+});
+
+test("voices seed once, save the guard flag and cannot disappear while used", () => {
+  let state = M.seed();
+  assert.deepEqual(
+    plain(state.voices.map((voice) => [voice.name, voice.guardrails])),
+    [
+      ["Caveman", true],
+      ["Gilfoyle", true],
+      ["Merlin", true],
+    ],
+  );
+  state = M.update(state, "save-voice", {
+    voice: { name: "Pirate", body: "Arr.", guardrails: false },
+  });
+  const pirate = state.voices.at(-1);
+  assert.equal(pirate.guardrails, false);
+  state = M.update(state, "save-agent", {
+    agent: { ...plain(state.agents[0]), voiceId: pirate.id },
+  });
+  assert.throws(
+    () => M.update(state, "delete-voice", { id: pirate.id }),
+    /Remove this voice/,
+  );
+  state = M.update(state, "save-agent", {
+    agent: { ...plain(state.agents[0]), voiceId: "" },
+  });
+  for (const voice of plain(state.voices))
+    state = M.update(state, "delete-voice", { id: voice.id });
+  assert.deepEqual(plain(state.voices), []);
+  assert.deepEqual(plain(M.migrate(plain(state)).voices), []);
+  const legacy = plain(M.seed());
+  delete legacy.voices;
+  assert.equal(M.migrate(legacy).voices.length, 3);
+});
+
+test("rubber duck limits save with capacity and refuse out-of-range values", () => {
+  let state = M.update(M.seed(), "capacity", {
+    limit: 2,
+    duck: { calls: 12, timeout: 240, window: 30 },
+  });
+  assert.equal(JSON.stringify(state.duck), JSON.stringify({ calls: 12, timeout: 240, window: 30 }));
+  for (const duck of [
+    { calls: 0, timeout: 180, window: 15 },
+    { calls: 8, timeout: 601, window: 15 },
+    { calls: 8, timeout: 180, window: 4 },
+  ])
+    assert.throws(() => M.update(state, "capacity", { limit: 2, duck }));
+});

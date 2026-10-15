@@ -422,6 +422,8 @@ async function seedTeam(
     mateName = "Security reviewer",
     findings,
     consumedWrite = false,
+    ducks,
+    failedDucks,
   },
 ) {
   const fixture = await queueFixture(store);
@@ -462,6 +464,18 @@ async function seedTeam(
   const lead = packetRun(fixture, 25, leadExit);
   lead.key = "work-primary";
   lead.job = { ...lead.job, work: work("work-primary", first.id, 1) };
+  if (ducks) lead.result.ducks = ducks;
+  if (failedDucks) {
+    lead.result = null;
+    lead.error = "Copilot review timed out.";
+    lead.operation = {
+      ...lead.operation,
+      state: "failed",
+      failure: "timeout",
+      next_attempt_at: null,
+    };
+    lead.attempt_ducks = failedDucks;
+  }
   const mate = packetRun(fixture, 25, { exit: "submit_report" });
   mate.key = "work-teammate";
   mate.assignment_id = secondAssignmentId;
@@ -635,4 +649,120 @@ test("activity rows stay readable with a long agent, a long path and a long find
   expect(layout).toEqual([]);
   await report.scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath("activity-long.png") });
+});
+
+test("the primary's rubber duck calls show verdicts and failures in Activity", async ({
+  page,
+  store,
+}) => {
+  const call = (ordinal, input, outcome) => ({
+    ordinal,
+    input: { claim: "c", proposed_body: "b", ...input },
+    outcome,
+    limits: {
+      max_calls: 8,
+      call_timeout_seconds: 180,
+      primary_window_minutes: 15,
+    },
+    agent: "Duck",
+    model: "duck-model",
+    state_id: "0:hash",
+    duration_ms: 12,
+  });
+  const item = await seedTeam(store, {
+    findings: [],
+    ducks: [
+      call(
+        1,
+        { kind: "line", path: "src/auth.rs", line: 42 },
+        {
+          outcome: "verdict",
+          verdict: { verdict: "confirmed", nano: "token reaches log" },
+        },
+      ),
+      call(
+        2,
+        { kind: "thread", thread_id: "T7" },
+        { outcome: "failure", failure: "timed_out" },
+      ),
+    ],
+  });
+  await openDetail(page, store, item);
+  const duck = activity(page, "duck");
+  await expect(duck).toHaveCount(1);
+  await expect(duck.locator(".activity-verb")).toHaveText("Rubber duck");
+  await expect(duck.locator(".activity-value")).toHaveText("2");
+  const facts = await expand(duck);
+  await expect(fact(facts, "Confirmed")).toHaveText("1");
+  await expect(fact(facts, "Failed")).toHaveText("1");
+  await expect(fact(facts, "Duck")).toHaveText("Duck");
+  const finding = (place) =>
+    facts.locator(`[data-finding="${place}"] .activity-finding-nano`);
+  await expect(finding("src/auth.rs:42")).toHaveText(
+    "confirmed: token reaches log",
+  );
+  await expect(finding("thread T7")).toHaveText("timed_out");
+  await page.evaluate(() => window.__settingsIdle());
+  await page.screenshot({
+    path: test.info().outputPath("packet-duck-activity.png"),
+    fullPage: true,
+  });
+});
+
+test("a failed attempt still shows its rubber duck calls in Activity", async ({
+  page,
+  store,
+}) => {
+  const call = (ordinal, input, outcome) => ({
+    ordinal,
+    input: { claim: "c", proposed_body: "b", ...input },
+    outcome,
+    limits: {
+      max_calls: 8,
+      call_timeout_seconds: 180,
+      primary_window_minutes: 15,
+    },
+    agent: "Duck",
+    model: "duck-model",
+    state_id: "0:hash",
+    duration_ms: 12,
+  });
+  const item = await seedTeam(store, {
+    findings: [],
+    failedDucks: [
+      call(1, { kind: "pr" }, { outcome: "failure", failure: "timed_out" }),
+      {
+        ...call(
+          2,
+          { kind: "line", path: "src/a.rs", line: 3 },
+          { outcome: "failure", failure: "limit_reached" },
+        ),
+        repeats: 4,
+      },
+      {
+        ...call(
+          3,
+          { kind: "line", path: "src/b.rs", line: 9 },
+          { outcome: "failure", failure: "exit_taken" },
+        ),
+        repeats: 1,
+        others: { rate_limited: 2 },
+      },
+    ],
+  });
+  await openDetail(page, store, item);
+  const duck = activity(page, "duck");
+  await expect(duck).toHaveCount(1);
+  await expect(duck.locator(".activity-value")).toHaveText("10");
+  const facts = await expand(duck);
+  await expect(fact(facts, "Failed")).toHaveText("10");
+  await expect(
+    facts.locator('[data-finding="PR"] .activity-finding-nano'),
+  ).toHaveText("timed_out");
+  await expect(
+    facts.locator('[data-finding="src/a.rs:3"] .activity-finding-nano'),
+  ).toHaveText("limit_reached x5");
+  await expect(
+    facts.locator('[data-finding="src/b.rs:9"] .activity-finding-nano'),
+  ).toHaveText("mixed x4");
 });

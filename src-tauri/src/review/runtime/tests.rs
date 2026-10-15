@@ -20,10 +20,14 @@ const OFFERED: [crate::exits::Exit; 2] = [
 
 /// The run's tool ids: two investigation tools, then the offered exits.
 fn tool_names() -> Vec<String> {
-    tools::tool_set(&["read_changes".into(), "read_source".into()], &OFFERED)
+    tools::tool_set(
+        &["read_changes".into(), "read_source".into()],
+        false,
+        &OFFERED,
+    )
 }
 
-struct Synthetic;
+pub(super) struct Synthetic;
 impl Transport for Synthetic {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
         assert!(path.starts_with("/repos/example/repo/git/blobs/"));
@@ -34,7 +38,7 @@ impl Transport for Synthetic {
     }
 }
 
-fn selection() -> Selection {
+pub(super) fn selection() -> Selection {
     Selection {
         agent: Agent {
             id: "agent".into(),
@@ -47,6 +51,8 @@ fn selection() -> Selection {
             }),
             doctrine: Some("Correctness".into()),
             doctrines: None,
+            doctrine_ids: vec![],
+            voice_id: None,
             prompt: "Look for defects.".into(),
             signature: "machine".into(),
         },
@@ -56,7 +62,7 @@ fn selection() -> Selection {
         configuration: None,
     }
 }
-fn context(changed: bool) -> ReviewContext {
+pub(super) fn context(changed: bool) -> ReviewContext {
     let entry = TreeEntry {
         path: "source.rs".into(),
         mode: "100644".into(),
@@ -122,9 +128,10 @@ fn request(changed: bool) -> Request<Synthetic> {
         selection: selection(),
         before_send: Arc::new(|| Ok(())),
         local_gate: Arc::new(|| Ok(())),
+        duck: None,
     }
 }
-fn operation(seconds: u64) -> Operation {
+pub(super) fn operation(seconds: u64) -> Operation {
     Operation::new(
         Arc::new(AccountWork::default()),
         Arc::new(AtomicBool::new(false)),
@@ -132,7 +139,7 @@ fn operation(seconds: u64) -> Operation {
     )
     .unwrap()
 }
-fn options(root: &Path, scenario: &str) -> ClientOptions {
+pub(super) fn options(root: &Path, scenario: &str) -> ClientOptions {
     let (node, script) = crate::copilot::runtime::fixture_program("review-runtime.mjs");
     let mut options = crate::copilot::runtime::options(
         node,
@@ -160,14 +167,14 @@ fn options(root: &Path, scenario: &str) -> ClientOptions {
     }
     options
 }
-fn receipt(root: &Path) -> Vec<Value> {
+pub(super) fn receipt(root: &Path) -> Vec<Value> {
     std::fs::read_to_string(root.join("receipt.jsonl"))
         .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
 }
-fn stopped(root: &Path) {
+pub(super) fn stopped(root: &Path) {
     let receipt = receipt(root);
     assert_eq!(receipt[0]["ambient"], json!([]));
     let pid = receipt[0]["pid"].as_u64().unwrap();
@@ -1176,7 +1183,7 @@ mod exits {
         let granted = ["read_changes".to_string(), "get_thread".to_string()];
         Request {
             exits: ExitSetup {
-                tool_set: tools::tool_set(&granted, offered),
+                tool_set: tools::tool_set(&granted, false, offered),
                 offered: offered.to_vec(),
                 facts: Arc::new(ToolFacts::default()),
                 gate,
@@ -1191,6 +1198,7 @@ mod exits {
             selection: selection(),
             before_send: Arc::new(|| Ok(())),
             local_gate: Arc::new(|| Ok(())),
+            duck: None,
         }
     }
 

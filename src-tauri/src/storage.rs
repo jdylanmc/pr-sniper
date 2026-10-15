@@ -75,16 +75,47 @@ pub struct Settings {
     pub doctrine_catalog_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine_reset: Option<DoctrineReset>,
+    // Same library semantics as `doctrines`. Files without the version predate
+    // Voices and are seeded once on load; an emptied library stays empty.
+    #[serde(default)]
+    pub voices: Vec<Voice>,
+    #[serde(default = "voice_catalog_version")]
+    pub voice_catalog_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_notice: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
     pub capacity: u32,
+    #[serde(default, skip_serializing_if = "DuckLimits::is_default")]
+    pub rubber_duck: DuckLimits,
     /// Always written. Settings files without it predate admission rules and
     /// get the one-time migration on load; programmatic settings are current.
     #[serde(default = "admission_migration_version")]
     pub admission_migration_version: u32,
+    /// Omitted when Light so default files stay readable by earlier versions.
+    #[serde(default, skip_serializing_if = "Theme::is_light")]
+    pub theme: Theme,
+    /// IANA zone for every repository schedule. Always written. Files without
+    /// it predate repository schedules and get `migrate_global_schedule` on load.
+    #[serde(default = "utc")]
+    pub time_zone: String,
+}
+
+/// Panel appearance. `Os` follows the current system light/dark appearance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+    Os,
+}
+
+impl Theme {
+    fn is_light(&self) -> bool {
+        *self == Theme::Light
+    }
 }
 
 pub const ADMISSION_MIGRATION_VERSION: u32 = 1;
@@ -93,11 +124,23 @@ fn admission_migration_version() -> u32 {
     ADMISSION_MIGRATION_VERSION
 }
 
+fn utc() -> String {
+    "UTC".into()
+}
+
+fn default_cron() -> String {
+    crate::schedule::DEFAULT_CRON.into()
+}
+
 fn default_capacity() -> u32 {
     4
 }
 
 fn doctrine_catalog_version() -> u32 {
+    1
+}
+
+fn voice_catalog_version() -> u32 {
     1
 }
 
@@ -130,26 +173,162 @@ impl Default for Settings {
             doctrines: Vec::new(),
             doctrine_catalog_version: doctrine_catalog_version(),
             doctrine_reset: None,
+            voices: Vec::new(),
+            voice_catalog_version: voice_catalog_version(),
             capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
+            rubber_duck: DuckLimits::default(),
             admission_migration_version: admission_migration_version(),
+            theme: Theme::Light,
+            time_zone: utc(),
         }
     }
 }
 
-/// A named review principle. `title` is both the display label and the
-/// identity (its slug) -- there is no separate id field. Plain text body,
-/// ~500 words recommended but never enforced.
+/// A review principle: stable `id` (UUID v4, never changed), display
+/// `title` and plain-text `body` (~500 words recommended, never enforced).
+/// Agents reference it by id. `id` is empty only on pre-id settings (migrated
+/// on load) and pre-id job evidence (kept as recorded).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Doctrine {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
     pub body: String,
 }
 
-/// A reusable review profile: model + ordered doctrines + prompt +
-/// signature. Referenced by id from repository assignments.
+/// A writing style for text an Agent writes for humans: stable `id`, `title`,
+/// plain-text `body` and the fixed-guard flag. Agents reference it by id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Voice {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    /// The host adds its fixed tone guard to the packet. Default on.
+    #[serde(default = "guardrails_default")]
+    pub guardrails: bool,
+}
+
+fn guardrails_default() -> bool {
+    true
+}
+
+/// A shared, id-keyed library entry (Doctrine, Voice).
+trait LibraryEntry: Clone + PartialEq {
+    fn id(&self) -> &str;
+    fn id_mut(&mut self) -> &mut String;
+    fn title(&self) -> &str;
+    fn body(&self) -> &str;
+}
+
+impl LibraryEntry for Doctrine {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn id_mut(&mut self) -> &mut String {
+        &mut self.id
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+impl LibraryEntry for Voice {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn id_mut(&mut self) -> &mut String {
+        &mut self.id
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+fn same_title(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
+}
+
+/// Library ids. Rejects invalid or repeated ids, empty or repeated
+/// (case-insensitive) titles and unsafe text.
+fn library_ids<T: LibraryEntry>(entries: &[T], plural: &str) -> Result<HashSet<String>, String> {
+    let mut ids = HashSet::new();
+    let mut titles = HashSet::new();
+    for entry in entries {
+        if uuid::Uuid::parse_str(entry.id()).is_err() || !ids.insert(entry.id().to_string()) {
+            return Err(format!("{plural} need a unique stable identity."));
+        }
+        if entry.title().trim().is_empty() || !titles.insert(entry.title().trim().to_lowercase()) {
+            return Err(format!("{plural} need a unique, nonempty title."));
+        }
+        crate::policy::validate_configuration_text(entry.title())?;
+        crate::policy::validate_configuration_text(entry.body())?;
+    }
+    Ok(ids)
+}
+
+/// Compare-and-save one library entry by id. A rename is a title change only:
+/// Agents reference the id and are never rewritten.
+fn replace_entry<T: LibraryEntry>(
+    library: &mut Vec<T>,
+    id: &str,
+    expected: Option<&T>,
+    value: Option<T>,
+    referenced: bool,
+    noun: &str,
+    conflict: &str,
+) -> Result<(), String> {
+    let index = library.iter().position(|e| e.id() == id);
+    if index.map(|i| &library[i]) != expected {
+        return Err(conflict.into());
+    }
+    if value.as_ref().is_some_and(|v| v.id() != id) {
+        return Err(format!("A {noun}'s stable identity cannot be changed."));
+    }
+    let in_use =
+        "is used by an Agent. Remove or replace its references explicitly before deleting it.";
+    match (index, value) {
+        (None, None) => Err(format!(
+            "This {noun} is not saved. Cancel its draft instead."
+        )),
+        (Some(_), None) if referenced => Err(format!("This {noun} {in_use}")),
+        (Some(index), None) => {
+            library.remove(index);
+            Ok(())
+        }
+        (Some(index), Some(value)) => {
+            library[index] = value;
+            Ok(())
+        }
+        (None, Some(value)) => {
+            library.push(value);
+            Ok(())
+        }
+    }
+}
+
+/// Give every id-less library entry a fresh UUID v4. True when any changed.
+fn assign_ids<T: LibraryEntry>(entries: &mut [T]) -> bool {
+    let mut changed = false;
+    for entry in entries.iter_mut().filter(|e| e.id().is_empty()) {
+        *entry.id_mut() = uuid::Uuid::new_v4().to_string();
+        changed = true;
+    }
+    changed
+}
+
+/// A reusable review profile: model + ordered doctrines + optional Voice +
+/// prompt + signature. Referenced by id from repository assignments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Agent {
@@ -161,11 +340,20 @@ pub struct Agent {
     pub intelligence: Option<AgentIntelligence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_account: Option<AiAccount>,
+    /// Legacy title references (single, then ordered list). Converted to
+    /// `doctrine_ids` on load; kept only in recorded job evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrine: Option<String>,
-    /// When present, including an empty list, supersedes the legacy single selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doctrines: Option<Vec<String>>,
+    /// Ordered Doctrine ids. A reference with no library entry is unavailable
+    /// and stays until the user removes it; migrated unmatched titles keep
+    /// their title as the reference.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doctrine_ids: Vec<String>,
+    /// Zero or one Voice id. Absent on Agents that predate Voices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_id: Option<String>,
     pub prompt: String,
     pub signature: String,
 }
@@ -191,7 +379,9 @@ pub struct AiAccount {
 pub struct Assignment {
     pub id: String,
     pub agent_id: String,
-    pub schedule: Schedule,
+    /// Legacy assignment schedule: readable, never consulted or written anew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
     pub comment: bool,
     #[serde(default)]
     pub approve: bool,
@@ -201,6 +391,9 @@ pub struct Assignment {
     /// Packet tool ids (`PACKET_TOOLS`). None = the role default (`default_tools`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Rubber Duck Agent id. Honored on the primary only; inert elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rubber_duck: Option<String>,
 }
 
 /// Role default tool set: investigation tools, the granted exits, then `panic_exit`.
@@ -226,8 +419,8 @@ pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
     tools.into_iter().map(String::from).collect()
 }
 
-/// Investigation tools, then exits. Mirrored by `PACKET_TOOLS` in `src/settings.ts`.
-pub const PACKET_TOOLS: [&str; 13] = [
+/// Investigation tools, `rubber_duck`, then exits. Mirrored by `PACKET_TOOLS` in `src/policy.ts`.
+pub const PACKET_TOOLS: [&str; 14] = [
     "read_changes",
     "read_source",
     "get_thread",
@@ -235,6 +428,7 @@ pub const PACKET_TOOLS: [&str; 13] = [
     "read_check_log",
     "list_tree",
     "search_code",
+    crate::review::duck::TOOL,
     "leave_comments",
     "ready_for_human",
     "approve_pull_request",
@@ -286,13 +480,57 @@ pub struct SavedSettings {
 pub struct GlobalPreferences {
     pub defaults: Policy,
     pub capacity: u32,
+    pub time_zone: String,
     pub root_folder: Option<String>,
     pub presets: Vec<ReviewPreset>,
     pub default_review_preset: Option<String>,
+    #[serde(default)]
+    pub rubber_duck: DuckLimits,
+}
+
+/// Saved Preferences bounding Rubber Duck use per primary attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuckLimits {
+    pub max_calls: u32,
+    pub call_timeout_seconds: u32,
+    pub primary_window_minutes: u32,
+}
+
+impl DuckLimits {
+    pub const MAX_CALLS: std::ops::RangeInclusive<u32> = 1..=32;
+    pub const CALL_TIMEOUT_SECONDS: std::ops::RangeInclusive<u32> = 30..=600;
+    pub const PRIMARY_WINDOW_MINUTES: std::ops::RangeInclusive<u32> = 5..=120;
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !Self::MAX_CALLS.contains(&self.max_calls)
+            || !Self::CALL_TIMEOUT_SECONDS.contains(&self.call_timeout_seconds)
+            || !Self::PRIMARY_WINDOW_MINUTES.contains(&self.primary_window_minutes)
+        {
+            return Err("Rubber duck limits: calls 1-32, call timeout 30-600 seconds, primary window 5-120 minutes.".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for DuckLimits {
+    fn default() -> Self {
+        Self {
+            max_calls: 8,
+            call_timeout_seconds: 180,
+            primary_window_minutes: 15,
+        }
+    }
 }
 
 /// Compare-and-save only the addressed resource. None means create/delete,
 /// not an instruction to replace the rest of the Settings window.
+// A short-lived command value, one per save; boxing would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceEdit {
@@ -302,9 +540,14 @@ pub enum ResourceEdit {
         value: Option<Agent>,
     },
     Doctrine {
-        title: String,
+        id: String,
         expected: Option<Doctrine>,
         value: Option<Doctrine>,
+    },
+    Voice {
+        id: String,
+        expected: Option<Voice>,
+        value: Option<Voice>,
     },
     Repository {
         id: String,
@@ -372,6 +615,9 @@ pub struct Repository {
     pub provider: ProviderId,
     pub name: String,
     pub enabled: bool,
+    /// Five-field cron, evaluated in `Settings::time_zone`.
+    #[serde(default = "default_cron")]
+    pub cron: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_account_id: Option<String>,
     #[serde(default, rename = "installation_id", skip_serializing)]
@@ -423,15 +669,28 @@ impl RepositoryAuthorization {
 impl Settings {
     pub fn doctrine_catalog(&self) -> DoctrineCatalog {
         use sha2::{Digest, Sha256};
+        // Title and body only, as before ids: stable across id assignment.
+        #[derive(Serialize)]
+        struct Content<'a> {
+            title: &'a str,
+            body: &'a str,
+        }
         let revision = |doctrines: &[Doctrine]| {
+            let content: Vec<_> = doctrines
+                .iter()
+                .map(|d| Content {
+                    title: &d.title,
+                    body: &d.body,
+                })
+                .collect();
             format!(
                 "{:x}",
-                Sha256::digest(serde_json::to_vec(doctrines).expect("Doctrine strings serialize"))
+                Sha256::digest(serde_json::to_vec(&content).expect("Doctrine strings serialize"))
             )
         };
         DoctrineCatalog {
             source: "config/settings.json; defaults: src-tauri/doctrines".into(),
-            source_revision: revision(&crate::doctrine_seeds::doctrines()),
+            source_revision: revision(&crate::seeds::doctrines()),
             effective_revision: revision(&self.doctrines),
             count: self.doctrines.len(),
         }
@@ -465,17 +724,16 @@ impl Settings {
         GlobalPreferences {
             defaults: self.defaults.clone(),
             capacity: self.capacity,
+            time_zone: self.time_zone.clone(),
             root_folder: self.root_folder.clone(),
             presets: self.presets.clone(),
             default_review_preset: self.default_review_preset.clone(),
+            rubber_duck: self.rubber_duck,
         }
     }
 
     pub fn readiness(&self) -> ResourceReadiness {
         let mut issues = Vec::new();
-        if !matches!(self.defaults.schedule, Schedule::Cron { .. }) {
-            issues.push("Choose a global five-field cron schedule; the saved legacy interval is retained until explicitly replaced.".into());
-        }
         if !self.repositories.iter().any(|r| r.enabled) {
             issues.push("Select at least one repository. Monitoring has not been enabled.".into());
         }
@@ -501,6 +759,22 @@ impl Settings {
                     {
                         issues.push(format!(
                             "Assignment {} needs an explicit AI account and model.",
+                            assignment.id
+                        ));
+                    }
+                }
+                for assignment in &repository.assignments {
+                    let Some(duck) = repository.assignment_duck(assignment) else {
+                        continue;
+                    };
+                    if self
+                        .agents
+                        .iter()
+                        .find(|a| a.id == duck)
+                        .is_none_or(|a| a.ai_account.is_none() || a.model.trim().is_empty())
+                    {
+                        issues.push(format!(
+                            "Assignment {} Rubber duck needs an explicit AI account and model.",
                             assignment.id
                         ));
                     }
@@ -555,10 +829,22 @@ impl Settings {
                     .into(),
             );
         }
+        if self.voice_catalog_version != voice_catalog_version() {
+            return Err(
+                "Unsupported voice catalog version. Use a compatible application before saving."
+                    .into(),
+            );
+        }
         self.defaults.validate()?;
+        if self.time_zone.parse::<chrono_tz::Tz>().is_err() {
+            return Err(
+                "Enter an explicit IANA time zone, such as UTC or America/New_York.".into(),
+            );
+        }
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
         }
+        self.rubber_duck.validate()?;
         if self
             .root_folder
             .as_ref()
@@ -588,16 +874,8 @@ impl Settings {
             Ok(())
         };
         validate_preset(&self.default_review_preset)?;
-        let mut doctrine_titles = HashSet::new();
-        for doctrine in &self.doctrines {
-            if doctrine.title.trim().is_empty()
-                || !doctrine_titles.insert(doctrine.title.trim().to_lowercase())
-            {
-                return Err("Doctrines need a unique, nonempty title.".into());
-            }
-            crate::policy::validate_configuration_text(&doctrine.title)?;
-            crate::policy::validate_configuration_text(&doctrine.body)?;
-        }
+        library_ids(&self.doctrines, "Doctrines")?;
+        library_ids(&self.voices, "Voices")?;
         let mut agent_ids = HashSet::new();
         let mut agent_names = HashSet::new();
         for agent in &self.agents {
@@ -613,12 +891,22 @@ impl Settings {
                         .into(),
                 );
             }
+            // Unavailable references may persist (shown, never dropped); see
+            // `Store::validate_resource` for the rule that they cannot be added.
+            if agent.doctrine.is_some() || agent.doctrines.is_some() {
+                return Err("Agent doctrine references must use ids.".into());
+            }
             let mut selected = HashSet::new();
-            for title in agent.doctrine_titles() {
-                let key = title.trim().to_lowercase();
-                if !doctrine_titles.contains(&key) || !selected.insert(key) {
-                    return Err("Selected doctrines must exist and must not repeat. Repair the Agent's doctrine references before saving.".into());
-                }
+            if agent
+                .doctrine_ids
+                .iter()
+                .any(|id| id.trim().is_empty() || !selected.insert(id))
+                || agent
+                    .voice_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty())
+            {
+                return Err("Selected doctrines must not repeat. Repair the Agent's doctrine references before saving.".into());
             }
             crate::policy::validate_configuration_text(&agent.name)?;
             crate::policy::validate_configuration_text(&agent.model)?;
@@ -692,6 +980,8 @@ impl Settings {
             if !bindings.insert(binding) {
                 return Err("Repository bindings must be unique.".into());
             }
+            crate::schedule::validate_cron(&repository.cron)
+                .map_err(|error| format!("{}: {error}", repository.name))?;
             repository.overrides.effective(&self.defaults).validate()?;
             if let Some(admission) = &repository.admission {
                 admission.validate()?;
@@ -725,7 +1015,18 @@ impl Settings {
                 if !agent_ids.contains(&assignment.agent_id) {
                     return Err("The selected agent no longer exists. Choose a local agent.".into());
                 }
-                assignment.schedule.validate()?;
+                if assignment
+                    .rubber_duck
+                    .as_ref()
+                    .is_some_and(|id| !agent_ids.contains(id))
+                {
+                    return Err(
+                        "The Rubber duck Agent no longer exists. Choose a local agent.".into(),
+                    );
+                }
+                if let Some(schedule) = &assignment.schedule {
+                    schedule.validate()?;
+                }
                 if assignment
                     .tools
                     .iter()
@@ -764,6 +1065,43 @@ impl Settings {
         Ok(())
     }
 
+    /// Moves a legacy global schedule onto every repository; its zone becomes
+    /// the saved time zone. A cron that can run becomes each repository's
+    /// cron. A legacy interval (it never polled) or a cron with no occurrence
+    /// leaves every repository paused (monitoring off) on the default cron.
+    /// An unparseable legacy schedule is rejected, never silently dropped.
+    /// True when one was moved.
+    pub fn migrate_global_schedule(&mut self) -> Result<bool, String> {
+        if let Some(schedule) = &self.defaults.schedule {
+            schedule.validate()?;
+        }
+        let Some(schedule) = self.defaults.schedule.take() else {
+            return Ok(false);
+        };
+        let (cron, timezone) = match schedule {
+            Schedule::Cron {
+                expression,
+                timezone,
+            } if crate::schedule::validate_cron(&expression).is_ok() => {
+                (Some(expression), timezone)
+            }
+            Schedule::Cron { timezone, .. } | Schedule::Interval { timezone, .. } => {
+                (None, timezone)
+            }
+        };
+        for repository in &mut self.repositories {
+            match &cron {
+                Some(cron) => repository.cron.clone_from(cron),
+                None => {
+                    repository.cron = default_cron();
+                    repository.enabled = false;
+                }
+            }
+        }
+        self.time_zone = timezone;
+        Ok(true)
+    }
+
     pub fn effective_policy(&self, id: &str) -> Option<Policy> {
         self.repositories
             .iter()
@@ -790,6 +1128,10 @@ fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<
             Some("is primary-only")
         } else if id == "submit_report" && primary {
             Some("is non-primary only")
+        } else if id == crate::review::duck::TOOL && !primary {
+            Some("is primary-only")
+        } else if id == crate::review::duck::TOOL && assignment.rubber_duck.is_none() {
+            Some("needs a Rubber duck")
         } else if id == "leave_comments" && !assignment.comment {
             Some("needs Publish Comment")
         } else if id == "approve_pull_request" && !(actions.approve || actions.merge) {
@@ -807,11 +1149,58 @@ fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<
 }
 
 impl Agent {
-    pub fn doctrine_titles(&self) -> Vec<&str> {
+    /// Legacy title references in selection order.
+    fn legacy_doctrine_titles(&self) -> Vec<&str> {
         match &self.doctrines {
             Some(titles) => titles.iter().map(String::as_str).collect(),
             None => self.doctrine.iter().map(String::as_str).collect(),
         }
+    }
+
+    /// References missing from the library: unavailable, never dropped.
+    pub fn unavailable_references(&self, settings: &Settings) -> Vec<&str> {
+        let doctrines = self
+            .doctrine_ids
+            .iter()
+            .filter(|id| !settings.doctrines.iter().any(|d| &d.id == *id));
+        let voice = self
+            .voice_id
+            .iter()
+            .filter(|id| !settings.voices.iter().any(|v| &v.id == *id));
+        doctrines.chain(voice).map(String::as_str).collect()
+    }
+}
+
+impl Settings {
+    /// Idempotent: ids for id-less library entries, then legacy Agent title
+    /// references to ids (trimmed, case-insensitive). An unmatched title stays
+    /// as its own reference, so it shows as unavailable. True when changed.
+    pub fn migrate_library_ids(&mut self) -> bool {
+        let mut changed = assign_ids(&mut self.doctrines) | assign_ids(&mut self.voices);
+        for agent in &mut self.agents {
+            if agent.doctrine.is_none() && agent.doctrines.is_none() {
+                continue;
+            }
+            let mut ids: Vec<String> = Vec::new();
+            for title in agent.legacy_doctrine_titles() {
+                let id = self
+                    .doctrines
+                    .iter()
+                    .find(|d| same_title(&d.title, title))
+                    .map_or_else(|| title.to_string(), |d| d.id.clone());
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            // A legacy list never mixes with ids; ids written earlier win.
+            if agent.doctrine_ids.is_empty() {
+                agent.doctrine_ids = ids;
+            }
+            agent.doctrine = None;
+            agent.doctrines = None;
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -876,8 +1265,24 @@ impl Repository {
     pub fn assignment_tools(&self, assignment: &Assignment) -> Vec<String> {
         match &assignment.tools {
             Some(tools) => tools.clone(),
-            None => default_tools(&self.assignment_authority(assignment)),
+            None => {
+                let mut tools = default_tools(&self.assignment_authority(assignment));
+                if self.assignment_duck(assignment).is_some() {
+                    tools.insert(
+                        crate::review::tools::INVESTIGATION.len(),
+                        crate::review::duck::TOOL.into(),
+                    );
+                }
+                tools
+            }
         }
+    }
+
+    /// The assignment's Rubber Duck Agent id: primary only.
+    pub fn assignment_duck<'a>(&self, assignment: &'a Assignment) -> Option<&'a str> {
+        (self.primary_assignment_id() == Some(assignment.id.as_str()))
+            .then_some(assignment.rubber_duck.as_deref())
+            .flatten()
     }
 
     pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
@@ -952,6 +1357,7 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
 
 pub struct Store {
     root: PathBuf,
+    initial_time_zone: String,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
     #[cfg(test)]
@@ -962,11 +1368,19 @@ impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            initial_time_zone: "UTC".into(),
             #[cfg(test)]
             failed_state_write: std::sync::Mutex::new(None),
             #[cfg(test)]
             state_reads: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Schedule zone written only when this store creates a brand-new profile;
+    /// existing settings, including a saved UTC, are never changed.
+    pub fn with_initial_time_zone(mut self, zone: String) -> Self {
+        self.initial_time_zone = zone;
+        self
     }
 
     #[cfg(test)]
@@ -1105,11 +1519,25 @@ impl Store {
                 if value.as_ref().is_some_and(|a| a.id != id) {
                     return Err("An Agent's stable identity cannot be changed.".into());
                 }
-                if value.is_none()
-                    && settings
-                        .repositories
+                // Keeping an unavailable reference is allowed; adding one is not.
+                if let Some(value) = &value {
+                    let kept = current
+                        .map(|a| a.unavailable_references(&settings))
+                        .unwrap_or_default();
+                    if value
+                        .unavailable_references(&settings)
                         .iter()
-                        .any(|r| r.assignments.iter().any(|a| a.agent_id == id))
+                        .any(|id| !kept.contains(id))
+                    {
+                        return Err("Selected doctrines and Voice must exist. Choose saved library entries.".into());
+                    }
+                }
+                if value.is_none()
+                    && settings.repositories.iter().any(|r| {
+                        r.assignments.iter().any(|a| {
+                            a.agent_id == id || a.rubber_duck.as_deref() == Some(id.as_str())
+                        })
+                    })
                 {
                     return Err("This Agent is assigned to a repository. Remove or replace its assignments explicitly before deleting it.".into());
                 }
@@ -1124,47 +1552,39 @@ impl Store {
                 }
             }
             ResourceEdit::Doctrine {
-                title,
+                id,
                 expected,
                 value,
             } => {
-                let matches =
-                    |value: &str| value.trim().to_lowercase() == title.trim().to_lowercase();
-                let current = settings.doctrines.iter().find(|d| matches(&d.title));
-                if current != expected.as_ref() {
-                    return Err(conflict.into());
-                }
-                if current.is_none() && value.is_none() {
-                    return Err("This doctrine is not saved. Cancel its draft instead.".into());
-                }
+                let referenced = settings.agents.iter().any(|a| a.doctrine_ids.contains(&id));
+                replace_entry(
+                    &mut settings.doctrines,
+                    &id,
+                    expected.as_ref(),
+                    value,
+                    referenced,
+                    "doctrine",
+                    conflict,
+                )?;
+            }
+            ResourceEdit::Voice {
+                id,
+                expected,
+                value,
+            } => {
                 let referenced = settings
                     .agents
                     .iter()
-                    .any(|a| a.doctrine_titles().iter().any(|title| matches(title)));
-                if value.is_none() && referenced {
-                    return Err("This doctrine is used by an Agent. Remove or replace its references explicitly before deleting it.".into());
-                }
-                if let Some(value) = &value {
-                    for agent in &mut settings.agents {
-                        if let Some(titles) = &mut agent.doctrines {
-                            for title in titles.iter_mut().filter(|title| matches(title)) {
-                                *title = value.title.clone();
-                            }
-                        }
-                        if agent.doctrine.as_ref().is_some_and(|title| matches(title)) {
-                            agent.doctrine = Some(value.title.clone());
-                        }
-                    }
-                }
-                if let Some(index) = settings.doctrines.iter().position(|d| matches(&d.title)) {
-                    if let Some(value) = value {
-                        settings.doctrines[index] = value;
-                    } else {
-                        settings.doctrines.remove(index);
-                    }
-                } else if let Some(value) = value {
-                    settings.doctrines.push(value);
-                }
+                    .any(|a| a.voice_id.as_ref() == Some(&id));
+                replace_entry(
+                    &mut settings.voices,
+                    &id,
+                    expected.as_ref(),
+                    value,
+                    referenced,
+                    "voice",
+                    conflict,
+                )?;
             }
             ResourceEdit::Repository {
                 id,
@@ -1201,16 +1621,16 @@ impl Store {
                 if settings.global_preferences() != expected {
                     return Err(conflict.into());
                 }
-                if value.defaults.schedule != expected.defaults.schedule
-                    && !matches!(value.defaults.schedule, Schedule::Cron { .. })
-                {
-                    return Err("Choose one global five-field cron expression.".into());
+                if value.defaults.schedule.is_some() {
+                    return Err("Schedules belong to repositories.".into());
                 }
                 settings.defaults = value.defaults;
                 settings.capacity = value.capacity;
+                settings.time_zone = value.time_zone;
                 settings.root_folder = value.root_folder;
                 settings.presets = value.presets;
                 settings.default_review_preset = value.default_review_preset;
+                settings.rubber_duck = value.rubber_duck;
             }
         }
         settings.validate()?;
@@ -1262,12 +1682,6 @@ impl Store {
             if repository.provider != ProviderId::Github || repository.account_binding().is_none() {
                 return Err(format!(
                     "{}: bind a supported GitHub account and repository before enabling monitoring.",
-                    repository.name
-                ));
-            }
-            if !matches!(settings.defaults.schedule, Schedule::Cron { .. }) {
-                return Err(format!(
-                    "{}: choose a global five-field cron schedule in Preferences before enabling monitoring.",
                     repository.name
                 ));
             }
@@ -1334,6 +1748,9 @@ impl Store {
         mut settings: Settings,
         expected: &Settings,
     ) -> Result<Settings, String> {
+        // Whole-settings saves may carry pre-id library shapes.
+        settings.migrate_library_ids();
+        settings.migrate_global_schedule()?;
         let current = self.load_settings()?;
         if &current != expected {
             return Err("Settings changed in another window. Reload Settings before saving; your draft has not been written.".into());
@@ -1366,10 +1783,12 @@ impl Store {
         let bytes = match self.read_file("config", "settings.json") {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                let settings = Settings {
-                    doctrines: crate::doctrine_seeds::doctrines(),
+                let mut settings = Settings {
+                    doctrines: crate::seeds::doctrines(),
+                    voices: crate::seeds::voices(),
                     ..Settings::default()
                 };
+                settings.time_zone.clone_from(&self.initial_time_zone);
                 settings.validate()?;
                 self.write_settings(&settings)?;
                 return Ok(settings);
@@ -1384,6 +1803,10 @@ impl Store {
             doctrine_catalog_version: Option<u32>,
             #[serde(default)]
             admission_migration_version: Option<u32>,
+            #[serde(default)]
+            voice_catalog_version: Option<u32>,
+            #[serde(default)]
+            time_zone: Option<serde::de::IgnoredAny>,
         }
         // API-created settings default to the current version; only unversioned
         // on-disk pre-alpha settings need the one-time reconciliation.
@@ -1391,8 +1814,47 @@ impl Store {
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
         let reconcile_doctrines = saved_version.doctrine_catalog_version.is_none();
         let migrate_admission = saved_version.admission_migration_version.is_none();
+        // Files without a saved time zone predate repository schedules; a file
+        // with no saved global schedule ran on the then-default cron. Only a
+        // real change is written, like the admission migration.
+        let saved_schedule = settings.defaults.schedule.is_some();
+        let schedules = |settings: &Settings| {
+            let repositories: Vec<_> = settings
+                .repositories
+                .iter()
+                .map(|r| (r.cron.clone(), r.enabled))
+                .collect();
+            (settings.time_zone.clone(), repositories)
+        };
+        let unmigrated = schedules(&settings);
+        if saved_version.time_zone.is_none() {
+            settings
+                .defaults
+                .schedule
+                .get_or_insert_with(|| Schedule::Cron {
+                    expression: crate::schedule::LEGACY_DEFAULT_CRON.into(),
+                    timezone: "UTC".into(),
+                });
+        }
+        settings
+            .migrate_global_schedule()
+            .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
+        let migrated_schedule = saved_schedule || schedules(&settings) != unmigrated;
+        // One-time seed for files that predate Voices; never a top-up.
+        let seed_voices = saved_version.voice_catalog_version.is_none();
+        if seed_voices {
+            for seed in crate::seeds::voices() {
+                if !settings
+                    .voices
+                    .iter()
+                    .any(|v| same_title(&v.title, &seed.title))
+                {
+                    settings.voices.push(seed);
+                }
+            }
+        }
         if reconcile_doctrines {
-            let canonical = crate::doctrine_seeds::doctrines();
+            let canonical = crate::seeds::doctrines();
             let mut removed_references = 0;
             let valid = |title: &str| {
                 canonical
@@ -1412,7 +1874,14 @@ impl Store {
                     removed_references += 1;
                 }
             }
-            if settings.doctrines != canonical || removed_references > 0 {
+            let content = |d: &Doctrine| (d.title.clone(), d.body.clone());
+            if !settings
+                .doctrines
+                .iter()
+                .map(content)
+                .eq(canonical.iter().map(content))
+                || removed_references > 0
+            {
                 settings.doctrine_reset = Some(DoctrineReset {
                     previous_count: settings.doctrines.len(),
                     removed_references,
@@ -1459,16 +1928,36 @@ impl Store {
         // Files without repositories to migrate are left byte-for-byte alone;
         // every later save stamps the version.
         let migrated_admission = migrate_admission && migrate_admission_rules(&mut settings);
+        // After the pre-alpha reconciliation, which still reads legacy titles.
+        let migrated_ids = settings.migrate_library_ids();
         settings
             .validate()
             .map_err(|_| "Settings are invalid. Repair config/settings.json before saving.")?;
-        if migrated || reconcile_doctrines || reconciled_permissions || migrated_admission {
+        if migrated
+            || reconcile_doctrines
+            || seed_voices
+            || migrated_ids
+            || reconciled_permissions
+            || migrated_admission
+            || migrated_schedule
+        {
             self.write_settings(&settings)?;
         }
         Ok(settings)
     }
 
+    pub fn save_theme(&self, theme: Theme) -> Result<(), String> {
+        let mut settings = self.load_settings()?;
+        settings.theme = theme;
+        self.save_settings(&settings)
+    }
+
     pub fn save_settings(&self, settings: &Settings) -> Result<(), String> {
+        // Callers may still hand in pre-id shapes (fixtures, imports).
+        let mut settings = settings.clone();
+        settings.migrate_library_ids();
+        settings.migrate_global_schedule()?;
+        let settings = &settings;
         settings.validate()?;
         // Never silently replace unreadable or corrupt existing configuration.
         self.load_settings()?;
@@ -1500,6 +1989,7 @@ impl Store {
             provider: ProviderId::Github,
             name,
             enabled: true,
+            cron: default_cron(),
             provider_account_id: None,
             legacy_installation_id: None,
             provider_repository_id: None,

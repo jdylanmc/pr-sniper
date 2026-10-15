@@ -11,6 +11,28 @@ const genieButton = document.querySelector("#genie-button");
 const pageTitle = document.querySelector("#page-title");
 const backButton = document.querySelector("#back-button");
 const toast = document.querySelector("#toast");
+const themeKey = "pr-sniper.vnext.theme";
+const themes = { light: "Light", dark: "Dark", os: "OS" };
+const systemDark = matchMedia("(prefers-color-scheme: dark)");
+let theme = (() => {
+  const requested = new URLSearchParams(location.search).get("theme");
+  if (requested in themes) return requested;
+  try {
+    const saved = localStorage.getItem(themeKey);
+    if (saved in themes) return saved;
+  } catch {
+    // Blocked storage keeps the Light default.
+  }
+  return "light";
+})();
+function applyTheme() {
+  document.documentElement.dataset.theme =
+    theme === "dark" || (theme === "os" && systemDark.matches)
+      ? "dark"
+      : "light";
+}
+systemDark.addEventListener("change", applyTheme);
+applyTheme();
 let state = Demo.seed();
 let savedRaw = null;
 let storageBlocked = false;
@@ -256,7 +278,7 @@ function navigate(page, id, keepEdits = false) {
 
 function goBack() {
   const picker = stage.lastElementChild?.querySelector(
-    '.agent-form[data-view="doctrines"]',
+    '.agent-form:is([data-view="doctrines"], [data-view="voices"])',
   );
   if (picker) {
     setAgentView(picker, "");
@@ -708,21 +730,28 @@ function settingsRow(title, subtitle, value, symbol, page) {
 
 function settingsPage() {
   return `<div class="page-scroll" data-scroll="settings">
-    <div class="settings-list">
+    <nav class="settings-list" aria-labelledby="settings-group-general"><h2 class="settings-list-heading" id="settings-group-general">General</h2>
       ${settingsRow("Accounts", "GitHub and Copilot, kept separate", `${state.accounts.filter((account) => account.connected).length} connected`, "people", "accounts")}
-      ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
       ${settingsRow("Repositories", "Assignments, people, and schedules", state.repos.length, "folder", "repos")}
+      ${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}
+      ${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}
+    </nav>
+    <nav class="settings-list" aria-labelledby="settings-group-behavior"><h2 class="settings-list-heading" id="settings-group-behavior">Review behavior</h2>
+      ${settingsRow("Agents", "Reusable review configurations", state.agents.length, "crosshair", "agents")}
       ${settingsRow("Doctrines", "The principles behind each review", state.doctrines.length, "book", "doctrines")}
-    </div>
-    <div class="settings-list">${settingsRow("Concurrent reviews", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}${settingsRow("Preferences", "Automation, notifications, startup", "", "settings", "preferences")}${settingsRow("Advanced", "Local demo data and reset", "", "terminal", "advanced")}</div>
+      ${settingsRow("Voices", "How agents sound to people", state.voices.length, "spark", "voices")}
+    </nav>
     <p class="section-note">Changes stay in this browser. No real accounts, credentials, or application settings are read or changed.</p>
   </div>`;
 }
 
 function collectionPage(kind) {
   if (kind === "repos") return repositoriesPage();
-  const editor = kind === "agents" ? "agent" : "doctrine";
-  const label = kind === "agents" ? "New agent" : "New doctrine";
+  const editor =
+    kind === "agents" ? "agent" : kind === "voices" ? "voice" : "doctrine";
+  const label = `New ${editor}`;
+  const symbol =
+    kind === "agents" ? "crosshair" : kind === "voices" ? "spark" : "book";
   const warning = (item) => {
     if (kind !== "agents") return "";
     if (!item.accountId || !item.prompt?.trim()) return "Unconfigured";
@@ -735,12 +764,14 @@ function collectionPage(kind) {
   const cards = state[kind].map((item) => {
     const detail =
       kind === "agents"
-        ? `${item.model} / ${state.repos.filter((repo) => repo.agentIds.includes(item.id)).length} repositories`
-        : `${item.body.trim().split(/\s+/).length} words`;
+        ? `${item.model} / ${countLabel(state.repos.filter((repo) => repo.agentIds.includes(item.id)).length, "repository", "repositories")}`
+        : kind === "voices"
+          ? `${countLabel(item.body.trim().split(/\s+/).length, "word", "words")} / ${countLabel(state.agents.filter((agent) => agent.voiceId === item.id).length, "agent", "agents")}`
+          : `${item.body.trim().split(/\s+/).length} words`;
     const problem = warning(item);
-    return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(kind === "agents" ? "crosshair" : "book")}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
+    return `<div class="configuration-card"><button type="button" class="card-open" data-page="${editor}" data-id="${esc(item.id)}"><span class="row-symbol">${icon(symbol)}</span><span class="row-copy"><strong>${esc(item.name)}</strong><small>${esc(detail)}</small>${problem ? `<span class="row-warning">${problem}</span>` : ""}</span></button><button type="button" class="row-trash" data-action="delete-${editor}" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.name)}" title="Delete">${icon("trash")}</button></div>`;
   });
-  return `<div class="page-scroll has-fab" data-scroll="${kind}">${cards.length ? `<div class="configuration-list">${cards.join("")}</div>` : quietEmpty(kind === "agents" ? "crosshair" : "book", `No ${kind} yet`)}</div>
+  return `<div class="page-scroll has-fab" data-scroll="${kind}">${cards.length ? `<div class="configuration-list">${cards.join("")}</div>` : quietEmpty(symbol, `No ${kind} yet`)}</div>
     <button type="button" class="floating-pill" data-page="${editor}">${icon("plus")}${label}</button>`;
 }
 
@@ -848,6 +879,7 @@ function addRepository(name, accountId) {
 function field(label, control, hint = "") {
   return `<label class="form-field"><span>${label}</span>${control}${hint ? `<small>${hint}</small>` : ""}</label>`;
 }
+const countLabel = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 const input = (name, value = "", required = true) =>
   `<input name="${name}" value="${esc(value)}" ${required ? "required" : ""} autocomplete="off" />`;
 const option = (value, label, current) =>
@@ -882,6 +914,7 @@ function agentEditor(id) {
     model: "",
     prompt: "Review this pull request for correctness, risk, and readability.",
     doctrineIds: [],
+    voiceId: "",
     completion: "human",
     comment: false,
   };
@@ -918,6 +951,7 @@ function agentEditor(id) {
       </section>
       <section class="group-card">
         <button type="button" class="kv-row kv-link" data-action="open-doctrines" aria-label="Choose doctrines"><span>Doctrines</span><span class="kv-value" data-doctrine-summary>${agent.doctrineIds.length} selected</span>${icon("chevron")}</button>
+        <button type="button" class="kv-row kv-link" data-action="open-voices" aria-label="Choose voice"><span>Voice</span><span class="kv-value" data-voice-summary>${esc(state.voices.find((voice) => voice.id === agent.voiceId)?.name ?? "None")}</span>${icon("chevron")}</button>
         <div class="prompt-block"><div class="prompt-head"><span>Prompt</span><button type="button" class="icon-button info-tip" data-action="prompt-tip" aria-label="Prompt tips" aria-expanded="false" aria-controls="prompt-tips">${icon("info")}</button></div>
           <div class="tip-body" id="prompt-tips" role="group" aria-label="Prompt tokens and tips" hidden><strong>Tokens</strong><span class="tip-note">Click to insert. Replaced when the review runs.</span><span class="token-list">${tokens}</span><strong>Tips</strong><ul><li>Open with a role and goal.</li><li>Say what to flag, what to ignore, and the severity bar.</li><li>Ask for file, line and a suggested fix.</li></ul></div>
           <textarea name="prompt" aria-label="Prompt" required rows="4">${esc(agent.prompt)}</textarea></div>
@@ -939,6 +973,17 @@ function agentEditor(id) {
           )
           .join("") || quietEmpty("book", "No doctrines yet")
       }</div>
+    </div>
+    <div class="agent-voices" hidden>
+      <div class="group-card doctrine-choices" role="radiogroup" aria-label="Available voices">${[
+        { id: "", name: "None" },
+        ...state.voices,
+      ]
+        .map(
+          (voice) =>
+            `<div class="doctrine-choice" data-voice-choice><label><input type="radio" name="voiceId" value="${esc(voice.id)}" ${checked((agent.voiceId ?? "") === voice.id)} /><span>${esc(voice.name)}</span></label>${voice.id ? `<button type="button" class="icon-button" data-action="edit-voice" data-id="${esc(voice.id)}" aria-label="Edit voice ${esc(voice.name)}" title="Edit voice">${icon("pencil")}</button>` : ""}</div>`,
+        )
+        .join("")}</div>
     </div></form></div>`;
 }
 
@@ -978,7 +1023,7 @@ function repoEditor(id) {
     </details>
     <details class="group-card repo-disclosure schedule-details"><summary>Schedule and scope (prototype)</summary>
       ${row("New-PR-only scope", `<input type="checkbox" class="switch" name="scope" ${checked(repo.scope)} />`)}
-      ${row("Schedule", `<select name="schedule">${option("interval", "Fixed interval", repo.schedule)}${option("cron", "Cron (advanced)", repo.schedule)}</select>`)}
+      ${row("Schedule", `<select name="schedule">${option("interval", "Every", repo.schedule)}${option("cron", "Advanced", repo.schedule)}</select>`)}
       <div data-schedule="interval">${row("Every (minutes)", `<input name="minutes" type="number" min="1" step="1" value="${repo.minutes}" required />`)}</div>
       <div data-schedule="cron">${row("Cron", input("cron", repo.cron))}${row("Time zone", input("zone", repo.zone))}</div>
       ${["start", "comments"].map((key) => row(key === "start" ? "Start reviews" : "Publish comments", `<select name="${key}">${option("inherit", `Default (${state.preferences[key === "start" ? "automaticStart" : "automaticComments"] ? "on" : "off"})`, repo[key])}${option("on", "On", repo[key])}${option("off", "Off", repo[key])}</select>`)).join("")}
@@ -1140,19 +1185,26 @@ function addAdmissionValue(form, value) {
 
 function setAgentView(form, view) {
   form.dataset.view = view;
-  form.querySelector(".agent-main").hidden = view === "doctrines";
+  const opener = form.dataset.opener || "open-doctrines";
+  if (view) form.dataset.opener = `open-${view}`;
+  form.querySelector(".agent-main").hidden = !!view;
   form.querySelector(".agent-doctrines").hidden = view !== "doctrines";
+  form.querySelector(".agent-voices").hidden = view !== "voices";
   const saved = state.agents.find((agent) => agent.id === form.dataset.id);
   pageTitle.textContent =
     view === "doctrines"
       ? "Doctrines"
-      : saved
-        ? `Editing ${saved.name}`
-        : "New agent";
+      : view === "voices"
+        ? "Voice"
+        : saved
+          ? `Editing ${saved.name}`
+          : "New agent";
   if (!form.isConnected) return;
   (view === "doctrines"
     ? form.querySelector("#doctrine-filter")
-    : form.querySelector('[data-action="open-doctrines"]')
+    : view === "voices"
+      ? form.querySelector('[name="voiceId"]:checked')
+      : form.querySelector(`[data-action="${opener}"]`)
   ).focus({ preventScroll: true });
 }
 
@@ -1203,6 +1255,7 @@ function captureDraft() {
           doctrineIds: [
             ...form.querySelectorAll('[name="doctrineIds"]:checked'),
           ].map((item) => item.value),
+          voiceId: form.querySelector('[name="voiceId"]:checked')?.value ?? "",
         }
       : {
           name: text("name"),
@@ -1243,6 +1296,15 @@ function doctrineEditor(id) {
     body: "",
   };
   return `<div class="page-scroll" data-scroll="doctrine-editor"><form data-form="doctrine" data-id="${esc(id ?? "")}" class="editor-form">${field("Doctrine name", input("name", item.name))}${field("Review principles", `<textarea name="body" rows="10" required>${esc(item.body)}</textarea>`)}${editorFooter("doctrine", id)}</form></div>`;
+}
+
+function voiceEditor(id) {
+  const item = state.voices.find((voice) => voice.id === id) ?? {
+    name: "",
+    body: "",
+    guardrails: true,
+  };
+  return `<div class="page-scroll" data-scroll="voice-editor"><form data-form="voice" data-id="${esc(id ?? "")}" class="editor-form">${field("Voice name", input("name", item.name))}${field("Style", `<textarea name="body" rows="8" required>${esc(item.body)}</textarea>`)}<label class="voice-guardrails"><input type="checkbox" name="guardrails" ${checked(item.guardrails)} /><span>Fixed guardrails: tone only; critique code, never people</span></label>${editorFooter("voice", id)}</form></div>`;
 }
 
 function accountsPage() {
@@ -1327,9 +1389,30 @@ function returnToAccounts() {
 }
 
 function capacityPage() {
+  const duck = state.duck ?? { calls: 8, timeout: 180, window: 15 };
   return `<div class="page-scroll" data-scroll="capacity"><div class="feature-summary"><span class="summary-icon">${icon("activity")}</span><div><strong>${state.limit}</strong><p>maximum simultaneous reviews</p></div></div>
     <form data-form="capacity" class="editor-form"><p class="section-note">Save as many agents as you like. This controls how many review packets can run at once across all repositories.</p>${field("Concurrent reviews", `<input name="limit" type="number" min="1" step="1" value="${state.limit}" required />`)}
+    <fieldset class="duck-limits"><legend>Rubber duck</legend>${field("Calls", `<input name="duckCalls" type="number" min="1" max="32" step="1" value="${duck.calls}" required />`)}${field("Timeout (s)", `<input name="duckTimeout" type="number" min="30" max="600" step="1" value="${duck.timeout}" required />`)}${field("Primary window (min)", `<input name="duckWindow" type="number" min="5" max="120" step="1" value="${duck.window}" required />`)}</fieldset>
     <p class="inline-warning">Lowering the limit stops surplus sample reviews, discards their partial work, and puts them back in the queue.</p><button class="primary-action wide" type="submit">Save review limit</button></form></div>`;
+}
+
+const notificationTypeLabels = {
+  confirmation: "Confirmation",
+  human_input: "Needs input",
+  ready: "Ready",
+  failure: "Failures",
+  approved: "Approved",
+  merged: "Merged",
+  final_review_cleared: "Final review cleared",
+};
+
+function notificationTypeRows() {
+  return `<fieldset class="notification-types" data-notification-types ${state.preferences.notifications ? "" : "hidden"}><legend>Notification types</legend>${Demo.notificationTypeKeys
+    .map(
+      (key) =>
+        `<label class="preference-row"><span><strong>${notificationTypeLabels[key]}</strong></span><input type="checkbox" class="switch" name="type-${key}" ${checked(state.preferences.notificationTypes[key])} /></label>`,
+    )
+    .join("")}</fieldset>`;
 }
 
 function preferencesPage() {
@@ -1351,25 +1434,29 @@ function preferencesPage() {
       "A saved preference only. No operating-system login item is changed.",
     ],
   };
-  return `<div class="page-scroll" data-scroll="preferences"><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
+  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}</div><div class="form-group"><label class="preference-row"><span><strong>Theme</strong></span><select data-theme-select aria-label="Theme">${Object.entries(
+    themes,
+  )
+    .map(
+      ([value, label]) =>
+        `<option value="${value}" ${value === theme ? "selected" : ""}>${label}</option>`,
+    )
+    .join(
+      "",
+    )}</select></label></div><form data-form="preferences" class="editor-form"><div class="form-group">${Object.entries(
     labels,
   )
     .map(
       ([key, [label, description]]) =>
-        `<label class="preference-row" title="${esc(description)}"><span><strong>${label}</strong></span><input type="checkbox" class="switch" name="${key}" ${checked(state.preferences[key])} /></label>`,
+        `<label class="preference-row" title="${esc(description)}"><span><strong>${label}</strong></span><input type="checkbox" class="switch" name="${key}" ${checked(state.preferences[key])} /></label>${key === "notifications" ? notificationTypeRows() : ""}`,
     )
     .join(
       "",
-    )}</div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
+    )}</div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
 }
 
-function statusPage() {
-  const waiting = human().length;
-  return `<div class="page-scroll" data-scroll="status"><section class="detail-section"><dl class="context-list"><dt>Monitoring</dt><dd>${state.monitoring ? "On" : "Paused"}</dd><dt>Running</dt><dd>${running().length} of ${state.limit}</dd><dt>Waiting</dt><dd>${queued().length}</dd><dt>Needs you</dt><dd>${waiting}</dd></dl></section></div>`;
-}
-
-function diagnosticsPage() {
-  return `<div class="page-scroll" data-scroll="diagnostics"><section class="detail-section"><dl class="context-list"><dt>Storage</dt><dd>${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}</dd><dt>Schema</dt><dd>v${state.version}</dd><dt>Review packets</dt><dd>${state.reviews.length}</dd><dt>Network operations</dt><dd>None</dd></dl></section></div>`;
+function diagnosticsText() {
+  return `Storage: ${storageBlocked ? "Unavailable / reset required" : "Browser localStorage"}\nSchema: v${state.version}\nReview packets: ${state.reviews.length}\nNetwork operations: None\n`;
 }
 
 const changelogSource = `# Changelog
@@ -1402,6 +1489,12 @@ const changelogSource = `# Changelog
 - Sample entries stand in for the rendered CHANGELOG.md in this prototype.
 `;
 
+// Escape first, then mark up **bold** and `code`; never raw HTML.
+const inlineMarkdown = (text) =>
+  esc(text).replace(/\*\*([^*]+)\*\*|`([^`]+)`/g, (_match, bold, code) =>
+    bold === undefined ? `<code>${code}</code>` : `<strong>${bold}</strong>`,
+  );
+
 function changelogPage() {
   let html = "";
   let open = false;
@@ -1411,11 +1504,11 @@ function changelogPage() {
       if (open) html += "</ul>";
       open = false;
       const tag = heading[1] === "##" ? "h2" : "h3";
-      html += `<${tag}>${esc(heading[2])}</${tag}>`;
+      html += `<${tag}>${inlineMarkdown(heading[2])}</${tag}>`;
     } else if (raw.startsWith("- ")) {
       if (!open) html += "<ul>";
       open = true;
-      html += `<li>${esc(raw.slice(2))}</li>`;
+      html += `<li>${inlineMarkdown(raw.slice(2))}</li>`;
     }
   }
   if (open) html += "</ul>";
@@ -1440,13 +1533,13 @@ function render(direction = 0, focus = false) {
     repo: "Repository",
     copilot: "GitHub Copilot",
     github: "GitHub",
-    status: "Status",
-    diagnostics: "Diagnostics",
     changelog: "Changelog",
     "repo-browser": "Browse",
     "repo-url": "Add by URL",
     doctrines: "Doctrines",
     doctrine: "Doctrine",
+    voices: "Voices",
+    voice: "Voice",
     accounts: "Accounts",
     "add-account": "Add account",
     "account-signin": "Sign in",
@@ -1467,10 +1560,14 @@ function render(direction = 0, focus = false) {
     pageTitle.textContent = record(state.doctrines)
       ? `Editing ${record(state.doctrines).name}`
       : "New doctrine";
+  else if (current.page === "voice")
+    pageTitle.textContent = record(state.voices)
+      ? `Editing ${record(state.voices).name}`
+      : "New voice";
   else if (current.page === "repo")
     pageTitle.textContent = record(state.repos)?.name ?? "New repository";
   popover.dataset.editor = String(
-    ["agent", "repo", "doctrine"].includes(current.page),
+    ["agent", "repo", "doctrine", "voice"].includes(current.page),
   );
   let html;
   switch (current.page) {
@@ -1498,6 +1595,7 @@ function render(direction = 0, focus = false) {
     case "agents":
     case "repos":
     case "doctrines":
+    case "voices":
       html = collectionPage(current.page);
       break;
     case "agent":
@@ -1515,6 +1613,9 @@ function render(direction = 0, focus = false) {
     case "doctrine":
       html = doctrineEditor(current.id);
       break;
+    case "voice":
+      html = voiceEditor(current.id);
+      break;
     case "accounts":
       html = accountsPage();
       break;
@@ -1527,12 +1628,6 @@ function render(direction = 0, focus = false) {
     case "copilot":
     case "github":
       html = accountKindPage(current.page);
-      break;
-    case "status":
-      html = statusPage();
-      break;
-    case "diagnostics":
-      html = diagnosticsPage();
       break;
     case "changelog":
       html = changelogPage();
@@ -1571,7 +1666,8 @@ function render(direction = 0, focus = false) {
     initRepoForm(next.querySelector('[data-form="repo"]'));
   if (current.page === "agent") {
     const form = next.querySelector('[data-form="agent"]');
-    if (current.draft?.view === "doctrines") setAgentView(form, "doctrines");
+    if (["doctrines", "voices"].includes(current.draft?.view))
+      setAgentView(form, current.draft.view);
     form.dataset.view ||= "";
   }
   if (previous) {
@@ -1582,6 +1678,8 @@ function render(direction = 0, focus = false) {
   growPrompt(next);
   if (current.page === "agent" && current.draft?.view === "doctrines")
     pageTitle.textContent = "Doctrines";
+  if (current.page === "agent" && current.draft?.view === "voices")
+    pageTitle.textContent = "Voice";
   if (current.page === "repo") {
     const repoForm = next.querySelector('[data-form="repo"]');
     if (repoForm._route.length) {
@@ -1652,6 +1750,7 @@ function readForm(form) {
             signature: value("signature"),
             prompt: value("prompt"),
             doctrineIds: all("doctrineIds"),
+            voiceId: value("voiceId"),
             completion: value("completion"),
             comment: bool("comment"),
           },
@@ -1693,15 +1792,49 @@ function readForm(form) {
         "save-doctrine",
         { doctrine: { id, name: value("name"), body: value("body") } },
       ];
+    case "voice":
+      return [
+        "save-voice",
+        {
+          voice: {
+            id,
+            name: value("name"),
+            body: value("body"),
+            guardrails: bool("guardrails"),
+          },
+        },
+      ];
     case "capacity":
-      return ["capacity", { limit: Number(value("limit")) }];
+      return [
+        "capacity",
+        {
+          limit: Number(value("limit")),
+          duck: {
+            calls: Number(value("duckCalls")),
+            timeout: Number(value("duckTimeout")),
+            window: Number(value("duckWindow")),
+          },
+        },
+      ];
     case "preferences":
       return [
         "preferences",
         {
-          preferences: Object.fromEntries(
-            Object.keys(state.preferences).map((key) => [key, bool(key)]),
-          ),
+          preferences: {
+            ...Object.fromEntries(
+              Object.keys(state.preferences)
+                .filter((key) => key !== "notificationTypes")
+                .map((key) => [key, bool(key)]),
+            ),
+            notificationTypes: bool("notifications")
+              ? Object.fromEntries(
+                  Demo.notificationTypeKeys.map((key) => [
+                    key,
+                    bool(`type-${key}`),
+                  ]),
+                )
+              : { ...state.preferences.notificationTypes },
+          },
         },
       ];
     case "complete":
@@ -1763,6 +1896,7 @@ stage.addEventListener("submit", (event) => {
       "agent",
       "repo",
       "doctrine",
+      "voice",
       "capacity",
       "preferences",
     ].includes(form.dataset.form);
@@ -1815,6 +1949,16 @@ stage.addEventListener("input", (event) => {
   }
 });
 stage.addEventListener("change", (event) => {
+  if (event.target.matches("[data-theme-select]")) {
+    theme = event.target.value;
+    try {
+      localStorage.setItem(themeKey, theme);
+    } catch {
+      // The choice still applies for this page.
+    }
+    applyTheme();
+    return;
+  }
   if (event.target.id === "repository-owner") {
     route().owner = event.target.value;
     route().query = "";
@@ -1822,11 +1966,26 @@ stage.addEventListener("change", (event) => {
     stage.querySelector("#repository-owner").focus();
     return;
   }
+  if (
+    event.target.name === "notifications" &&
+    event.target.closest('[data-form="preferences"]')
+  ) {
+    event.target
+      .closest("form")
+      .querySelector("[data-notification-types]").hidden =
+      !event.target.checked;
+  }
   if (event.target.name === "confirmSetup") {
     event.target
       .closest("form")
       .querySelector('button[type="submit"]').disabled =
       !event.target.checked || !Demo.setupStatus(state).ready;
+  }
+  if (event.target.name === "voiceId") {
+    const form = event.target.closest("form");
+    form.querySelector("[data-voice-summary]").textContent =
+      state.voices.find((voice) => voice.id === event.target.value)?.name ??
+      "None";
   }
   if (event.target.name === "doctrineIds") {
     const form = event.target.closest("form");
@@ -1972,13 +2131,25 @@ popover.addEventListener("click", (event) => {
       return;
     if (perform(action, { id }, "Prototype configuration deleted.", false)) {
       dirty = false;
-      if (["agent", "repo", "doctrine"].includes(route().page)) goBack();
+      if (["agent", "repo", "doctrine", "voice"].includes(route().page))
+        goBack();
       else render();
     }
     return;
   }
   if (action === "account") {
     perform("account", { id }, "Account disconnected.");
+    return;
+  }
+  if (action === "copy-diagnostics") {
+    const done = (ok) => {
+      button.dataset.state = ok ? "copied" : "failed";
+      button.querySelector("svg").outerHTML = icon(ok ? "check" : "copy");
+    };
+    navigator.clipboard.writeText(diagnosticsText()).then(
+      () => done(true),
+      () => done(false),
+    );
     return;
   }
   if (action === "changelog") {
@@ -2001,6 +2172,7 @@ popover.addEventListener("click", (event) => {
   const form = button.closest("form");
   const editorActions = {
     "open-doctrines": () => setAgentView(form, "doctrines"),
+    "open-voices": () => setAgentView(form, "voices"),
     "prompt-tip": () => {
       const tip = form.querySelector(".tip-body");
       tip.hidden = !tip.hidden;
@@ -2030,6 +2202,10 @@ popover.addEventListener("click", (event) => {
     "edit-doctrine": () => {
       captureDraft();
       navigate("doctrine", id, true);
+    },
+    "edit-voice": () => {
+      captureDraft();
+      navigate("voice", id, true);
     },
     "assign-agent": () => {
       const picker = form.querySelector('[data-picker="agents"]');

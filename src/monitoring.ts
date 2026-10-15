@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { whenReleased } from "./stable-dom";
 import { actualIntelligence } from "./copilot";
 import { mountAutomation, type AutomationSnapshot } from "./automation";
 import type { PanelDetail } from "./panel";
@@ -17,7 +18,6 @@ import {
   renderItemEvidence,
   humanQueue,
 } from "./queue";
-import { renderNotificationHistory } from "./notifications";
 import {
   renderConfiguration,
   renderWorkContext,
@@ -41,6 +41,9 @@ interface Health {
   last_failure: string | null;
   last_error?: string | null;
   in_flight: boolean;
+  scheduled_run?: number;
+  scan_pending?: boolean;
+  scan_requested?: boolean;
   conversation_admission_pending?: boolean;
   manual_pending: boolean;
   operation: {
@@ -87,11 +90,6 @@ export interface MonitoringSnapshot {
     blocked: string | null;
   }[];
   mentions?: MentionRouting[];
-  global_scan?: {
-    schedule_key: string;
-    next_run: number;
-    pending: string[];
-  } | null;
   tracked?: {
     pull_request_id: string;
     lifecycle: "open" | "closed" | "merged";
@@ -203,6 +201,10 @@ export interface ReviewCandidate {
       exits_offered: string[];
       exits_denied: unknown[];
     } | null;
+    // The Rubber Duck Agent whose setup failed the last attempt.
+    failed_duck?: string | null;
+    // Duck calls of the last attempt that ended without a result.
+    attempt_ducks?: DuckCall[];
     result: {
       reviewed_base_sha?: string | null;
       output: {
@@ -231,76 +233,44 @@ export interface ReviewCandidate {
       output_tokens: number;
       tool_calls: number;
       coverage?: { read: number; changed: number } | null;
+      ducks?: DuckCall[];
     } | null;
   } | null;
 }
 
+/** One Rubber Duck call, stored with the primary's result. */
+export interface DuckCall {
+  ordinal: number;
+  input: {
+    kind: "line" | "thread" | "pr";
+    path?: string;
+    line?: number;
+    end_line?: number;
+    thread_id?: string;
+    claim: string;
+  };
+  outcome:
+    | {
+        outcome: "verdict";
+        verdict: {
+          verdict: "confirmed" | "revise" | "rejected" | "unverifiable";
+          nano: string;
+        };
+      }
+    | { outcome: "failure"; failure: string };
+  agent: string;
+  model: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  duration_ms: number;
+  /** Further refusals folded into this entry. */
+  repeats?: number;
+  /** Refusals of other kinds folded in past the entry cap, by failure id. */
+  others?: Record<string, number>;
+}
+
 const time = (value: number | null) =>
   value === null ? "Never" : new Date(value * 1000).toLocaleString();
-
-const blockingFailures = new Set([
-  "account_binding_required",
-  "account_disconnected",
-  "configuration",
-  "invalid_schedule",
-  "invalid_global_cron",
-  "provider_unavailable",
-  "scope_confirmation_required",
-  "repository_configuration_required",
-  "settings_unavailable",
-]);
-
-function healthLabel(item: Health) {
-  if (!item.enabled) return "Disabled";
-  if (item.operation?.state === "manual_retry") return "Manual retry";
-  if (item.operation?.state === "failed") return "Failed";
-  if (item.operation?.state === "interrupted") return "Interrupted";
-  if (item.operation?.state === "queued") return "Retry queued";
-  if (item.in_flight) return "Checking";
-  if (item.conversation_admission_pending) return "Admission pending";
-  if (item.last_failure && blockingFailures.has(item.last_failure))
-    return "Failed";
-  if (!item.schedule_available) return "Unavailable";
-  return item.manual_pending ? "Scheduled; check pending" : "Scheduled";
-}
-
-function waitingLabel(waiting: string) {
-  switch (waiting) {
-    case "trust_confirmation":
-      return "Waiting";
-    case "human_start":
-    case "ai_capacity":
-      return "Queued";
-    case "agent_unavailable":
-      return "Agent unavailable";
-    case "account_disconnected":
-      return "Account disconnected";
-    case "repository_disabled":
-      return "Repository disabled";
-    case "repository_removed":
-      return "Repository removed";
-    case "binding_changed":
-      return "Binding changed";
-    case "policy_changed":
-      return "Policy changed";
-    case "superseded":
-      return "Superseded";
-    case "ineligible":
-      return "Ineligible";
-    case "no_longer_current":
-      return "Not current";
-    case "scope_excluded":
-      return "Out of scope";
-    case "closed":
-      return "Closed";
-    case "merged":
-      return "Merged";
-    case "assignment_removed":
-      return "Assignment removed";
-    default:
-      return waiting;
-  }
-}
 
 function conversationItem(
   snapshot: MonitoringSnapshot,
@@ -349,23 +319,14 @@ export function renderMonitoring(
     fix?: (target: FixTarget) => void;
   } = {},
 ) {
-  root.innerHTML = `<div data-monitor-overview><div class="actions"><button id="check-now" type="button">Check Now</button><button id="queue-settings" type="button">Open Settings</button><button id="queue-diagnostics" type="button">Open Diagnostics</button></div>
-    <section id="automation-controls"></section>
+  root.innerHTML = `<div data-monitor-overview><section id="automation-controls"></section>
     <h2>Inbox</h2><section id="handoff-queue"></section></div>
     <div data-monitor-detail><section data-item-evidence></section>
     <div data-evidence-guidance><h2 id="evidence-heading" class="sr-only" tabindex="-1">Review evidence and actions</h2></div>
     
     <details data-queue-details><summary aria-label="Details" title="Details">${detailsIcon}</summary><section data-item-more></section>
     <h2 data-normal-heading>Agent reviews</h2><section id="agent-reviews"></section>
-    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></details></div>
-    <div data-monitor-recovery>
-    <h2>Notifications</h2><section id="notification-history"></section>
-    <h2>Schedule health</h2><section id="schedule-health"></section>
-    <h2>Detected pull requests</h2><section id="review-jobs"></section></div>`;
-  const check = root.querySelector<HTMLButtonElement>("#check-now")!;
-  const recoveryRoot = root.querySelector<HTMLElement>(
-    "[data-monitor-recovery]",
-  )!;
+    <h2 data-conversation-heading>Thread follow-ups</h2><section id="thread-follow-ups"></section></details></div>`;
   const automationRoot = root.querySelector<HTMLElement>(
     "#automation-controls",
   )!;
@@ -375,12 +336,10 @@ export function renderMonitoring(
     (value) => {
       automation = value;
       options.onAutomation?.(value);
-      renderEvidence();
+      whenReleased(renderEvidence);
     },
     { compact: options.panel, onError: options.panel ? showError : undefined },
   );
-  const health = root.querySelector<HTMLElement>("#schedule-health")!;
-  const jobs = root.querySelector<HTMLElement>("#review-jobs")!;
   const reviews = root.querySelector<HTMLElement>("#agent-reviews")!;
   const expanded = new Set<string>();
   const pending = new Set<string>();
@@ -394,10 +353,6 @@ export function renderMonitoring(
   let evidenceTarget = "";
   let detailRevision = 0;
   let selection: QueueItem | null | undefined;
-  const refreshNotifications = renderNotificationHistory(
-    root.querySelector<HTMLElement>("#notification-history")!,
-    showError,
-  );
   const followUps = renderFollowUps(
     root.querySelector<HTMLElement>("#thread-follow-ups")!,
     showError,
@@ -427,22 +382,8 @@ export function renderMonitoring(
     const overview = root.querySelector<HTMLElement>(
       "[data-monitor-overview]",
     )!;
-    recoveryRoot.prepend(overview.querySelector(".actions")!);
     overview.querySelector("h2")!.remove();
     root.querySelector<HTMLElement>("[data-monitor-detail]")!.hidden = true;
-    root.querySelector<HTMLElement>("[data-monitor-recovery]")!.hidden = true;
-  }
-  for (const [id, command] of [
-    ["#queue-settings", "open_settings"],
-    ["#queue-diagnostics", "open_diagnostics"],
-  ]) {
-    root.querySelector(id)!.addEventListener("click", async () => {
-      try {
-        await invoke(command);
-      } catch {
-        showError("Open failed");
-      }
-    });
   }
 
   function renderEvidence() {
@@ -995,6 +936,20 @@ export function renderMonitoring(
     }
   }
 
+  // Deferred like every background redraw; queued after any earlier redraw,
+  // so the failure is what remains once the press ends.
+  function showUnavailable() {
+    if (snapshot) return;
+    root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
+      "Unavailable";
+    root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
+      "Unavailable";
+    reviews.replaceChildren();
+    reviewsSignature = "";
+    detailSignature = "";
+    followUps([]);
+  }
+
   async function refresh() {
     if (loading || !root.isConnected) return;
     loading = true;
@@ -1006,144 +961,22 @@ export function renderMonitoring(
       void refreshAutomation();
       if (snapshot.items)
         queue(options.panel ? humanQueue(snapshot.items) : snapshot.items);
-      renderEvidence();
-      health.replaceChildren();
-      jobs.replaceChildren();
-      if (snapshot.global_scan) {
-        const scan = document.createElement("p");
-        const hasSchedulableRepository = snapshot.health.some(
-          (item) => item.enabled && item.schedule_available,
-        );
-        const hasInvalidGlobalCron = snapshot.health.some(
-          (item) =>
-            item.enabled &&
-            ["invalid_global_cron", "invalid_schedule"].includes(
-              item.last_failure ?? "",
-            ),
-        );
-        const nextScan =
-          snapshot.global_scan.next_run > 0
-            ? time(snapshot.global_scan.next_run)
-            : hasInvalidGlobalCron
-              ? "Unavailable"
-              : hasSchedulableRepository
-                ? "Unavailable"
-                : "None scheduled";
-        scan.textContent = `Global scan: ${snapshot.global_scan.schedule_key}; next ${nextScan}; pending ${snapshot.global_scan.pending.length}`;
-        health.append(scan);
-      }
-      if (!snapshot.health.length) {
-        health.textContent = "No repositories";
-      }
-      for (const item of snapshot.health) {
-        const row = document.createElement("p");
-        const state = healthLabel(item);
-        const next = !item.enabled
-          ? "Disabled"
-          : item.schedule_available
-            ? time(item.next_run)
-            : "Unavailable";
-        const account = item.provider_account_id
-          ? item.account_login
-            ? `${item.account_login} (${item.provider_account_id})`
-            : item.provider_account_id
-          : "Unbound";
-        const assignment = item.assignment_id
-          ? `${item.agent_name ?? "Missing agent"} (${item.agent_id ?? "?"}), assignment ${item.assignment_id}`
-          : "None";
-        row.textContent = `${item.name}: ${state}; account ${account}; assignment ${assignment}; schedule ${item.schedule_key || "Unavailable"}; last attempt ${time(item.last_attempt)}; last success ${time(item.last_success)}; next ${next}; failure ${item.last_failure ?? "None"}`;
-        if (item.operation) {
-          row.append(
-            `; ${item.operation.operation_type}; attempts ${item.operation.attempt_count}; deadline ${time(item.operation.retry_deadline)}`,
-          );
-        }
-        if (
-          item.operation?.state === "manual_retry" ||
-          item.operation?.state === "failed"
-        ) {
-          const retry = document.createElement("button");
-          retry.type = "button";
-          retry.textContent =
-            item.operation.state === "failed" ? "Retry" : "Retry";
-          retry.addEventListener("click", async () => {
-            retry.disabled = true;
-            try {
-              await invoke("retry_monitoring_operation", {
-                operationId: item.operation!.id,
-              });
-              await refresh();
-            } catch {
-              showError("Failed");
-            } finally {
-              retry.disabled = false;
-            }
-          });
-          row.append(" ", retry);
-        }
-        health.append(row);
-      }
-      if (!snapshot.jobs.length)
-        jobs.textContent = snapshot.tracked?.length
-          ? `${snapshot.tracked.length} tracked; no jobs`
-          : "None";
-      for (const job of snapshot.jobs) {
-        const row = document.createElement("article");
-        const title = document.createElement("h3");
-        title.textContent = `${job.repository_name} #${job.number}: ${job.title}`;
-        const author =
-          job.author_login && job.author_id
-            ? `${job.author_login} (${job.author_id})`
-            : "Unknown";
-        const admission = job.work?.admission ?? job;
-        const reasons = [
-          admission.watched_author ? "watched author" : "",
-          admission.all_authors ? "all-author monitoring scope" : "",
-          admission.requested_reviewer ? "requested reviewer" : "",
-        ]
-          .filter(Boolean)
-          .join(" and ");
-        const details = document.createElement("p");
-        details.textContent = `${job.account_login} (${job.account_id}); ${author}; ${reasons || "historical"}; ${job.head_sha}; ${waitingLabel(job.waiting)}`;
-        if (job.work)
-          details.append(
-            `; pass ${job.work.pass_ordinal}; iteration ${job.work.iteration}; order ${job.work.enqueue_order}; ${job.work.trigger.replaceAll("_", " ")}`,
-          );
-        row.append(title, details);
-        jobs.append(row);
-      }
+      // Evidence controls redraw after a press ends so its click survives.
+      whenReleased(renderEvidence);
     } catch {
       snapshot = undefined;
       options.onSnapshot?.(undefined);
       if (options.panel) {
         queue.invalidate();
-        root.querySelector<HTMLElement>("#handoff-queue")!.textContent =
-          "Unavailable";
-        root.querySelector<HTMLElement>("[data-item-evidence]")!.textContent =
-          "Unavailable";
-        reviews.replaceChildren();
-        reviewsSignature = "";
-        detailSignature = "";
-        followUps([]);
+        whenReleased(showUnavailable);
       }
       showError("Failed");
     } finally {
       loading = false;
       void refreshAutomation();
-      void refreshNotifications();
     }
   }
 
-  check.addEventListener("click", async () => {
-    check.disabled = true;
-    try {
-      await invoke("check_now");
-      await refresh();
-    } catch {
-      showError("Failed");
-    } finally {
-      check.disabled = false;
-    }
-  });
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);
@@ -1171,10 +1004,6 @@ export function renderMonitoring(
     automation: (destination: HTMLElement) => {
       if (automationRoot.parentElement !== destination)
         destination.prepend(automationRoot);
-    },
-    tools: (destination: HTMLElement) => {
-      recoveryRoot.hidden = false;
-      destination.append(recoveryRoot);
     },
   };
 }

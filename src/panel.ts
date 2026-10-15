@@ -2,16 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
-import {
-  type Diagnostic,
-  diagnosticLog,
-  doctrineDiagnostics,
-} from "./diagnostics";
-import {
-  type SetupReview,
-  type DoctrineCatalog,
-  type Settings,
-} from "./resources";
+import { type SetupReview } from "./resources";
 import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
@@ -22,18 +13,19 @@ import {
   workPresentation,
   purposes,
   type WorkPresentation,
-  renderIntelligenceDiagnostics,
 } from "./work-presentation";
 import changelogSource from "../CHANGELOG.md?raw";
 import "./panel.css";
 import { terseError } from "./errors";
+import { inlineMarkdown } from "./markdown";
+import { drawNow, setText, whenReleased } from "./stable-dom";
+import { applyTheme } from "./theme";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
 export type PanelDetail =
   | { type: "item"; item_id: string }
-  | { type: "job"; kind: WorkKind; id: string }
-  | { type: "status" | "diagnostics" };
+  | { type: "job"; kind: WorkKind; id: string };
 export interface PanelRoute {
   tab: PanelTab;
   detail?: PanelDetail;
@@ -120,7 +112,6 @@ export async function mountPanel(app: HTMLElement) {
       <section data-panel-view="reviewed" hidden></section>
       <div data-panel-view="settings" hidden></div>
       <div data-panel-view="genie" hidden></div>
-      <section data-panel-view="utility" hidden></section>
       <section data-panel-view="changelog" class="changelog" hidden></section>
     </div>
     <nav class="panel-tabs" data-panel-navigation aria-label="Application destinations">${(
@@ -131,7 +122,7 @@ export async function mountPanel(app: HTMLElement) {
           `<button type="button" data-panel-tab="${tab}" aria-label="${tab[0].toUpperCase() + tab.slice(1)}"><span class="nav-icon">${icon(destinations[tab].icon)}${tab === "running" ? '<span data-running-count aria-hidden="true">?</span>' : ""}</span><span>${tab[0].toUpperCase() + tab.slice(1)}</span></button>`,
       )
       .join("")}</nav>
-    <footer class="panel-footer"><button type="button" data-panel-status>Status</button><button type="button" data-panel-diagnostics>Diagnostics</button><button type="button" data-panel-version aria-label="Show changelog">Reading version...</button></footer>`;
+    <footer class="panel-footer"><button type="button" data-panel-version aria-label="Show changelog">Reading version...</button></footer>`;
   const version = app.querySelector<HTMLElement>("[data-panel-version]")!;
   let versionKnown = false;
   const showVersion = (value: unknown, failure?: unknown) => {
@@ -147,10 +138,17 @@ export async function mountPanel(app: HTMLElement) {
           : `Unavailable: ${String(failure)}`;
     }
   };
-  void invoke<{ version: unknown }>("snapshot").then(
-    (state) => showVersion(state.version),
-    (cause) => showVersion(undefined, cause),
-  );
+  const readVersion = () =>
+    void invoke<{ version: unknown; settings?: { theme?: unknown } | null }>(
+      "snapshot",
+    ).then(
+      (state) => {
+        showVersion(state.version);
+        if (state.settings) applyTheme(state.settings.theme);
+      },
+      (cause) => showVersion(undefined, cause),
+    );
+  readVersion();
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
@@ -185,7 +183,6 @@ export async function mountPanel(app: HTMLElement) {
     reviewed: app.querySelector<HTMLElement>('[data-panel-view="reviewed"]')!,
     settings: app.querySelector<HTMLElement>('[data-panel-view="settings"]')!,
     genie: app.querySelector<HTMLElement>('[data-panel-view="genie"]')!,
-    utility: app.querySelector<HTMLElement>('[data-panel-view="utility"]')!,
     changelog: app.querySelector<HTMLElement>('[data-panel-view="changelog"]')!,
   };
   let changelogOpen = false;
@@ -194,25 +191,32 @@ export async function mountPanel(app: HTMLElement) {
     const view = views.changelog;
     view.replaceChildren();
     let list: HTMLUListElement | undefined;
+    let item: { element: HTMLLIElement; text: string } | undefined;
+    const flush = () => {
+      if (item) inlineMarkdown(item.element, item.text);
+      item = undefined;
+    };
     for (const raw of changelogSource.split("\n").slice(1)) {
       const line = raw.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
       const heading = /^(##|###) (.+)$/.exec(line);
       if (heading) {
+        flush();
         list = undefined;
         const h = document.createElement(heading[1] === "##" ? "h2" : "h3");
-        h.textContent = heading[2];
+        inlineMarkdown(h, heading[2]);
         view.append(h);
       } else if (line.startsWith("- ")) {
+        flush();
         list ??= view.appendChild(document.createElement("ul"));
-        list.append(
-          Object.assign(document.createElement("li"), {
-            textContent: line.slice(2),
-          }),
-        );
-      } else if (/^\s+\S/.test(line) && list?.lastElementChild) {
-        list.lastElementChild.textContent += ` ${line.trim()}`;
+        item = {
+          element: list.appendChild(document.createElement("li")),
+          text: line.slice(2),
+        };
+      } else if (/^\s+\S/.test(line) && item) {
+        item.text += ` ${line.trim()}`;
       }
     }
+    flush();
     view.scrollTop = 0;
   }
   function setChangelog(open: boolean) {
@@ -220,7 +224,10 @@ export async function mountPanel(app: HTMLElement) {
     if (open) renderChangelog();
     if (lastState) void apply(lastState);
   }
-  version.onclick = () => setChangelog(!changelogOpen);
+  version.onclick = () => {
+    if (!versionKnown) readVersion();
+    setChangelog(!changelogOpen);
+  };
   let route: PanelRoute = { tab: "queue" };
   let revision = -1;
   let returnTo: PanelRoute = { tab: "queue" };
@@ -233,7 +240,6 @@ export async function mountPanel(app: HTMLElement) {
   let automation: AutomationSnapshot | undefined;
   let navigating = Promise.resolve();
   let navigationOrigin: string | undefined;
-  let utilityRevision = 0;
   let lastVisible = false;
   let focusRevision = 0;
   let setupRead = 0;
@@ -353,7 +359,7 @@ export async function mountPanel(app: HTMLElement) {
       const runningCount = app.querySelector<HTMLElement>(
         "[data-running-count]",
       )!;
-      runningCount.textContent = value ? String(value.active) : "?";
+      setText(runningCount, value ? String(value.active) : "?");
       // A zero badge is noise; the count stays in the DOM for state checks.
       runningCount.dataset.zero = String(value?.active === 0);
       app.querySelector<HTMLButtonElement>(
@@ -531,24 +537,31 @@ export async function mountPanel(app: HTMLElement) {
     const main = summary.querySelector<HTMLElement>("[data-summary-main]")!;
     const detail = summary.querySelector<HTMLElement>("[data-summary-detail]")!;
     if (route.tab === "running") {
-      main.textContent = automation
-        ? `${automation.active - automation.stopping} / ${automation.capacity} running`
-        : "Unavailable";
-      detail.textContent = automation
-        ? `${waitingCount()} waiting${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
-        : "Occupancy unknown";
+      setText(
+        main,
+        automation
+          ? `${automation.active - automation.stopping} / ${automation.capacity} running`
+          : "Unavailable",
+      );
+      setText(
+        detail,
+        automation
+          ? `${waitingCount()} waiting${automation.stopping ? ` / ${automation.stopping} stopping` : ""}`
+          : "Occupancy unknown",
+      );
     } else {
       const items = humanQueue(snapshot?.items ?? []);
       const known = Array.isArray(snapshot?.items);
       const ready = items.filter(
         (item) => item.state === "machine_signed_off",
       ).length;
-      main.textContent = known
-        ? `${items.length} for you`
-        : "Queue unavailable";
-      detail.textContent = known
-        ? `${ready} ready / ${items.length - ready} need attention`
-        : "Handoffs unavailable";
+      setText(main, known ? `${items.length} for you` : "Queue unavailable");
+      setText(
+        detail,
+        known
+          ? `${ready} ready / ${items.length - ready} need attention`
+          : "Handoffs unavailable",
+      );
       const view = queueFilter ?? (ready > 0 ? "ready" : "attention");
       app.dataset.queueView = view;
       for (const button of summary.querySelectorAll<HTMLElement>(
@@ -558,18 +571,24 @@ export async function mountPanel(app: HTMLElement) {
           "aria-pressed",
           String(button.dataset.queueFilter === view),
         );
-      summary.querySelector<HTMLElement>("[data-queue-ready]")!.textContent =
-        known ? String(ready) : "?";
-      summary.querySelector<HTMLElement>(
-        "[data-queue-attention]",
-      )!.textContent = known ? String(items.length - ready) : "?";
-      summary.querySelector<HTMLElement>("[data-queue-capacity]")!.textContent =
-        automation ? `${automation.active}/${automation.capacity}` : "?";
-      summary.querySelector<HTMLElement>(
-        "[data-queue-work-status]",
-      )!.textContent = automation
-        ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${waitingCount()} waiting${automation.paused ? " / paused" : ""}`
-        : "Unavailable";
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-ready]")!,
+        known ? String(ready) : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-attention]")!,
+        known ? String(items.length - ready) : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-capacity]")!,
+        automation ? `${automation.active}/${automation.capacity}` : "?",
+      );
+      setText(
+        summary.querySelector<HTMLElement>("[data-queue-work-status]")!,
+        automation
+          ? `${automation.active - automation.stopping} running${automation.stopping ? ` / ${automation.stopping} stopping` : ""} / ${waitingCount()} waiting${automation.paused ? " / paused" : ""}`
+          : "Unavailable",
+      );
     }
   }
   function metadata(
@@ -581,7 +600,30 @@ export async function mountPanel(app: HTMLElement) {
       ? { title: `${work.reference} / ${work.agent}`, state: work.state }
       : undefined;
   }
-  function draw(tab: "running" | "reviewed", rows: Row[]) {
+  // Lists redraw after a press ends so a refresh never drops its click.
+  // `null` marks an unavailable list; it defers like any other redraw so a
+  // later paint can never resurrect stale rows over it.
+  const pendingRows = new Map<"running" | "reviewed", Row[] | null>();
+  const paint = (tab: "running" | "reviewed") => {
+    const rows = pendingRows.get(tab);
+    if (rows !== null) return render(tab, rows ?? []);
+    (tab === "running"
+      ? views.running.querySelector<HTMLElement>("[data-running-list]")!
+      : views.reviewed
+    ).textContent = "Unavailable";
+    listSignatures.delete(tab);
+  };
+  const drawers = {
+    running: () => paint("running"),
+    reviewed: () => paint("reviewed"),
+  };
+  // `now`: user-initiated redraws (Show more, opening a tab) never wait.
+  function draw(tab: "running" | "reviewed", rows: Row[] | null, now = false) {
+    pendingRows.set(tab, rows);
+    if (now) drawNow(drawers[tab]);
+    else whenReleased(drawers[tab]);
+  }
+  function render(tab: "running" | "reviewed", rows: Row[]) {
     const limit = tab === "reviewed" ? reviewedLimit : rows.length;
     const signature = JSON.stringify([rows, limit]);
     if (listSignatures.get(tab) === signature) return;
@@ -629,7 +671,7 @@ export async function mountPanel(app: HTMLElement) {
       more.onclick = () => {
         const first = limit;
         reviewedLimit = limit + REVIEWED_PAGE;
-        drawLists();
+        drawLists(true);
         const target =
           root.querySelectorAll<HTMLButtonElement>(".work-row")[first];
         if (!target) return;
@@ -808,12 +850,9 @@ export async function mountPanel(app: HTMLElement) {
         ),
     ).length;
   }
-  function drawLists() {
+  function drawLists(now = false) {
     if (!automation) {
-      views.running.querySelector<HTMLElement>(
-        "[data-running-list]",
-      )!.textContent = "Unavailable";
-      listSignatures.delete("running");
+      draw("running", null, now);
     } else {
       const rows: Row[] = [...automation.work]
         .sort((a, b) => {
@@ -852,11 +891,10 @@ export async function mountPanel(app: HTMLElement) {
             !["failed", "manual_retry"].includes(row.work?.state ?? "")),
       );
       rows.splice(0, rows.length, ...running);
-      draw("running", rows);
+      draw("running", rows, now);
     }
     if (!snapshot) {
-      views.reviewed.textContent = "Unavailable";
-      listSignatures.delete("reviewed");
+      draw("reviewed", null, now);
       return;
     }
     const rows: Row[] = [];
@@ -903,53 +941,7 @@ export async function mountPanel(app: HTMLElement) {
         });
       }
     }
-    draw("reviewed", rows);
-  }
-  async function utility(type: "status" | "diagnostics") {
-    const request = ++utilityRevision;
-    views.utility.replaceChildren();
-    try {
-      const state = await invoke<{
-        version: string;
-        isolated: boolean;
-        error: string | null;
-        doctrine_catalog?: DoctrineCatalog | null;
-        settings: Pick<Settings, "doctrine_reset"> | null;
-      }>("snapshot");
-      if (request !== utilityRevision) return;
-      showVersion(state.version);
-      if (state.error) showError(state.error);
-      const info = document.createElement("p");
-      info.textContent = `PR Sniper ${state.version}${state.isolated ? " \u00b7 Isolated" : ""}`;
-      views.utility.append(info);
-      const refresh = document.createElement("button");
-      refresh.textContent = `Refresh ${type}`;
-      refresh.onclick = () => void utility(type);
-      views.utility.append(refresh);
-      if (type === "diagnostics") {
-        const [entries, jobs] = await Promise.all([
-          invoke<Diagnostic[]>("diagnostics"),
-          invoke<MonitoringSnapshot>("monitoring_snapshot"),
-        ]);
-        if (request !== utilityRevision) return;
-        const pre = document.createElement("pre");
-        pre.textContent =
-          doctrineDiagnostics(
-            state.doctrine_catalog,
-            state.settings?.doctrine_reset,
-          ) + diagnosticLog(entries);
-        views.utility.append(pre);
-        renderIntelligenceDiagnostics(views.utility, jobs);
-      } else {
-        const tools = document.createElement("div");
-        tools.dataset.panelRecovery = "true";
-        views.utility.append(tools);
-        monitor.tools(tools);
-      }
-    } catch (cause) {
-      if (request === utilityRevision)
-        showError(typeof cause === "string" ? cause : "Failed");
-    }
+    draw("reviewed", rows, now);
   }
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
@@ -994,21 +986,19 @@ export async function mountPanel(app: HTMLElement) {
         : sub
           ? sub.title
           : route.detail
-            ? route.detail.type === "status"
-              ? "Status"
-              : route.detail.type === "diagnostics"
-                ? "Diagnostics"
-                : route.detail.type === "job"
-                  ? "Job details"
-                  : "Saved evidence"
+            ? route.detail.type === "job"
+              ? "Job details"
+              : "Saved evidence"
             : destinations[route.tab].title;
     app.dataset.tab = route.tab;
+    app.dataset.changelog = String(changelogOpen);
     app.dataset.settingsSub = String(!!sub);
     app.dataset.settingsEditor = String(!!settingsEditor && !!sub);
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
-    const scrollQueue = route.tab === "queue" && !setupVisible();
+    const scrollQueue =
+      route.tab === "queue" && !setupVisible() && !changelogOpen;
     app.dataset.scrollQueue = String(scrollQueue);
     if (scrollQueue) {
       content.tabIndex = 0;
@@ -1041,17 +1031,13 @@ export async function mountPanel(app: HTMLElement) {
         button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    const utilityDetail =
-      route.detail?.type === "status" || route.detail?.type === "diagnostics";
     const visible = changelogOpen
       ? "changelog"
       : setupVisible()
         ? "genie"
-        : utilityDetail
-          ? "utility"
-          : route.detail || route.tab === "queue"
-            ? "monitor"
-            : route.tab;
+        : route.detail || route.tab === "queue"
+          ? "monitor"
+          : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
     views.settings.dispatchEvent(
@@ -1064,8 +1050,6 @@ export async function mountPanel(app: HTMLElement) {
       if (state.revision !== revision) return;
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
-    if (utilityDetail && (changed || !views.utility.children.length))
-      void utility(route.detail!.type as "status" | "diagnostics");
     if (restore && focusAtStart === focusRevision) {
       // Commit route focus now, before a subsequent explicit focus can win.
       // Only layout positioning waits for a frame; it cannot own newer input.
@@ -1087,7 +1071,7 @@ export async function mountPanel(app: HTMLElement) {
     intent++;
     if (next.tab === "reviewed" && tabIntent !== "reviewed") {
       reviewedLimit = REVIEWED_PAGE;
-      drawLists();
+      drawLists(true);
     }
     tabIntent = next.tab;
     // Capture activation before a queue redraw detaches the actual row button.
@@ -1136,10 +1120,6 @@ export async function mountPanel(app: HTMLElement) {
     };
   app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>
     void navigate({ tab: "running" });
-  app.querySelector<HTMLButtonElement>("[data-panel-status]")!.onclick = () =>
-    void navigate({ tab: route.tab, detail: { type: "status" } });
-  app.querySelector<HTMLButtonElement>("[data-panel-diagnostics]")!.onclick =
-    () => void navigate({ tab: route.tab, detail: { type: "diagnostics" } });
   async function hide() {
     remember();
     try {

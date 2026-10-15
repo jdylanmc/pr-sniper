@@ -1,16 +1,18 @@
 # Polling and GitHub reads
 
-Reference for scheduled detection, admission rules, the read-only GitHub connection and PR metadata reads. Decisions: [ADR-0007](adr/0007-retry-then-park-single-inbox.md), [ADR-0009](adr/0009-admission-filters-first-match-wins.md), [ADR-0014](adr/0014-single-global-cron-schedule.md).
+Reference for scheduled detection, admission rules, the read-only GitHub connection and PR metadata reads. Decisions: [ADR-0007](adr/0007-retry-then-park-single-inbox.md), [ADR-0009](adr/0009-admission-filters-first-match-wins.md), [ADR-0024](adr/0024-repository-schedules.md) (supersedes [ADR-0014](adr/0014-single-global-cron-schedule.md)).
 
 ## Schedule
 
-- One global cron expression + timezone. One read per account/repo binding per run. Set in Settings > Preferences.
-- **Check Now** (tray menu) runs an immediate scan. **Pause automation** halts polling.
-- Schedule suspends when no repo is schedulable; resumes at the next occurrence.
-- Poll operation persists before the read. Restart keeps it. Interruption past its deadline needs **Retry**.
-- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately.
-- Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else 30s x2^n (cap 15m); no attempt spent, no failure shown. Other repos on the same account wait too (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
-- Schedule health keeps pending/success/failure per account/repo read. Surfaced in Status.
+- One cron per repository (repository editor builder, [settings.md](settings.md#repository-schedule)), all evaluated in the one Preferences time zone. One read per account/repo binding per occurrence.
+- Each repository keeps its own next occurrence (`scheduled_run` in `monitoring_snapshot`). Missed occurrences collapse into one poll; a new occurrence waits until the previous poll finishes (`scan_pending`).
+- **Check Now** (tray menu) polls every enabled repository now and retries any parked repository poll; a running poll gets one follow-up (`scan_requested`). Each repository keeps its schedule. The header **Monitoring** switch halts polling.
+- A repository's schedule suspends while it is not schedulable (a parked poll counts unless it waits for a credential reconnect); resumes at its next occurrence. Editing its cron re-times only that repository.
+- Legacy `global_scan` state folds into each repository on restore: shared next run, pending and request.
+- Poll operation persists before the read. Restart keeps it. A waiting or interrupted poll whose window ran out before it could run (quit, sleep, account rate limit) restarts with a fresh window and keeps its cause; it never parks on the deadline alone. An account rate limit also extends the window of every poll on that account.
+- Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately. A parked poll is requeued at its repository's next occurrence (once per occurrence); credential failures wait for reconnect.
+- Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else 30s x2^n (cap 15m); no attempt spent, no failure shown. Other repos on the same account wait too, whatever their schedule (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
+- Schedule health keeps pending/success/failure per account/repo read in `monitoring_snapshot`; no Status screen.
 - Detection never clones, executes repo code, mutates GitHub or publishes.
 
 ## Admission
@@ -26,7 +28,7 @@ Per repository, set in the repo editor.
 
 ## Heartbeat (PR state)
 
-Replaces head-SHA-only detection for tracked open PRs. Cadence is the global cron; there is no settle window.
+Replaces head-SHA-only detection for tracked open PRs. Cadence is the repository's cron; there is no settle window.
 
 | Step         | Rule                                                                                                                                                                             |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

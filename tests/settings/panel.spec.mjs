@@ -266,27 +266,34 @@ test("native notification identity, legacy entry commands and missing routes nev
   page,
   store,
 }) => {
+  await store("set_notifications_enabled", { enabled: true });
   await queueFixture(store);
-  const item = (await store("monitoring_snapshot")).items.find(
-    (i) => i.job.number === 1,
-  );
+  const items = (await store("monitoring_snapshot")).items;
   await page.goto("/");
   await page.evaluate(() => {
     window.__sameDocument = "retained";
   });
   await invoke(page, "open_settings");
   await expect(heading(page)).toHaveText("Settings");
-  await invoke(page, "open_diagnostics");
-  await expect(heading(page)).toHaveText("Diagnostics");
-  await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-    /\n\nNo events$/,
+  await expect(invoke(page, "open_diagnostics")).rejects.toThrow(
+    /Unsupported settings test command/,
   );
-  await store("set_notifications_enabled", { enabled: true });
-  const id = await store("test_notification", { itemId: item.id });
+  await expect(
+    invoke(page, "panel_navigate", {
+      route: { tab: "settings", detail: { type: "diagnostics" } },
+    }),
+  ).rejects.toThrow(/Invalid panel route/);
+  await expect(heading(page)).toHaveText("Settings");
+  const { id } = (await store("observe_notifications")).notices.find(
+    (n) => n.event.destination.kind === "queue_item",
+  );
   const destination = await store("notification_destination", { id });
+  const item = items.find((i) => i.id === destination.item_id);
   await invoke(page, "open_queue_item", { itemId: destination.item_id });
   await expect(page.locator("#agent-reviews article")).toHaveCount(1);
-  await expect(page.locator("#agent-reviews")).toContainText("example/repo #1");
+  await expect(page.locator("#agent-reviews")).toContainText(
+    `example/repo #${item.job.number}`,
+  );
   const missing = '<img src=x onerror="window.injected=true">deleted-iteration';
   await expect(
     invoke(page, "open_queue_item", { itemId: missing }),
@@ -412,8 +419,8 @@ test("external auth blur and retained URL entry preserve unsaved preferences and
   await page.goto("/");
   await tab(page, "Settings").click();
   await section(page, "Preferences");
-  const cron = page.getByLabel("Cron expression", { exact: true });
-  await cron.fill("*/23 * * * *");
+  const zone = page.locator("#global-timezone");
+  await zone.selectOption("Asia/Tokyo");
   await section(page, "GitHub");
   await page.getByRole("button", { name: "Add GitHub account" }).click();
   await expect(page.locator(".github-auth-card")).toContainText("FIXTURE-CODE");
@@ -438,7 +445,7 @@ test("external auth blur and retained URL entry preserve unsaved preferences and
     page.getByRole("button", { name: "Add repository by URL", exact: true }),
   ).toBeEnabled();
   await section(page, "Preferences");
-  await expect(cron).toHaveValue("*/23 * * * *");
+  await expect(zone).toHaveValue("Asia/Tokyo");
   expect((await store("snapshot")).settings).toEqual(before);
 });
 

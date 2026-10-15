@@ -57,7 +57,10 @@ impl From<SelectorInput> for Selector {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-    pub schedule: Schedule,
+    /// Legacy global schedule. Moved onto every repository on load and on
+    /// whole-settings saves (`Settings::migrate_global_schedule`); never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
     pub watched_authors: Vec<WatchedIdentity>,
     pub reviewer_assignment: bool,
     pub adapter: Adapter,
@@ -71,10 +74,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            schedule: Schedule::Cron {
-                expression: "*/15 * * * *".into(),
-                timezone: "UTC".into(),
-            },
+            schedule: None,
             watched_authors: Vec::new(),
             reviewer_assignment: true,
             adapter: Adapter::Copilot,
@@ -146,7 +146,9 @@ pub fn validate_configuration_text(value: &str) -> Result<(), String> {
 
 impl Policy {
     pub fn validate(&self) -> Result<(), String> {
-        self.schedule.validate()?;
+        if let Some(schedule) = &self.schedule {
+            schedule.validate()?;
+        }
         let mut identities = HashSet::new();
         for identity in &self.watched_authors {
             let valid_id = identity
@@ -215,10 +217,7 @@ impl PolicyOverrides {
 
     pub fn effective(&self, defaults: &Policy) -> Policy {
         Policy {
-            schedule: self
-                .schedule
-                .clone()
-                .unwrap_or_else(|| defaults.schedule.clone()),
+            schedule: self.schedule.clone().or_else(|| defaults.schedule.clone()),
             watched_authors: self
                 .watched_authors
                 .clone()
@@ -242,6 +241,98 @@ impl PolicyOverrides {
             automatic_comment_publication: self
                 .automatic_comment_publication
                 .unwrap_or(defaults.automatic_comment_publication),
+        }
+    }
+}
+
+/// Every IANA zone `Schedule::validate` accepts, in alphabetical order.
+pub fn time_zones() -> Vec<&'static str> {
+    let mut zones: Vec<_> = chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(|zone| zone.name())
+        .collect();
+    zones.sort_unstable();
+    zones
+}
+
+/// Zone for a brand-new profile, std-only: a valid IANA `TZ` value (leading
+/// `:` stripped), else the zone named by the `/etc/localtime` link target,
+/// else UTC. Every candidate must parse as `chrono_tz::Tz`, the same authority
+/// as `Schedule::validate`.
+pub fn initial_time_zone(tz: Option<&str>, localtime: Option<&std::path::Path>) -> String {
+    let valid = |zone: &str| {
+        zone.parse::<chrono_tz::Tz>()
+            .ok()
+            .map(|zone| zone.name().to_string())
+    };
+    tz.map(|value| value.strip_prefix(':').unwrap_or(value))
+        .and_then(valid)
+        .or_else(|| {
+            let target = localtime?.to_str()?;
+            let (_, zone) = target.rsplit_once("zoneinfo/")?;
+            valid(zone)
+        })
+        .unwrap_or_else(|| "UTC".into())
+}
+
+/// `initial_time_zone` for this host. Windows has no `/etc/localtime`; without
+/// a valid `TZ` it falls back to UTC.
+pub fn host_time_zone() -> String {
+    let tz = std::env::var("TZ").ok();
+    #[cfg(unix)]
+    let localtime = std::fs::read_link("/etc/localtime").ok();
+    #[cfg(not(unix))]
+    let localtime: Option<std::path::PathBuf> = None;
+    initial_time_zone(tz.as_deref(), localtime.as_deref())
+}
+
+#[cfg(test)]
+mod time_zone_tests {
+    use super::{initial_time_zone, time_zones, Schedule};
+    use std::path::Path;
+
+    #[test]
+    fn time_zones_are_sorted_unique_and_each_validates() {
+        let zones = time_zones();
+        assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
+        for zone in ["UTC", "America/New_York", "Asia/Tokyo", "Pacific/Auckland"] {
+            assert!(zones.contains(&zone), "{zone}");
+        }
+        assert!(!zones.contains(&"Mars/Olympus_Mons"));
+        for zone in zones {
+            Schedule::Cron {
+                expression: "*/15 * * * *".into(),
+                timezone: zone.into(),
+            }
+            .validate()
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn initial_time_zone_prefers_valid_tz_then_the_localtime_link_then_utc() {
+        let mac = Path::new("/var/db/timezone/zoneinfo/America/New_York");
+        let linux = Path::new("/usr/share/zoneinfo/Europe/Paris");
+        let relative = Path::new("../usr/share/zoneinfo/Asia/Tokyo");
+        let cases: [(Option<&str>, Option<&Path>, &str); 11] = [
+            (Some("Asia/Tokyo"), Some(linux), "Asia/Tokyo"),
+            (Some(":Pacific/Auckland"), None, "Pacific/Auckland"),
+            (Some("Mars/Olympus_Mons"), Some(linux), "Europe/Paris"),
+            (Some(""), Some(mac), "America/New_York"),
+            (None, Some(mac), "America/New_York"),
+            (None, Some(linux), "Europe/Paris"),
+            (None, Some(relative), "Asia/Tokyo"),
+            (None, Some(Path::new("/etc/custom-localtime")), "UTC"),
+            (
+                None,
+                Some(Path::new("/usr/share/zoneinfo/Mars/Olympus_Mons")),
+                "UTC",
+            ),
+            (Some("not a zone"), None, "UTC"),
+            (None, None, "UTC"),
+        ];
+        for (tz, link, expected) in cases {
+            assert_eq!(initial_time_zone(tz, link), expected, "{tz:?} {link:?}");
         }
     }
 }

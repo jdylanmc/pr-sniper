@@ -147,12 +147,16 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
         .filter(|exit| input.tools.iter().any(|tool| tool == exit.id()))
         .filter(|exit| match exit {
             Exit::SubmitReport => !input.primary,
+            Exit::SubmitVerdict => false,
             Exit::PanicExit => true,
             _ => input.primary,
         })
         .map(|exit| {
             let offer = match exit {
-                Exit::SubmitReport | Exit::PanicExit | Exit::ReadyForHuman => Offer::Offered,
+                Exit::SubmitReport
+                | Exit::SubmitVerdict
+                | Exit::PanicExit
+                | Exit::ReadyForHuman => Offer::Offered,
                 Exit::LeaveComments => {
                     if !input.grants.comment {
                         Offer::Denied("No Publish Comment grant.".into())

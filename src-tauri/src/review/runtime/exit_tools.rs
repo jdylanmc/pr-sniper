@@ -34,6 +34,10 @@ impl ExitState {
     pub fn take_exit(&self) -> Option<ExitCall> {
         self.slot.lock().ok().and_then(|mut slot| slot.take())
     }
+    /// An exit already won the slot.
+    pub fn taken(&self) -> bool {
+        self.slot.lock().map(|slot| slot.is_some()).unwrap_or(true)
+    }
     pub fn take_failure(&self) -> Option<Failure> {
         self.failure.lock().ok().and_then(|mut f| f.take())
     }

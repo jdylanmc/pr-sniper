@@ -10,13 +10,23 @@ test("pause persists across queue and Settings without saving unrelated preferen
 }) => {
   await seedAgent(store);
   const original = (await store("snapshot")).settings;
-  await page.goto("/?view=settings");
-  await section(page, "Preferences");
-  await page.locator("#global-capacity").fill("20");
+  await store("panel_snapshot");
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
   await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await section(page, "Preferences");
+  await expect(
+    page.locator(".preferences-view [data-toggle-automation]"),
+  ).toHaveCount(0);
+  const header = page.locator("#automation-controls");
+  await page.locator("#global-capacity").fill("20");
+  await header
     .getByRole("button", { name: "Pause automation", exact: true })
     .click();
-  await expect(page.locator("[data-automation-status]")).toContainText(
+  await expect(header.locator("[data-automation-status]")).toContainText(
     "Paused; 0 occupied / 4",
   );
   expect((await store("snapshot")).settings).toEqual(original);
@@ -26,7 +36,7 @@ test("pause persists across queue and Settings without saving unrelated preferen
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
-  await expect(page.locator("[data-automation-status]")).toContainText(
+  await expect(header.locator("[data-automation-status]")).toContainText(
     "Paused; 0 occupied / 20",
   );
   await page.goto("/?view=queue");

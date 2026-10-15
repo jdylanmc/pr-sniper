@@ -35,6 +35,20 @@ baseline, initial selection and admitted heads while current polling uses the
 current effective filter; stale previews and in-flight reads remain pinned to
 their starting filter. This amendment changes detection admission only.
 
+On 2026-10-14 the product owner approved removing the Status screen and the
+tray Status item. This amendment withdraws PR-001's status action only.
+Scheduler health is still recorded (PR-006); queue-item failures surface in
+Queue > Needs attention ([ADR 0007](../../adr/0007-retry-then-park-single-inbox.md)).
+For AC-019 and PR-043, repository polls (no queue item) recover without a
+retry surface: a poll that was waiting or interrupted when its window ran
+out (quit, sleep, account rate limit) starts a fresh attempt window instead
+of parking on its expired deadline; a parked poll is requeued
+on the next scheduled scan (at most once per scan; credential failures wait
+for reconnect) and by Check Now.
+The same approval replaces the Diagnostics screen and tray item with one
+Settings **Copy diagnostics** export of the same content-free text; PR-039 is
+met by that export ([ADR 0019](../../adr/0019-bounded-content-free-diagnostics.md)).
+
 ## Problem and Users
 
 The primary user is a human reviewer whose pull-request workload spans repositories and teammates. Teammate authors receive machine-authored feedback through GitHub. PR Sniper detects eligible work, invokes the configured local agent, publishes validated comments, follows its own unresolved conversations, and prepares the final human handoff.
@@ -79,7 +93,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 
 ## Product Requirements
 
-- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose status, queue, settings, and quit actions, and support opt-in launch at login.
+- PR-001 [AC-001]: The application shall use Tauri, present as a macOS menu-bar utility without a persistent main window, expose queue, check, settings, and quit actions (status action withdrawn 2026-10-14), and support opt-in launch at login.
 - PR-002 [AC-001]: Closing settings or queue windows shall not stop monitoring; quitting the tray process shall stop monitoring.
 - PR-003 [AC-002]: Repository settings shall support add, edit, disable, re-enable, and remove without a hard-coded product maximum, while surfacing provider and local-resource limits.
 - PR-004 [AC-003]: Global defaults and per-repository overrides shall cover fixed interval or five-field cron schedule with explicit time zone, watched GitHub identities, reviewer-assignment trigger, agent adapter, model or named-agent selector, prompt, automatic agent start, and automatic comment publication. A reusable Agent shall explicitly select a stable AI provider/account reference (`AiAccount`) and an actual model returned for that account, independently of its repository assignments and the repository acting account. Copilot shall be represented as the provider, not a model. No example identity, first account or model shall become an implicit default or fallback; direct Claude/Codex/Grok integrations remain unavailable, without excluding Claude models supplied through Copilot.
@@ -115,7 +129,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-036 [AC-017]: The MVP shall never submit a provider `APPROVE` event.
 - PR-037 [AC-018]: Local persistence shall contain repository configuration, schedules, poll cursors, jobs, state transitions, pending-review identities, publication receipts, retry budgets, and notification deduplication records.
 - PR-038 [AC-018]: Provider/account-scoped access and refresh credentials shall use authentication-generation-specific, account-addressed operating-system secure-storage records plus a non-secret account registry; prompts, child-process arguments, ordinary configuration, logs and UI payloads shall not contain provider secrets. Explicit isolated test launches shall use a unique test-owned secure-storage namespace and never fall back to production credentials.
-- PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings.
+- PR-039 [AC-018]: Structured redacted logs shall expose provider, repository, agent, scheduler, persistence, and publication health from Settings through a content-free clipboard export (amended 2026-10-14; no Diagnostics screen).
 - PR-040 [AC-019]: Automatic retry shall apply only to provider rate limits, transient network or transport failures, provider server failures, transient checkout fetch or input/output failures, and agent launch, timeout, or temporary-exit failures before any provider mutation.
 - PR-041 [AC-019]: Authentication, permission, configuration, cancellation, schema-validation, stale-revision, ineligibility, and explicit-provider-rejection failures shall require correction or human action and shall not consume automatic retries.
 - PR-042 [AC-019]: Each persisted job-operation identity shall receive one budget whose initial attempt starts a 15-minute deadline and permits at most three retries; provider timing takes precedence and otherwise exponential backoff with jitter applies.

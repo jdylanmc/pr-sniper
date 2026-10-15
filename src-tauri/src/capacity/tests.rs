@@ -570,6 +570,8 @@ fn rate_limit(origin: crate::backpressure::Origin, retry_after: Option<i64>) -> 
         message: "Rate limited".into(),
         retry_after_seconds: retry_after,
         origin,
+        duck_setup: false,
+        resume: Default::default(),
     }
 }
 

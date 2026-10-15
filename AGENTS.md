@@ -62,6 +62,7 @@ grants no approval, ready, or merge authority.
 
 - `src/`: web UI (Vite, `safari15` target). `src-tauri/`: Rust (`capacity.rs`, `monitoring.rs`, `storage::diagnostics`).
 - `src-tauri/doctrines`: app doctrine catalog, independent of `.agents/skills/doctrine`.
+- `src-tauri/voices`: app Voice seeds ([ADR 0022](docs/adr/0022-voices.md)).
 - `tests/settings/`: Playwright. `tests/release/`: release/packaging tests. `scripts/`: sign, release, icons, Windows.
 
 ### Local development

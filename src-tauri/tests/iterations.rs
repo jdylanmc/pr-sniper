@@ -55,7 +55,7 @@ fn configured(count: usize) -> (Fixture, Store, Monitor) {
         "launch_at_login":false, "doctrines":[],
         "repositories":[{
             "id":REPO,"provider":"github","name":"example/repo","enabled":true,
-            "provider_account_id":"22","provider_repository_id":"100",
+            "cron":"*/15 * * * *","provider_account_id":"22","provider_repository_id":"100",
             "watched_authors":[{"id":"11","login":"author"}]
         }]
     }))
@@ -166,6 +166,7 @@ fn explicit(
             connection: resolved.connection,
             pull_request: Some(pull),
         },
+        NOW,
         NOW,
     )
 }
@@ -331,6 +332,7 @@ fn explicit_pr_rejects_stale_saved_configuration_without_queueing_work() {
                 pull_request: Some(pull('a')),
             },
             NOW,
+            NOW,
         )
         .unwrap_err();
     assert!(error.contains("configuration changed"));
@@ -371,6 +373,7 @@ fn explicit_pr_cannot_bypass_disabled_account_agent_or_revision_gates() {
                 connection: resolved.connection,
                 pull_request: Some(pull('a')),
             },
+            NOW,
             NOW
         )
         .unwrap_err()
@@ -414,6 +417,8 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
     ReviewRun {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
@@ -456,6 +461,7 @@ fn running_primary_review() -> (Fixture, Store, ReviewRun) {
     }]))
     .unwrap();
     settings.repositories[0].review_preset = Some(settings.presets[0].id.clone());
+    settings.migrate_library_ids();
     store
         .save_preferences(settings, &store.load_settings().unwrap())
         .unwrap();
@@ -492,7 +498,7 @@ fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
             sibling.prompt = "A different sibling lens.".into();
             sibling.model = "another-model".into();
             sibling.ai_account.as_mut().unwrap().account_id = "44".into();
-            sibling.doctrines = Some(vec!["Boundaries".into()]);
+            sibling.doctrine_ids = vec![settings.doctrines[1].id.clone()];
             store
                 .save_resource(ResourceEdit::Agent {
                     id: sibling.id.clone(),
@@ -605,8 +611,8 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
                 settings.repositories[0].assignments[0].agent_id = settings.agents[1].id.clone();
             }
             "doctrine body" => settings.doctrines[0].body = "Changed own doctrine.".into(),
-            "doctrine order" => settings.agents[0].doctrines.as_mut().unwrap().reverse(),
-            "doctrine selection" => settings.agents[0].doctrines = Some(vec![]),
+            "doctrine order" => settings.agents[0].doctrine_ids.reverse(),
+            "doctrine selection" => settings.agents[0].doctrine_ids = vec![],
             "preset body" => settings.presets[0].body = "Changed preset instructions.".into(),
             "repository prompt" => {
                 settings.repositories[0].review_preset = None;
@@ -702,12 +708,7 @@ fn seven_way_fanout_successful_pass_dedupe_restart_and_next_scan_assignment_reco
         .unwrap()
         .is_empty());
     assert_eq!(store.load_queue().unwrap().len(), 7);
-    let due = store
-        .load_monitoring_state()
-        .unwrap()
-        .global_scan
-        .unwrap()
-        .next_run;
+    let due = store.load_monitoring_state().unwrap().health[REPO].scheduled_run;
     let ticket = monitor
         .prepare_checks(&store, due, false)
         .unwrap()
@@ -812,7 +813,7 @@ fn retries_do_not_allocate_another_normal_pass_or_change_fifo_metadata() {
 }
 
 #[test]
-fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan() {
+fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_scheduled_run() {
     let (_fixture, store, mut monitor) = configured(1);
     let ticket = monitor.prepare_checks(&store, NOW, true).unwrap().remove(0);
     let mut settings = store.load_settings().unwrap();
@@ -822,12 +823,7 @@ fn a_filter_edit_discards_an_inflight_read_then_resumes_on_the_next_global_scan(
         .finish(&store, ticket, Ok(result(vec![pull('a')])), NOW + 1)
         .is_err());
     assert!(store.load_queue().unwrap().is_empty());
-    let due = store
-        .load_monitoring_state()
-        .unwrap()
-        .global_scan
-        .unwrap()
-        .next_run;
+    let due = store.load_monitoring_state().unwrap().health[REPO].scheduled_run;
     let ticket = monitor
         .prepare_checks(&store, due, false)
         .unwrap()
@@ -1340,7 +1336,7 @@ fn legacy_assignment_retry_health_collapses_without_resetting_the_operation_or_b
     health.assignment_id = Some("cccccccc-cccc-4ccc-8ccc-000000000001".into());
     health.schedule_key = "interval:2:UTC".into();
     health.scan_assignments.clear();
-    state.global_scan = None;
+    health.scan_pending = false;
     state.health.insert(
         format!("{REPO}:assignment:cccccccc-cccc-4ccc-8ccc-000000000001"),
         health,
@@ -1500,20 +1496,22 @@ fn closure_after_an_unseen_push_also_terminates_superseded_heads() {
 }
 
 #[test]
-fn legacy_global_interval_is_preserved_and_reported_instead_of_silently_retimed() {
+fn a_legacy_global_interval_pauses_repositories_and_moves_its_zone() {
     let (_fixture, store, mut monitor) = configured(1);
     let mut settings = store.load_settings().unwrap();
-    settings.defaults.schedule = monitoring_schedule();
+    settings.defaults.schedule = Some(monitoring_schedule());
     store.save_settings(&settings).unwrap();
+    let saved = store.load_settings().unwrap();
+    assert_eq!(saved.defaults.schedule, None);
+    assert_eq!(saved.time_zone, "America/New_York");
+    // The interval never polled; its repositories stay off after upgrade.
+    assert!(!saved.repositories[0].enabled);
+    assert_eq!(saved.repositories[0].cron, "*/30 * * * *");
     assert!(monitor
         .prepare_checks(&store, NOW, true)
         .unwrap()
         .is_empty());
-    assert_eq!(
-        monitor.snapshot()[0].last_failure.as_deref(),
-        Some("invalid_global_cron")
-    );
-    assert_eq!(store.load_settings().unwrap(), settings);
+    assert!(!monitor.snapshot()[0].enabled);
 }
 
 fn monitoring_schedule() -> pr_sniper_lib::policy::Schedule {

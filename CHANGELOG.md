@@ -5,11 +5,75 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Per-type notification switches appear under Notifications while it is on;
+  every type starts on.
+- Settings › Preferences **Copy diagnostics** copies the content-free
+  diagnostic export to the clipboard.
+- Voices: an optional per-Agent writing style for comments, replies and
+  summaries people read. Settings › Voices ships Caveman, Gilfoyle and Merlin,
+  accepts custom Voices and has a per-Voice "Fixed guardrails" switch, on by
+  default. Teammate reports stay caveman; permissions, gates and exits are
+  unchanged.
+- Optional Rubber Duck for the primary Agent: pick any Agent on the primary
+  assignment, and the primary can send a finding for a confirmed, revise,
+  rejected or unverifiable verdict before posting. Call, timeout and run-window
+  limits live in Settings › Preferences; if the duck can't start, the job parks
+  in Needs attention.
+- Themes: Settings › Preferences › Appearance picks Light, Dark or OS. The
+  choice applies right away in every window, and OS follows system changes
+  live. Defaults to Light, which looks the same as before.
+- Per-repository schedules: the repository editor has a Schedule builder
+  (Every 5–30 min or 1–4 h, Hourly at :MM, Daily at listed times, each on chosen
+  days, or an Advanced cron) with the next three runs in your time zone.
+  Repository rows show each schedule. New repositories poll every 30 minutes.
+
+### Changed
+
+- Time zone is a dedicated dropdown of host time zones; new profiles start in
+  the system time zone, falling back to UTC. Every repository schedule runs in
+  it.
+- Upgrading moves the saved global cron onto each existing repository. A legacy
+  interval, or a cron that never runs, leaves repositories paused on Every
+  30 min until monitoring is turned back on.
+- Settings home groups into General (Accounts, Repositories, Preferences) and
+  Review behavior (Agents, Doctrines, Voices); collections render as single
+  lists.
+
 ### Fixed
 
 - Keep the retained panel visible after display changes: recompute each opening
   against current work areas, prefer the clicked tray display and resize to fit
   smaller screens.
+- Turning notifications on no longer sends alerts for events that already
+  existed or happened while off; it sends one confirmation instead.
+- Preferences heading no longer hides under the header band, and AI capacity
+  matches the other fields.
+- The in-app Changelog uses the shared page header and renders bold and code.
+- Counts use the singular for one item, such as "1 repository".
+- Repository polls no longer stay parked: an interrupted poll restarts after
+  relaunch, and a parked poll retries on its repository's next scheduled run or
+  Check Now; credential failures wait for reconnect.
+- A review whose PR moved to a new head or base, closed, merged, left draft
+  scope or whose Agent assignment changed is superseded instead of parked as a
+  permanent failure. It waits for the next successful poll instead of retrying,
+  then queues the new revision without spending an attempt; each new base gets
+  at most one review. Draft PRs are reviewed when Review drafts is on, and runs
+  already parked this way recover on restart.
+
+### Removed
+
+- Settings test-notification destination and Send test notification controls.
+- The Status and Diagnostics screens and their tray items. Check Now stays in
+  the tray; queue-item failures stay in Queue › Needs attention, and parked
+  repository polls recover on their repository's next scheduled run or Check
+  Now.
+- The Settings Global pause card; use the header Monitoring switch.
+- The global Cron expression and Schedule helper in Preferences; schedules
+  live on each repository.
+- The duplicate Concurrent reviews Settings entry; AI capacity stays in
+  Preferences.
 
 ## 0.3.1 - 2026-10-14
 

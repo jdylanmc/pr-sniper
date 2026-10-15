@@ -24,6 +24,8 @@ export interface Repository {
   provider: "github" | "azure_devops";
   name: string;
   enabled: boolean;
+  /** Five-field cron, evaluated in the saved time zone. */
+  cron: string;
   provider_account_id?: string;
   provider_repository_id?: string;
   overrides?: PolicyOverrides;

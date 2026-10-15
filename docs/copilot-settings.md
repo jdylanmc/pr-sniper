@@ -63,7 +63,7 @@ Genie's repository scope choice remains unconfirmed until the combined final
 check. Scope choices are transient, not a second saved resource library: after
 an application restart, preview pending scope again. Final confirmation shows
 the effective repository and AI accounts separately, assignment permissions
-and primary designation, the global cron/time zone and capacity. It rechecks
+and primary designation, each repository's cron, the time zone and capacity. It rechecks
 assigned model availability and rejects changed native configuration or account
 state, including same-identity AI reconnects after an earlier catalog completes.
 The local commit locks connection generations before auth state; catalog and
@@ -127,7 +127,7 @@ execution, with no replacement model or success-shaped fallback.
 Agent saves record the requested Intelligence together with the model/account.
 Unrelated edits to legacy Agents preserve absent Intelligence fields; they do
 not invent a deliberate default choice.
-Jobs capture that configuration immutably. Job details and Diagnostics show
+Jobs capture that configuration immutably. Job details and copied diagnostics show
 captured requests separately from the actual runtime session report; later
 Agent edits do not rewrite either. Missing legacy fields are unavailable
 evidence, not today's defaults. A provider default not reported by the runtime
@@ -153,7 +153,7 @@ provider-operation safety receipts. After that one-time reconciliation, edited,
 custom and intentionally empty libraries survive restart.
 
 Agent editors use the same saved library as assignment resolution and job
-capture. Filtering retains selections. Editors, Doctrines and Diagnostics show
+capture. Filtering retains selections. Editors, Doctrines and copied diagnostics show
 the bundled source and effective library revisions (SHA-256 of the ordered
 title/body JSON). Jobs retain the actual selected texts and catalog revision;
 older jobs without a recorded revision say so rather than inferring today's

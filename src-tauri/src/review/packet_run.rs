@@ -21,6 +21,8 @@ use std::sync::Arc;
 pub(crate) struct Prepared {
     pub packet: Packet,
     pub setup: ExitSetup,
+    /// Present when the run offers `rubber_duck`.
+    pub duck: Option<super::runtime::DuckPrep>,
 }
 
 fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
@@ -88,9 +90,10 @@ where
         .map_err(Failure::from)?;
     observation.write_capability = write_capability;
     if observation.head != context.pull.head_sha || observation.base != context.pull.base_sha {
-        return Err(Failure::superseded(
-            "The PR state moved before the packet was built.",
-        ));
+        return Err(
+            Failure::superseded("The PR state moved before the packet was built.")
+                .after(super::Resume::NextPoll),
+        );
     }
     let base = gate_input(run, Facts::from_observation(&observation))?;
     let exits = gates::offered(&base);
@@ -107,12 +110,12 @@ where
             "No exit is offered to this assignment. Grant a usable exit tool.",
         ));
     }
-    let tool_set = tools::tool_set(&base.tools, &offered);
     let config = run
         .selection
         .configuration
         .as_ref()
         .ok_or_else(|| Failure::permanent("Execution configuration is missing."))?;
+    let tool_set = tools::tool_set(&base.tools, config.rubber_duck.is_some(), &offered);
     let agent = &run.selection.agent;
     let admission = run.job.work.as_ref().map(|w| &w.admission);
     let mut conversation = reads::conversation(&observation);
@@ -169,13 +172,44 @@ where
             ),
             preset: run.selection.preset.clone(),
             signature: agent.signature.clone(),
+            // Captured for primaries only (Selection::resolve).
+            voice: config.voice.clone(),
         },
         teammates: if base.primary { teammates } else { vec![] },
         conversation: conversation.clone(),
     };
+    let duck_input = input.clone();
     let mut packet = packet::build(&input);
     packet.record.state_hash = Some(state_hash);
     packet.record.state_marks = Some(crate::github::state::StateMarks::of(snapshot, acting_login));
+    let duck_tools = tools::duck_tools(&base.tools);
+    let duck = config
+        .rubber_duck
+        .as_ref()
+        .filter(|_| tool_set.iter().any(|t| t == super::duck::TOOL))
+        .map(|duck| super::runtime::DuckPrep {
+            primary_hash: packet.hash.clone(),
+            directive: Directive {
+                doctrines: duck
+                    .doctrines
+                    .iter()
+                    .map(|d| (d.title.clone(), d.body.clone()))
+                    .collect(),
+                agent_prompt: crate::prompt_tokens::expand(
+                    &duck.agent.prompt,
+                    &duck.agent.name,
+                    context,
+                ),
+                repository_prompt: duck_input.directive.repository_prompt.clone(),
+                preset: None,
+                signature: String::new(),
+                voice: None,
+            },
+            tools: duck_tools,
+            changed: context.files.iter().map(|f| f.path.clone()).collect(),
+            threads: conversation.threads.iter().map(|t| t.id.clone()).collect(),
+            base: duck_input,
+        });
     let facts = Arc::new(reads::tool_facts(description, &conversation, &checks));
     let gate = exit_gate(
         client.clone(),
@@ -186,6 +220,7 @@ where
         write_capability,
     )?;
     Ok(Prepared {
+        duck,
         packet,
         setup: ExitSetup {
             tool_set,

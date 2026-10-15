@@ -33,6 +33,7 @@ test("Settings separates Accounts and Repositories without prototype or retired 
     "Accounts",
     "Repositories",
     "Doctrines",
+    "Voices",
     "Agents",
     "Preferences",
   ]);
@@ -70,16 +71,17 @@ test("Settings separates Accounts and Repositories without prototype or retired 
   await expect(notifications).toBeDisabled();
   notificationState.release();
   await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#notification-permission")).toContainText(/^Off;/);
   await expect(notifications).toBeEnabled();
+  await expect(page.locator("#notification-permission")).toBeHidden();
   await expect(notifications).not.toBeChecked();
   await expect(
     page.getByRole("button", { name: "Send test notification" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
+  await expect(page.locator("#notification-types")).toBeHidden();
   expect((await store("notification_snapshot")).enabled).toBe(false);
   await expect(
     page.getByRole("button", {
-      name: "Open redacted diagnostics",
+      name: "Copy diagnostics",
       exact: true,
     }),
   ).toBeVisible();
@@ -147,11 +149,9 @@ test("new assignments use the global policy while cancelled drafts never opt int
   const saved = JSON.parse(
     await readFile(join(dataRoot, "config/settings.json"), "utf8"),
   );
-  expect(saved.repositories[0].assignments[0].schedule).toEqual({
-    kind: "cron",
-    expression: "*/15 * * * *",
-    timezone: "UTC",
-  });
+  // Schedules belong to repositories; new assignments carry none.
+  expect(saved.repositories[0].assignments[0].schedule).toBeUndefined();
+  expect(saved.repositories[0].cron).toBe(initial.repositories[0].cron);
   expect(saved.repositories[0].assignments[0].comment).toBe(false);
   expect(saved.defaults).toEqual(initial.defaults);
   expect(saved.launch_at_login).toBe(false);
@@ -285,7 +285,7 @@ test("doctrine authoring stays inert and rejects unknown schema and credentials 
   const saved = (await store("snapshot")).settings;
   expect(saved.agents[0]).toEqual({
     ...fixtureAgent,
-    doctrines: ["api-renamed"],
+    doctrine_ids: [saved.doctrines.find((d) => d.title === "api-renamed").id],
   });
   expect(saved.presets).toEqual(settings.presets);
   expect(await page.evaluate(() => window.doctrineExecuted)).toBeUndefined();
@@ -351,6 +351,7 @@ for (const viewport of [
     for (const title of [
       "Repositories",
       "Doctrines",
+      "Voices",
       "Agents",
       "Preferences",
     ]) {
@@ -393,6 +394,9 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   };
   initial.defaults.prompt = "Keep this exact custom prompt.\nAnd its newline.";
   await store("seed_settings", initial);
+  const seeded = (await store("snapshot")).settings;
+  expect(seeded.repositories[0].cron).toBe("0 9 * * MON-FRI");
+  expect(seeded.time_zone).toBe("Europe/London");
   await page.goto("/?view=settings");
   let modal = await assignment(page, "fixture/project");
   await assignmentView(page, modal, "permissions");
@@ -409,7 +413,7 @@ test("assignment comment choice stays independent of opt-in Approve and preserve
   await saveAssignment(page, modal);
   await saveChanges(page);
   const saved = (await store("snapshot")).settings;
-  expect(saved.defaults).toEqual(initial.defaults);
+  expect(saved.defaults).toEqual(seeded.defaults);
   expect(saved.repositories[0].assignments[0]).toMatchObject({
     comment: false,
     approve: false,

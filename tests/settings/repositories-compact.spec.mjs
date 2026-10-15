@@ -169,27 +169,34 @@ async function capture(page, testInfo, name) {
 
 test.use({ viewport: { width: 408, height: 744 } });
 
-test("repository saves leave unsaved Preferences and the saved global schedule independent", async ({
+test("repository saves leave unsaved Preferences independent and show the migrated repository schedule", async ({
   page,
   store,
 }, testInfo) => {
   const initial = await seed(store);
+  expect(initial.defaults.schedule).toBeUndefined();
+  expect(initial.time_zone).toBe("America/New_York");
+  expect(initial.repositories.map((r) => r.cron)).toEqual([
+    "7 */2 * * MON-FRI",
+    "7 */2 * * MON-FRI",
+  ]);
   await provider(page);
   await start(page, store);
   await section(page, "Preferences");
-  await page.locator("#global-cron").fill("invalid unsaved cron");
+  await page.locator("#global-timezone").selectOption("Asia/Tokyo");
   await page.locator("#global-capacity").fill("9");
   const editor = await repositorySettings(page, "fixture/compact");
-  await expect(editor.locator("[data-global-schedule]")).toContainText(
+  const schedule = editor.locator("[data-schedule]");
+  await expect(schedule).not.toHaveAttribute("aria-busy", "true");
+  await expect(editor.locator("#schedule-mode-advanced")).toBeChecked();
+  await expect(editor.locator("#schedule-cron")).toHaveValue(
     "7 */2 * * MON-FRI",
   );
-  await expect(editor.locator("[data-global-schedule]")).toContainText(
+  await expect(schedule.locator("[data-schedule-zone]")).toHaveText(
     "America/New_York",
   );
-  await expect(
-    editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
-  ).toHaveCount(0);
-  await capture(page, testInfo, "saved-global-schedule");
+  await expect(editor.locator("#global-cron, #global-timezone")).toHaveCount(0);
+  await capture(page, testInfo, "saved-repository-schedule");
   await flipAll(editor);
   await expect(
     editor.getByRole("button", { name: "Configure scope", exact: true }),
@@ -200,16 +207,12 @@ test("repository saves leave unsaved Preferences and the saved global schedule i
   expect(saved.capacity).toBe(initial.capacity);
   expect(saved.repositories[1]).toEqual(initial.repositories[1]);
   await section(page, "Preferences");
-  await expect(page.locator("#global-cron")).toHaveValue(
-    "invalid unsaved cron",
-  );
+  await expect(page.locator("#global-timezone")).toHaveValue("Asia/Tokyo");
   await expect(page.locator("#global-capacity")).toHaveValue("9");
   await page.reload();
   await page.evaluate(() => window.__settingsIdle());
   await section(page, "Preferences");
-  await expect(page.locator("#global-cron")).toHaveValue(
-    initial.defaults.schedule.expression,
-  );
+  await expect(page.locator("#global-timezone")).toHaveValue(initial.time_zone);
   expect((await store("snapshot")).settings).toEqual(saved);
 });
 
@@ -703,7 +706,7 @@ for (const resolution of ["Save", "Cancel"]) {
     const settingsPath = join(dataRoot, "config/settings.json");
     const before = await readFile(settingsPath);
     await section(page, "Preferences");
-    await page.locator("#global-cron").fill("invalid unsaved cron");
+    await page.locator("#global-timezone").selectOption("Asia/Tokyo");
     await page.locator("#global-capacity").fill("9");
     let editor = await repositorySettings(page, "fixture/compact");
     await editor
@@ -777,9 +780,7 @@ for (const resolution of ["Save", "Cancel"]) {
     };
     expect((await store("snapshot")).settings).toEqual(expected);
     await section(page, "Preferences");
-    await expect(page.locator("#global-cron")).toHaveValue(
-      "invalid unsaved cron",
-    );
+    await expect(page.locator("#global-timezone")).toHaveValue("Asia/Tokyo");
     await expect(page.locator("#global-capacity")).toHaveValue("9");
     await page.reload();
     await page.evaluate(() => window.__settingsIdle());
@@ -824,32 +825,45 @@ test("R1 correction: concurrent saved repository changes still reject a clean un
   ).not.toBeChecked();
 });
 
-test("R2 correction: saved legacy interval and timezone remain visible but explicitly block polling", async ({
+test("R2 correction (superseded by ADR 0024): a legacy global interval leaves repositories paused and becomes the saved zone", async ({
   page,
   store,
   dataRoot,
 }, testInfo) => {
   const initial = await seed(store);
+  initial.repositories[0].enabled = true;
   initial.defaults.schedule = {
     kind: "interval",
     minutes: 7,
-    timezone: "America/New_York",
+    timezone: "Europe/London",
   };
   await store("seed_settings", initial);
+  const migrated = (await store("snapshot")).settings;
+  expect(migrated.defaults.schedule).toBeUndefined();
+  expect(migrated.time_zone).toBe("Europe/London");
+  // The interval never polled: repositories stay off on the default cron.
+  expect(migrated.repositories.map((r) => [r.cron, r.enabled])).toEqual([
+    ["*/30 * * * *", false],
+    ["*/30 * * * *", false],
+  ]);
   const before = await readFile(join(dataRoot, "config/settings.json"));
   await provider(page);
   await start(page, store);
   const editor = await repositorySettings(page, "fixture/compact");
-  const schedule = editor.locator("[data-global-schedule]");
-  await expect(schedule).toContainText("Every 7 minutes");
-  await expect(schedule).toContainText("America/New_York");
+  const schedule = editor.locator("[data-schedule]");
+  await expect(schedule).not.toHaveAttribute("aria-busy", "true");
+  await expect(editor.locator("#schedule-mode-every")).toBeChecked();
+  await expect(editor.locator("#schedule-every")).toHaveValue("30");
   await expect(
-    editor.locator("[name=cron],[name=minutes],[name=timezone],#global-cron"),
-  ).toHaveCount(0);
-  await capture(page, testInfo, "legacy-schedule-blocked");
+    editor.getByRole("switch", { name: "Monitor fixture/compact" }),
+  ).not.toBeChecked();
+  await expect(schedule.locator("[data-schedule-zone]")).toHaveText(
+    "Europe/London",
+  );
+  await expect(schedule.locator("[data-schedule-runs] li")).toHaveCount(3);
+  await capture(page, testInfo, "legacy-schedule-migrated");
   const resources = await store("saved_resources");
-  expect(resources.readiness.configuration_ready).toBe(false);
-  expect(resources.settings).toEqual(initial);
+  expect(resources.settings).toEqual(migrated);
   expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
     before,
   );

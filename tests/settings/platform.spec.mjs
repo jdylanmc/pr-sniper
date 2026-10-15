@@ -8,7 +8,7 @@ for (const platform of ["Windows", "Macintosh"]) {
     test("existing surfaces describe this host, not another platform", async ({
       page,
     }) => {
-      await page.goto("/?view=status");
+      await page.goto("/");
       await expect(page.locator("body")).not.toContainText(
         /menu bar|menu-bar|system tray|system-tray/i,
       );

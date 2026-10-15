@@ -80,6 +80,15 @@ impl Integration {
             .credential(&id, &operation)
             .await
             .map_err(Failure::operation)?;
+        let mut request = request;
+        if let Some(duck) = request.duck.as_mut() {
+            let (launch, account) = self
+                .duck_launch(&duck.selection, &operation)
+                .await
+                .map_err(Failure::duck_setup)?;
+            duck.launch = launch;
+            duck.account = Some(account);
+        }
         let final_operation = operation.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
             if let Some(trace) = &request.diagnostics {
@@ -95,6 +104,40 @@ impl Integration {
             final_operation.check().map_err(Failure::operation)?;
             Ok(value)
         })
+    }
+}
+
+impl Integration {
+    /// The Rubber Duck's own Copilot credential, under the primary's cancellation and
+    /// deadline. A failure here is a setup failure of the primary's attempt.
+    async fn duck_launch(
+        &self,
+        selection: &crate::review::Selection,
+        primary: &Operation,
+    ) -> Result<(crate::review::runtime::DuckLaunch, Operation), crate::review::Failure> {
+        use crate::review::Failure;
+        let id = selection
+            .agent
+            .ai_account
+            .as_ref()
+            .filter(|account| account.provider == "copilot")
+            .ok_or_else(|| {
+                Failure::permanent("Choose a Copilot account for the Rubber duck Agent.")
+            })?
+            .account_id
+            .clone();
+        let mut operation = self
+            .operation(&id, primary.deadline)
+            .map_err(Failure::permanent)?;
+        operation.cancelled = primary.cancelled.clone();
+        let (identity, pair) = self
+            .credential(&id, &operation)
+            .await
+            .map_err(Failure::operation)?;
+        Ok((
+            crate::review::runtime::DuckLaunch::Credential { identity, pair },
+            operation,
+        ))
     }
 }
 

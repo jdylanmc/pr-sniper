@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { setText } from "./stable-dom";
 
 interface Notice {
   id: string;
@@ -27,71 +28,120 @@ interface Snapshot {
   } | null;
   error: string | null;
   notices: Notice[];
-  targets: { id: string; label: string }[];
+  categories: { category: Category; enabled: boolean }[];
 }
 
-const phase: Record<Notice["phase"], string> = {
-  queued: "Queued",
-  submitting: "Submitting",
-  accepted_unconfirmed: "Accepted",
-  outcome_unknown: "Unknown",
-  permission_denied: "Permission denied",
-  failed: "Failed",
-  not_sent: "Not sent",
+type Category =
+  | "confirmation"
+  | "human_input"
+  | "ready"
+  | "failure"
+  | "approved"
+  | "merged"
+  | "final_review_cleared";
+
+const categoryLabel: Record<Category, string> = {
+  confirmation: "Confirmation",
+  human_input: "Needs input",
+  ready: "Ready",
+  failure: "Failures",
+  approved: "Approved",
+  merged: "Merged",
+  final_review_cleared: "Final review cleared",
 };
 
-function permissionText(state: Snapshot) {
-  const permission = state.permission;
+// Healthy notifications show nothing beyond the switch; a problem shows one
+// short label. Unknown channels are never treated as muted.
+function permissionAlert(state: Snapshot): string | null {
   const os = state.platform === "windows" ? "Windows" : "macOS";
-  const channel = (value: boolean | null) =>
-    value === null ? "unknown" : value ? "on" : "off";
-  return `${state.enabled ? "On" : "Off"}; ${
-    permission
-      ? `${os} ${permission.authorization.replaceAll("_", " ")}; banners ${channel(permission.alerts_enabled)}; center ${channel(permission.center_enabled)}`
-      : `${os} unavailable`
-  }`;
+  const permission = state.permission;
+  if (!permission) return state.enabled ? `${os} unavailable` : null;
+  const { authorization } = permission;
+  if (authorization === "authorized_aggregate") return null;
+  if (authorization === "authorized" || authorization === "provisional")
+    return state.enabled &&
+      permission.alerts_enabled === false &&
+      permission.center_enabled === false
+      ? `Muted in ${os}`
+      : null;
+  if (["not_determined", "not_registered", "unknown"].includes(authorization))
+    return state.enabled ? `Blocked by ${os}` : null;
+  return `Blocked by ${os}`;
 }
+
+const alertIcon =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/></svg>';
 
 export function mountNotificationSettings(
   root: HTMLElement,
   view: {
-    target: string;
     pending?: boolean;
     actionError?: string | null;
     refresh?: () => Promise<void>;
+    snapshot?: Snapshot;
   },
 ) {
-  root.innerHTML = `<fieldset aria-label="Notifications"><legend>Notifications</legend>
+  root.innerHTML = `<fieldset aria-label="Notifications">
     <label class="setting-row"><span>Notifications</span><input id="notification-enabled" type="checkbox" role="switch" aria-describedby="notification-permission" disabled /></label>
-    <p id="notification-permission" role="status">Loading</p>
+    <p id="notification-permission" class="notification-alert" hidden>${alertIcon}<span data-notification-alert></span></p><span class="sr-only" role="status" data-notification-announce></span>
     <p id="notification-error" role="alert" hidden></p>
-    <label>Test destination<select id="notification-target"><option value="">Settings</option></select></label>
-    <button id="notification-test" type="button" disabled>Send test notification</button></fieldset>`;
+    <fieldset id="notification-types" class="notification-types" hidden><legend>Notification types</legend>${(
+      Object.keys(categoryLabel) as Category[]
+    )
+      .map(
+        (category) =>
+          `<label class="setting-row"><span>${categoryLabel[category]}</span><input id="notification-type-${category}" data-notification-type="${category}" type="checkbox" role="switch" disabled /></label>`,
+      )
+      .join("")}</fieldset></fieldset>`;
   const enabled = root.querySelector<HTMLInputElement>(
     "#notification-enabled",
   )!;
   const status = root.querySelector<HTMLElement>("#notification-permission")!;
+  const showAlert = (label: string | null) => {
+    setText(status.querySelector("[data-notification-alert]")!, label ?? "");
+    status.hidden = !label;
+    // The live region stays rendered so a new problem is announced.
+    setText(root.querySelector("[data-notification-announce]")!, label ?? "");
+  };
   const error = root.querySelector<HTMLElement>("#notification-error")!;
-  const target = root.querySelector<HTMLSelectElement>("#notification-target")!;
-  const test = root.querySelector<HTMLButtonElement>("#notification-test")!;
+  const types = root.querySelector<HTMLElement>("#notification-types")!;
+  const toggles = [
+    ...types.querySelectorAll<HTMLInputElement>("[data-notification-type]"),
+  ];
   let reading = false;
   let revision = 0;
-  let selected = view.target;
-  let targetsSignature = "";
   let state: Snapshot | undefined;
-  target.onchange = () => {
-    selected = target.value;
-    view.target = selected;
-    updateControls();
-  };
+  let opener: string | undefined;
+
+  // Redraws remount this card; showing the last read keeps controls focusable by ID.
+  function apply(next: Snapshot) {
+    state = next;
+    view.snapshot = next;
+    enabled.checked = next.enabled;
+    showAlert(permissionAlert(next));
+    error.textContent = [view.actionError, next.error]
+      .filter(Boolean)
+      .join("\n");
+    error.hidden = !error.textContent;
+    for (const toggle of toggles)
+      toggle.checked = next.categories.some(
+        (c) => c.category === toggle.dataset.notificationType && c.enabled,
+      );
+    types.hidden = !next.enabled;
+  }
 
   function updateControls() {
     enabled.disabled = !!view.pending || !state;
-    test.disabled =
-      !!view.pending ||
-      !state?.enabled ||
-      (!!selected && !state.targets.some((t) => t.id === selected));
-    target.disabled = !!view.pending || !state;
+    for (const toggle of toggles)
+      toggle.disabled = !!view.pending || !state?.enabled;
+    if (!opener || view.pending) return;
+    // Disabling the acting switch drops its focus; return it unless the user moved on.
+    const control = root.querySelector<HTMLInputElement>(`#${opener}`);
+    if (control?.disabled) return;
+    opener = undefined;
+    const active = document.activeElement;
+    if (control && !control.hidden && (!active || active === document.body))
+      control.focus();
   }
 
   async function refresh() {
@@ -101,28 +151,12 @@ export function mountNotificationSettings(
     try {
       const next = await invoke<Snapshot>("notification_snapshot");
       if (!root.isConnected || view.pending || captured !== revision) return;
-      state = next;
-      enabled.checked = next.enabled;
-      status.textContent = permissionText(next);
-      error.textContent = [view.actionError, next.error]
-        .filter(Boolean)
-        .join("\n");
-      error.hidden = !error.textContent;
-      const targets = JSON.stringify(next.targets);
-      if (targets !== targetsSignature) {
-        targetsSignature = targets;
-        target.replaceChildren(new Option("Settings", ""));
-        for (const item of next.targets)
-          target.append(new Option(item.label, item.id));
-        if (selected && !next.targets.some((t) => t.id === selected)) {
-          target.append(new Option("Unavailable", selected));
-        }
-        target.value = selected;
-      }
+      apply(next);
     } catch {
       if (!root.isConnected || captured !== revision) return;
       state = undefined;
-      status.textContent = "Unavailable";
+      view.snapshot = undefined;
+      showAlert(null);
       error.textContent = [view.actionError, "Unavailable"]
         .filter(Boolean)
         .join("\n");
@@ -135,17 +169,18 @@ export function mountNotificationSettings(
     }
   }
 
-  async function act(command: string, args: Record<string, unknown>) {
+  async function act(
+    control: HTMLInputElement,
+    command: string,
+    args: Record<string, unknown>,
+  ) {
     if (view.pending) return;
+    opener = control.id;
     view.pending = true;
     view.actionError = null;
     error.hidden = true;
     revision++;
     updateControls();
-    status.textContent =
-      command === "set_notifications_enabled" && args.enabled
-        ? "Checking permission"
-        : "Updating";
     try {
       await invoke(command, args);
     } catch (cause) {
@@ -156,97 +191,21 @@ export function mountNotificationSettings(
     }
   }
   enabled.onchange = () =>
-    void act("set_notifications_enabled", { enabled: enabled.checked });
-  test.onclick = () =>
-    void act("test_notification", { itemId: selected || null });
+    void act(enabled, "set_notifications_enabled", {
+      enabled: enabled.checked,
+    });
+  for (const toggle of toggles)
+    toggle.onchange = () =>
+      void act(toggle, "set_notification_category", {
+        category: toggle.dataset.notificationType,
+        enabled: toggle.checked,
+      });
   view.refresh = refresh;
+  if (view.snapshot && !view.pending) apply(view.snapshot);
   updateControls();
-  if (view.pending) status.textContent = "Pending";
   void refresh();
   const timer = window.setInterval(() => {
     if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
-}
-
-export function renderNotificationHistory(
-  root: HTMLElement,
-  showError: (message: string) => void,
-) {
-  let signature = "";
-  let expanded = false;
-  let loading = false;
-  return async () => {
-    if (loading || !root.isConnected) return;
-    loading = true;
-    try {
-      const state = await invoke<Snapshot>("notification_snapshot");
-      if (!root.isConnected) return;
-      const next = JSON.stringify(state);
-      if (next === signature) return;
-      signature = next;
-      root.replaceChildren();
-      root.removeAttribute("role");
-      const status = document.createElement("p");
-      status.textContent = permissionText(state);
-      root.append(status);
-      if (state.error) {
-        const error = document.createElement("p");
-        error.setAttribute("role", "alert");
-        error.textContent = state.error;
-        root.append(error);
-      }
-      const details = document.createElement("details");
-      details.open = expanded;
-      details.ontoggle = () => {
-        expanded = details.open;
-      };
-      const summary = document.createElement("summary");
-      summary.textContent = `Notification history (${state.notices.length})`;
-      details.append(summary);
-      for (const notice of state.notices) {
-        const row = document.createElement("article");
-        const title = document.createElement("h3");
-        title.textContent = notice.title;
-        const info = document.createElement("p");
-        info.textContent = `${new Date(notice.created_at * 1000).toLocaleString()}: ${phase[notice.phase]}`;
-        row.append(title, info);
-        for (const message of [notice.error, notice.navigation_error].filter(
-          Boolean,
-        )) {
-          const error = document.createElement("p");
-          error.textContent = message;
-          row.append(error);
-        }
-        if (notice.opened_at !== null) {
-          const opened = document.createElement("p");
-          opened.textContent = `Opened ${new Date(notice.opened_at * 1000).toLocaleString()}`;
-          row.append(opened);
-        }
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = "Open saved destination";
-        button.onclick = async () => {
-          button.disabled = true;
-          try {
-            await invoke("open_notification", { id: notice.id });
-          } catch (cause) {
-            showError(typeof cause === "string" ? cause : "Open failed");
-          } finally {
-            button.disabled = false;
-            signature = "";
-            root.setAttribute("role", "alert");
-          }
-        };
-        row.append(button);
-        details.append(row);
-      }
-      root.append(details);
-    } catch {
-      signature = "";
-      root.textContent = "Unavailable";
-    } finally {
-      loading = false;
-    }
-  };
 }

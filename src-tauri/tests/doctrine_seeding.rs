@@ -32,6 +32,7 @@ fn stale_library() -> Vec<Doctrine> {
     ]
     .into_iter()
     .map(|title| Doctrine {
+        id: String::new(),
         title: title.into(),
         body: format!("Old {title} text."),
     })
@@ -64,10 +65,15 @@ fn stale_23_entry_saved_library_is_reconciled_once() {
     )
     .unwrap();
     let settings = fixture.store().load_settings().unwrap();
-    assert_eq!(settings.doctrines, canonical_doctrines());
-    assert_eq!(settings.agents[0].doctrine_titles(), ["testing", " CODE "]);
+    assert_eq!(
+        content(&settings.doctrines),
+        content(&canonical_doctrines())
+    );
+    // Surviving title references become ids of the reconciled library.
+    assert_eq!(titles(&settings, 0), ["testing", "code"]);
     assert_eq!(settings.agents[0].doctrine, None);
-    assert!(settings.agents[1].doctrine_titles().is_empty());
+    assert_eq!(settings.agents[0].doctrines, None);
+    assert!(settings.agents[1].doctrine_ids.is_empty());
     let reset = settings.doctrine_reset.as_ref().unwrap();
     assert_eq!(reset.previous_count, 23);
     assert_eq!(reset.removed_references, 4);
@@ -79,6 +85,34 @@ fn stale_23_entry_saved_library_is_reconciled_once() {
     let persisted = fs::read(&path).unwrap();
     assert_eq!(fixture.store().load_settings().unwrap(), settings);
     assert_eq!(fs::read(path).unwrap(), persisted);
+}
+
+/// Library content without ids, which are fresh UUIDs per store.
+fn content(doctrines: &[Doctrine]) -> Vec<(String, String)> {
+    doctrines
+        .iter()
+        .map(|d| (d.title.clone(), d.body.clone()))
+        .collect()
+}
+
+fn titles(settings: &pr_sniper_lib::storage::Settings, agent: usize) -> Vec<String> {
+    settings.agents[agent]
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            settings
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .unwrap()
+                .title
+                .clone()
+        })
+        .collect()
+}
+
+fn id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn canonical_doctrines() -> Vec<Doctrine> {
@@ -117,7 +151,11 @@ fn canonical_doctrines() -> Vec<Doctrine> {
                 body.split_whitespace().count() <= 500,
                 "{title} exceeds the shipped doctrine word cap"
             );
-            Doctrine { title, body }
+            Doctrine {
+                id: String::new(),
+                title,
+                body,
+            }
         })
         .collect();
     doctrines.sort_by(|a, b| a.title.cmp(&b.title));
@@ -146,7 +184,10 @@ fn canonical_doctrines() -> Vec<Doctrine> {
 fn fresh_settings_persist_the_exact_complete_canonical_catalog() {
     let fixture = Fixture::new();
     let settings = fixture.store().load_settings().unwrap();
-    assert_eq!(settings.doctrines, canonical_doctrines());
+    assert_eq!(
+        content(&settings.doctrines),
+        content(&canonical_doctrines())
+    );
     assert_eq!(
         settings
             .doctrines
@@ -180,7 +221,7 @@ fn fresh_settings_persist_the_exact_complete_canonical_catalog() {
 fn saving_another_section_first_retains_all_doctrines() {
     let fixture = Fixture::new();
     let saved = fixture.store().add_repository("fixture/project").unwrap();
-    assert_eq!(saved.doctrines, canonical_doctrines());
+    assert_eq!(content(&saved.doctrines), content(&canonical_doctrines()));
     assert_eq!(fixture.store().load_settings().unwrap(), saved);
 }
 
@@ -190,11 +231,13 @@ fn edited_created_deleted_and_explicitly_empty_libraries_survive_restart() {
     let original = fixture.store().load_settings().unwrap();
     let mut edited = original.clone();
     edited.doctrines[0] = Doctrine {
+        id: id(),
         title: "renamed-principle".into(),
         body: "User-edited principles, not the shipped text.".into(),
     };
     edited.doctrines.remove(1);
     edited.doctrines.push(Doctrine {
+        id: id(),
         title: "custom-principle".into(),
         body: "User-created principles.".into(),
     });
@@ -227,13 +270,15 @@ fn versioned_custom_empty_and_missing_libraries_are_not_reseeded() {
     for library in [
         "",
         r#","doctrines":[]"#,
-        r#","doctrines":[{"title":"mine","body":"Keep this exact custom body."}]"#,
+        r#","doctrines":[{"id":"5d7a1c3e-2b4f-4a6d-9e8c-1f2a3b4c5d6e","title":"mine","body":"Keep this exact custom body."}]"#,
     ] {
         let fixture = Fixture::new();
         let path = fixture.path().join("config/settings.json");
         fs::create_dir(path.parent().unwrap()).unwrap();
-        let original =
-            format!(r#"{{"launch_at_login":true,"doctrine_catalog_version":1{library}}}"#);
+        // Voice-versioned too, so loading has no unrelated one-time Voice seed to write.
+        let original = format!(
+            r#"{{"launch_at_login":true,"doctrine_catalog_version":1,"voice_catalog_version":1{library}}}"#
+        );
         fs::write(&path, &original).unwrap();
         let settings = fixture.store().load_settings().unwrap();
         assert!(settings.launch_at_login);
@@ -265,10 +310,11 @@ fn pre_alpha_custom_and_empty_libraries_reset_but_later_edits_survive() {
         fs::write(&path, format!(r#"{{"launch_at_login":true{library}}}"#)).unwrap();
         let initial = fixture.store().load_settings().unwrap();
         assert!(initial.launch_at_login);
-        assert_eq!(initial.doctrines, canonical_doctrines());
+        assert_eq!(content(&initial.doctrines), content(&canonical_doctrines()));
         assert!(initial.doctrine_reset.is_some());
         let mut edited = initial.clone();
         edited.doctrines = vec![Doctrine {
+            id: id(),
             title: "mine".into(),
             body: "New intentional text.".into(),
         }];
@@ -318,8 +364,8 @@ fn reset_failure_is_visible_retryable_and_does_not_touch_safety_state() {
     assert_eq!(fs::read(&path).unwrap(), original);
     fs::remove_dir(blocked).unwrap();
     assert_eq!(
-        fixture.store().load_settings().unwrap().doctrines,
-        canonical_doctrines()
+        content(&fixture.store().load_settings().unwrap().doctrines),
+        content(&canonical_doctrines())
     );
     for name in [
         "reviews.json",
@@ -341,6 +387,9 @@ fn versioned_catalogs_and_invalid_settings_are_not_silently_reset() {
     let fixture = Fixture::new();
     let mut intentional = fixture.store().load_settings().unwrap();
     intentional.doctrines = stale_library();
+    for doctrine in &mut intentional.doctrines {
+        doctrine.id = id();
+    }
     fixture.store().save_settings(&intentional).unwrap();
     assert_eq!(fixture.store().load_settings().unwrap(), intentional);
     let path = fixture.path().join("config/settings.json");
@@ -366,8 +415,8 @@ fn initialization_failure_is_an_error_not_a_saved_snapshot_and_can_be_retried() 
     assert!(!fixture.store().has_saved_settings());
     fs::remove_dir(blocked).unwrap();
     assert_eq!(
-        fixture.store().load_settings().unwrap().doctrines,
-        canonical_doctrines()
+        content(&fixture.store().load_settings().unwrap().doctrines),
+        content(&canonical_doctrines())
     );
     assert!(fixture.store().has_saved_settings());
 }

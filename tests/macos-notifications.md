@@ -25,21 +25,25 @@ not prove OS banner presentation or the notification-center callback.
 - Seed only synthetic local queue data through the existing `settings_bridge`
   fixture interface. Keep automatic review/publication off and do not sign into
   GitHub or Copilot. Disconnected synthetic accounts should remain honestly
-  blocked; the test-notification path still supports their exact queue identity.
+  blocked; seeded queue transitions still carry their exact queue identity.
 - Do not click an isolated-profile notification while its test process is
   stopped: an OS cold launch does not retain custom environment variables.
   Relaunch explicitly with the same isolation variables before restart checks.
 
 ## Observe the real boundary
 
-1. Open Settings > Preferences. Notifications must be off initially. Opt in,
-   complete the normal macOS permission prompt for the **test application**, and
-   verify the displayed native authorization/banner/Notification Center status.
-   Denial or timeout must remain visible and must not claim opt-in success.
-2. Select a specific synthetic queue item as **Test destination**, recording its
-   saved ID and the resulting notification request ID from the private ledger.
-   **Send test notification**. Observe the real banner or Notification Center
-   item: test-app identity and generic text, with no PR/repository title or code.
+1. Seed synthetic queue items in attention states first. Open Settings >
+   Preferences. Notifications must be off initially. Opt in, complete the
+   normal macOS permission prompt for the **test application**, and verify the
+   displayed native authorization/banner/Notification Center status. Denial or
+   timeout must remain visible, must not claim opt-in success and must queue no
+   confirmation.
+2. Observe exactly one **PR Sniper notifications are on** banner (opens
+   Settings) and none for the pre-existing items. Then seed a new attention
+   transition for a specific synthetic queue item, recording its saved ID and
+   the resulting notification request ID from the private ledger. Observe the
+   real banner or Notification Center item: test-app identity and generic text,
+   with no PR/repository title or code.
 3. Open an unsaved Settings editor, hide the panel, then click that exact OS
    notification. Verify the same native panel opens the single detail layer
    for that provider/account/repository/PR/iteration identity, without a reload.
@@ -52,10 +56,13 @@ not prove OS banner presentation or the notification-center callback.
    An unrelated or missing-profile request must never open a substitute item.
    A valid saved notification whose exact destination is now unavailable must
    open the explicit missing-destination state, not a first/last queue item.
-5. Wait through at least two scheduler ticks. Unchanged source state must not
+5. Turn one type off below the main switch, seed a transition of that type,
+   then turn it back on: neither step may notify. Turn notifications off, seed a
+   transition, turn them on: only the confirmation appears. Wait through at
+   least two scheduler ticks. Unchanged source state must not
    add requests. Restart the test process with the same profile and Keychain
    namespace, then repeat the count and exact-destination checks.
-6. Verify Settings-destination tests as well. Inspect notification history:
+6. Verify the confirmation's Settings destination as well. Inspect notification history:
    accepted is still **unconfirmed visibility**, not acknowledgment; denied,
    failed, unknown and not-sent states retain in-app context. Focus behavior
    remains under the user's existing OS settings; no critical/time-sensitive

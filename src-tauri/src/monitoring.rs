@@ -145,6 +145,33 @@ pub struct JobOperation {
     /// Lens hash an automatic re-review of a discarded batch ran under; the once-per-lens marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rereview_lens: Option<String>,
+    /// A superseded run waits for a poll that observed its PR after this, not a timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<Supersession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Supersession {
+    pub at: i64,
+    /// Base an AI attempt reviewed before it moved: the next attempt needs a poll
+    /// that observed another base, so each base gets at most one AI attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+}
+
+impl Supersession {
+    /// A successful poll observed the PR after supersession (and, for a moved
+    /// base, observed a different base). Without one the run never re-dispatches.
+    pub fn cleared(&self, job: &QueueJob, tracked: &[TrackedPullRequest]) -> bool {
+        tracked
+            .iter()
+            .any(|t| t.matches(job) && t.observed_at > self.at)
+            && self
+                .base
+                .as_ref()
+                .is_none_or(|base| job.observed_base_sha.as_ref() != Some(base))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +217,16 @@ pub struct ScheduleHealth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub in_flight: bool,
+    /// Next occurrence of this repository's cron; 0 while it has no schedule.
+    #[serde(default)]
+    pub scheduled_run: i64,
+    /// The poll owed to a started occurrence (or Check Now) has not finished:
+    /// in flight, retrying, or waiting on backpressure.
+    #[serde(default)]
+    pub scan_pending: bool,
+    /// Check Now arrived while this repository's poll was running.
+    #[serde(default)]
+    pub scan_requested: bool,
     #[serde(default)]
     pub conversation_admission_pending: bool,
     #[serde(default)]
@@ -384,6 +421,7 @@ impl QueueState {
     }
 }
 
+/// Legacy single global scan, read once and folded into per-repository health.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalScan {
@@ -407,7 +445,8 @@ pub struct PollCursor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MonitoringState {
-    #[serde(default)]
+    /// Legacy; `Monitor::restore` moves it into per-repository health.
+    #[serde(default, skip_serializing)]
     pub global_scan: Option<GlobalScan>,
     #[serde(default)]
     pub health: BTreeMap<String, ScheduleHealth>,
@@ -571,6 +610,9 @@ pub struct PollTicket {
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
     pub tracked: Vec<(String, u64)>,
+    /// When the ticket was prepared, before any fetch: what it observes is no
+    /// newer than this, so tracked observations are stamped with it.
+    pub prepared_at: i64,
 }
 
 pub struct PollResult {
@@ -677,6 +719,13 @@ impl Monitor {
                 if baseline.initially_selected && baseline.admitted_head_sha.is_none() {
                     baseline.admitted_head_sha = Some(baseline.initial_head_sha.clone());
                 }
+            }
+        }
+        if let Some(scan) = state.global_scan.take() {
+            for (key, health) in &mut state.health {
+                health.scheduled_run = scan.next_run;
+                health.scan_pending = scan.pending.contains(key);
+                health.scan_requested = scan.requested && health.scan_pending;
             }
         }
         for health in state.health.values_mut() {
@@ -1179,9 +1228,14 @@ impl Monitor {
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
         let configured = configured_schedules(&settings);
+        let parked = if check_now {
+            ParkedPolls::CheckNow
+        } else {
+            ParkedPolls::ScheduledRun
+        };
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
-        self.synchronize_health(&configured, accounts, now);
+        self.synchronize_health_with(&configured, accounts, now, parked);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
             self.state = previous;
             self.leases = previous_leases;
@@ -1232,6 +1286,7 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         expected: &crate::storage::Repository,
         resolved: crate::github::intake::ResolvedTarget,
+        read_at: i64,
         now: i64,
     ) -> Result<ExplicitAdmission, String> {
         let settings = store.load_settings()?;
@@ -1302,6 +1357,7 @@ impl Monitor {
             account_generation: 0,
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
+            prepared_at: read_at,
         };
         let number = pull.number;
         let pull_id = pull.id.clone();
@@ -1330,16 +1386,11 @@ impl Monitor {
 
     pub fn cancel_pending_checks(&mut self, store: &Store) -> Result<(), String> {
         let previous = self.state.clone();
-        if let Some(scan) = &mut self.state.global_scan {
-            scan.requested = false;
-            scan.pending.retain(|id| {
-                self.state
-                    .health
-                    .get(id)
-                    .is_some_and(|h| !h.manual_pending || h.in_flight)
-            });
-        }
         for health in self.state.health.values_mut() {
+            health.scan_requested = false;
+            if health.manual_pending && !health.in_flight {
+                health.scan_pending = false;
+            }
             health.manual_pending = false;
         }
         if self.state != previous {
@@ -1400,9 +1451,7 @@ impl Monitor {
                 OperationState::Queued | OperationState::Interrupted
             )
         }) {
-            if let Some(scan) = &mut self.state.global_scan {
-                scan.next_run = scan.next_run.min(now.max(1));
-            }
+            health.scheduled_run = health.scheduled_run.min(now.max(1));
         }
         if let Err(error) = store.save_monitoring_state(&self.state) {
             self.state = previous;
@@ -1543,31 +1592,16 @@ impl Monitor {
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) {
-        let schedule = configured.first().map(|c| &c.schedule);
-        let any_enabled = configured.iter().any(|configuration| configuration.enabled);
-        let valid_global_cron = schedule.is_some_and(|schedule| {
-            matches!(schedule, Schedule::Cron { .. }) && next_run(schedule, now).is_ok()
-        });
-        if let Some(schedule) = schedule {
-            let key = schedule_key(schedule);
-            let next = if any_enabled && matches!(schedule, Schedule::Cron { .. }) {
-                next_run(schedule, now).unwrap_or(0)
-            } else {
-                0
-            };
-            let scan = self.state.global_scan.get_or_insert_with(|| GlobalScan {
-                schedule_key: key.clone(),
-                next_run: next,
-                pending: Vec::new(),
-                requested: false,
-            });
-            if scan.schedule_key != key {
-                scan.schedule_key = key;
-                scan.next_run = next;
-            } else if any_enabled && scan.next_run == 0 {
-                scan.next_run = next;
-            }
-        }
+        self.synchronize_health_with(configured, accounts, now, ParkedPolls::Keep);
+    }
+
+    fn synchronize_health_with(
+        &mut self,
+        configured: &[ConfiguredSchedule],
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+        parked: ParkedPolls,
+    ) {
         // Collapse legacy assignment health without losing its retry budget.
         for configuration in configured {
             if self.state.health.contains_key(&configuration.health_key) {
@@ -1611,9 +1645,7 @@ impl Monitor {
                         OperationState::Queued | OperationState::Interrupted
                     )
                 }) {
-                    if let Some(scan) = &mut self.state.global_scan {
-                        scan.pending.push(configuration.health_key.clone());
-                    }
+                    previous.scan_pending = true;
                 }
                 self.state
                     .health
@@ -1706,6 +1738,9 @@ impl Monitor {
                     last_failure: None,
                     last_error: None,
                     in_flight: false,
+                    scheduled_run: 0,
+                    scan_pending: false,
+                    scan_requested: false,
                     conversation_admission_pending: false,
                     manual_pending: false,
                     operation: None,
@@ -1717,7 +1752,8 @@ impl Monitor {
             let key = schedule_key(&configuration.schedule);
             let schedule_changed = health.schedule_key != key;
             health.schedule_key = key;
-            if valid_global_cron
+            let occurrence = next_run(&configuration.schedule, now);
+            if occurrence.is_ok()
                 && matches!(
                     health.last_failure.as_deref(),
                     Some("invalid_global_cron") | Some("invalid_schedule")
@@ -1753,9 +1789,13 @@ impl Monitor {
                 health.manual_pending = false;
                 continue;
             }
-            if !matches!(configuration.schedule, Schedule::Cron { .. }) {
-                unavailable_health(health, "invalid_global_cron");
+            let Ok(occurrence) = occurrence else {
+                unavailable_health(health, "invalid_schedule");
                 continue;
+            };
+            // A due occurrence stays due until `begin` starts it.
+            if schedule_changed || health.scheduled_run == 0 {
+                health.scheduled_run = occurrence;
             }
             let Some(account_id) = configuration.provider_account_id.as_ref() else {
                 unavailable_health(health, "account_binding_required");
@@ -1802,6 +1842,33 @@ impl Monitor {
                         .insert(operation.id.clone(), operation);
                 }
             }
+            // A parked repository poll retries once per occurrence of its own
+            // schedule (credentials wait for a reconnect); Check Now retries any.
+            let occurrence_due =
+                !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
+            let restart = !health.in_flight
+                && health.operation.as_ref().is_some_and(|operation| {
+                    operation.parked()
+                        && match parked {
+                            ParkedPolls::Keep => false,
+                            ParkedPolls::ScheduledRun => {
+                                occurrence_due
+                                    && operation.failure != Some(OperationFailure::Credentials)
+                            }
+                            ParkedPolls::CheckNow => true,
+                        }
+                });
+            if restart {
+                if let Some(operation) = health.operation.as_mut() {
+                    self.state
+                        .operations
+                        .insert(operation.id.clone(), operation.clone());
+                    operation.id = uuid::Uuid::new_v4().to_string();
+                    operation.requeue_fresh(now);
+                }
+                health.last_failure = None;
+                health.last_error = None;
+            }
             if health
                 .operation
                 .as_ref()
@@ -1811,20 +1878,16 @@ impl Monitor {
                 health.schedule_available = false;
                 continue;
             }
-            if health.operation.as_ref().is_some_and(|operation| {
+            // A waiting poll whose window ran out before it could run (quit,
+            // sleep, or an account-wide rate limit) failed nothing: it gets a
+            // fresh window and keeps its last cause. Failures park in `finish`.
+            if let Some(operation) = health.operation.as_mut().filter(|operation| {
                 matches!(
                     operation.state,
                     OperationState::Queued | OperationState::Interrupted
                 ) && now >= operation.retry_deadline
             }) {
-                if let Some(operation) = health.operation.as_mut() {
-                    operation.state = OperationState::ManualRetry;
-                    operation.next_attempt_at = None;
-                    operation.failure = Some(OperationFailure::Permanent);
-                }
-                health.next_run = 0;
-                health.schedule_available = false;
-                continue;
+                operation.restart_window(now);
             }
             if let Some(next_attempt) = health.operation.as_ref().and_then(|operation| {
                 matches!(
@@ -1840,12 +1903,7 @@ impl Monitor {
             }
 
             if schedule_changed || health.next_run == 0 {
-                health.next_run = self
-                    .state
-                    .global_scan
-                    .as_ref()
-                    .map(|s| s.next_run)
-                    .unwrap_or(0);
+                health.next_run = health.scheduled_run;
             }
             health.schedule_available = health.next_run > 0;
             if !health.schedule_available {
@@ -1855,28 +1913,15 @@ impl Monitor {
                 health.last_failure = None;
             }
         }
-        let has_schedulable_repository = self
-            .state
-            .health
-            .values()
-            .any(|health| health.enabled && health.schedule_available);
-        if let Some(scan) = &mut self.state.global_scan {
-            if has_schedulable_repository {
-                if scan.next_run == 0 {
-                    scan.next_run = schedule
-                        .and_then(|schedule| next_run(schedule, now).ok())
-                        .unwrap_or(0);
-                }
-            } else {
-                scan.next_run = 0;
-                scan.requested = false;
+        for health in self.state.health.values_mut() {
+            // A parked poll keeps its schedule: the next occurrence recovers it.
+            if !(health.enabled && (health.schedule_available || awaits_scheduled_run(health))) {
+                health.scheduled_run = 0;
+                health.scan_requested = false;
             }
-            scan.pending.retain(|id| {
-                self.state
-                    .health
-                    .get(id)
-                    .is_some_and(|h| h.enabled && (h.schedule_available || h.in_flight))
-            });
+            if !(health.enabled && (health.schedule_available || health.in_flight)) {
+                health.scan_pending = false;
+            }
         }
     }
 
@@ -1976,46 +2021,44 @@ impl Monitor {
     ) -> Vec<PollTicket> {
         let mut checking_repositories: HashSet<_> = self.leases.keys().cloned().collect();
         let mut tickets = Vec::new();
-        if let Some(scan) = &mut self.state.global_scan {
-            if check_now
-                && !scan.pending.is_empty()
-                && self.state.health.values().any(|h| h.in_flight)
-            {
-                scan.requested = true;
-            }
-            if scan.pending.is_empty()
-                && scan.next_run > 0
-                && (check_now || scan.requested || now >= scan.next_run)
-            {
-                scan.requested = false;
-                scan.next_run = configured
-                    .first()
-                    .and_then(|c| next_run(&c.schedule, now).ok())
-                    .unwrap_or(0);
-                for configuration in configured {
-                    if let Some(health) = self.state.health.get_mut(&configuration.health_key) {
-                        if health.enabled
-                            && health.schedule_available
-                            && health.operation.as_ref().is_none_or(|o| {
-                                !matches!(
-                                    o.state,
-                                    OperationState::Failed | OperationState::ManualRetry
-                                )
-                            })
-                        {
-                            scan.pending.push(configuration.health_key.clone());
-                            health.scan_assignments = configuration.assignments.clone();
-                            health.manual_pending = check_now;
-                        }
-                        if health
-                            .operation
-                            .as_ref()
-                            .is_none_or(|o| o.state == OperationState::Completed)
-                        {
-                            health.next_run = scan.next_run;
-                        }
-                    }
+        // Each repository starts its own occurrences. Missed occurrences
+        // collapse into one; a new one waits for the previous poll to finish.
+        for configuration in configured {
+            let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
+                continue;
+            };
+            if health.scan_pending {
+                if check_now && health.in_flight {
+                    health.scan_requested = true;
                 }
+                continue;
+            }
+            if health.scheduled_run == 0
+                || !(check_now || health.scan_requested || now >= health.scheduled_run)
+            {
+                continue;
+            }
+            health.scan_requested = false;
+            health.scheduled_run = next_run(&configuration.schedule, now).unwrap_or(0);
+            if health.enabled
+                && health.schedule_available
+                && health.operation.as_ref().is_none_or(|o| {
+                    !matches!(
+                        o.state,
+                        OperationState::Failed | OperationState::ManualRetry
+                    )
+                })
+            {
+                health.scan_pending = true;
+                health.scan_assignments = configuration.assignments.clone();
+                health.manual_pending = check_now;
+            }
+            if health
+                .operation
+                .as_ref()
+                .is_none_or(|o| o.state == OperationState::Completed)
+            {
+                health.next_run = health.scheduled_run;
             }
         }
 
@@ -2040,6 +2083,19 @@ impl Monitor {
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
+            let account_gate = gates.until(&crate::backpressure::Scope::github(account_id), now);
+            // A rate-limited account is a wait for every poll on it, not a
+            // failure: the retry window stays open past the wait.
+            if let (Some(until), Some(operation)) = (account_gate, health.operation.as_mut()) {
+                if matches!(
+                    operation.state,
+                    OperationState::Queued | OperationState::Interrupted
+                ) {
+                    operation.retry_deadline = operation
+                        .retry_deadline
+                        .max(until.saturating_add(RETRY_WINDOW_SECONDS));
+                }
+            }
             let retry_waiting = health.operation.as_ref().is_some_and(|o| {
                 matches!(
                     o.state,
@@ -2049,15 +2105,9 @@ impl Monitor {
             if health.in_flight
                 || !health.enabled
                 || !health.schedule_available
-                || !self
-                    .state
-                    .global_scan
-                    .as_ref()
-                    .is_some_and(|scan| scan.pending.contains(&configuration.health_key))
+                || !health.scan_pending
                 || retry_waiting
-                || gates
-                    .until(&crate::backpressure::Scope::github(account_id), now)
-                    .is_some()
+                || account_gate.is_some()
                 || checking_repositories.contains(repository_id)
             {
                 continue;
@@ -2084,12 +2134,7 @@ impl Monitor {
             health.in_flight = true;
             health.manual_pending = false;
             start_poll_operation(health, configuration, now, false);
-            health.next_run = self
-                .state
-                .global_scan
-                .as_ref()
-                .map(|s| s.next_run)
-                .unwrap_or(0);
+            health.next_run = health.scheduled_run;
             checking_repositories.insert(repository_id.clone());
             self.leases
                 .insert(repository_id.clone(), configuration.health_key.clone());
@@ -2134,6 +2179,7 @@ impl Monitor {
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect(),
+                prepared_at: now,
             });
         }
         tickets
@@ -2317,8 +2363,8 @@ impl Monitor {
                 )
             });
         if !retrying {
-            if let Some(scan) = &mut self.state.global_scan {
-                scan.pending.retain(|id| id != &ticket.health_key);
+            if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
+                health.scan_pending = false;
             }
         }
         store
@@ -2372,11 +2418,7 @@ impl Monitor {
         health.last_error = None;
         health.next_run = now;
         health.schedule_available = true;
-        if let Some(scan) = &mut self.state.global_scan {
-            if !scan.pending.contains(&health.repository_id) {
-                scan.pending.push(health.repository_id.clone());
-            }
-        }
+        health.scan_pending = true;
         self.state
             .operations
             .insert(previous_operation.id.clone(), previous_operation);
@@ -2549,7 +2591,7 @@ impl Monitor {
                     iteration_id,
                     admission,
                     admitted_at: legacy.map(|j| j.detected_at).unwrap_or(now),
-                    observed_at: now,
+                    observed_at: ticket.prepared_at,
                 });
                 index = Some(queue.tracked.len() - 1);
                 mark_activation_admitted(&mut activation, &pull);
@@ -2574,7 +2616,8 @@ impl Monitor {
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
-            tracked.observed_at = now;
+            // Overlapping reads may finish out of order; never move it back.
+            tracked.observed_at = tracked.observed_at.max(ticket.prepared_at);
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -2987,7 +3030,8 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
     let mut configured = Vec::new();
     for repository in &settings.repositories {
         let mut policy = repository.overrides.effective(&settings.defaults);
-        policy.schedule = settings.defaults.schedule.clone();
+        // Cadence is not a poll or review input; editing it never invalidates one.
+        policy.schedule = None;
         let (watched_authors, admission) = effective_admission(repository, &policy);
         let policy_key = trigger_policy(
             &watched_authors,
@@ -3014,7 +3058,10 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             provider_account_id,
             provider_repository_id,
             provider_supported,
-            schedule: settings.defaults.schedule.clone(),
+            schedule: Schedule::Cron {
+                expression: repository.cron.clone(),
+                timezone: settings.time_zone.clone(),
+            },
             assignment_id: None,
             agent_id: None,
             agent_name: None,
@@ -3045,6 +3092,22 @@ fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &Pol
         && configuration.provider_repository_id.as_deref() == Some(&ticket.provider_repository_id)
         && configuration.policy == ticket.policy
         && configuration.trigger_policy.as_deref() == Some(&ticket.trigger_policy)
+}
+
+fn awaits_scheduled_run(health: &ScheduleHealth) -> bool {
+    !configuration_failure(health.last_failure.as_deref())
+        && health.operation.as_ref().is_some_and(|operation| {
+            operation.parked() && operation.failure != Some(OperationFailure::Credentials)
+        })
+}
+
+/// Whether this check may restart parked repository polls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParkedPolls {
+    Keep,
+    /// Each repository whose own occurrence is due.
+    ScheduledRun,
+    CheckNow,
 }
 
 fn unavailable_health(health: &mut ScheduleHealth, failure: &str) {
@@ -3127,6 +3190,7 @@ fn start_poll_operation(
         triggering_external_comment_id: None,
         confirmed_receipt: None,
         rereview_lens: None,
+        superseded: None,
     });
 }
 
@@ -3161,8 +3225,10 @@ impl JobOperation {
     }
 
     /// The state moved before the run could read it: not a failure, no attempt spent.
-    /// Retried shortly; the next heartbeat retargets or retires the work.
-    pub fn requeue_superseded(&mut self, now: i64) {
+    /// Retried shortly, or with `wait` only after a poll; the next heartbeat
+    /// retargets or retires the work.
+    pub fn requeue_superseded(&mut self, now: i64, wait: Option<Supersession>) {
+        self.superseded = wait;
         if self.ai_attempt.is_some() {
             self.restore_budget();
         } else if self.state == OperationState::Running {
@@ -3220,6 +3286,17 @@ impl JobOperation {
         }
     }
 
+    /// Fresh attempt window for a waiting poll; its cause and any rate-limit
+    /// wait are kept.
+    pub(crate) fn restart_window(&mut self, now: i64) {
+        self.state = OperationState::Queued;
+        self.attempt_count = 0;
+        self.initial_attempt_at = now;
+        self.retry_deadline = now + RETRY_WINDOW_SECONDS;
+        self.next_attempt_at = Some(self.next_attempt_at.map_or(now, |next| next.max(now)));
+        self.interruption = None;
+    }
+
     /// Fresh attempt window with no failure history carried over.
     pub(crate) fn requeue_fresh(&mut self, now: i64) {
         self.state = OperationState::Queued;
@@ -3233,6 +3310,7 @@ impl JobOperation {
         self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
+        self.superseded = None;
     }
 
     fn schedule_resume(&mut self, now: i64) {
@@ -3303,6 +3381,28 @@ impl JobOperation {
         self.next_attempt_at = Some(next_attempt);
     }
 
+    /// Ends unstarted or waiting work quietly: superseded, not failed. The
+    /// attempt is handed back and nothing resumes it.
+    pub fn end_superseded(&mut self) {
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.state = OperationState::Failed;
+        self.failure = Some(OperationFailure::Superseded);
+        self.next_attempt_at = None;
+        self.superseded = None;
+        self.resume_at = None;
+        self.backpressure_until = None;
+        self.interruption = None;
+    }
+
+    /// Quietly ended by supersession: history, never a failure or Needs attention.
+    pub fn ended_superseded(&self) -> bool {
+        self.state == OperationState::Failed && self.failure == Some(OperationFailure::Superseded)
+    }
+
     pub fn parked(&self) -> bool {
         matches!(
             self.state,
@@ -3351,6 +3451,7 @@ impl JobOperation {
         self.state = OperationState::Running;
         self.next_attempt_at = None;
         self.backpressure_until = None;
+        self.superseded = None;
         Ok(())
     }
 
@@ -3382,6 +3483,7 @@ impl JobOperation {
             triggering_external_comment_id: None,
             confirmed_receipt: None,
             rereview_lens: None,
+            superseded: None,
         }
     }
 }
@@ -3422,6 +3524,22 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "scope_confirmation_required"
                 | "repository_configuration_required"
         )
+    )
+}
+
+/// A scan retired this entry: its PR moved on, closed, merged, left review
+/// scope, or lost its assignment or repository. No work for it can run again.
+pub fn retired(job: &QueueJob) -> bool {
+    matches!(
+        job.waiting.as_str(),
+        WAITING_SUPERSEDED
+            | WAITING_CLOSED
+            | WAITING_MERGED
+            | WAITING_INELIGIBLE
+            | WAITING_NO_LONGER_CURRENT
+            | WAITING_SCOPE_EXCLUDED
+            | WAITING_ASSIGNMENT_REMOVED
+            | WAITING_REPOSITORY_REMOVED
     )
 }
 
@@ -3552,15 +3670,68 @@ fn trigger_policy(
     .map_err(|_| ConnectionError::Configuration)
 }
 
+/// Why work may no longer run for its exact Iteration and assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyRejection {
+    RepositoryRemoved,
+    ConfigurationChanged,
+    /// The assignment was removed or now names another Agent. The next scheduled
+    /// poll retires this entry and queues the current configuration.
+    AssignmentChanged,
+    /// A new head, closure, merge, unadmitted draft or lost admission. The next
+    /// poll retires this entry and queues an eligible new revision.
+    RevisionChanged,
+    /// A scan already retired this entry: superseded, closed, merged or out of scope.
+    Retired,
+    /// The provider returned a different pull request or repository identity.
+    IdentityChanged,
+}
+
+impl PolicyRejection {
+    /// The attempt is stale rather than failed: the next scan retargets or retires it.
+    pub fn superseded(self) -> bool {
+        matches!(
+            self,
+            Self::RepositoryRemoved
+                | Self::AssignmentChanged
+                | Self::RevisionChanged
+                | Self::Retired
+        )
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RepositoryRemoved => "Repository was removed.",
+            Self::ConfigurationChanged | Self::Retired => {
+                "Review eligibility or repository configuration changed."
+            }
+            Self::AssignmentChanged => {
+                "This Agent assignment was removed or replaced; wait for the next scheduled poll."
+            }
+            Self::RevisionChanged | Self::IdentityChanged => {
+                "Pull request revision or eligibility changed; wait for the next poll."
+            }
+        }
+    }
+}
+
 pub fn review_policy(
     settings: &Settings,
     job: &QueueJob,
     pull: Option<&PullRequest>,
 ) -> Result<Policy, String> {
+    check_review_policy(settings, job, pull).map_err(|rejection| rejection.message().into())
+}
+
+pub fn check_review_policy(
+    settings: &Settings,
+    job: &QueueJob,
+    pull: Option<&PullRequest>,
+) -> Result<Policy, PolicyRejection> {
     let configuration = configured_schedules(settings)
         .into_iter()
         .find(|c| c.repository_id == job.configuration_id)
-        .ok_or("Repository was removed.")?;
+        .ok_or(PolicyRejection::RepositoryRemoved)?;
     if !configuration.enabled
         || !configuration.provider_supported
         || configuration.name != job.repository_name
@@ -3568,28 +3739,34 @@ pub fn review_policy(
         || configuration.provider_repository_id.as_deref() != Some(&job.repository_id)
         || (job.work.is_none()
             && configuration.trigger_policy.as_deref() != Some(&job.trigger_policy))
-        || !actionable(job)
     {
-        return Err("Review eligibility or repository configuration changed.".into());
+        return Err(PolicyRejection::ConfigurationChanged);
+    }
+    if !actionable(job) {
+        return Err(if retired(job) {
+            PolicyRejection::Retired
+        } else {
+            PolicyRejection::ConfigurationChanged
+        });
     }
     if let Some(work) = &job.work {
         if !configuration.assignments.iter().any(|a| {
             Some(a.assignment_id.as_str()) == job.assignment_id.as_deref()
                 && a.agent_id == work.agent_id
         }) {
-            return Err(
-                "This Agent assignment was removed or replaced; wait for the next global scan."
-                    .into(),
-            );
+            return Err(PolicyRejection::AssignmentChanged);
         }
     }
     if let Some(pull) = pull {
         if pull.id != job.pull_request_id
             || pull.number != job.number
-            || pull.head_sha != job.head_sha
             || pull.base_repository_id != job.repository_id
+        {
+            return Err(PolicyRejection::IdentityChanged);
+        }
+        if pull.head_sha != job.head_sha
             || pull.state != Lifecycle::Open
-            || pull.draft
+            || (pull.draft && !configuration.review_drafts)
             || (job.work.is_none()
                 && !eligibility(
                     &configuration.watched_authors,
@@ -3600,9 +3777,7 @@ pub fn review_policy(
                 )
                 .admitted)
         {
-            return Err(
-                "Pull request revision or eligibility changed; wait for the next poll.".into(),
-            );
+            return Err(PolicyRejection::RevisionChanged);
         }
     }
     Ok(configuration.policy)
@@ -3837,6 +4012,13 @@ impl Monitor {
                     .agent
                     .ai_account
                     .as_ref()
+                    .is_some_and(|ai| reconnected.contains(&ai.account_id))
+                || run
+                    .selection
+                    .configuration
+                    .as_ref()
+                    .and_then(|c| c.rubber_duck.as_ref())
+                    .and_then(|duck| duck.agent.ai_account.as_ref())
                     .is_some_and(|ai| reconnected.contains(&ai.account_id));
             if run.operation.auto_resume(account, now) {
                 run.error = None;
@@ -4158,6 +4340,7 @@ mod admission_tests {
             account_generation: 0,
             assignments: Vec::new(),
             tracked: Vec::new(),
+            prepared_at: 0,
         }
     }
 

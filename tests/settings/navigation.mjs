@@ -399,3 +399,25 @@ export async function backOne(page) {
   if (await back.isVisible()) await back.click();
   else await page.locator(".admission-back").last().click();
 }
+
+// Picks a Preferences time zone after the host list loads. A zone the host
+// does not list is injected to model a rejected draft (e.g. legacy data).
+export async function chooseTimeZone(page, zone) {
+  const select = page.locator("#global-timezone");
+  await expect(select.locator("option")).not.toHaveCount(1);
+  if (await select.locator(`option[value="${zone}"]`).count())
+    return select.selectOption(zone);
+  await select.evaluate((element, zone) => {
+    element.add(new Option(zone, zone));
+    element.value = zone;
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, zone);
+}
+
+/** An Agent's Doctrine references (stable ids) as library titles, in order. */
+export async function agentDoctrineTitles(store, index = 0) {
+  const settings = (await store("snapshot")).settings;
+  return (settings.agents[index].doctrine_ids ?? []).map(
+    (id) => settings.doctrines.find((d) => d.id === id)?.title ?? id,
+  );
+}

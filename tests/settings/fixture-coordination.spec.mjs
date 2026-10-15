@@ -463,13 +463,6 @@ test("native panel routes, visibility, revisions and missing-destination errors 
     ["hide_panel", {}, { tab: "settings" }, false, 1],
     ["fixture_show_panel", {}, { tab: "settings" }, true, 2],
     [
-      "open_diagnostics",
-      {},
-      { tab: "settings", detail: { type: "diagnostics" } },
-      true,
-      2,
-    ],
-    [
       "panel_navigate",
       { route: { tab: "reviewed" } },
       { tab: "reviewed" },
@@ -490,6 +483,10 @@ test("native panel routes, visibility, revisions and missing-destination errors 
   await expect(
     store("panel_navigate", { route: { tab: "unknown" } }),
   ).rejects.toBe("Invalid panel route.");
+  for (const type of ["status", "diagnostics"])
+    await expect(
+      store("panel_navigate", { route: { tab: "settings", detail: { type } } }),
+    ).rejects.toBe("Invalid panel route.");
   await expect(store("open_queue_item", { itemId: "\n" })).rejects.toBe(
     "Panel destination identity is invalid; no substitute was selected.",
   );

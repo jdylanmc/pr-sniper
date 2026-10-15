@@ -14,14 +14,15 @@ import {
   withPermissions,
   openPermissions,
   assignmentBack,
+  chooseTimeZone,
+  agentDoctrineTitles,
 } from "./navigation.mjs";
 
-for (const [scenario, expression, timezone] of [
-  ["invalid cron", "invalid", "UTC"],
-  ["invalid timezone", "0 9 * * MON-FRI", "Mars/Olympus_Mons"],
-  ["different valid schedule", "0 9 * * MON-FRI", "America/New_York"],
+for (const [scenario, timezone, capacity] of [
+  ["different time zone", "America/New_York", "4"],
+  ["invalid capacity", "UTC", "0"],
 ]) {
-  test(`new assignment uses saved schedule with ${scenario} in unsaved Preferences`, async ({
+  test(`new assignment carries no schedule with ${scenario} in unsaved Preferences`, async ({
     page,
     store,
   }) => {
@@ -42,18 +43,20 @@ for (const [scenario, expression, timezone] of [
     };
     settings.repositories[0].assignments = [existing];
     await store("seed_settings", settings);
+    const seeded = (await store("snapshot")).settings;
+    expect(seeded.repositories[0].cron).toBe("5 * * * *");
     await page.goto("/?view=settings");
     await section(page, "Preferences");
-    await page.locator("#global-cron").fill(expression);
-    await page.locator("#global-timezone").fill(timezone);
+    await chooseTimeZone(page, timezone);
+    await page.locator("#global-capacity").fill(capacity);
     await saveAssignment(page, await assignment(page, "fixture/schedules"));
     let saved = (await store("saved_resources")).settings;
-    expect(saved.defaults).toEqual(settings.defaults);
+    expect(saved.defaults).toEqual(seeded.defaults);
+    expect(saved.time_zone).toBe("UTC");
+    expect(saved.repositories[0].cron).toBe("5 * * * *");
     expect(saved.repositories[0].assignments).toHaveLength(2);
     expect(saved.repositories[0].assignments[0]).toEqual(existing);
-    expect(saved.repositories[0].assignments[1].schedule).toEqual(
-      settings.defaults.schedule,
-    );
+    expect(saved.repositories[0].assignments[1].schedule).toBeUndefined();
     const modal = await assignment(page, "fixture/schedules", 0);
     await withPermissions(page, modal, () =>
       modal.getByRole("switch", { name: "Publish Comment" }).check(),
@@ -64,23 +67,21 @@ for (const [scenario, expression, timezone] of [
       ...existing,
       comment: true,
     });
-    expect(saved.defaults).toEqual(settings.defaults);
+    expect(saved.defaults).toEqual(seeded.defaults);
     await section(page, "Preferences");
-    await expect(page.locator("#global-cron")).toHaveValue(expression);
+    await expect(page.locator("#global-capacity")).toHaveValue(capacity);
     await expect(page.locator("#global-timezone")).toHaveValue(timezone);
-    await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
-    await expect(
-      page.getByRole("button", { name: "Save preferences", exact: true }),
-    ).toBeEnabled();
+    if (timezone !== "UTC" || capacity !== "4") {
+      await expect(page.locator("#save-status")).toHaveText("Unsaved changes");
+      await expect(
+        page.getByRole("button", { name: "Save preferences", exact: true }),
+      ).toBeEnabled();
+    }
     await page.reload();
     expect((await store("saved_resources")).settings).toEqual(saved);
     await section(page, "Preferences");
-    await expect(page.locator("#global-cron")).toHaveValue(
-      settings.defaults.schedule.expression,
-    );
-    await expect(page.locator("#global-timezone")).toHaveValue(
-      settings.defaults.schedule.timezone,
-    );
+    await expect(page.locator("#global-capacity")).toHaveValue("4");
+    await expect(page.locator("#global-timezone")).toHaveValue("UTC");
   });
 }
 
@@ -221,10 +222,8 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await modal.locator("input[name=doctrine][value=First]").check();
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Second",
-    "First",
-  ]);
+  expect(await agentDoctrineTitles(store)).toEqual(["Second", "First"]);
+  const before = (await store("snapshot")).settings.agents[0];
   await section(page, "Doctrines");
   await page
     .locator(".doctrine-card")
@@ -237,10 +236,9 @@ test("legacy single doctrines become ordered selections, rename preserves refere
     .getByRole("button", { name: "Save doctrine", exact: true })
     .click();
   await expect(modal).toHaveCount(0);
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([
-    "Second",
-    "Renamed",
-  ]);
+  expect(await agentDoctrineTitles(store)).toEqual(["Second", "Renamed"]);
+  // References are ids: the rename did not rewrite the Agent.
+  expect((await store("snapshot")).settings.agents[0]).toEqual(before);
   await page
     .locator(".doctrine-card")
     .first()
@@ -255,7 +253,7 @@ test("legacy single doctrines become ordered selections, rename preserves refere
   await modal.getByRole("button", { name: "Save agent", exact: true }).click();
   await expect(modal).toHaveCount(0);
   await page.reload();
-  expect((await store("snapshot")).settings.agents[0].doctrines).toEqual([]);
+  expect(await agentDoctrineTitles(store)).toEqual([]);
 });
 
 test("primary and independent opt-ins are reachable without scoped polling or legacy permission escalation", async ({
@@ -355,36 +353,32 @@ test("primary and independent opt-ins are reachable without scoped polling or le
   expect(saved.readiness.repositories[0].assignments[0][1].merge).toBe(false);
 });
 
-test("global cron helper and capacity save through the shared readiness surface without activation", async ({
+test("time zone and capacity save through the shared readiness surface without activation", async ({
   page,
   store,
 }) => {
   await page.goto("/?view=settings");
   await section(page, "Preferences");
-  await expect(page.locator("#global-cron")).toHaveValue("*/15 * * * *");
+  await expect(page.locator("#global-cron, #cron-helper")).toHaveCount(0);
   await expect(page.locator("#global-capacity")).toHaveValue("4");
-  await page.locator("#cron-helper").selectOption("0 9 * * MON-FRI");
-  await page.locator("#global-timezone").fill("America/New_York");
+  await chooseTimeZone(page, "America/New_York");
   await page.locator("#global-capacity").fill("6");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
   const resources = await store("saved_resources");
-  expect(resources.settings.defaults.schedule).toEqual({
-    kind: "cron",
-    expression: "0 9 * * MON-FRI",
-    timezone: "America/New_York",
-  });
+  expect(resources.settings.defaults.schedule).toBeUndefined();
+  expect(resources.settings.time_zone).toBe("America/New_York");
   expect(resources.settings.capacity).toBe(6);
   expect(resources.settings.defaults.automatic_agent_start).toBe(false);
   expect(resources.readiness.configuration_ready).toBe(false);
   await expect(page.locator("[data-readiness]")).toContainText("Incomplete:");
-  await page.locator("#global-cron").fill("invalid");
+  await page.locator("#global-capacity").fill("0");
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
-  await expect(page.locator("#error")).toContainText("five-field cron");
-  await expect(page.locator("#global-cron")).toHaveValue("invalid");
+  await expect(page.locator("#error")).toBeVisible();
+  await expect(page.locator("#global-capacity")).toHaveValue("0");
   expect((await store("saved_resources")).settings).toEqual(resources.settings);
 });

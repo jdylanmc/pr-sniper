@@ -5,8 +5,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 ## Tray
 
 - No main window at startup. Left-click the crosshair: one retained panel. Tabs: **Queue**, **Running**, **Reviewed**, **Settings**.
-- Right-click menu (`src-tauri/src/lib.rs`): **Status**, **Review Queue**, **Check Now**, **Settings**, **Diagnostics**, **Close Panel**, **Quit PR Sniper** (`CmdOrCtrl+Q`).
-- Status and Diagnostics are routes inside the panel. No new webview.
+- Right-click menu (`src-tauri/src/lib.rs`): **Review Queue**, **Check Now**, **Settings**, **Close Panel**, **Quit PR Sniper** (`CmdOrCtrl+Q`).
 - Hide the panel: outside click, `Escape`, panel Close, tray **Close Panel**. Native window close is intercepted; webview kept ([ADR-0018](adr/0018-retained-hidden-panel.md)). Background work continues.
 - **Quit PR Sniper** ends the process.
 - Launching the app again (Finder, Spotlight, Dock) opens the panel.
@@ -20,7 +19,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 - Opening another PR or job replaces the single detail layer.
 - Route focus restored on commit, not on animation frame.
 - Deferred positioning and the initial Settings load yield to newer focus, routes, dismissal.
-- Native notification, legacy Settings entry and Diagnostics entry use retained routes. No webview reload.
+- Native notification and legacy Settings entry use retained routes. No webview reload.
 - Unavailable exact PR, iteration or job: missing-destination view. Never another item.
 - Profile-scoped PR selection survives restart (`state/queue-selection.json`). Unsaved drafts live in-process only.
 - Back and Settings-dialog close restore the activating control. Saves keep the logical opener through redraw by stable resource ID. Removed resources: section heading. Removed assignment: Add control. Background completion never steals focus.
@@ -30,7 +29,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 - Navy header band, artwork, bottom nav. Cards overlap the band. 8px corners. Page title and back arrow in the band.
 - Monitoring control = machine-wide pause gate. Unknown automation state: control disabled, active-work badge cleared.
-- Version comes from native app metadata, shown beside Status/Diagnostics. Unavailable metadata is labelled; opening Status retries. Footer version opens the in-app Changelog.
+- Version comes from native app metadata, shown in the footer. Unavailable metadata is labelled; clicking it retries. Footer version opens the in-app Changelog: an ordinary sub-page (shared band, art, overlapping card) rendering `**bold**` and `` `code` `` as text nodes, never HTML.
 - Repository intake has no local-folder selection.
 
 ## Queue tab
@@ -57,6 +56,6 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 - Finished and merged/closed PR results. Paging: [active-results.md](active-results.md).
 
-## Status and Diagnostics
+## Removed screens
 
-- Status: schedule health, notification history, recovery. Diagnostics: redacted. Both keep refreshing evidence while open. See [diagnostics.md](diagnostics.md).
+- No Status or Diagnostics screen (removed 2026-10-14). Queue-item failures: Queue > **Needs attention**. Parked repository polls recover at their repository's next scheduled run or tray **Check Now**. Diagnostics: Settings > Preferences **Copy diagnostics** ([diagnostics.md](diagnostics.md)).

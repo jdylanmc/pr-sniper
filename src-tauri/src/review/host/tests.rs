@@ -36,6 +36,8 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     let run = ReviewRun {
         mode: Default::default(),
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),
@@ -81,10 +83,12 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     let mut settings = store.load_settings().unwrap();
     settings.doctrines = vec![
         crate::storage::Doctrine {
+            id: String::new(),
             title: "code".into(),
             body: "Old code principles.".into(),
         },
         crate::storage::Doctrine {
+            id: String::new(),
             title: "domain".into(),
             body: "Obsolete domain principles.".into(),
         },
@@ -108,6 +112,10 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
         .as_object_mut()
         .unwrap()
         .remove("doctrine_catalog_version");
+    // Pre-catalog files referenced doctrines by title.
+    let agent = legacy["agents"][0].as_object_mut().unwrap();
+    agent.remove("doctrine_ids");
+    agent.insert("doctrines".into(), serde_json::json!(["domain", "code"]));
     std::fs::write(
         root.path().join("config/settings.json"),
         serde_json::to_vec(&legacy).unwrap(),
@@ -115,7 +123,19 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     .unwrap();
     let resolved = store.load_settings().unwrap();
     assert_eq!(resolved.doctrines.len(), 10);
-    assert_eq!(resolved.agents[0].doctrine_titles(), ["code"]);
+    let titles: Vec<_> = resolved.agents[0]
+        .doctrine_ids
+        .iter()
+        .map(|id| {
+            &resolved
+                .doctrines
+                .iter()
+                .find(|d| &d.id == id)
+                .unwrap()
+                .title
+        })
+        .collect();
+    assert_eq!(titles, ["code"]);
     assert_eq!(std::fs::read(&evidence_path).unwrap(), evidence);
     let retained = store.load_reviews().unwrap().remove(0);
     assert_eq!(retained.selection, actual.selection);
@@ -438,4 +458,194 @@ fn a_reused_run_reads_the_heartbeat_state_seq_so_its_exit_consumes() {
         .unwrap();
     assert_eq!(record.exit.unwrap().state_seq, 2);
     assert!(record.pending.is_none(), "no state left unreviewed");
+}
+
+/// The fixture with a Rubber Duck on its (sole, so primary) assignment.
+fn duck_fixture(window: u32) -> (tempfile::TempDir, Store, ReviewRun) {
+    let (root, store, mut run) = fixture();
+    let mut settings = store.load_settings().unwrap();
+    let duck_id = uuid::Uuid::new_v4().to_string();
+    settings.agents.push(
+        serde_json::from_value(json!({
+            "id":duck_id,"name":"Duck","model":"duck-model",
+            "ai_account":{"provider":"copilot","account_id":"44"},
+            "prompt":"Check one claim.","signature":"duck"
+        }))
+        .unwrap(),
+    );
+    settings.repositories[0].assignments[0].rubber_duck = Some(duck_id);
+    settings.rubber_duck.primary_window_minutes = window;
+    store.save_settings(&settings).unwrap();
+    run.selection = Selection::resolve(&settings, &run.job, &run.assignment_id).unwrap();
+    (root, store, run)
+}
+
+fn duck_call() -> crate::review::duck::DuckCall {
+    serde_json::from_value(json!({
+        "ordinal":1,"input":{"kind":"pr","claim":"c","proposed_body":"b"},
+        "outcome":{"outcome":"verdict","verdict":{"verdict":"confirmed","nano":"real"}},
+        "limits":{"max_calls":8,"call_timeout_seconds":180,"primary_window_minutes":15},
+        "agent":"Duck","model":"duck-model","state_id":"0:hash","duration_ms":5
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_job_snapshot_captures_the_duck_and_a_duck_edit_changes_the_execution() {
+    let (_root, store, run) = duck_fixture(15);
+    let snapshot = run
+        .selection
+        .configuration
+        .as_ref()
+        .unwrap()
+        .rubber_duck
+        .clone()
+        .unwrap();
+    assert_eq!(snapshot.agent.name, "Duck");
+    crate::review::validate_execution_selection(&store, &run).unwrap();
+    let mut settings = store.load_settings().unwrap();
+    let duck = settings
+        .agents
+        .iter_mut()
+        .find(|a| a.name == "Duck")
+        .unwrap();
+    duck.prompt = "Changed duck prompt.".into();
+    store.save_settings(&settings).unwrap();
+    assert!(crate::review::validate_execution_selection(&store, &run).is_err());
+    // The captured evidence is never rewritten by the edit.
+    assert_eq!(
+        run.selection.configuration.unwrap().rubber_duck.unwrap(),
+        snapshot
+    );
+}
+
+#[test]
+fn a_primary_with_a_duck_gets_the_preference_window_and_others_keep_the_default() {
+    let (_root, store, template) = duck_fixture(60);
+    request(&store, &template.key, true, 100).unwrap();
+    let run = prepare_dispatch(&store, &template.key, 100).unwrap();
+    assert_eq!(run.operation.retry_deadline, 100 + 60 * 60);
+    let (_root, store, template) = fixture();
+    request(&store, &template.key, true, 100).unwrap();
+    let run = prepare_dispatch(&store, &template.key, 100).unwrap();
+    assert_eq!(run.operation.retry_deadline, 100 + 15 * 60);
+}
+
+#[test]
+fn a_duck_setup_failure_parks_through_the_normal_path_with_typed_provenance() {
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::permanent("The Rubber duck model is not available.").duck_setup()),
+        101,
+    )
+    .unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(saved.operation.state, OperationState::Failed);
+    assert_eq!(saved.failed_duck.as_deref(), Some("Duck"));
+    // Same message without the typed marker: no duck provenance is inferred.
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::permanent(
+            "The Rubber duck model is not available.",
+        )),
+        101,
+    )
+    .unwrap();
+    assert_eq!(store.load_reviews().unwrap().remove(0).failed_duck, None);
+}
+
+#[test]
+fn a_disconnected_duck_account_parks_as_credentials() {
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    let mut failure = Failure::permanent("Reconnect the Copilot account.").duck_setup();
+    failure.kind = monitoring::OperationFailure::Credentials;
+    complete(&store, &run.operation.id, Err(failure), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(
+        saved.operation.failure,
+        Some(monitoring::OperationFailure::Credentials)
+    );
+    assert_eq!(saved.failed_duck.as_deref(), Some("Duck"));
+}
+
+#[test]
+fn duck_evidence_is_kept_with_a_consumed_result_and_never_outlives_a_moved_state() {
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Checked."}));
+    result.ducks = vec![duck_call()];
+    complete(&store, &run.operation.id, Ok(result), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(saved.operation.state, OperationState::Completed);
+    assert_eq!(saved.result.unwrap().ducks, vec![duck_call()]);
+    assert_eq!(saved.failed_duck, None);
+
+    // An exit-gate or post-run toss, and a state superseded before the run.
+    for error in [
+        Failure::tossed("PR state moved. Review discarded. Stop."),
+        Failure::superseded("The PR head moved since the work was queued."),
+    ] {
+        let (_root, store, template) = duck_fixture(15);
+        let run = running_packet(&store, &template, 100);
+        record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+        complete(&store, &run.operation.id, Err(error), 101).unwrap();
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert!(saved.result.is_none(), "verdicts of a moved state are gone");
+        assert!(
+            saved.attempt_ducks.is_empty(),
+            "verdicts of a moved state are gone"
+        );
+    }
+
+    // A result whose state moved by the time it is consumed.
+    let (_root, store, template) = duck_fixture(15);
+    let binding = crate::retention::Binding::job(&template.job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "i",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 1,
+        },
+    );
+    store.save_pr_states(&states).unwrap();
+    let run = running_packet(&store, &template, 100);
+    record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Stale."}));
+    result.ducks = vec![duck_call()];
+    complete(&store, &run.operation.id, Ok(result), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert!(saved.result.is_none());
+    assert!(saved.attempt_ducks.is_empty());
+}
+
+#[test]
+fn a_failed_attempt_keeps_its_duck_calls_until_a_result_replaces_them() {
+    let (_root, store, template) = duck_fixture(15);
+    let run = running_packet(&store, &template, 100);
+    record_attempt_ducks(&store, &run.operation.id, vec![duck_call()]).unwrap();
+    complete(&store, &run.operation.id, Err(Failure::timeout()), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert!(saved.result.is_none());
+    assert_eq!(saved.attempt_ducks, vec![duck_call()]);
+    // A later completed attempt carries its own calls and clears the failed ones.
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.state = OperationState::Running;
+    store.save_reviews(&reviews).unwrap();
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Checked."}));
+    result.ducks = vec![duck_call()];
+    complete(&store, &run.operation.id, Ok(result), 102).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert!(saved.attempt_ducks.is_empty());
+    assert_eq!(saved.result.unwrap().ducks.len(), 1);
 }

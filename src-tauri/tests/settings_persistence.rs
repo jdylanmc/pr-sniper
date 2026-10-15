@@ -1,6 +1,6 @@
 use pr_sniper_lib::{
     policy::PolicyOverrides,
-    storage::{ProviderId, Repository, Settings, Store},
+    storage::{ProviderId, Repository, Settings, Store, Theme},
 };
 use std::fs;
 
@@ -206,10 +206,12 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
             "launch_at_login": true,
             "doctrines": [],
             "doctrine_catalog_version": 1,
+            "voices": [],
+            "voice_catalog_version": 1,
             "capacity": 4,
             "admission_migration_version": 1,
+            "time_zone": "UTC",
             "defaults": {
-                "schedule": {"kind":"cron","expression":"*/15 * * * *","timezone":"UTC"},
                 "watched_authors": [],
                 "reviewer_assignment": true,
                 "adapter": "copilot",
@@ -292,6 +294,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
         provider: ProviderId::Github,
         name: "octo/example".into(),
         enabled: true,
+        cron: "*/30 * * * *".into(),
         provider_account_id: Some("202".into()),
         legacy_installation_id: None,
         provider_repository_id: Some("42".into()),
@@ -339,6 +342,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
         provider: ProviderId::AzureDevops,
         name: "organization/project/repository".into(),
         enabled: true,
+        cron: "*/30 * * * *".into(),
         provider_account_id: Some("entra-object-id".into()),
         legacy_installation_id: None,
         provider_repository_id: Some("repository-guid".into()),
@@ -483,4 +487,240 @@ fn typescript_tool_registry_mirrors_the_rust_registry() {
         .filter(|item| !item.is_empty())
         .collect();
     assert_eq!(ts, pr_sniper_lib::storage::PACKET_TOOLS);
+}
+
+#[test]
+fn only_a_brand_new_profile_takes_the_initial_time_zone() {
+    let zone = |store: &Store| store.load_settings().unwrap().time_zone;
+    let fresh = tempfile::tempdir().unwrap();
+    let created = Store::new(fresh.path().into()).with_initial_time_zone("Asia/Tokyo".into());
+    assert_eq!(zone(&created), "Asia/Tokyo");
+    let reopened = Store::new(fresh.path().into()).with_initial_time_zone("Europe/Paris".into());
+    assert_eq!(zone(&reopened), "Asia/Tokyo");
+
+    let existing = tempfile::tempdir().unwrap();
+    assert_eq!(zone(&Store::new(existing.path().into())), "UTC");
+    let later = Store::new(existing.path().into()).with_initial_time_zone("Asia/Tokyo".into());
+    assert_eq!(zone(&later), "UTC");
+}
+
+#[test]
+fn theme_round_trips_and_light_keeps_the_previous_file_format() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let path = fixture.path().join("config/settings.json");
+    store
+        .save_settings(&Settings {
+            launch_at_login: true,
+            ..Settings::default()
+        })
+        .unwrap();
+
+    for (theme, persisted) in [
+        (Theme::Dark, Some("dark")),
+        (Theme::Os, Some("os")),
+        (Theme::Light, None),
+    ] {
+        store.save_theme(theme).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value.get("theme").and_then(|v| v.as_str()), persisted);
+        let reopened = Store::new(fixture.path().to_path_buf())
+            .load_settings()
+            .unwrap();
+        assert_eq!(reopened.theme, theme);
+        assert!(reopened.launch_at_login, "theme saves keep other settings");
+    }
+}
+
+#[test]
+fn settings_saved_before_themes_load_as_light() {
+    let fixture = Fixture::new();
+    let config = fixture.path().join("config");
+    fs::create_dir(&config).unwrap();
+    fs::write(
+        config.join("settings.json"),
+        br#"{"launch_at_login":false,"doctrines":[],"doctrine_catalog_version":1,"capacity":4,"admission_migration_version":1}"#,
+    )
+    .unwrap();
+
+    let settings = fixture.store().load_settings().unwrap();
+
+    assert_eq!(settings.theme, Theme::Light);
+}
+
+#[test]
+fn invalid_theme_values_are_rejected() {
+    let fixture = Fixture::new();
+    let config = fixture.path().join("config");
+    fs::create_dir(&config).unwrap();
+    for value in [r#""Dark""#, r#""system""#, r#""""#, "1", "null", "{}"] {
+        let path = config.join("settings.json");
+        let original = format!(r#"{{"launch_at_login":false,"doctrines":[],"theme":{value}}}"#);
+        fs::write(&path, &original).unwrap();
+
+        assert!(
+            fixture.store().load_settings().is_err(),
+            "theme {value} must be rejected"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(serde_json::from_str::<Theme>(value).is_err());
+    }
+}
+
+fn legacy_settings_file(fixture: &Fixture, defaults: &str) -> std::path::PathBuf {
+    let path = fixture.path().join("config/settings.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            r#"{{
+          "launch_at_login": false, "admission_migration_version": 1,{defaults}
+          "repositories": [
+            {{"id": "c53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
+              "name": "octo/one", "enabled": true}},
+            {{"id": "d53ae3be-2ad5-44aa-b257-9298186e1c6f", "provider": "github",
+              "name": "octo/two", "enabled": true}}
+          ]
+        }}"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn the_global_cron_moves_onto_every_repository_once() {
+    let fixture = Fixture::new();
+    let path = legacy_settings_file(
+        &fixture,
+        r#""defaults": {
+            "schedule": {"kind":"cron","expression":"0 9 * * MON-FRI","timezone":"Europe/Paris"},
+            "watched_authors": [], "reviewer_assignment": true, "adapter": "copilot",
+            "selector": {"kind":"default"}, "prompt": "Review.",
+            "automatic_agent_start": false, "automatic_comment_publication": false
+          },"#,
+    );
+    let settings = fixture.store().load_settings().unwrap();
+    assert_eq!(settings.time_zone, "Europe/Paris");
+    assert_eq!(settings.defaults.schedule, None);
+    assert!(settings
+        .repositories
+        .iter()
+        .all(|repository| repository.cron == "0 9 * * MON-FRI" && repository.enabled));
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(written["defaults"].get("schedule").is_none());
+    assert_eq!(written["time_zone"], "Europe/Paris");
+    assert_eq!(written["repositories"][1]["cron"], "0 9 * * MON-FRI");
+
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(fixture.store().load_settings().unwrap(), settings);
+    assert_eq!(fs::read(&path).unwrap(), bytes, "migration runs once");
+}
+
+#[test]
+fn files_without_a_saved_schedule_keep_the_former_default_cadence() {
+    let fixture = Fixture::new();
+    legacy_settings_file(&fixture, "");
+    let settings = fixture.store().load_settings().unwrap();
+    assert_eq!(settings.time_zone, "UTC");
+    assert!(settings
+        .repositories
+        .iter()
+        .all(|repository| repository.cron == "*/15 * * * *"));
+}
+
+#[test]
+fn new_repositories_default_to_every_thirty_minutes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let added = store.add_repository("octo/example").unwrap();
+    assert_eq!(added.repositories[0].cron, "*/30 * * * *");
+    let mut value = serde_json::to_value(&added.repositories[0]).unwrap();
+    value.as_object_mut().unwrap().remove("cron");
+    value["id"] = "e53ae3be-2ad5-44aa-b257-9298186e1c6f".into();
+    value["name"] = "octo/other".into();
+    value["enabled"] = false.into();
+    let created = store
+        .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+            id: "e53ae3be-2ad5-44aa-b257-9298186e1c6f".into(),
+            expected: None,
+            value: Some(Box::new(serde_json::from_value(value).unwrap())),
+        })
+        .unwrap();
+    assert_eq!(created.repositories[1].cron, "*/30 * * * *");
+}
+
+#[test]
+fn repository_saves_reject_crons_that_cannot_run() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let saved = store.add_repository("octo/example").unwrap();
+    let path = fixture.path().join("config/settings.json");
+    let before = fs::read(&path).unwrap();
+    for cron in [
+        "",
+        "* * * *",
+        "0 0 * * * *",
+        "61 * * * *",
+        "0 0 30 2 *",
+        "@hourly",
+    ] {
+        let mut value = saved.repositories[0].clone();
+        value.cron = cron.into();
+        assert!(
+            store
+                .save_resource(pr_sniper_lib::storage::ResourceEdit::Repository {
+                    id: value.id.clone(),
+                    expected: Some(Box::new(saved.repositories[0].clone())),
+                    value: Some(Box::new(value)),
+                })
+                .is_err(),
+            "{cron:?}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}
+
+fn legacy_defaults(schedule: &str) -> String {
+    format!(
+        r#""defaults": {{
+            "schedule": {schedule},
+            "watched_authors": [], "reviewer_assignment": true, "adapter": "copilot",
+            "selector": {{"kind":"default"}}, "prompt": "Review.",
+            "automatic_agent_start": false, "automatic_comment_publication": false
+          }},"#
+    )
+}
+
+#[test]
+fn legacy_intervals_and_crons_that_never_run_pause_every_repository_once() {
+    for (schedule, zone) in [
+        (
+            r#"{"kind":"interval","minutes":7,"timezone":"Europe/London"}"#,
+            "Europe/London",
+        ),
+        (
+            r#"{"kind":"cron","expression":"0 0 30 2 *","timezone":"Asia/Tokyo"}"#,
+            "Asia/Tokyo",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let path = legacy_settings_file(&fixture, &legacy_defaults(schedule));
+        let settings = fixture.store().load_settings().unwrap();
+        assert_eq!(settings.time_zone, zone, "{schedule}");
+        assert_eq!(settings.defaults.schedule, None);
+        assert!(settings
+            .repositories
+            .iter()
+            .all(|repository| !repository.enabled && repository.cron == "*/30 * * * *"));
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(fixture.store().load_settings().unwrap(), settings);
+        assert_eq!(fs::read(&path).unwrap(), bytes, "migration runs once");
+        // Saves keep working; re-enabling is an explicit user choice.
+        let mut enabled = settings.clone();
+        enabled.repositories[0].enabled = true;
+        fixture.store().save_settings(&enabled).unwrap();
+        assert!(fixture.store().load_settings().unwrap().repositories[0].enabled);
+    }
 }

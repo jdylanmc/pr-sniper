@@ -133,6 +133,8 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
             ReviewRun {
                 mode: Default::default(),
                 packet: None,
+                failed_duck: None,
+                attempt_ducks: Vec::new(),
                 feedback_context: None,
                 key: crate::review::key(job, assignment),
                 assignment_id: assignment.clone(),
@@ -188,6 +190,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
     let run = ReviewRun {
         mode,
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: crate::review::key(&job, &assignment),
         assignment_id: assignment,
@@ -1534,6 +1538,8 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         message: "Provider read rate limited.".into(),
         retry_after_seconds: Some(60),
         origin: crate::backpressure::Origin::Github,
+        duck_setup: false,
+        resume: Default::default(),
     };
     let network = Failure {
         kind: monitoring::OperationFailure::Network,

@@ -135,7 +135,8 @@ async function seed(page, store, assignments = false) {
       return original(command, args);
     };
   });
-  return settings;
+  // Stored shape: library ids assigned, title references migrated to ids.
+  return (await store("snapshot")).settings;
 }
 
 async function openSettings(page, mode) {
@@ -389,9 +390,16 @@ for (const mode of ["panel", "legacy", "legacy fallback"]) {
           exact: true,
         }),
       );
-      expect((await store("snapshot")).settings.agents[1].doctrines).toEqual([
-        "Renamed doctrine",
-      ]);
+      // Rename changes the title only; the Agent keeps the same id reference.
+      const renamed = (await store("snapshot")).settings;
+      expect(renamed.agents[1].doctrine_ids).toEqual(
+        initial.agents[1].doctrine_ids,
+      );
+      expect(
+        renamed.doctrines.find(
+          (d) => d.id === renamed.agents[1].doctrine_ids[0],
+        ).title,
+      ).toBe("Renamed doctrine");
 
       const addDoctrine = page.getByRole("button", {
         name: "New doctrine",

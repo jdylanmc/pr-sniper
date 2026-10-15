@@ -10,6 +10,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Transient failure: backoff, retry. After 3 failed attempts or deadline: park (`ManualRetry`).
 - Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else 30s x2^n capped at 15m with deterministic jitter. A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
 - Credential, permission, permanent failure: park at once.
+- Superseded is not failure: a moved head, closed/merged/unadmitted PR or removed/replaced assignment, seen before or during a run, requeues without an attempt and never parks. It re-dispatches only after the repository's next successful poll observes the PR, which retargets or retires it ([ADR 0008](0008-one-review-per-head-sha.md)); a failing poll never loops it. A base move after an AI run waits for a poll that observed another base: at most one AI attempt per base.
 - Every parked failure lands in one inbox: Queue > **Needs attention**. Cause chip: Credentials, Permission, Network, Failed.
 - Row action: **Fix** for credentials (opens Accounts), **Retry** otherwise. **Retry all** pill.
 - No user-facing "Blocked" state. Running tab shows active + queued only.
@@ -24,6 +25,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Restart-safe. No silent retry loops.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
 - Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.
+- Repository polls (no queue item, no retry UI since 2026-10-14): a poll that was waiting or interrupted when its window ran out (quit, sleep, account rate limit) restarts with a fresh window, keeps its cause and never parks on the deadline alone. A parked poll is requeued at the next occurrence of its repository's schedule (one retry per occurrence; Credentials wait for reconnect) and by Check Now (any parked poll). A parked poll keeps its repository's schedule alive, except a credential-parked poll, which waits for reconnect ([ADR 0024](0024-repository-schedules.md)).
 - Auto-resume covers review runs, repository poll operations and publication operations (same cooldowns; resume reconciles the original batch, never reposts). Legacy follow-up/primary-final operations are cancelled on startup ([ADR 0021](0021-review-packet.md)).
 - Completed reviews stay Ready despite config drift or disabled repo.
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.

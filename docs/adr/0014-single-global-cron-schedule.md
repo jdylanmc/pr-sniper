@@ -1,5 +1,7 @@
 # Poll on one global cron schedule
 
+Status: superseded by [ADR 0024](0024-repository-schedules.md) (per-repository cron, one global time zone).
+
 ## Context
 
 Per-repo and per-Agent timers multiplied provider reads, drifted, and burst after sleep.

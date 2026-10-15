@@ -153,7 +153,6 @@ export const test = base.extend({
                   "panel_navigate",
                   "hide_panel",
                   "open_settings",
-                  "open_diagnostics",
                   "open_queue_item",
                   "fixture_show_panel",
                 ].includes(command)

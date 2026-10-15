@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { captureInspector, nativeCapacity, expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
 import { target } from "./paths.mjs";
+import { section } from "./navigation.mjs";
+import { clipboardWrites, recordClipboard } from "./diagnostics-copy.mjs";
 
 const tab = (page, name) =>
   page
@@ -13,7 +15,7 @@ const screenshots = join(target, "visual-correction-1");
 test.use({ viewport: { width: 408, height: 744 } });
 
 for (const failUtility of [false, true]) {
-  test(`monitor polling survives detached recovery controls and delayed ${failUtility ? "failed" : "successful"} Diagnostics`, async ({
+  test(`monitor polling survives a delayed ${failUtility ? "failed" : "successful"} Copy diagnostics`, async ({
     page,
     store,
     ipc,
@@ -30,25 +32,33 @@ for (const failUtility of [false, true]) {
         return original(command, args);
       };
     }, failUtility);
+    await recordClipboard(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "Status", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Check Now" })).toBeVisible();
+    for (const name of ["Status", "Diagnostics"])
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+        0,
+      );
+    await tab(page, "Settings").click();
+    await section(page, "Preferences");
+    await page.evaluate(() => window.__settingsIdle());
+    const copy = page.getByRole("button", { name: "Copy diagnostics" });
     const held = ipc.holdNext("snapshot");
-    await page
-      .getByRole("button", { name: "Diagnostics", exact: true })
-      .click();
+    await copy.click();
     await held.arrived;
-    await expect(page.locator("#check-now")).toHaveCount(0);
     await page.clock.runFor(5100);
     held.release();
+    await expect(copy).toHaveAttribute(
+      "data-state",
+      failUtility ? "failed" : "copied",
+    );
     if (failUtility)
-      await expect(page.locator("[data-panel-error]")).toHaveAttribute(
+      await expect(page.locator("#error")).toHaveAttribute(
         "title",
         "Synthetic utility read failure",
       );
     else
-      await expect(page.locator('[data-panel-view="utility"] pre')).toHaveText(
-        /\n\nNo events$/,
+      expect((await clipboardWrites(page)).at(-1)).toMatch(
+        /\n\nNo events\n\nRecorded job Intelligence\n/,
       );
     await tab(page, "Queue").click();
     await page.evaluate(() => window.__settingsIdle());
@@ -483,6 +493,96 @@ test("completion removes its row, capacity refills immediately and failed work l
   await expect(page.locator("[data-running-list]")).toContainText(
     "Unavailable",
   );
+});
+
+test("a job evidence control keeps its click while the job's automation state changes", async ({
+  page,
+  store,
+}) => {
+  await workFixture(store);
+  await nativeCapacity(page, ["visual-work-1"]);
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__opened = [];
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "open_queue_destination") {
+        window.__opened.push(args.itemId);
+        return Promise.resolve(null);
+      }
+      return original(command, args);
+    };
+  });
+  // Paused clock: the 5 s automation poll lands exactly at start + 5 s.
+  const start = new Date("2026-10-14T12:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
+  await tab(page, "Running").click();
+  await page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button", { name: "Open job" })
+    .click();
+  await page.evaluate(() => window.__settingsIdle());
+  const link = page.locator(".job-provider-link");
+  await expect(link).toBeVisible();
+  const evidence = page.locator("[data-item-evidence]");
+  const before = await evidence.innerText();
+  const box = await link.boundingBox();
+  await page.clock.fastForward(4900);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // The job's capacity state changes: its evidence redraws on the next poll.
+  await page.evaluate(() => {
+    window.__capacityUnavailable = true;
+  });
+  await page.clock.fastForward(200);
+  await page.evaluate(() => window.__settingsIdle());
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect.poll(() => page.evaluate(() => window.__opened.length)).toBe(1);
+  // The deferred redraw still lands once the press ends.
+  await expect.poll(() => evidence.innerText()).not.toBe(before);
+});
+
+test("a running row keeps its click when automation fails mid-press, then shows Unavailable", async ({
+  page,
+  store,
+}) => {
+  await workFixture(store);
+  await nativeCapacity(page, ["visual-work-1"]);
+  const start = new Date("2026-10-14T12:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
+  await page.goto("/");
+  await page.evaluate(() => window.__settingsIdle());
+  await tab(page, "Running").click();
+  await page.evaluate(() => window.__settingsIdle());
+  const list = page.locator("[data-running-list]");
+  const row = page
+    .locator('[data-job-id="normal:visual-work-1"]')
+    .getByRole("button", { name: "Open job" });
+  await expect(row).toBeVisible();
+  const rows = await list.locator("article").count();
+  expect(rows).toBeGreaterThan(0);
+  const box = await row.boundingBox();
+  await page.clock.fastForward(4900);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // The monitor poll still succeeds; the automation read fails.
+  await page.evaluate(() => {
+    window.__capacityUnavailable = true;
+  });
+  await page.clock.fastForward(200);
+  await page.evaluate(() => window.__settingsIdle());
+  // Still the pressed rows while the press lasts.
+  await expect(list.locator("article")).toHaveCount(rows);
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("[data-panel-heading]")).toHaveText("Job details");
+  // The deferred failure lands after release; no stale row is repainted.
+  await expect(list).toHaveText("Unavailable");
+  await expect(list.locator("article")).toHaveCount(0);
 });
 
 test("captured full configuration survives current Agent and doctrine edits without relabeling history", async ({

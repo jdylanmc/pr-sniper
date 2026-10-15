@@ -49,23 +49,35 @@ _Avoid_: Connected account
 ### Agents and grants
 
 **Agent**:
-Saved review configuration: prompt, signature, ordered zero-or-more **Doctrines**, one **Copilot AI Account** and model. No count cap; **AI Capacity** limits concurrent work, not Agents. Missing, unavailable or legacy selections stay visible, never silently replaced. Referenced Agent cannot be deleted. Holds no permissions; grants live on repository assignments.
+Saved review configuration: prompt, signature, ordered zero-or-more **Doctrines**, zero-or-one **Voice**, one **Copilot AI Account** and model. No count cap; **AI Capacity** limits concurrent work, not Agents. Missing, unavailable or legacy selections stay visible, never silently replaced. Referenced Agent cannot be deleted. Holds no permissions; grants live on repository assignments.
 _Avoid_: Bot, reviewer, development agent
 
 **Doctrine**:
-Shared, editable plain-text review principle selected per Agent. Referenced Doctrine cannot be deleted; rename updates references. Edits and deletions, even an empty library, survive restart; the library is never topped up. Holds no credentials.
+Shared, editable plain-text review principle: ID, title, body. Agents reference it by ID, in their own order; rename changes the title only, never Agents. Titles unique (case-insensitive). Referenced Doctrine cannot be deleted; a reference with no entry shows as unavailable until removed. Edits and deletions, even an empty library, survive restart; the library is never topped up. Holds no credentials.
 _Avoid_: Skill, prompt snippet
+
+**Voice**:
+Shared, editable plain-text writing style: ID, title, body and Fixed guardrails flag, selected per Agent by ID (zero or one; default none). Same library rules as **Doctrine**: referenced Voice cannot be deleted; rename never touches Agents; edits and deletions, even an empty library, survive restart; seeds added once, never topped up. Holds no credentials. Tone only for the Primary Agent's human-facing text (comments, replies, exit body); reports and agent-to-agent text stay caveman. Fixed guardrails (default on) add the host's guard. Never changes rules, tools, permissions, gates or exits. See [ADR 0022](docs/adr/0022-voices.md).
+_Avoid_: Persona, tone prompt
 
 **Primary Agent**:
 The repository assignment responsible for eligible conversation assessments and the final full review before permitted provider actions. Runs last, after every teammate report for the same PR state; its packet has the Teammate reports section. A sole assignment is primary automatically; multiple assignments have at most one explicit primary. No primary means no reply, approve or merge; normal reviews and permitted initial comments continue. Selecting primary grants no capabilities and does not change original feedback ownership.
 _Avoid_: Global primary, thread owner as responder
 
 **Tools** (assignment):
-Packet tool ids an assignment may use: investigation tools plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
+Packet tool ids an assignment may use: investigation tools, `rubber_duck` (primary with a **Rubber Duck**) plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, `rubber_duck` when a Rubber Duck is set, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
 _Avoid_: Skills, plugins
 
+**Rubber Duck**:
+Optional Agent selected on the primary assignment (may be the primary's own Agent). Offered to the primary as host-owned tool `rubber_duck`: the primary chooses when to send one finding for checking. Each **Duck call** is a fresh, read-only session over the primary's PR state, ending on `submit_verdict`. Borrows the primary's **AI Capacity** slot; calls run one at a time, bounded by Saved Preferences (calls, timeout, primary window). Setup failure at job start is a job error (park path, `failed_duck`); a failed call is a typed tool error for the primary. Teammates have none. See [ADR 0023](docs/adr/0023-rubber-duck-verification.md).
+_Avoid_: Reviewer, gate, sub-agent
+
+**Verdict**:
+A duck call's structured answer: `confirmed`, `revise` (with `revised_body`), `rejected` or `unverifiable`, caveman rationale and evidence refs. Untrusted data for the primary, which decides. Never publishes, blocks or authorizes anything; never reused across attempts or PR states.
+_Avoid_: Approval, decision
+
 **Packet**:
-The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
+The one text an agent is given per run, built by the host from fresh PR state: Meta, fixed Rules, PR, Conversation, Files manifest, Teammate reports (primary), Directive, Voice (primary with a Voice), Exits. Untrusted content is fenced; nothing is cut without a marker. Same state, same text, same `packet_hash`. Stored content-free as the run's packet record. See [Review packet](docs/review-packet.md).
 _Avoid_: Prompt
 
 **Exit**:
@@ -77,7 +89,7 @@ A non-primary assignment of a repository. Runs first, ends with `submit_report`,
 _Avoid_: Secondary agent, peer
 
 **Review drafts** (repository):
-Repository switch, default off. On: draft pull requests are reviewed too.
+Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
 **Include self** (Approve & Merge):
 Approve & Merge option, default off: the user's own PRs count. Inert until approve exits land.
@@ -100,22 +112,25 @@ _Avoid_: Reviewer requests, People you watch, watch filter
 PR URL entered at **+ URL** resolves its repository and that exact PR. After a valid repository Save the PR is admitted at once, outside admission rules, with no schedule wait. Same URL and same Iteration reuse existing work. Normal gates still apply. A plain repository URL creates no PR work. Failed intake never undoes a committed Save.
 _Avoid_: Manual scan, force review
 
-**Global Schedule**:
-The single five-field cron plus explicit IANA time zone (default `*/15 * * * *`, `UTC`) scanning all enabled configured repositories. No per-repository or per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep ticks collapse to one check; no catch-up. Legacy interval choices are readable only and stay a visible setup issue until replaced.
-_Avoid_: Polling interval, assignment timer, per-Agent poll
+**Repository Schedule**:
+Each repository's five-field cron (new repositories: every 30 minutes), built in its editor (Every, Hourly, Daily, Advanced; days of the week; no working hours), evaluated in the one saved **Time Zone**. No per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep occurrences collapse to one poll; no catch-up. Replaced the single global cron ([ADR 0024](docs/adr/0024-repository-schedules.md)); a saved global cron migrated onto every repository; a legacy interval or never-firing cron migrated repositories paused.
+_Avoid_: Global schedule, global scan, polling interval, assignment timer, per-Agent poll
+
+**Time Zone**:
+The single saved IANA zone (Preferences) that every **Repository Schedule** runs in.
 
 **Check Now**:
-Manual global scan. Coalesces to one pending scan. Never bypasses **Backpressure** or an existing **Retry budget**.
+Polls every enabled repository now and retries any parked poll. Coalesces with a running poll per repository. Never bypasses **Backpressure** or an existing **Retry budget**; keeps each **Repository Schedule**.
 
 **Pause Automation**:
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.
 
 **AI Capacity**:
-Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by all review runs (primaries and teammates) in one FIFO order across retries and pauses. Primary-final, reply and mention kinds are history only. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
+Machine-wide count of concurrent AI job slots, positive integer, default 4. Shared by all review runs (primaries and teammates) in one FIFO order across retries and pauses. A **Duck call** runs inside its primary's slot, never a slot of its own. Primary-final, reply and mention kinds are history only. Limits work, not Agent count. A free slot fills at once. Reducing stops the newest excess workers. Does not raise provider-write concurrency.
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
-Global cron, time zone, **AI Capacity** and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in, launch at login; apply natively, not by Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
+**Time Zone**, **AI Capacity**, Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login apply natively; theme applies to the panel and persists on change. None use Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
 _Avoid_: Startup checkbox as effective state
 
 ### Reviews and iterations
@@ -138,7 +153,7 @@ The scheduled read of PR state for tracked open PRs. It only adds a PR to the qu
 Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
 
 **Consume** / **Toss**:
-A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved or PR closed before the run: superseded, no budget spent.
+A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved, PR closed, merged or no longer admitted, or assignment removed or replaced, before or during the run: superseded, no budget spent, never parked; the next scan queues the new revision or retires the work. A superseded run waits for the repository's next successful poll, never a timer. Waiting work whose entry a scan retired (merged, closed, superseded, out of scope, assignment removed) ends quietly as superseded and leaves Running; a primary never waits on such a teammate. Base moved: superseded, never parked; after an AI run it waits for a poll that saw another base, so each base gets at most one AI attempt.
 
 **Clean** (Reviewed):
 Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.
@@ -148,7 +163,7 @@ One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet r
 _Avoid_: Trigger, task
 
 **Execution Snapshot**:
-Immutable record of Agent, account, model, prompt, Doctrine bodies, repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
+Immutable record of Agent, account, model, prompt, Doctrine bodies, primary Voice (title, body, guardrails), primary Rubber Duck (Agent and Doctrine bodies), repository and assignment authority at job start. Evidence, never current grant, never rewritten by edits or restart. Legacy missing fields show unavailable, never rebuilt. A never-started failure keeps its planned configuration and claims no execution.
 _Avoid_: Current config, Execution Configuration
 
 **Normal Pass**:

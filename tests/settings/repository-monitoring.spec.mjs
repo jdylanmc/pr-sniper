@@ -667,7 +667,7 @@ test("quick editor switch commits only saved configuration and retains repositor
   await providerFixture(page, store);
   await repositoryPage(page, store, false);
   await section(page, "Preferences");
-  await page.locator("#global-cron").fill("invalid draft cron");
+  await page.locator("#global-timezone").selectOption("Asia/Tokyo");
   await page.locator("#global-capacity").fill("9");
   await section(page, "Repositories");
   const modal = await openEditor(page);
@@ -696,7 +696,7 @@ test("quick editor switch commits only saved configuration and retains repositor
   expect(saved.repositories[0].admission.mode).toBe("filtered");
   expect(saved.repositories[1]).toEqual(original.repositories[1]);
   await section(page, "Preferences");
-  await expect(page.locator("#global-cron")).toHaveValue("invalid draft cron");
+  await expect(page.locator("#global-timezone")).toHaveValue("Asia/Tokyo");
   await expect(page.locator("#global-capacity")).toHaveValue("9");
 });
 

@@ -41,6 +41,8 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     let review = ReviewRun {
         mode: crate::review::RunMode::Packet,
         packet: None,
+        failed_duck: None,
+        attempt_ducks: Vec::new(),
         feedback_context: None,
         key: crate::review::key(&job,&assignment_id),
         selection: Selection::resolve(&settings,&job,&assignment_id).unwrap(),

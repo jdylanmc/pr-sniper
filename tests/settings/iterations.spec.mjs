@@ -76,12 +76,6 @@ async function iterationFixture(store, count = 7) {
       },
     ],
     monitoring: {
-      global_scan: {
-        schedule_key: "cron:*/15 * * * *:UTC",
-        next_run: 1_800_000_900,
-        pending: [],
-        requested: false,
-      },
       health: {
         [repository.id]: {
           repository_id: repository.id,
@@ -95,6 +89,7 @@ async function iterationFixture(store, count = 7) {
           last_attempt: 1_800_000_000,
           last_success: 1_800_000_001,
           next_run: 1_800_000_900,
+          scheduled_run: 1_800_000_900,
           schedule_available: true,
           last_failure: null,
           in_flight: false,
@@ -132,16 +127,15 @@ test("one global repository read exposes seven ordered independent jobs and immu
   await expect(page.locator("#agent-reviews article").first()).toContainText(
     "attempt 3",
   );
-  await expect(page.locator("#schedule-health")).toContainText(
-    "Global scan: cron:*/15 * * * *:UTC",
-  );
-  await expect(page.locator("#schedule-health")).toContainText(
-    "assignment None",
-  );
-  await expect(page.locator("#review-jobs article")).toHaveCount(7);
-  await expect(page.locator("#review-jobs article").first()).toContainText(
-    "watched author and requested reviewer",
-  );
+  expect(before.health[0].schedule_key).toBe("cron:*/15 * * * *:UTC");
+  expect(before.health[0].scheduled_run).toBe(1_800_000_900);
+  expect(before.health[0].assignment_id).toBeNull();
+  expect(before.jobs).toHaveLength(7);
+  const admission = before.jobs[0].work?.admission ?? before.jobs[0];
+  expect([admission.watched_author, admission.requested_reviewer]).toEqual([
+    true,
+    true,
+  ]);
   await page.reload();
   await expect(page.locator("#agent-reviews article")).toHaveCount(7);
   expect((await store("monitoring_snapshot")).jobs).toEqual(before.jobs);
@@ -227,9 +221,8 @@ test("sticky tracking without assignments is visible without fabricating Agent j
 }) => {
   await iterationFixture(store, 0);
   await page.goto("/?view=queue");
-  await expect(page.locator("#review-jobs")).toContainText(
-    "1 tracked; no jobs",
-  );
   await expect(page.locator("#agent-reviews article")).toHaveCount(0);
-  expect((await store("monitoring_snapshot")).tracked).toHaveLength(1);
+  const snapshot = await store("monitoring_snapshot");
+  expect(snapshot.jobs).toEqual([]);
+  expect(snapshot.tracked).toHaveLength(1);
 });

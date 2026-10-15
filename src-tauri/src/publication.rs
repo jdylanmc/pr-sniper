@@ -252,11 +252,7 @@ impl Publication {
 }
 
 fn lens_differs(current: &Selection, review: &Selection) -> bool {
-    current.agent != review.agent
-        || current.doctrine != review.doctrine
-        || current.preset != review.preset
-        || current.policy.prompt != review.policy.prompt
-        || current.policy.adapter != review.policy.adapter
+    !current.same_lens(review)
 }
 
 pub fn automatic_policy(
@@ -785,8 +781,10 @@ fn unresolved() -> Failure {
     Failure {
         cancelled: false,
         message: "GitHub mutation outcome is unresolved. Reconcile the original review; no replacement batch will be created.".into(),
+        duck_setup: false,
         kind: OperationFailure::Network,
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
+        resume: Default::default(),
     }
 }

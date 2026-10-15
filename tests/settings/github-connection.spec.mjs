@@ -264,7 +264,7 @@ test("metadata pins verified identities, renders all files safely and clears fai
     "1 PRs, 2 files",
   );
   await card.locator(".connection summary").click();
-  await expect(card.locator("li")).toHaveText([
+  await expect(card.locator(".connection li")).toHaveText([
     "added: first.rs",
     "renamed: last.rs",
   ]);

@@ -94,12 +94,16 @@ test("reusable Agents keep independent repository assignments and preserve legac
   ).toHaveLength(2);
   await saveChanges(page);
   let saved = (await store("snapshot")).settings;
+  // The legacy global schedule moved onto each repository; new assignments carry none.
   expect(
     saved.repositories[0].assignments.map(({ schedule }) => schedule),
-  ).toEqual([initial.defaults.schedule, initial.defaults.schedule]);
-  expect(saved.repositories[1].assignments[0].schedule).toEqual(
-    initial.defaults.schedule,
-  );
+  ).toEqual([undefined, undefined]);
+  expect(saved.repositories[1].assignments[0].schedule).toBeUndefined();
+  expect(saved.repositories.map(({ cron }) => cron)).toEqual([
+    initial.defaults.schedule.expression,
+    initial.defaults.schedule.expression,
+  ]);
+  expect(saved.time_zone).toBe(initial.defaults.schedule.timezone);
   const assignments = saved.repositories.map(({ assignments }) => assignments);
   await setAgentPrompt(page, "Updated shared Agent instructions.");
   await saveChanges(page);
@@ -110,7 +114,8 @@ test("reusable Agents keep independent repository assignments and preserve legac
   expect(saved.repositories.map(({ assignments }) => assignments)).toEqual(
     assignments,
   );
-  expect(saved.defaults).toEqual(initial.defaults);
+  const { schedule: _legacy, ...defaults } = initial.defaults;
+  expect(saved.defaults).toEqual(defaults);
   expect(saved.presets).toEqual(initial.presets);
   expect(saved.repositories[0].overrides).toEqual(
     initial.repositories[0].overrides,

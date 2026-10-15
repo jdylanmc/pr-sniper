@@ -37,7 +37,7 @@ fn a_runs_tool_set_is_granted_investigation_tools_then_offered_exits() {
         .map(String::from)
         .to_vec();
     assert_eq!(
-        tool_set(&granted, &[Exit::ReadyForHuman, Exit::PanicExit]),
+        tool_set(&granted, false, &[Exit::ReadyForHuman, Exit::PanicExit]),
         [
             "read_changes",
             "search_code",
@@ -45,7 +45,7 @@ fn a_runs_tool_set_is_granted_investigation_tools_then_offered_exits() {
             "panic_exit"
         ]
     );
-    assert!(tool_set(&[], &[]).is_empty());
+    assert!(tool_set(&[], false, &[]).is_empty());
 }
 
 #[test]

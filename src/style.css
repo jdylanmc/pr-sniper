@@ -4,7 +4,6 @@
   background: #f4f7f7;
   font-synthesis: none;
   line-height: 1.6;
-  color-scheme: light dark;
 }
 body {
   margin: 0;
@@ -112,11 +111,6 @@ dialog[tabindex]:focus-visible {
   outline: 3px solid #d47516;
   outline-offset: 3px;
 }
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .eyebrow {
   margin: 0 0 4px;
   font-size: 11px;
@@ -203,21 +197,19 @@ pre {
   overflow-wrap: anywhere;
   font-size: 12px;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #dcebed;
-    background: #11282f;
-  }
-  header img {
-    filter: invert(1);
-  }
-  button {
-    background: #247b89;
-  }
-  #error {
-    background: #492621;
-    color: #ffdbd5;
-  }
+:root:where([data-theme="dark"]) {
+  color: #dcebed;
+  background: #11282f;
+}
+:where(:root[data-theme="dark"]) header img {
+  filter: invert(1);
+}
+:where(:root[data-theme="dark"]) button {
+  background: #247b89;
+}
+:where(:root[data-theme="dark"]) #error {
+  background: #492621;
+  color: #ffdbd5;
 }
 .queue-teammate {
   display: inline-flex;

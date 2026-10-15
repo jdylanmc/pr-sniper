@@ -23,7 +23,32 @@ const exitScenarios = [
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
   "exit-approve", "exit-merge", "exit-approve-denied-self",
+  "verdict-ok", "verdict-revise-bad-then-ok",
 ];
+// Primary scenarios that call rubber_duck: [calls in parallel, args].
+const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
+const duckScenarios = {
+  "duck-call": [duckArgs],
+  "duck-sequential": [duckArgs, { ...duckArgs, claim: "second claim" }],
+  "duck-then-error": [duckArgs],
+  "duck-flood": Array.from({ length: 100 }, () => duckArgs),
+  "duck-primary-error": [duckArgs],
+  "duck-parallel": [duckArgs, { ...duckArgs, claim: "second claim" }],
+  "duck-invalid": [{ ...duckArgs, path: "unchanged.rs" }],
+};
+const duckCalls = duckScenarios[scenario];
+let duckResults = 0;
+// Sequential scenarios call the next duck only after the previous result.
+const sequential = ["duck-sequential"].includes(scenario);
+// Duck turns that started and neither ended nor were aborted.
+let activeTurns = 0;
+const duckCall = (index) => {
+  event("tool.execution_start", { toolName: "rubber_duck" });
+  event("external_tool.requested", {
+    sessionId, requestId: `duck-${index + 1}`, toolCallId: `duck-${index + 1}`,
+    toolName: "rubber_duck", arguments: duckCalls[index],
+  });
+};
 const isExit = exitScenarios.includes(scenario);
 const longNano = Array.from({ length: 120 }, () => "word").join(" ");
 const okReport = {
@@ -42,6 +67,8 @@ const firstExit = {
   "report-ok": ["submit_report", okReport],
   "report-too-long": ["submit_report", badReport],
   "exit-malformed-forever": ["submit_report", badReport],
+  "verdict-ok": ["submit_verdict", { verdict: "confirmed", nano: "real overflow", evidence: [{ path: "source.rs", line: 1 }] }],
+  "verdict-revise-bad-then-ok": ["submit_verdict", { verdict: "revise", nano: "wrong body" }],
 };
 let exitCount = 0;
 let exitEnded = false;
@@ -58,6 +85,7 @@ const handOver = () => toolCall("ready_for_human", { summary: "Synthetic review 
 const endTurn = () => {
   if (exitEnded) return;
   exitEnded = true;
+  activeTurns = Math.max(0, activeTurns - 1);
   event("assistant.usage", { inputTokens: 20, outputTokens: 10 });
   event("session.idle", {});
 };
@@ -198,6 +226,34 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
+        receipt({ method: "fixture.prompt", prompt: request.params.prompt ?? null });
+        if (duckCalls) {
+          setTimeout(() => {
+            if (sequential) duckCall(0);
+            else duckCalls.forEach((_, index) => duckCall(index));
+            // The primary run fails on its own while the duck call is still pending.
+            if (scenario === "duck-primary-error")
+              setTimeout(() => event("session.error", { statusCode: 500 }), 300);
+          }, 10);
+          break;
+        }
+        if (scenario.startsWith("verdict-")) {
+          receipt({ method: "fixture.turns", active: activeTurns });
+          activeTurns += 1;
+          exitEnded = false;
+        }
+        if (scenario === "verdict-slow") break;
+        if (scenario === "verdict-none") {
+          setTimeout(() => {
+            event("assistant.usage", { inputTokens: 5, outputTokens: 2 });
+            event("session.idle", {});
+          }, 10);
+          break;
+        }
+        if (scenario === "verdict-429") {
+          setTimeout(() => event("session.error", { statusCode: 429, retryAfterSeconds: 30 }), 10);
+          break;
+        }
         if (isExit) {
           setTimeout(() => {
             if (scenario === "exit-none") {
@@ -258,6 +314,18 @@ process.stdin.on("data", (chunk) => {
       case "session.tools.handlePendingToolCall":
         receipt({ method: "fixture.finalRead", result: request.params.result });
         respond(request.id, {});
+        if (String(request.params.requestId).startsWith("duck-")) {
+          receipt({ method: "fixture.duck", requestId: request.params.requestId, result: request.params.result, at: Date.now() });
+          ++duckResults;
+          if (duckResults < duckCalls.length) {
+            if (sequential) duckCall(duckResults);
+          } else if (scenario === "duck-then-error") {
+            event("session.error", { statusCode: 500 });
+          } else {
+            handOver();
+          }
+          break;
+        }
         if (String(request.params.requestId).startsWith("exit-")) {
           const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
@@ -271,6 +339,8 @@ process.stdin.on("data", (chunk) => {
             toolCall("submit_report", okReport);
           } else if (scenario === "exit-malformed-forever") {
             toolCall("submit_report", badReport);
+          } else if (scenario === "verdict-revise-bad-then-ok") {
+            toolCall("submit_verdict", { verdict: "revise", nano: "wrong line", revised_body: "Use checked_add on line 1." });
           }
           break;
         }
@@ -304,6 +374,8 @@ process.stdin.on("data", (chunk) => {
         }
         break;
       case "session.abort":
+        receipt({ method: "fixture.aborted", at: Date.now(), active: activeTurns });
+        activeTurns = Math.max(0, activeTurns - 1);
         if (scenario.endsWith("-held-abort")) {
           const held = setInterval(() => {
             if (!existsSync(process.env.TEST_ABORT_RELEASE)) return;

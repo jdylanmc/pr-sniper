@@ -1,6 +1,6 @@
 mod support;
 
-use pr_sniper_lib::policy::{Policy, PolicyOverrides, Schedule, Selector};
+use pr_sniper_lib::policy::{Policy, PolicyOverrides, Selector};
 use pr_sniper_lib::storage::{DiagnosticEvent, Settings};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -86,21 +86,48 @@ fn cron_rejects_wrong_field_counts_out_of_range_values_and_empty_ranges() {
 }
 
 #[test]
-fn standard_five_field_cron_and_positive_intervals_survive_restart() {
-    for schedule in [
-        json!({"kind":"cron","expression":"0 9 * * MON-FRI","timezone":"America/New_York"}),
-        json!({"kind":"cron","expression":"*/5 9-17 * JAN-MAR MON-FRI","timezone":"Europe/London"}),
-        json!({"kind":"cron","expression":"0 0 1,15 * *","timezone":"UTC"}),
-        json!({"kind":"interval","minutes":1,"timezone":"UTC"}),
-        json!({"kind":"interval","minutes":90,"timezone":"Asia/Tokyo"}),
+fn legacy_global_schedules_move_onto_repositories_and_the_time_zone() {
+    for (schedule, cron, zone, enabled) in [
+        (
+            json!({"kind":"cron","expression":"0 9 * * MON-FRI","timezone":"America/New_York"}),
+            "0 9 * * MON-FRI",
+            "America/New_York",
+            true,
+        ),
+        (
+            json!({"kind":"cron","expression":"*/5 9-17 * JAN-MAR MON-FRI","timezone":"Europe/London"}),
+            "*/5 9-17 * JAN-MAR MON-FRI",
+            "Europe/London",
+            true,
+        ),
+        // Never polled before: paused on the default cron.
+        (
+            json!({"kind":"interval","minutes":90,"timezone":"Asia/Tokyo"}),
+            "*/30 * * * *",
+            "Asia/Tokyo",
+            false,
+        ),
+        // Parses but never fires: must not brick saves.
+        (
+            json!({"kind":"cron","expression":"0 0 30 2 *","timezone":"UTC"}),
+            "*/30 * * * *",
+            "UTC",
+            false,
+        ),
     ] {
         let fixture = Fixture::new();
+        fixture.store().add_repository("octo/hello-world").unwrap();
         let policy = Policy {
             schedule: serde_json::from_value(schedule).unwrap(),
             ..Policy::default()
         };
-        fixture.store().save_defaults(policy.clone()).unwrap();
-        assert_eq!(fixture.store().load_settings().unwrap().defaults, policy);
+        fixture.store().save_defaults(policy).unwrap();
+        let saved = fixture.store().load_settings().unwrap();
+        assert_eq!(saved.defaults, Policy::default());
+        assert_eq!(saved.time_zone, zone);
+        assert_eq!(saved.repositories[0].cron, cron);
+        assert_eq!(saved.repositories[0].enabled, enabled, "{cron}");
+        fixture.store().save_settings(&saved).unwrap();
     }
 }
 
@@ -194,7 +221,6 @@ fn sparse_overrides_preserve_false_empty_and_default_selector_as_explicit_values
     let saved = store.add_repository("octo/hello-world").unwrap();
     let id = &saved.repositories[0].id;
     let defaults: Policy = serde_json::from_value(json!({
-        "schedule":{"kind":"interval","minutes":90,"timezone":"UTC"},
         "watched_authors":[{"id":"123","login":"octo"}],
         "reviewer_assignment":true,
         "adapter":"copilot",
@@ -283,10 +309,6 @@ fn forty_repositories_keep_current_policy_and_identity_across_change_disable_and
     let first = &saved.repositories[0];
     let neighbor = &saved.repositories[1];
     let defaults = Policy {
-        schedule: Schedule::Interval {
-            minutes: 27,
-            timezone: "UTC".into(),
-        },
         automatic_agent_start: true,
         ..Policy::default()
     };

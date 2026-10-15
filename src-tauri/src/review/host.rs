@@ -58,7 +58,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 .find(|a| a.id == assignment.agent_id)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| "Missing Agent".into());
-            let run = reviews.iter().rev().find(|r| r.key == key).cloned();
+            // A quietly ended run is history: revived work starts a new operation.
+            let run = reviews
+                .iter()
+                .rev()
+                .find(|r| r.key == key)
+                .filter(|r| !r.operation.ended_superseded())
+                .cloned();
             result.push(Candidate {
                 agent_name: run
                     .as_ref()
@@ -157,6 +163,8 @@ pub(crate) fn request(
         _ => ReviewRun {
             mode: super::RunMode::Packet,
             packet: None,
+            failed_duck: None,
+            attempt_ducks: Vec::new(),
             feedback_context: None,
             key: candidate.key,
             assignment_id: candidate.assignment_id,
@@ -205,6 +213,18 @@ pub(crate) fn prepare_dispatch(
         store.save_reviews(&reviews)?;
         return Err(error);
     }
+    if run
+        .selection
+        .configuration
+        .as_ref()
+        .is_some_and(|c| c.rubber_duck.is_some())
+    {
+        let window = store.load_settings()?.rubber_duck.primary_window_minutes;
+        run.operation.retry_deadline = run
+            .operation
+            .retry_deadline
+            .max(now.saturating_add(i64::from(window) * 60));
+    }
     run.phase = "Preparing immutable review context".into();
     run.error = None;
     replace_run(&mut reviews, &run);
@@ -215,7 +235,9 @@ pub(crate) fn prepare_dispatch(
 pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: Arc<AtomicBool>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = execute(app.clone(), run.clone(), cancelled).await;
+        let ducks: runtime::DuckLog = Default::default();
+        let outcome = execute(app.clone(), run.clone(), cancelled, ducks.clone()).await;
+        let ducks = ducks.lock().map(|d| d.clone()).unwrap_or_default();
         let host = app.state::<Host>();
         let saved = (|| {
             let generations = host
@@ -244,6 +266,10 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 super::validate_execution_selection(&store, &run)?;
                 Ok(result)
             });
+            // A moved state keeps no duck evidence: its verdicts are gone with it.
+            if outcome.as_ref().is_err_and(|error| !moved(error)) {
+                record_attempt_ducks(&store, &run.operation.id, ducks)?;
+            }
             complete(&store, &run.operation.id, outcome, now_seconds()?)?;
             let diagnostic = store.load_reviews().and_then(|reviews| {
                 let current = reviews
@@ -296,12 +322,20 @@ pub(crate) fn complete(
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
-    } else if outcome
+    } else if let Some(error) = outcome
         .as_ref()
         .err()
-        .is_some_and(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
+        .filter(|e| !e.cancelled && e.kind == monitoring::OperationFailure::Superseded)
     {
-        current.operation.requeue_superseded(now);
+        let wait = error.resume.as_deref().map(|resume| match resume {
+            super::Resume::NextPoll => None,
+            super::Resume::NewBase(base) => Some(base.clone()),
+        });
+        current.operation.requeue_superseded(
+            now,
+            wait.map(|base| monitoring::Supersession { at: now, base }),
+        );
+        current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
         current.error = None;
@@ -343,6 +377,8 @@ pub(crate) fn complete(
                         .as_ref()
                         .map(|account| account.account_id.as_str()),
                 );
+                current.failed_duck = None;
+                current.attempt_ducks.clear();
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
@@ -352,6 +388,21 @@ pub(crate) fn complete(
                 current.error = None;
             }
             Err(error) => {
+                current.failed_duck = error
+                    .duck_setup
+                    .then(|| {
+                        current
+                            .selection
+                            .configuration
+                            .as_ref()?
+                            .rubber_duck
+                            .as_ref()
+                            .map(|d| d.agent.name.clone())
+                    })
+                    .flatten();
+                if moved(&error) {
+                    current.attempt_ducks.clear();
+                }
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
@@ -362,6 +413,15 @@ pub(crate) fn complete(
         }
     }
     store.save_reviews(&reviews)
+}
+
+/// The PR state moved under the attempt (superseded before the run, tossed after).
+fn moved(error: &Failure) -> bool {
+    !error.cancelled
+        && matches!(
+            error.kind,
+            monitoring::OperationFailure::Tossed | monitoring::OperationFailure::Superseded
+        )
 }
 
 fn replace_run(reviews: &mut Vec<ReviewRun>, run: &ReviewRun) {
@@ -409,21 +469,74 @@ fn remote_gate(
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
     let settings = store.load_settings().map_err(Failure::permanent)?;
-    monitoring::review_policy(&settings, &run.job, Some(&pull)).map_err(Failure::permanent)?;
+    pull_gate(&settings, &run.job, &pull)?;
     Ok(pull)
+}
+
+/// A moved head, closed or unadmitted PR, or changed assignment supersedes the
+/// attempt: no budget spent, no park. The next scan retargets or retires it.
+pub(crate) fn pull_gate(
+    settings: &crate::storage::Settings,
+    job: &QueueJob,
+    pull: &crate::github::metadata::PullRequest,
+) -> Result<(), Failure> {
+    monitoring::check_review_policy(settings, job, Some(pull))
+        .map(|_| ())
+        .map_err(Failure::policy)
+}
+
+/// A new base is a new revision: superseded, never parked. Before inference it
+/// waits for the next poll; after it, for a poll that observed a base other than
+/// `reviewed`, so each base gets at most one AI attempt.
+pub(crate) fn base_changed(reviewed: Option<&str>) -> Failure {
+    match reviewed {
+        Some(base) => {
+            Failure::superseded("Pull request base changed during review; result is stale.")
+                .after(super::Resume::NewBase(base.into()))
+        }
+        None => Failure::superseded("Pull request base changed; review context is stale.")
+            .after(super::Resume::NextPoll),
+    }
+}
+
+/// The fresh snapshot read before any setup: the same eligibility the remote gate
+/// applies, so a stale attempt never builds context, a packet or a session.
+pub(crate) fn snapshot_gate(
+    settings: &crate::storage::Settings,
+    job: &QueueJob,
+    snapshot: &crate::github::state::PrSnapshot,
+) -> Result<(), Failure> {
+    let review_drafts = settings
+        .repositories
+        .iter()
+        .find(|r| r.id == job.configuration_id)
+        .is_some_and(|r| r.review_drafts);
+    let stale = if snapshot.state != "OPEN" {
+        Some("The PR is no longer open.")
+    } else if snapshot.head != job.head_sha {
+        Some("The PR head moved since the work was queued.")
+    } else if snapshot.draft && !review_drafts {
+        Some("The PR is a draft and Review drafts is off.")
+    } else {
+        None
+    };
+    stale.map_or(Ok(()), |message| {
+        Err(Failure::superseded(message).after(super::Resume::NextPoll))
+    })
 }
 
 pub(crate) async fn execute(
     app: tauri::AppHandle,
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
+    ducks: runtime::DuckLog,
 ) -> Result<(super::ReviewResult, u64), Failure> {
     let diagnostics =
         super::diagnostics::native(&app, &run.job, &run.operation, &run.selection.agent.model);
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::PreparingContext,
     });
-    let result = execute_attempt(app, run, cancelled, diagnostics.clone()).await;
+    let result = execute_attempt(app, run, cancelled, diagnostics.clone(), ducks).await;
     diagnostics.finish(
         crate::storage::diagnostics::CompletionStage::Attempt,
         result.as_ref().err(),
@@ -436,6 +549,7 @@ async fn execute_attempt(
     run: ReviewRun,
     cancelled: Arc<AtomicBool>,
     diagnostics: Arc<super::diagnostics::Trace>,
+    ducks: runtime::DuckLog,
 ) -> Result<(super::ReviewResult, u64), Failure> {
     let remaining = run
         .operation
@@ -515,13 +629,14 @@ async fn execute_attempt(
         let snapshot = client
             .pr_snapshot(&repo, preparation_run.job.number)
             .map_err(Failure::from)?;
-        if snapshot.state != "OPEN" {
-            return Err(Failure::superseded("The PR is no longer open."));
-        }
-        if snapshot.head != preparation_run.job.head_sha {
-            return Err(Failure::superseded(
-                "The PR head moved since the work was queued.",
-            ));
+        {
+            let settings = host
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                .load_settings()
+                .map_err(Failure::permanent)?;
+            snapshot_gate(&settings, &preparation_run.job, &snapshot)?;
         }
         let context = client
             .review_context(
@@ -612,12 +727,11 @@ async fn execute_attempt(
     let before_send: runtime::Gate = Arc::new(move || {
         let pull = remote_gate(&remote_app, &remote_run)?;
         if pull.base_sha != send_base {
-            return Err(Failure::permanent(
-                "Pull request base changed; review context is stale.",
-            ));
+            return Err(base_changed(None));
         }
         Ok(())
     });
+    let duck = duck_setup(&app, &run, packet.duck, ducks)?;
     let integration = app.state::<Host>().copilot.clone();
     let read_hash = packet.packet.record.state_hash.clone();
     let client_after = client.clone();
@@ -633,6 +747,7 @@ async fn execute_attempt(
         selection: run.selection.clone(),
         before_send,
         local_gate: gate.clone(),
+        duck,
     };
     let mut result = integration.review(request, cancelled, deadline).await?;
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
@@ -644,9 +759,7 @@ async fn execute_attempt(
         .await
         .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
     if pull.base_sha != expected_base {
-        return Err(Failure::permanent(
-            "Pull request base changed during review; result is stale.",
-        ));
+        return Err(base_changed(Some(&expected_base)));
     }
     // A local-only exit writes nothing, so the state it read must still be the state.
     if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
@@ -672,6 +785,100 @@ async fn execute_attempt(
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
     Ok((result, generation))
+}
+
+/// The primary's Rubber Duck for this attempt: the job-start snapshot, current limits and
+/// the duck account's rate-limit gate. The credential is fetched with the primary's.
+fn duck_setup(
+    app: &tauri::AppHandle,
+    run: &ReviewRun,
+    prep: Option<runtime::DuckPrep>,
+    log: runtime::DuckLog,
+) -> Result<Option<runtime::DuckSetup>, Failure> {
+    let Some(prep) = prep else {
+        return Ok(None);
+    };
+    let snapshot = run
+        .selection
+        .configuration
+        .as_ref()
+        .and_then(|c| c.rubber_duck.clone())
+        .ok_or_else(|| Failure::permanent("Rubber duck snapshot is missing.").duck_setup())?;
+    let host = app.state::<Host>();
+    let limits = host
+        .store
+        .lock()
+        .map_err(|_| Failure::permanent("Review storage unavailable."))?
+        .load_settings()
+        .map_err(Failure::permanent)?
+        .rubber_duck;
+    let scope = snapshot
+        .agent
+        .ai_account
+        .as_ref()
+        .map(|a| crate::backpressure::Scope::copilot(&a.account_id));
+    let (gate_app, gate_scope) = (app.clone(), scope.clone());
+    let gated: runtime::Gated = Arc::new(move || {
+        let Some(scope) = &gate_scope else {
+            return false;
+        };
+        let host = gate_app.state::<Host>();
+        let Ok(store) = host.store.lock() else {
+            return false;
+        };
+        let now = now_seconds().unwrap_or(0);
+        store
+            .load_backpressure()
+            .is_ok_and(|gates| gates.until(scope, now).is_some())
+    });
+    let (pace_app, seed) = (app.clone(), run.operation.id.clone());
+    let rate_limited: runtime::Pacing = Arc::new(move |retry_after| {
+        let Some(scope) = scope.clone() else {
+            return;
+        };
+        let host = pace_app.state::<Host>();
+        let recorded = host.store.lock().map(|store| {
+            let now = now_seconds().unwrap_or(0);
+            crate::backpressure::record(&store, scope, retry_after, &seed, now)
+        });
+        if let Ok(Err(error)) = recorded {
+            crate::report(&pace_app, error);
+        }
+    });
+    Ok(Some(runtime::DuckSetup {
+        prep,
+        selection: super::Selection {
+            agent: snapshot.agent,
+            policy: run.selection.policy.clone(),
+            doctrine: None,
+            preset: None,
+            configuration: None,
+        },
+        limits,
+        launch: runtime::DuckLaunch::Pending,
+        rate_limited,
+        gated,
+        account: None,
+        log,
+    }))
+}
+
+/// Keeps the duck calls of an attempt that ended without a result, replacing those of
+/// an earlier attempt. Evidence only; a completed result carries its own.
+pub(crate) fn record_attempt_ducks(
+    store: &crate::storage::Store,
+    id: &str,
+    ducks: Vec<crate::review::duck::DuckCall>,
+) -> Result<(), String> {
+    let mut reviews = store.load_reviews()?;
+    let Some(current) = reviews.iter_mut().find(|r| r.operation.id == id) else {
+        return Ok(());
+    };
+    if current.operation.state != OperationState::Running || current.attempt_ducks == ducks {
+        return Ok(());
+    }
+    current.attempt_ducks = ducks;
+    store.save_reviews(&reviews)
 }
 
 #[tauri::command]
@@ -755,5 +962,7 @@ pub(crate) async fn cancel_review(
     .map_err(|_| "Review cancellation could not finish.".to_string())?
 }
 
+#[cfg(test)]
+mod stale_revision_tests;
 #[cfg(test)]
 mod tests;
