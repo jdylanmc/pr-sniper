@@ -1,6 +1,6 @@
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
-import { queueFixture } from "./queue-fixture.mjs";
+import { queueFixture, showQueueGroup } from "./queue-fixture.mjs";
 
 const theme = (page) => page.locator("#theme");
 const root = (page) => page.locator("html");
@@ -397,6 +397,51 @@ test.describe("contrast", () => {
     await expect(page.locator(".genie-card").first()).toBeVisible();
     await check("genie");
     expect(failures).toEqual({});
+  });
+
+  test("Dark keeps AA on a failed handoff with Fix and Retry", async ({
+    page,
+    store,
+  }) => {
+    const fixture = await queueFixture(store);
+    fixture.state.publications.find(
+      (entry) => entry.review.job.number === 3,
+    ).operation.failure = "credentials";
+    await store("seed_queue_state", fixture.state);
+    const { settings } = await store("snapshot");
+    await store("seed_settings", { ...settings, theme: "dark" });
+    await openPanel(page, store);
+    await showQueueGroup(page, "attention");
+    const failed = page.getByRole("article", {
+      name: "example/repo #3",
+      exact: true,
+    });
+    await expect(failed.locator("[data-fix-account]")).toHaveText("Fix");
+    expect(await contrastFailures(page)).toEqual([]);
+
+    await failed.locator(".queue-card-open").click();
+    const retry = page.locator(".queue-status-actions .queue-secondary");
+    await expect(retry).toHaveText("Retry");
+    await expect(page.locator('[data-queue-primary="fix"]')).toBeVisible();
+    expect(await contrastFailures(page)).toEqual([]);
+
+    // Light keeps the pre-theme literals for these controls.
+    await page.evaluate(
+      () => (document.documentElement.dataset.theme = "light"),
+    );
+    expect(await styles(retry, ["color", "backgroundColor"])).toEqual({
+      color: "rgb(36, 50, 71)",
+      backgroundColor: "rgb(255, 255, 255)",
+    });
+    expect(
+      await styles(page.locator('[data-queue-primary="fix"]'), [
+        "color",
+        "backgroundColor",
+      ]),
+    ).toEqual({
+      color: "rgb(255, 255, 255)",
+      backgroundColor: "rgb(232, 118, 29)",
+    });
   });
 
   test("Dark focus indicators keep 3:1 against their surface", async ({

@@ -1434,7 +1434,7 @@ body:has(.panel-shell) {
   border-radius: 11px;
   background: var(--panel-paper);
   border: 1px solid var(--line-slate-d5dde4);
-  color: var(--panel-navy);
+  color: var(--text-slate-243247);
   font-size: 15px;
   font-weight: 650;
   flex: none;
