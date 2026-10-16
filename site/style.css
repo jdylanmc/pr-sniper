@@ -504,6 +504,11 @@ html:not([data-thematic="off"]) .t-off {
   min-width: 0;
 }
 
+/* The tab row and, with thematic off, the about toggle. */
+.tabbar {
+  display: contents;
+}
+
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -727,8 +732,36 @@ html:not([data-thematic="off"]) .t-off {
   display: flex;
 }
 
-#demo-full {
+/* Full screen sits on the frame's bottom edge, right of the desktop. */
+.demo-full {
+  position: absolute;
+  right: calc(var(--cw) * 2);
+  bottom: 0;
+  z-index: 1;
+  padding: 0 var(--cw);
   white-space: nowrap;
+  background: var(--bg);
+  opacity: 0.7;
+}
+
+.demo-stage:hover .demo-full,
+.demo-full:hover,
+.demo-full:focus-visible {
+  opacity: 1;
+}
+
+.demo-full svg {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.demo-full[aria-pressed="true"] .icon-enter,
+.demo-full[aria-pressed="false"] .icon-exit {
+  display: none;
 }
 
 /* JS sizes the viewport to 16:9 and scales the 1440x810 desktop into it. */
@@ -748,13 +781,6 @@ html:not([data-thematic="off"]) .t-off {
   height: 810px;
   border: 0;
   transform-origin: 0 0;
-}
-
-.demo-caption {
-  display: flex;
-  justify-content: space-between;
-  gap: calc(var(--cw) * 2);
-  color: var(--dim);
 }
 
 /* Tab switch: the section prints top to bottom in line steps, with a brief
@@ -919,8 +945,9 @@ html[data-thematic="off"] body {
   --fs-big: 28px;
   --cw: 9.6px;
   --lh: 26px;
-  --gutter: 24px;
-  --page: 1200px;
+  --gutter: clamp(24px, 4vw, 72px);
+  --page: 1560px;
+  --measure: 80ch;
   background: var(--bg);
 }
 
@@ -974,7 +1001,14 @@ html[data-thematic="off"] body {
   border-radius: var(--radius);
 }
 
+/* The document scrolls: no fixed screen, no inner scroller. */
+html[data-thematic="off"],
+html[data-thematic="off"] body {
+  height: auto;
+}
+
 [data-thematic="off"] .crt {
+  position: static;
   padding: 0;
   background: var(--bg);
 }
@@ -989,7 +1023,11 @@ html[data-thematic="off"] body {
 }
 
 [data-thematic="off"] .screen {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
   padding: 0;
   background: var(--bg);
   border-radius: 0;
@@ -1048,9 +1086,70 @@ html[data-thematic="off"] body {
   width: 100%;
   max-width: calc(var(--page) + var(--gutter) * 2);
   margin: 0 auto;
+  flex: 1 0 auto;
   padding: 2rem var(--gutter) 0;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 1.1rem;
+  align-items: start;
+}
+
+/* About: collapsed on every load; expanded it is a sticky left column. */
+[data-thematic="off"] .layout:not(.about-open) .info {
+  display: none;
+}
+
+[data-thematic="off"] .layout.about-open {
+  grid-template-columns: 340px minmax(0, 1fr);
+}
+
+[data-thematic="off"] .layout.about-open .info {
+  display: block;
+  position: sticky;
+  top: 1.5rem;
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+}
+
+[data-thematic="off"] .main,
+[data-thematic="off"] .scroller {
+  display: block;
+  overflow: visible;
+}
+
+[data-thematic="off"] .tabbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5rem;
+  margin: -0.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+[data-thematic="off"] .about-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  margin-bottom: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .about-btn:hover,
+[data-thematic="off"] .about-btn[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+[data-thematic="off"] .chevron {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+[data-thematic="off"] .about-btn[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
 }
 
 [data-thematic="off"] .frame {
@@ -1118,7 +1217,6 @@ html[data-thematic="off"] body {
 
 /* Buttons: the homepage .btn--ghost. */
 [data-thematic="off"] .copy,
-[data-thematic="off"] #demo-full,
 [data-thematic="off"] #thematic-btn {
   display: inline-flex;
   align-items: center;
@@ -1133,7 +1231,6 @@ html[data-thematic="off"] body {
 }
 
 [data-thematic="off"] .copy:hover,
-[data-thematic="off"] #demo-full:hover,
 [data-thematic="off"] #thematic-btn:hover {
   border-color: var(--accent);
 }
@@ -1141,8 +1238,7 @@ html[data-thematic="off"] body {
 /* Tabs: the homepage nav, accent for the current one. */
 [data-thematic="off"] .tabs {
   gap: 0 1.5rem;
-  margin: -0.5rem 0 1.5rem;
-  border-bottom: 1px solid var(--border);
+  margin: 0;
 }
 
 [data-thematic="off"] .tabs [role="tab"] {
@@ -1167,10 +1263,6 @@ html[data-thematic="off"] body {
   display: none;
 }
 
-[data-thematic="off"] .scroller {
-  scrollbar-color: var(--border) transparent;
-}
-
 /* Sections */
 [data-thematic="off"] .panel > * + * {
   margin-top: 1rem;
@@ -1184,9 +1276,17 @@ html[data-thematic="off"] body {
   font-size: 1.3rem;
 }
 
-[data-thematic="off"] .panel p,
+/* Prose keeps a readable measure; terms, tables and commands use the width. */
 [data-thematic="off"] .panel li {
-  max-width: 72ch;
+  max-width: none;
+}
+
+[data-thematic="off"] .panel p,
+[data-thematic="off"] .bullets > li,
+[data-thematic="off"] .sub > li,
+[data-thematic="off"] .steps:not(.install) > li,
+[data-thematic="off"] .changelog li {
+  max-width: var(--measure);
 }
 
 [data-thematic="off"] .lede {
@@ -1238,7 +1338,6 @@ html[data-thematic="off"] body {
 
 [data-thematic="off"] .grants {
   width: 100%;
-  max-width: 36rem;
 }
 
 [data-thematic="off"] .grants th,
@@ -1290,10 +1389,19 @@ html[data-thematic="off"] body {
   border-radius: 2px;
 }
 
-[data-thematic="off"] .demo-caption {
-  align-items: center;
-  margin-top: 1rem;
-  font-size: 0.85rem;
+/* Full screen: a ghost icon button floating over the frame's corner. */
+[data-thematic="off"] .demo-full {
+  right: 1rem;
+  bottom: -0.9rem;
+  padding: 0.35rem;
+  color: var(--fg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .demo-full:hover {
+  border-color: var(--accent);
 }
 
 /* Footer: the homepage site-footer. */
@@ -1304,12 +1412,6 @@ html[data-thematic="off"] body {
   padding: 0.75rem max(var(--gutter), calc((100% - var(--page)) / 2));
   font-size: 0.85rem;
   border-top: 1px solid var(--border);
-}
-
-@media (min-width: 901px) and (max-width: 1279px) {
-  [data-thematic="off"] .layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 @media (max-width: 900px) {
@@ -1328,8 +1430,16 @@ html[data-thematic="off"] body {
     padding-top: 1.25rem;
   }
 
-  [data-thematic="off"] .info {
+  [data-thematic="off"] .layout.about-open .info {
+    position: static;
+    max-height: none;
     margin-bottom: 1.1rem;
+  }
+
+  [data-thematic="off"] .tabbar {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1.1rem;
   }
 
   [data-thematic="off"] .main {

@@ -157,6 +157,77 @@ test("keyboard focus is visible with thematic off", async ({ page }) => {
   ).toBe("solid");
 });
 
+test("with thematic off the about sidebar starts collapsed and toggles", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const about = page.locator("#about");
+  const button = page.locator("#about-btn");
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAccessibleName("about");
+  await expect(button).toHaveAttribute("aria-controls", "about");
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await expect(about).toBeHidden();
+  const collapsed = await page.locator("#sections").boundingBox();
+  await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+  await expect(about).toBeVisible();
+  expect(await about.evaluate((node) => getComputedStyle(node).position)).toBe(
+    "sticky",
+  );
+  const aboutBox = await about.boundingBox();
+  const expanded = await page.locator("#sections").boundingBox();
+  // A column beside the content, not an overlay.
+  expect(aboutBox.x + aboutBox.width).toBeLessThanOrEqual(expanded.x);
+  expect(expanded.width).toBeLessThan(collapsed.width - 200);
+  await expect(about.getByRole("link", { name: "Releases" })).toBeVisible();
+  await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await expect(about).toBeHidden();
+  await button.click();
+  await page.reload();
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  await expect(about).toBeHidden();
+});
+
+test("with thematic on the sidebar always shows and the toggle hides", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, { thematic: true });
+  await expect(page.locator("#about")).toBeVisible();
+  await expect(page.locator("#about-btn")).toBeHidden();
+});
+
+test("with thematic off the document scrolls, not an inner box", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  expect(
+    await page
+      .locator("#scroller")
+      .evaluate((node) => getComputedStyle(node).overflowY),
+  ).toBe("visible");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollHeight > window.innerHeight,
+    ),
+  ).toBe(true);
+  // The footer follows the content.
+  const foot = await page.locator(".foot").boundingBox();
+  expect(foot.y).toBeGreaterThan(900);
+  await blur(page);
+  await page.keyboard.press("ArrowDown");
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY))
+    .toBeGreaterThan(0);
+  expect(
+    await page.locator("#scroller").evaluate((node) => node.scrollTop),
+  ).toBe(0);
+});
+
 test("H toggles thematic", async ({ page }) => {
   await open(page);
   await blur(page);
@@ -443,6 +514,8 @@ for (const [width, height] of [
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth),
       ).toBeLessThanOrEqual(width);
+      // With thematic off the page scrolls; the desktop still fits the window.
+      if (!thematic) expect(box.y + box.height).toBeLessThanOrEqual(height);
     });
   }
 }
@@ -457,8 +530,24 @@ for (const thematic of [false, true]) {
     const button = page.locator("#demo-full");
     const viewport = page.locator("#demo-viewport");
     const before = await viewport.boundingBox();
+    // A small button on the desktop's frame, not a caption row.
+    await expect(page.locator(".demo-screen > #demo-full")).toHaveCount(1);
+    await expect(button).toBeVisible();
+    await expect(button).toHaveAccessibleName("Full screen");
+    if (thematic) await expect(label(button, true)).toHaveText("[FULL]");
+    const frameBox = await page.locator(".demo-screen").boundingBox();
+    const buttonBox = await button.boundingBox();
+    expect(buttonBox.width).toBeLessThan(80);
+    expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(
+      frameBox.x + frameBox.width,
+    );
+    // Centred on or below the frame edge, never over the desktop's middle.
+    expect(buttonBox.y + buttonBox.height / 2).toBeGreaterThanOrEqual(
+      before.y + before.height - 1,
+    );
     await button.click();
     await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect(button).toHaveAccessibleName("Exit full screen");
     await expect
       .poll(async () => (await viewport.boundingBox()).width)
       .toBeGreaterThan(before.width + 100);
@@ -472,14 +561,24 @@ for (const thematic of [false, true]) {
     );
     await page.keyboard.press("Escape");
     await expect(button).toHaveAttribute("aria-pressed", "false");
-    await expect(label(button, thematic)).toHaveText(
-      thematic ? "[FULL SCREEN]" : "FULL SCREEN",
-    );
+    await expect(button).toHaveAccessibleName("Full screen");
     await expect
       .poll(async () => Math.round((await viewport.boundingBox()).width))
       .toBe(Math.round(before.width));
   });
 }
+
+test("the demo tab is only the desktop, with no caption row", async ({
+  page,
+}) => {
+  for (const thematic of [false, true]) {
+    await open(page, { thematic });
+    await page.locator("#tab-demo").click();
+    await expect(page.locator(".demo-caption")).toHaveCount(0);
+    await expect(page.locator("#panel-demo")).not.toContainText("Fake data");
+    await expect(page.locator("#panel-demo > *")).toHaveCount(1);
+  }
+});
 
 test("Esc inside the demo closes the full screen overlay", async ({ page }) => {
   await page.addInitScript(() => {

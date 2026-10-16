@@ -175,6 +175,16 @@ function toggleThematic() {
 thematicButton.addEventListener("click", toggleThematic);
 syncThematic();
 
+// About: with thematic off the sidebar starts collapsed on every load.
+const aboutButton = document.getElementById("about-btn");
+const layout = document.querySelector(".layout");
+aboutButton.addEventListener("click", () => {
+  const open = aboutButton.getAttribute("aria-expanded") !== "true";
+  aboutButton.setAttribute("aria-expanded", String(open));
+  layout.classList.toggle("about-open", open);
+  fitDemo();
+});
+
 // Frames
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
   frame(node);
@@ -187,20 +197,33 @@ const demoViewport = document.getElementById("demo-viewport");
 const demoScreen = demoViewport.parentElement;
 const stacked = matchMedia("(max-width: 900px)");
 
+// Below the desktop when thematic is off: the main card's padding and border.
+const DEMO_BOTTOM_GAP = 32;
+
 function fitDemo() {
   if (!demoStage.getClientRects().length) return;
   const screen = getComputedStyle(demoScreen);
   const padX = parseFloat(screen.paddingLeft) + parseFloat(screen.paddingRight);
   const padY = parseFloat(screen.paddingTop) + parseFloat(screen.paddingBottom);
   const width = demoStage.clientWidth - padX;
-  const height =
-    stacked.matches && !isDemoFull() ? Infinity : demoStage.clientHeight - padY;
+  let height;
+  if (isDemoFull()) {
+    height = demoStage.clientHeight - padY;
+  } else if (!isThematic()) {
+    // The document scrolls, so fit the width and cap at the viewport height.
+    const top = demoScreen.getBoundingClientRect().top + window.scrollY;
+    height = window.innerHeight - top - padY - DEMO_BOTTOM_GAP;
+    if (height < 160) height = Infinity;
+  } else {
+    height = stacked.matches ? Infinity : demoStage.clientHeight - padY;
+  }
   const scale = Math.max(0.1, Math.min(width / DEMO_W, height / DEMO_H));
   demoViewport.style.width = `${Math.floor(DEMO_W * scale)}px`;
   demoViewport.firstElementChild.style.transform = `scale(${scale})`;
 }
 
 new ResizeObserver(fitDemo).observe(demoStage);
+window.addEventListener("resize", fitDemo);
 stacked.addEventListener?.("change", fitDemo);
 
 // Full screen: the browser's Fullscreen API where it exists (Esc exits
@@ -223,7 +246,8 @@ function isDemoFull() {
 function syncFull() {
   const on = isDemoFull();
   demoFull.setAttribute("aria-pressed", String(on));
-  setLabel(demoFull, on ? "EXIT FULL SCREEN · ESC" : "FULL SCREEN");
+  demoFull.setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
+  demoFull.querySelector(".t-on").textContent = on ? "[EXIT]" : "[FULL]";
   fitDemo();
 }
 

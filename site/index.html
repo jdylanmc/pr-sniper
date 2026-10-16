@@ -78,7 +78,7 @@
           &gt; LINK ESTABLISHED · 5 SECTIONS · CLEARANCE: READ-ONLY
         </p>
         <div class="layout">
-          <aside class="info frame" aria-label="About PR Sniper">
+          <aside class="info frame" id="about" aria-label="About PR Sniper">
             <pre class="scope t-on" aria-hidden="true">
          │
    ┌─────┼─────┐
@@ -134,57 +134,68 @@
           </aside>
 
           <main class="main frame" id="sections" tabindex="-1">
-            <div class="tabs" role="tablist" aria-label="Sections">
+            <div class="tabbar">
               <button
                 type="button"
-                role="tab"
-                id="tab-what"
-                aria-controls="panel-what"
-                aria-selected="true"
-                tabindex="0"
+                id="about-btn"
+                class="about-btn t-off"
+                aria-expanded="false"
+                aria-controls="about"
               >
-                <span class="num">1</span> WHAT
+                <span class="chevron" aria-hidden="true">›</span> about
               </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-why"
-                aria-controls="panel-why"
-                aria-selected="false"
-                tabindex="-1"
-              >
-                <span class="num">2</span> WHY
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-how"
-                aria-controls="panel-how"
-                aria-selected="false"
-                tabindex="-1"
-              >
-                <span class="num">3</span> HOW
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-changelog"
-                aria-controls="panel-changelog"
-                aria-selected="false"
-                tabindex="-1"
-              >
-                <span class="num">4</span> CHANGELOG
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-demo"
-                aria-controls="panel-demo"
-                aria-selected="false"
-                tabindex="-1"
-              >
-                <span class="num">5</span> DEMO
-              </button>
+              <div class="tabs" role="tablist" aria-label="Sections">
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-what"
+                  aria-controls="panel-what"
+                  aria-selected="true"
+                  tabindex="0"
+                >
+                  <span class="num">1</span> WHAT
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-why"
+                  aria-controls="panel-why"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  <span class="num">2</span> WHY
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-how"
+                  aria-controls="panel-how"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  <span class="num">3</span> HOW
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-changelog"
+                  aria-controls="panel-changelog"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  <span class="num">4</span> CHANGELOG
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-demo"
+                  aria-controls="panel-demo"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  <span class="num">5</span> DEMO
+                </button>
+              </div>
             </div>
 
             <div class="scroller" id="scroller">
@@ -517,19 +528,37 @@
                         loading="lazy"
                       ></iframe>
                     </div>
+                    <button
+                      type="button"
+                      id="demo-full"
+                      class="demo-full"
+                      aria-controls="demo-stage"
+                      aria-pressed="false"
+                      aria-label="Full screen"
+                    >
+                      <span class="t-on">[FULL]</span>
+                      <svg
+                        class="t-off icon-enter"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"></path>
+                      </svg>
+                      <svg
+                        class="t-off icon-exit"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"></path>
+                      </svg>
+                    </button>
                   </div>
-                </div>
-                <div class="demo-caption">
-                  <span>Fake data. Not touch GitHub.</span>
-                  <button
-                    type="button"
-                    id="demo-full"
-                    aria-controls="demo-stage"
-                    aria-pressed="false"
-                  >
-                    <span class="t-on">[FULL SCREEN]</span
-                    ><span class="t-off">FULL SCREEN</span>
-                  </button>
                 </div>
               </section>
             </div>
