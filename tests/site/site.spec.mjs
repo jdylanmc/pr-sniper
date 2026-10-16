@@ -5,9 +5,21 @@ const { version } = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 );
 const sections = ["what", "why", "how", "changelog", "demo"];
+// Landing page order with thematic off.
+const pageOrder = [
+  ".hero",
+  "#panel-demo",
+  "#panel-what",
+  "#panel-why",
+  "#panel-how",
+  "#install",
+  "#panel-changelog",
+];
 const NORD_BG = "rgb(46, 52, 64)";
 const P1_BG = "rgb(2, 26, 10)";
 const HOME = "https://jdylanmc.github.io/";
+const FULL_CHANGELOG =
+  "https://github.com/jdylanmc/pr-sniper/blob/main/CHANGELOG.md";
 
 const thematicOn = (page) =>
   page.addInitScript(() => localStorage.setItem("termlink-thematic", "on"));
@@ -18,10 +30,14 @@ async function open(page, { thematic = false } = {}) {
   );
   if (thematic) await thematicOn(page);
   await page.goto("/");
-  await expect(page.locator("#tab-what")).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  if (thematic) {
+    await expect(page.locator("#tab-what")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  } else {
+    await expect(page.locator(".hero")).toBeVisible();
+  }
 }
 
 async function expectSection(page, name) {
@@ -41,6 +57,42 @@ async function expectSection(page, name) {
   }
 }
 
+// Thematic on: the DEMO tab. Off: scroll the desktop into view.
+async function showDemo(page, thematic) {
+  if (thematic) await page.locator("#tab-demo").click();
+  else await page.locator("#demo-stage").scrollIntoViewIfNeeded();
+}
+
+async function expectLanding(page) {
+  await expect(page.locator("html")).toHaveAttribute("data-thematic", "off");
+  await expect(page.locator(".hero h1")).toHaveText("pr sniper");
+  await expect(page.locator('[role="tablist"]')).toBeHidden();
+  await expect(page.locator('[role="tab"]:visible')).toHaveCount(0);
+  await expect(page.locator('[role="tabpanel"]')).toHaveCount(0);
+  await expect(page.locator("#scroller section[hidden]")).toHaveCount(0);
+  let previous = -Infinity;
+  for (const selector of pageOrder) {
+    const node = page.locator(selector);
+    await expect(node).toBeVisible();
+    const top = await node.evaluate(
+      (el) => el.getBoundingClientRect().top + window.scrollY,
+    );
+    expect(top, selector).toBeGreaterThan(previous);
+    previous = top;
+  }
+  // DOM order matches the visual order.
+  const domOrder = await page.evaluate((selectors) => {
+    const nodes = selectors.map((s) => document.querySelector(s));
+    return nodes.every(
+      (node, i) =>
+        i === 0 ||
+        nodes[i - 1].compareDocumentPosition(node) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  }, pageOrder);
+  expect(domOrder).toBe(true);
+}
+
 const blur = (page) => page.evaluate(() => document.activeElement?.blur());
 const background = (locator) =>
   locator.evaluate((node) => getComputedStyle(node).backgroundColor);
@@ -48,31 +100,34 @@ const background = (locator) =>
 const label = (button, thematic) =>
   button.locator(thematic ? ".t-on" : ".t-off");
 
-test("thematic is off by default: Nord, no boot, no theme or sound", async ({
-  page,
-}) => {
+test("thematic is off by default: the Nord landing page", async ({ page }) => {
   await page.goto("/");
-  const html = page.locator("html");
-  await expect(html).toHaveAttribute("data-thematic", "off");
-  await expect(page.locator("#tab-what")).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expectLanding(page);
   expect(await background(page.locator("body"))).toBe(NORD_BG);
-  expect(await background(page.locator(".screen"))).toBe(NORD_BG);
   await expect(page.locator("#boot")).toBeHidden();
   await expect(page.locator("#theme-btn")).toBeHidden();
   await expect(page.locator("#sound-btn")).toBeHidden();
   await expect(page.locator(".statusline")).toBeHidden();
   await expect(page.locator(".head-clock")).toBeHidden();
-  await expect(page.locator(".panel h2 .prompt").first()).toBeHidden();
-  await expect(page.locator("#thematic-btn")).toHaveAttribute(
-    "aria-pressed",
-    "false",
+  await expect(page.locator(".info")).toBeHidden();
+  await expect(page.locator("#panel-what h2 .prompt")).toBeHidden();
+  await expect(page.locator(".hero-facts")).toContainText(
+    `v${version} · macOS 13.5+ · Apple Silicon · MIT`,
   );
-  await expect(label(page.locator("#thematic-btn"), true)).toHaveText(
-    "[THEMATIC OFF]",
+  await expect(page.locator(".hero .btn").first()).toHaveAttribute(
+    "href",
+    "#install",
   );
+  await expect(page.locator(".hero .btn--ghost")).toHaveAttribute(
+    "href",
+    "https://github.com/jdylanmc/pr-sniper",
+  );
+  await expect(page.locator("#panel-what .terms > div")).toHaveCount(3);
+  await expect(page.locator("#demo-full")).toBeVisible();
+  const button = page.locator(".head #thematic-btn");
+  await expect(button).toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".foot #thematic-btn")).toHaveCount(0);
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
     "content",
     "#2e3440",
@@ -80,9 +135,19 @@ test("thematic is off by default: Nord, no boot, no theme or sound", async ({
   expect(
     await page.evaluate(() => getComputedStyle(document.body).fontFamily),
   ).toMatch(/^"?JetBrains Mono/);
+  await page.reload();
+  await expect(page.locator("#boot")).toBeHidden();
+});
+
+test("with thematic off the page keeps normal keyboard behaviour", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
   await blur(page);
-  await page.keyboard.press("t");
-  await page.keyboard.press("m");
+  for (const key of ["t", "m", "2", "5", "ArrowRight"]) {
+    await page.keyboard.press(key);
+  }
   await expect(page.locator("body")).toHaveAttribute("data-theme", "p1");
   await expect(page.locator("#sound-btn")).toHaveAttribute(
     "aria-pressed",
@@ -91,8 +156,138 @@ test("thematic is off by default: Nord, no boot, no theme or sound", async ({
   expect(
     await page.evaluate(() => localStorage.getItem("termlink-theme")),
   ).toBeNull();
-  await page.reload();
-  await expect(page.locator("#boot")).toBeHidden();
+  expect(new URL(page.url()).hash).toBe("");
+  await expectLanding(page);
+  // The document scrolls; there is no inner scroller.
+  expect(
+    await page
+      .locator("#scroller")
+      .evaluate((node) => getComputedStyle(node).overflowY),
+  ).toBe("visible");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollHeight > window.innerHeight * 2,
+    ),
+  ).toBe(true);
+  await page.mouse.move(700, 450);
+  await page.mouse.wheel(0, 600);
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY))
+    .toBeGreaterThan(0);
+  const foot = await page
+    .locator(".foot")
+    .evaluate((node) => node.getBoundingClientRect().top + window.scrollY);
+  const changelog = await page
+    .locator("#panel-changelog")
+    .evaluate((node) => node.getBoundingClientRect().bottom + window.scrollY);
+  expect(foot).toBeGreaterThanOrEqual(changelog);
+});
+
+test("header anchors scroll to their sections", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const nav = page.locator('.head nav[aria-label="Page"] a');
+  await expect(nav).toHaveText(["what", "why", "how", "demo", "changelog"]);
+  for (const name of ["changelog", "why", "demo", "how", "what"]) {
+    await page.locator(`.head nav a[href="#${name}"]`).click();
+    await expect.poll(() => new URL(page.url()).hash).toBe(`#${name}`);
+    // The demo's heading is visually hidden; check the desktop instead.
+    const target = page.locator(name === "demo" ? "#demo-stage" : `#${name}`);
+    await expect(target).toBeInViewport();
+    // Lands near the top, with the heading in view.
+    await expect
+      .poll(async () => Math.round((await target.boundingBox()).y))
+      .toBeLessThan(80);
+    expect((await target.boundingBox()).y).toBeGreaterThanOrEqual(0);
+  }
+  await page.locator('.hero a[href="#install"]').click();
+  await expect(page.locator("#install h2")).toBeInViewport();
+});
+
+test("the hero copies the install command", async ({
+  page,
+  context,
+  browserName,
+}) => {
+  if (browserName === "chromium") {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  }
+  await open(page);
+  const button = page.locator(".hero .copy");
+  await expect(button).toHaveAccessibleName("COPY");
+  await button.click();
+  await expect(label(button, false)).toHaveText("Copied");
+  await expect(page.locator("#announcer")).toHaveText("Copied");
+  if (browserName === "chromium") {
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
+    );
+  }
+});
+
+test("the demo loads when scrolled into view and stays 16:9", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 360 });
+  await open(page);
+  const frame = page.locator("#demo-frame");
+  await expect(frame).not.toHaveAttribute("src", /.+/);
+  await page.locator("#demo-stage").scrollIntoViewIfNeeded();
+  await expect(frame).toHaveAttribute("src", "demo/index.html");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const viewport = page.locator("#demo-viewport");
+  await expect
+    .poll(async () => {
+      const box = await viewport.boundingBox();
+      return Math.abs(box.width / box.height - 16 / 9);
+    })
+    .toBeLessThan(0.02);
+  const demo = page.frameLocator("#demo-frame");
+  await expect(demo.locator("body")).not.toBeEmpty();
+});
+
+test("the changelog shows the latest release and links the full one", async ({
+  page,
+}) => {
+  await open(page);
+  const latest = page.locator("#changelog-latest");
+  await expect(latest.locator("h3")).toHaveCount(1);
+  await expect(latest.locator("h3")).toContainText(version);
+  await expect(latest).not.toContainText("Unreleased");
+  await expect(latest.locator("li").first()).toBeVisible();
+  await expect(page.locator("#changelog-body")).toBeHidden();
+  const more = page.getByRole("link", { name: "Full changelog ↗" });
+  await expect(more).toBeVisible();
+  await expect(more).toHaveAttribute("href", FULL_CHANGELOG);
+});
+
+test("toggling switches between the landing page and the terminal", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const button = page.locator("#thematic-btn");
+  await button.click();
+  await expect(page.locator("html")).toHaveAttribute("data-thematic", "on");
+  await expect(page.locator(".hero")).toBeHidden();
+  await expect(page.locator('[role="tablist"]')).toBeVisible();
+  await expect(page.locator('[role="tabpanel"]')).toHaveCount(5);
+  await expect(page.locator("#panel-what #install")).toHaveCount(1);
+  await expect(page.locator(".info")).toBeVisible();
+  await expectSection(page, "what");
+  await page.locator("#tab-why").click();
+  await expectSection(page, "why");
+  await blur(page);
+  await page.keyboard.press("3");
+  await expectSection(page, "how");
+  await button.click();
+  await expectLanding(page);
+  await expect(page.locator("#panel-what #install")).toHaveCount(0);
+  await button.click();
+  await expectSection(page, "how");
+  await page.locator("#tab-what").click();
+  await expectSection(page, "what");
+  await expect(page.locator("#panel-what #install .copy")).toHaveCount(4);
 });
 
 test("the thematic toggle turns the terminal on, persists and turns off", async ({
@@ -105,6 +300,7 @@ test("the thematic toggle turns the terminal on, persists and turns off", async 
   await expect(html).toHaveAttribute("data-thematic", "on");
   await expect(button).toHaveAttribute("aria-pressed", "true");
   await expect(label(button, true)).toHaveText("[THEMATIC ON]");
+  await expect(page.locator(".head #thematic-btn")).toBeVisible();
   await expect(page.locator("#announcer")).toHaveText("Thematic on");
   expect(await background(page.locator(".screen"))).toBe(P1_BG);
   await expect(page.locator("#theme-btn")).toBeVisible();
@@ -140,92 +336,17 @@ test("the thematic toggle turns the terminal on, persists and turns off", async 
 
 test("keyboard focus is visible with thematic off", async ({ page }) => {
   await open(page);
-  await page.locator("#tab-what").focus();
-  await page.keyboard.press("ArrowRight");
-  const tab = page.locator("#tab-why");
-  await expect(tab).toBeFocused();
+  const link = page.locator('.head nav a[href="#what"]');
+  // WebKit skips links on Tab by default, so focus after a key press.
+  await page.keyboard.press("Shift");
+  await link.focus();
+  await expect(link).toBeFocused();
   expect(
-    await tab.evaluate((node) => {
+    await link.evaluate((node) => {
       const style = getComputedStyle(node);
       return [style.outlineStyle, style.outlineColor];
     }),
   ).toEqual(["solid", "rgb(136, 192, 208)"]);
-  await page.keyboard.press("Tab");
-  const focused = page.locator(":focus");
-  expect(
-    await focused.evaluate((node) => getComputedStyle(node).outlineStyle),
-  ).toBe("solid");
-});
-
-test("with thematic off the about sidebar starts collapsed and toggles", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await open(page);
-  const about = page.locator("#about");
-  const button = page.locator("#about-btn");
-  await expect(button).toBeVisible();
-  await expect(button).toHaveAccessibleName("about");
-  await expect(button).toHaveAttribute("aria-controls", "about");
-  await expect(button).toHaveAttribute("aria-expanded", "false");
-  await expect(about).toBeHidden();
-  const collapsed = await page.locator("#sections").boundingBox();
-  await button.click();
-  await expect(button).toHaveAttribute("aria-expanded", "true");
-  await expect(about).toBeVisible();
-  expect(await about.evaluate((node) => getComputedStyle(node).position)).toBe(
-    "sticky",
-  );
-  const aboutBox = await about.boundingBox();
-  const expanded = await page.locator("#sections").boundingBox();
-  // A column beside the content, not an overlay.
-  expect(aboutBox.x + aboutBox.width).toBeLessThanOrEqual(expanded.x);
-  expect(expanded.width).toBeLessThan(collapsed.width - 200);
-  await expect(about.getByRole("link", { name: "Releases" })).toBeVisible();
-  await button.click();
-  await expect(button).toHaveAttribute("aria-expanded", "false");
-  await expect(about).toBeHidden();
-  await button.click();
-  await page.reload();
-  await expect(button).toHaveAttribute("aria-expanded", "false");
-  await expect(about).toBeHidden();
-});
-
-test("with thematic on the sidebar always shows and the toggle hides", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await open(page, { thematic: true });
-  await expect(page.locator("#about")).toBeVisible();
-  await expect(page.locator("#about-btn")).toBeHidden();
-});
-
-test("with thematic off the document scrolls, not an inner box", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await open(page);
-  expect(
-    await page
-      .locator("#scroller")
-      .evaluate((node) => getComputedStyle(node).overflowY),
-  ).toBe("visible");
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollHeight > window.innerHeight,
-    ),
-  ).toBe(true);
-  // The footer follows the content.
-  const foot = await page.locator(".foot").boundingBox();
-  expect(foot.y).toBeGreaterThan(900);
-  await blur(page);
-  await page.keyboard.press("ArrowDown");
-  await expect
-    .poll(() => page.evaluate(() => window.scrollY))
-    .toBeGreaterThan(0);
-  expect(
-    await page.locator("#scroller").evaluate((node) => node.scrollTop),
-  ).toBe(0);
 });
 
 test("H toggles thematic", async ({ page }) => {
@@ -252,17 +373,42 @@ for (const saved of ["on", "off"]) {
       }).observe(document, { childList: true, subtree: true });
       const firstFrame = () => {
         const screen = document.querySelector(".screen");
-        if (!screen) return requestAnimationFrame(firstFrame);
-        window.firstBg = getComputedStyle(screen).backgroundColor;
+        const hero = document.querySelector(".hero");
+        const tabs = document.querySelector(".tabs");
+        const demo = document.getElementById("panel-demo");
+        const what = document.getElementById("panel-what");
+        if (!screen || !hero || !tabs || !demo || !what) {
+          requestAnimationFrame(firstFrame);
+          return;
+        }
+        window.first = {
+          bg: getComputedStyle(screen).backgroundColor,
+          hero: getComputedStyle(hero).display,
+          tabs: getComputedStyle(tabs).display,
+          demoFirst:
+            demo.getBoundingClientRect().top < what.getBoundingClientRect().top,
+          whyShown: getComputedStyle(document.getElementById("panel-why"))
+            .display,
+        };
       };
       requestAnimationFrame(firstFrame);
     }, saved);
     await page.goto("/");
-    await page.waitForFunction(() => window.firstBg);
+    await page.waitForFunction(() => window.first);
     expect(await page.evaluate(() => window.atBody)).toBe(saved);
-    expect(await page.evaluate(() => window.firstBg)).toBe(
-      saved === "on" ? P1_BG : NORD_BG,
-    );
+    const first = await page.evaluate(() => window.first);
+    if (saved === "on") {
+      expect(first.bg).toBe(P1_BG);
+      expect(first.hero).toBe("none");
+      expect(first.tabs).toBe("flex");
+      expect(first.whyShown).toBe("none");
+    } else {
+      expect(first.bg).toBe(NORD_BG);
+      expect(first.hero).toBe("block");
+      expect(first.tabs).toBe("none");
+      expect(first.demoFirst).toBe(true);
+      expect(first.whyShown).toBe("block");
+    }
   });
 }
 
@@ -283,7 +429,7 @@ for (const thematic of [false, true]) {
 }
 
 test("tabs switch by click and keep a roving tabindex", async ({ page }) => {
-  await open(page);
+  await open(page, { thematic: true });
   await expect(
     page.locator('[role="tablist"][aria-label="Sections"]'),
   ).toBeVisible();
@@ -297,7 +443,7 @@ test("tabs switch by click and keep a roving tabindex", async ({ page }) => {
 });
 
 test("number keys and arrows switch tabs", async ({ page }) => {
-  await open(page);
+  await open(page, { thematic: true });
   await blur(page);
   await page.keyboard.press("2");
   await expectSection(page, "why");
@@ -359,25 +505,34 @@ test.describe("reduced motion", () => {
       "true",
     );
   });
+
+  test("anchors jump without smooth scrolling", async ({ page }) => {
+    await open(page);
+    expect(
+      await page.evaluate(
+        () => getComputedStyle(document.documentElement).scrollBehavior,
+      ),
+    ).toBe("auto");
+  });
 });
 
 test("changelog renders versions from CHANGELOG.md", async ({ page }) => {
-  await open(page);
+  await open(page, { thematic: true });
   await page.locator("#tab-changelog").click();
-  const headings = page.locator("#changelog h3");
+  const headings = page.locator("#changelog-body h3");
   await expect(headings.filter({ hasText: version }).first()).toBeVisible();
   const links = await page
-    .locator("#changelog a")
+    .locator("#changelog-body a")
     .evaluateAll((nodes) => nodes.map((node) => node.href));
   expect(links.length).toBeGreaterThan(0);
   for (const href of links) expect(href).toMatch(/^https:\/\//);
-  expect(await page.locator("#changelog script, #changelog img").count()).toBe(
-    0,
-  );
+  expect(
+    await page.locator("#panel-changelog script, #panel-changelog img").count(),
+  ).toBe(0);
 });
 
 for (const thematic of [false, true]) {
-  test(`What tab install steps each copy their command, thematic ${thematic ? "on" : "off"}`, async ({
+  test(`install steps each copy their command, thematic ${thematic ? "on" : "off"}`, async ({
     page,
     context,
     browserName,
@@ -386,10 +541,11 @@ for (const thematic of [false, true]) {
       await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     }
     await open(page, { thematic });
-    await expect(page.locator("#panel-what")).toBeVisible();
-    const steps = page.locator("#panel-what .install > li");
+    const install = page.locator("#install");
+    await expect(install).toBeVisible();
+    const steps = install.locator(".install > li");
     await expect(steps).toHaveCount(6);
-    const buttons = page.locator("#panel-what .copy");
+    const buttons = install.locator(".copy");
     await expect(buttons).toHaveCount(4);
     const expected = [
       "brew install --cask jdylanmc/pr-sniper/pr-sniper",
@@ -425,6 +581,7 @@ for (const thematic of [false, true]) {
 test("shown version matches package.json", async ({ page }) => {
   await open(page);
   await expect(page.locator("#version")).toHaveText(`v${version}`);
+  await expect(page.locator("#hero-version")).toHaveText(`v${version}`);
 });
 
 for (const thematic of [false, true]) {
@@ -433,14 +590,22 @@ for (const thematic of [false, true]) {
   }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await open(page, { thematic });
-    await expect(page.locator("#thematic-btn")).toBeVisible();
+    const button = page.locator(".head #thematic-btn");
+    await expect(button).toBeVisible();
     await expect(
       page.getByRole("link", { name: "dylan mccurry" }),
     ).toBeVisible();
+    // The toggle shares the header's first row with the home link.
+    const home = await page
+      .getByRole("link", { name: "dylan mccurry" })
+      .boundingBox();
+    const toggle = await button.boundingBox();
+    if (!thematic) expect(Math.abs(toggle.y - home.y)).toBeLessThan(16);
+    expect(toggle.x + toggle.width).toBeLessThanOrEqual(375);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(375);
-    await page.locator("#tab-demo").click();
+    await showDemo(page, thematic);
     await expect(page.locator("#demo-frame")).toBeVisible();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
@@ -451,7 +616,7 @@ for (const thematic of [false, true]) {
 test("demo is the last tab and loads the v2 prototype only when opened", async ({
   page,
 }) => {
-  await open(page);
+  await open(page, { thematic: true });
   const frame = page.locator("#demo-frame");
   await expect(frame).not.toHaveAttribute("src", /.+/);
   const tabs = page.locator(
@@ -497,7 +662,7 @@ for (const [width, height] of [
     }) => {
       await page.setViewportSize({ width, height });
       await open(page, { thematic });
-      await page.locator("#tab-demo").click();
+      await showDemo(page, thematic);
       const viewport = page.locator("#demo-viewport");
       await expect(viewport).toBeVisible();
       await expect
@@ -515,7 +680,7 @@ for (const [width, height] of [
         await page.evaluate(() => document.documentElement.scrollWidth),
       ).toBeLessThanOrEqual(width);
       // With thematic off the page scrolls; the desktop still fits the window.
-      if (!thematic) expect(box.y + box.height).toBeLessThanOrEqual(height);
+      if (!thematic) expect(box.height).toBeLessThanOrEqual(height);
     });
   }
 }
@@ -526,7 +691,7 @@ for (const thematic of [false, true]) {
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, { thematic });
-    await page.locator("#tab-demo").click();
+    await showDemo(page, thematic);
     const button = page.locator("#demo-full");
     const viewport = page.locator("#demo-viewport");
     const before = await viewport.boundingBox();
@@ -555,10 +720,12 @@ for (const thematic of [false, true]) {
     expect(Math.abs(full.width / full.height - 16 / 9)).toBeLessThan(0.02);
     // Tab keys are ignored while full screen.
     await page.keyboard.press("1");
-    await expect(page.locator("#tab-demo")).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    if (thematic) {
+      await expect(page.locator("#tab-demo")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    }
     await page.keyboard.press("Escape");
     await expect(button).toHaveAttribute("aria-pressed", "false");
     await expect(button).toHaveAccessibleName("Full screen");
@@ -568,38 +735,40 @@ for (const thematic of [false, true]) {
   });
 }
 
-test("the demo tab is only the desktop, with no caption row", async ({
-  page,
-}) => {
+test("the demo is only the desktop, with no caption row", async ({ page }) => {
   for (const thematic of [false, true]) {
     await open(page, { thematic });
-    await page.locator("#tab-demo").click();
+    await showDemo(page, thematic);
     await expect(page.locator(".demo-caption")).toHaveCount(0);
     await expect(page.locator("#panel-demo")).not.toContainText("Fake data");
     await expect(page.locator("#panel-demo > *")).toHaveCount(1);
   }
 });
 
-test("Esc inside the demo closes the full screen overlay", async ({ page }) => {
-  await page.addInitScript(() => {
-    // Force the overlay fallback, as on browsers without the Fullscreen API.
-    Element.prototype.requestFullscreen = undefined;
-    Element.prototype.webkitRequestFullscreen = undefined;
+for (const thematic of [false, true]) {
+  test(`Esc inside the demo closes the full screen overlay, thematic ${thematic ? "on" : "off"}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      // Force the overlay fallback, as on browsers without the Fullscreen API.
+      Element.prototype.requestFullscreen = undefined;
+      Element.prototype.webkitRequestFullscreen = undefined;
+    });
+    await open(page, { thematic });
+    await showDemo(page, thematic);
+    const demo = page.frameLocator("#demo-frame");
+    await expect(demo.locator("body")).not.toBeEmpty();
+    await page.locator("#demo-full").click();
+    await expect(page.locator("#demo-stage")).toHaveClass(/demo-overlay/);
+    await demo.locator("body").click({ position: { x: 5, y: 400 } });
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#demo-stage")).not.toHaveClass(/demo-overlay/);
+    await expect(page.locator("#demo-full")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
-  await open(page);
-  await page.locator("#tab-demo").click();
-  const demo = page.frameLocator("#demo-frame");
-  await expect(demo.locator("body")).not.toBeEmpty();
-  await page.locator("#demo-full").click();
-  await expect(page.locator("#demo-stage")).toHaveClass(/demo-overlay/);
-  await demo.locator("body").click({ position: { x: 5, y: 400 } });
-  await page.keyboard.press("Escape");
-  await expect(page.locator("#demo-stage")).not.toHaveClass(/demo-overlay/);
-  await expect(page.locator("#demo-full")).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
-});
+}
 
 test("switching tabs redraws the new section once", async ({ page }) => {
   await open(page, { thematic: true });
@@ -611,27 +780,13 @@ test("switching tabs redraws the new section once", async ({ page }) => {
   });
 });
 
-test("with thematic off, switching tabs fades instead of redrawing", async ({
-  page,
-}) => {
-  await open(page);
-  await page.locator("#tab-why").click();
-  await expect(page.locator("#panel-why")).toHaveClass(/fade/);
-  await expect(page.locator("#panel-why")).not.toHaveClass(/redraw/);
-  await expect(page.locator("#panel-why")).not.toHaveClass(/fade/, {
-    timeout: 2000,
-  });
-});
-
 test.describe("reduced motion tabs", () => {
   test.use({ reducedMotion: "reduce" });
 
   test("switch without the redraw", async ({ page }) => {
-    for (const thematic of [false, true]) {
-      await open(page, { thematic });
-      await page.locator("#tab-how").click();
-      await expect(page.locator("#panel-how")).toBeVisible();
-      await expect(page.locator("#panel-how")).not.toHaveClass(/redraw|fade/);
-    }
+    await open(page, { thematic: true });
+    await page.locator("#tab-how").click();
+    await expect(page.locator("#panel-how")).toBeVisible();
+    await expect(page.locator("#panel-how")).not.toHaveClass(/redraw/);
   });
 });

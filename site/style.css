@@ -391,6 +391,8 @@ html:not([data-thematic="off"]) .t-off {
    header keeps its spacing. */
 .head-links {
   position: relative;
+  display: flex;
+  gap: 0 calc(var(--cw) * 2);
 }
 
 .head-home {
@@ -504,11 +506,6 @@ html:not([data-thematic="off"]) .t-off {
   min-width: 0;
 }
 
-/* The tab row and, with thematic off, the about toggle. */
-.tabbar {
-  display: contents;
-}
-
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -573,6 +570,20 @@ html:not([data-thematic="off"]) .t-off {
   position: absolute;
   left: 0;
   color: var(--dim);
+}
+
+/* Install lives in WHAT; it is its own section with thematic off. */
+.install-block > * + * {
+  margin-top: var(--lh);
+}
+
+html:not([data-thematic="off"]) .scroller > .install-block {
+  display: none;
+}
+
+html:not([data-thematic="off"]) #panel-what:not([hidden]) ~ .install-block {
+  display: block;
+  margin-top: var(--lh);
 }
 
 .install > li > .cmd {
@@ -805,16 +816,6 @@ html:not([data-thematic="off"]) .t-off {
   }
 }
 
-.fade {
-  animation: fade 0.15s ease-out both;
-}
-
-@keyframes fade {
-  from {
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -873,11 +874,6 @@ html:not([data-thematic="off"]) .t-off {
     display: none;
   }
 
-  .head-links {
-    display: flex;
-    gap: 0 calc(var(--cw) * 2);
-  }
-
   .head-home {
     position: static;
     margin: 0;
@@ -924,8 +920,8 @@ html:not([data-thematic="off"]) .t-off {
   }
 }
 
-/* Thematic off: Nord, matching https://jdylanmc.github.io/. Overrides the
-   terminal rules above; the phosphor theme stays on body for when it is on. */
+/* Thematic off: a plain scrolling landing page in the Nord style of
+   https://jdylanmc.github.io/. Overrides the terminal rules above. */
 
 html[data-thematic="off"],
 html[data-thematic="off"] body {
@@ -937,18 +933,26 @@ html[data-thematic="off"] body {
   --accent-contrast: #2e3440;
   --border: #4c566a;
   --radius: 4px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
   --font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --dim: var(--fg-muted);
   --bar: var(--bg-elevated);
   --glow-text: none;
   --fs: 16px;
-  --fs-big: 28px;
+  --fs-big: 2.6rem;
   --cw: 9.6px;
   --lh: 26px;
-  --gutter: clamp(24px, 4vw, 72px);
-  --page: 1560px;
-  --measure: 80ch;
+  --gutter: 1.5rem;
+  --wrap: 1040px;
+  --wide: 1200px;
+  height: auto;
   background: var(--bg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html[data-thematic="off"] {
+    scroll-behavior: smooth;
+  }
 }
 
 [data-thematic="off"] body {
@@ -987,7 +991,6 @@ html[data-thematic="off"] body {
 
 [data-thematic="off"] a:focus-visible,
 [data-thematic="off"] button:focus-visible,
-[data-thematic="off"] .tabs [role="tab"]:focus-visible,
 [data-thematic="off"] [tabindex]:not(button):not(a):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1001,12 +1004,7 @@ html[data-thematic="off"] body {
   border-radius: var(--radius);
 }
 
-/* The document scrolls: no fixed screen, no inner scroller. */
-html[data-thematic="off"],
-html[data-thematic="off"] body {
-  height: auto;
-}
-
+/* One document: no fixed screen, frames, sidebar or tabs. */
 [data-thematic="off"] .crt {
   position: static;
   padding: 0;
@@ -1018,7 +1016,8 @@ html[data-thematic="off"] body {
 [data-thematic="off"] .boot,
 [data-thematic="off"] .fb,
 [data-thematic="off"] .head-clock,
-[data-thematic="off"] .prompt {
+[data-thematic="off"] .prompt,
+[data-thematic="off"] .tabs {
   display: none;
 }
 
@@ -1033,12 +1032,31 @@ html[data-thematic="off"] body {
   border-radius: 0;
 }
 
-/* Header: the homepage site-header, brand left, links right. */
+[data-thematic="off"] .layout,
+[data-thematic="off"] .main,
+[data-thematic="off"] .scroller {
+  display: block;
+  flex: 1 0 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  background: none;
+  border: 0;
+}
+
+/* Every section shows, in page order, even before app.js runs. */
+[data-thematic="off"] .panel[hidden] {
+  display: block !important;
+}
+
+/* Header: the homepage site-header. */
 [data-thematic="off"] .head {
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
-  gap: 1.1rem;
-  padding: 1rem max(var(--gutter), calc((100% - var(--page)) / 2));
+  gap: 0.5rem 1.1rem;
+  padding: 1rem max(var(--gutter), calc((100% - var(--wrap)) / 2));
+  white-space: normal;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
 }
@@ -1049,7 +1067,6 @@ html[data-thematic="off"] body {
 
 [data-thematic="off"] .head-home {
   position: static;
-  order: -1;
   margin: 0 auto 0 0;
   font-size: 1.05rem;
   font-weight: 700;
@@ -1062,151 +1079,214 @@ html[data-thematic="off"] body {
   opacity: 1;
 }
 
-[data-thematic="off"] .head-name,
+[data-thematic="off"] .head-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.1rem;
+}
+
+[data-thematic="off"] .head-nav a,
 [data-thematic="off"] .head-link {
   font-size: 0.92rem;
+  color: var(--fg-muted);
   text-decoration: none;
 }
 
-[data-thematic="off"] .head-name {
-  color: var(--accent);
-}
-
-[data-thematic="off"] .head-link {
-  color: var(--fg-muted);
-}
-
+[data-thematic="off"] .head-nav a:hover,
 [data-thematic="off"] .head-link:hover {
   color: var(--accent);
   opacity: 1;
 }
 
-/* Cards */
-[data-thematic="off"] .layout {
-  width: 100%;
-  max-width: calc(var(--page) + var(--gutter) * 2);
-  margin: 0 auto;
-  flex: 1 0 auto;
-  padding: 2rem var(--gutter) 0;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 1.1rem;
-  align-items: start;
-}
-
-/* About: collapsed on every load; expanded it is a sticky left column. */
-[data-thematic="off"] .layout:not(.about-open) .info {
-  display: none;
-}
-
-[data-thematic="off"] .layout.about-open {
-  grid-template-columns: 340px minmax(0, 1fr);
-}
-
-[data-thematic="off"] .layout.about-open .info {
-  display: block;
-  position: sticky;
-  top: 1.5rem;
-  max-height: calc(100vh - 3rem);
-  overflow: auto;
-}
-
-[data-thematic="off"] .main,
-[data-thematic="off"] .scroller {
-  display: block;
-  overflow: visible;
-}
-
-[data-thematic="off"] .tabbar {
-  display: flex;
-  align-items: flex-end;
-  gap: 1.5rem;
-  margin: -0.5rem 0 1.5rem;
-  border-bottom: 1px solid var(--border);
-}
-
-[data-thematic="off"] .about-btn {
+/* Thematic: a small ghost switch at the end of the header. */
+[data-thematic="off"] .thematic-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  flex: none;
-  margin-bottom: 0.4rem;
+  gap: 0.5rem;
   padding: 0.2rem 0.6rem;
-  color: var(--fg-muted);
   font-size: 0.85rem;
+  color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-[data-thematic="off"] .about-btn:hover,
-[data-thematic="off"] .about-btn[aria-expanded="true"] {
+[data-thematic="off"] .thematic-btn > .t-off {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-thematic="off"] .thematic-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
 }
 
-[data-thematic="off"] .chevron {
-  display: inline-block;
-  transition: transform 0.15s ease;
+[data-thematic="off"] .switch {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 7px;
 }
 
-[data-thematic="off"] .about-btn[aria-expanded="true"] .chevron {
-  transform: rotate(180deg);
+[data-thematic="off"] .switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-[data-thematic="off"] .frame {
-  padding: 1.5rem;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    0 8px 24px rgba(0, 0, 0, 0.08);
+[data-thematic="off"] .thematic-btn[aria-pressed="true"] .switch::after {
+  left: auto;
+  right: 2px;
 }
 
-[data-thematic="off"] .info > * + * {
+/* Sections: centred in the homepage's column, divided by rules. */
+[data-thematic="off"] .hero,
+[data-thematic="off"] .panel,
+[data-thematic="off"] .install-block {
+  position: relative;
+  width: calc(100% - var(--gutter) * 2);
+  max-width: var(--wrap);
+  margin: 0 auto;
+  padding: 3.5rem 0;
+  border-top: 1px solid var(--border);
+}
+
+[data-thematic="off"] .hero {
+  padding: 4.5rem 0 2.5rem;
+  border-top: 0;
+}
+
+[data-thematic="off"] .panel-demo {
+  display: block;
+  height: auto;
+  max-width: var(--wide);
+  padding: 1rem 0 3.5rem;
+  border-top: 0;
+}
+
+[data-thematic="off"] .panel > * + *,
+[data-thematic="off"] .install-block > * + * {
   margin-top: 1rem;
 }
 
-[data-thematic="off"] .info > .label + .cmd,
-[data-thematic="off"] .info > .label + .links {
-  margin-top: 0.5rem;
+[data-thematic="off"] .panel > h3,
+[data-thematic="off"] .install-block > h3 {
+  margin-top: 2.5rem;
 }
 
-[data-thematic="off"] .title {
-  font-size: var(--fs-big);
-  line-height: 1.2;
+[data-thematic="off"] .panel h2,
+[data-thematic="off"] .install-block h2 {
+  margin-bottom: 1.5rem;
+  font-size: 1.75rem;
 }
 
-[data-thematic="off"] .facts > div {
-  grid-template-columns: 6.5rem minmax(0, 1fr);
-  align-items: baseline;
+[data-thematic="off"] .panel > h3,
+[data-thematic="off"] .install-block > h3 {
+  font-size: 1.15rem;
 }
 
-[data-thematic="off"] .facts dt,
-[data-thematic="off"] .label,
-[data-thematic="off"] .grants th {
+[data-thematic="off"] #what,
+[data-thematic="off"] #why,
+[data-thematic="off"] #how,
+[data-thematic="off"] #demo,
+[data-thematic="off"] #changelog,
+[data-thematic="off"] #install {
+  scroll-margin-top: 1.5rem;
+}
+
+[data-thematic="off"] .eyebrow {
+  display: block;
+  margin-bottom: 0.5rem;
   font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.65;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-[data-thematic="off"] .label {
   color: var(--accent);
 }
 
-[data-thematic="off"] .dot {
-  color: #a3be8c;
-  animation: none;
+[data-thematic="off"] .panel p,
+[data-thematic="off"] .panel li,
+[data-thematic="off"] .install-block p,
+[data-thematic="off"] .install-block li {
+  max-width: 72ch;
 }
 
-[data-thematic="off"] .links {
-  gap: 0 1.1rem;
+/* Hero */
+[data-thematic="off"] .hero > * + * {
+  margin-top: 1rem;
 }
 
+[data-thematic="off"] .hero h1 {
+  margin-top: 0;
+  font-size: var(--fs-big);
+}
+
+[data-thematic="off"] .hero-tagline {
+  margin-top: 1.25rem;
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+[data-thematic="off"] .hero-lede {
+  max-width: 60ch;
+  color: var(--fg-muted);
+}
+
+[data-thematic="off"] .hero-cmd {
+  max-width: 40rem;
+  margin-top: 2rem;
+}
+
+[data-thematic="off"] .hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+[data-thematic="off"] .hero-facts {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+[data-thematic="off"] .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--accent-contrast);
+  text-decoration: none;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .btn:hover {
+  opacity: 0.85;
+}
+
+[data-thematic="off"] .btn--ghost {
+  color: var(--fg);
+  background: transparent;
+  border-color: var(--border);
+}
+
+/* Commands and copy buttons */
 [data-thematic="off"] .cmd {
   align-items: center;
   gap: 0.5rem 1rem;
   padding: 0.5rem 0.5rem 0.5rem 1rem;
-  background: var(--bg);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
@@ -1215,86 +1295,55 @@ html[data-thematic="off"] body {
   flex: 1 1 12rem;
 }
 
-/* Buttons: the homepage .btn--ghost. */
-[data-thematic="off"] .copy,
-[data-thematic="off"] #thematic-btn {
+[data-thematic="off"] .copy {
   display: inline-flex;
   align-items: center;
   padding: 0.3rem 0.75rem;
-  color: var(--fg);
   font-size: 0.85rem;
   font-weight: 700;
   line-height: 1.4;
   text-transform: lowercase;
+  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-[data-thematic="off"] .copy:hover,
-[data-thematic="off"] #thematic-btn:hover {
+[data-thematic="off"] .copy:hover {
   border-color: var(--accent);
 }
 
-/* Tabs: the homepage nav, accent for the current one. */
-[data-thematic="off"] .tabs {
-  gap: 0 1.5rem;
+/* What: three homepage cards. */
+[data-thematic="off"] #panel-what .terms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.1rem;
+}
+
+[data-thematic="off"] #panel-what .terms > div {
+  display: block;
   margin: 0;
+  padding: 1.5rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
-[data-thematic="off"] .tabs [role="tab"] {
-  padding: 0.5rem 0;
-  margin-bottom: -1px;
-  color: var(--fg-muted);
+[data-thematic="off"] #panel-what .terms dt {
+  margin-bottom: 0.35rem;
+  font-size: 1.1rem;
+  font-weight: 700;
   text-transform: lowercase;
-  border-bottom: 2px solid transparent;
+  color: var(--fg);
 }
 
-[data-thematic="off"] .tabs [role="tab"]:hover,
-[data-thematic="off"] .tabs [role="tab"][aria-selected="true"] {
-  color: var(--accent);
-  background: none;
+[data-thematic="off"] #panel-what .terms dd {
+  color: var(--fg-muted);
 }
 
-[data-thematic="off"] .tabs [role="tab"][aria-selected="true"] {
-  border-bottom-color: var(--accent);
-}
-
-[data-thematic="off"] .tabs .num {
-  display: none;
-}
-
-/* Sections */
-[data-thematic="off"] .panel > * + * {
-  margin-top: 1rem;
-}
-
-[data-thematic="off"] .panel > h2:not(:first-child) {
-  margin-top: 2.25rem;
-}
-
-[data-thematic="off"] .panel h2 {
-  font-size: 1.3rem;
-}
-
-/* Prose keeps a readable measure; terms, tables and commands use the width. */
-[data-thematic="off"] .panel li {
-  max-width: none;
-}
-
-[data-thematic="off"] .panel p,
-[data-thematic="off"] .bullets > li,
-[data-thematic="off"] .sub > li,
-[data-thematic="off"] .steps:not(.install) > li,
-[data-thematic="off"] .changelog li {
-  max-width: var(--measure);
-}
-
-[data-thematic="off"] .lede {
-  font-size: 1.05rem;
-}
-
+/* Lists, terms and tables */
 [data-thematic="off"] .terms > div {
-  grid-template-columns: 9.5rem minmax(0, 1fr);
+  grid-template-columns: 10rem minmax(0, 1fr);
 }
 
 [data-thematic="off"] .terms > div + div,
@@ -1317,6 +1366,11 @@ html[data-thematic="off"] body {
 
 [data-thematic="off"] .install h3 {
   font-size: 1rem;
+  text-transform: lowercase;
+}
+
+[data-thematic="off"] .install > li + li {
+  margin-top: 1.5rem;
 }
 
 [data-thematic="off"] .install > li > * + * {
@@ -1325,6 +1379,7 @@ html[data-thematic="off"] body {
 
 [data-thematic="off"] .install > li > .cmd {
   margin-top: 0.75rem;
+  max-width: 40rem;
 }
 
 [data-thematic="off"] .sub > li {
@@ -1336,8 +1391,14 @@ html[data-thematic="off"] body {
   padding-left: 1.5rem;
 }
 
+[data-thematic="off"] .bullets > li::before,
+[data-thematic="off"] .changelog li::before {
+  color: var(--accent);
+}
+
 [data-thematic="off"] .grants {
   width: 100%;
+  max-width: 36rem;
 }
 
 [data-thematic="off"] .grants th,
@@ -1346,22 +1407,29 @@ html[data-thematic="off"] body {
   border-bottom: 1px solid var(--border);
 }
 
+[data-thematic="off"] .grants th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* Changelog: the latest release only. */
 [data-thematic="off"] .changelog > * + * {
   margin-top: 0.75rem;
 }
 
 [data-thematic="off"] .changelog h3 {
   display: block;
-  margin-top: 2rem;
   padding: 0;
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   color: var(--fg);
   background: none;
 }
 
 [data-thematic="off"] .changelog h4 {
-  margin-top: 1rem;
+  margin-top: 1.25rem;
   font-size: 0.78rem;
+  font-weight: 400;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent);
@@ -1374,22 +1442,32 @@ html[data-thematic="off"] body {
 [data-thematic="off"] .changelog pre {
   padding: 1rem;
   overflow-x: auto;
-  background: var(--bg);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-/* Demo */
+[data-thematic="off"] .changelog-more {
+  margin-top: 1.5rem;
+}
+
+/* Demo: the desktop on a card, full screen on its corner. */
+[data-thematic="off"] .demo-stage {
+  display: flex;
+}
+
 [data-thematic="off"] .demo-screen {
   padding: 0.5rem;
-  box-shadow: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 [data-thematic="off"] .demo-viewport {
   border-radius: 2px;
 }
 
-/* Full screen: a ghost icon button floating over the frame's corner. */
 [data-thematic="off"] .demo-full {
   right: 1rem;
   bottom: -0.9rem;
@@ -1408,46 +1486,59 @@ html[data-thematic="off"] body {
 [data-thematic="off"] .foot {
   align-items: center;
   gap: 0.5rem 1.5rem;
-  margin: 1.5rem 0 0;
-  padding: 0.75rem max(var(--gutter), calc((100% - var(--page)) / 2));
+  margin: 2rem 0 0;
+  padding: 2rem max(var(--gutter), calc((100% - var(--wrap)) / 2));
   font-size: 0.85rem;
+  color: var(--fg-muted);
   border-top: 1px solid var(--border);
 }
 
-@media (max-width: 900px) {
+[data-thematic="off"] .foot-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.1rem;
+}
+
+[data-thematic="off"] .foot-links a {
+  color: var(--fg-muted);
+}
+
+@media (max-width: 640px) {
   html[data-thematic="off"],
   html[data-thematic="off"] body {
-    --gutter: 16px;
+    --gutter: 1rem;
+    --fs-big: 2.1rem;
   }
 
-  [data-thematic="off"] .head {
-    flex-wrap: wrap;
-    gap: 0.25rem 1.1rem;
+  [data-thematic="off"] .thematic-btn {
+    order: 1;
   }
 
-  [data-thematic="off"] .layout {
-    display: block;
-    padding-top: 1.25rem;
+  [data-thematic="off"] .head-nav {
+    order: 2;
+    gap: 0 0.9rem;
   }
 
-  [data-thematic="off"] .layout.about-open .info {
-    position: static;
-    max-height: none;
-    margin-bottom: 1.1rem;
+  [data-thematic="off"] .head-link {
+    order: 3;
   }
 
-  [data-thematic="off"] .tabbar {
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem 1.1rem;
+  [data-thematic="off"] .head-nav a,
+  [data-thematic="off"] .head-link {
+    font-size: 0.85rem;
   }
 
-  [data-thematic="off"] .main {
-    padding: 1.5rem 1rem;
+  [data-thematic="off"] .hero {
+    padding-top: 3rem;
   }
 
-  [data-thematic="off"] .tabs {
-    gap: 0 1.1rem;
+  [data-thematic="off"] .hero-tagline {
+    font-size: 1.3rem;
+  }
+
+  [data-thematic="off"] .panel,
+  [data-thematic="off"] .install-block {
+    padding: 2.5rem 0;
   }
 
   [data-thematic="off"] .terms > div {

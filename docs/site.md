@@ -17,17 +17,18 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 
 ## Thematic
 
-| State         | Look                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------- |
-| Off (default) | Nord, JetBrains Mono, plain bordered cards; matches <https://jdylanmc.github.io/>. No boot, sound, theme |
-| On            | CRT terminal: VT323, phosphor themes (T), boot once per session, sound (M), redraw on tab switch         |
+| State         | Look                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Off (default) | Nord landing page like <https://jdylanmc.github.io/>: JetBrains Mono, one scrolling page, no tabs, sidebar, boot or sound |
+| On            | CRT terminal: VT323, tabs, sidebar, phosphor themes (T), boot once per session, sound (M), redraw on tab switch           |
 
-- Footer button `[THEMATIC OFF]` / `[THEMATIC ON]` (`aria-pressed`) or H. Saved in `localStorage` `termlink-thematic` (`on` / `off`).
+- Header button `[THEMATIC ON]` / `[THEMATIC OFF]` (on) or "thematic" switch (off), `aria-pressed`, or H. Saved in `localStorage` `termlink-thematic` (`on` / `off`).
 - `<html data-thematic>` is `off` in the markup. The inline `<head>` script sets the saved state, preloads that look's font and sets `theme-color` before first paint. A Content Security Policy would need its `sha256` hash.
 - Turning it on never boots mid-session; the boot can run next session.
-- Off: the document scrolls (no fixed screen or inner scroller); page up to 1560px with gutters `clamp(24px, 4vw, 72px)`; prose capped at 80ch.
-- Off: the about sidebar is collapsed on every load; the `about` button (`aria-expanded`) shows it as a sticky left column, or above the content at ≤900px. On: always shown, no button.
-- DEMO is only the 16:9 desktop. Full screen is a small button on the frame's bottom edge (`[FULL]` on, icon off; name "Full screen" / "Exit full screen"); Esc exits. Off sizes the desktop by width, capped to the window height.
+- Off page order: header (home, anchors, GitHub, toggle), hero, demo, what, why, how, install (`#install`), changelog (latest release + full link), footer.
+- One set of sections serves both looks. The markup is in page order; `applyMode()` in `app.js` adds tab roles, `hidden` and moves `#install` into WHAT when on, and removes them when off. CSS shows every section before `app.js` runs.
+- Off: keys 1–5 and arrows keep browser behaviour; anchors scroll smoothly unless reduced motion; the demo loads near the viewport (`IntersectionObserver`), fits the width and is capped by the window height.
+- DEMO is only the 16:9 desktop. Full screen is a small button on the frame's bottom edge (`[FULL]` on, icon off; name "Full screen" / "Exit full screen"); Esc exits.
 - Both looks: header link home to <https://jdylanmc.github.io/> ("dylan mccurry").
 - Markup that exists in one look only uses `.t-on` / `.t-off`; off-look rules live at the end of `style.css` under `[data-thematic="off"]`.
 

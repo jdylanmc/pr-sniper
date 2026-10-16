@@ -53,14 +53,11 @@
     <div class="crt">
       <div class="screen" id="screen">
         <header class="head">
-          <span class="head-name"
-            ><span class="t-on">PR SNIPER (TM) TERMLINK PROTOCOL</span
-            ><span class="t-off">PR Sniper</span></span
-          >
+          <span class="head-name t-on">PR SNIPER (TM) TERMLINK PROTOCOL</span>
           <span class="head-clock" aria-hidden="true"
             >UPTIME <span id="uptime">00:00:00</span></span
           >
-          <span class="head-links">
+          <div class="head-links">
             <a class="head-home" href="https://jdylanmc.github.io/"
               ><span class="t-on" aria-hidden="true">[</span>dylan mccurry<span
                 class="t-on"
@@ -68,17 +65,35 @@
                 >]</span
               ></a
             >
+            <nav class="head-nav t-off" aria-label="Page">
+              <a href="#what">what</a>
+              <a href="#why">why</a>
+              <a href="#how">how</a>
+              <a href="#demo">demo</a>
+              <a href="#changelog">changelog</a>
+            </nav>
             <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
               ><span class="t-on">[GITHUB]</span
               ><span class="t-off">GitHub</span></a
             >
-          </span>
+            <button
+              type="button"
+              id="thematic-btn"
+              class="thematic-btn"
+              aria-pressed="false"
+            >
+              <span class="t-on">[THEMATIC OFF]</span
+              ><span class="t-off"
+                >thematic<span class="switch" aria-hidden="true"></span
+              ></span>
+            </button>
+          </div>
         </header>
         <p class="statusline t-on">
           &gt; LINK ESTABLISHED · 5 SECTIONS · CLEARANCE: READ-ONLY
         </p>
         <div class="layout">
-          <aside class="info frame" id="about" aria-label="About PR Sniper">
+          <aside class="info frame t-on" aria-label="About PR Sniper">
             <pre class="scope t-on" aria-hidden="true">
          │
    ┌─────┼─────┐
@@ -134,71 +149,145 @@
           </aside>
 
           <main class="main frame" id="sections" tabindex="-1">
-            <div class="tabbar">
+            <div class="tabs" role="tablist" aria-label="Sections">
               <button
                 type="button"
-                id="about-btn"
-                class="about-btn t-off"
-                aria-expanded="false"
-                aria-controls="about"
+                role="tab"
+                id="tab-what"
+                aria-controls="panel-what"
+                aria-selected="true"
+                tabindex="0"
               >
-                <span class="chevron" aria-hidden="true">›</span> about
+                <span class="num">1</span> WHAT
               </button>
-              <div class="tabs" role="tablist" aria-label="Sections">
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-what"
-                  aria-controls="panel-what"
-                  aria-selected="true"
-                  tabindex="0"
-                >
-                  <span class="num">1</span> WHAT
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-why"
-                  aria-controls="panel-why"
-                  aria-selected="false"
-                  tabindex="-1"
-                >
-                  <span class="num">2</span> WHY
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-how"
-                  aria-controls="panel-how"
-                  aria-selected="false"
-                  tabindex="-1"
-                >
-                  <span class="num">3</span> HOW
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-changelog"
-                  aria-controls="panel-changelog"
-                  aria-selected="false"
-                  tabindex="-1"
-                >
-                  <span class="num">4</span> CHANGELOG
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-demo"
-                  aria-controls="panel-demo"
-                  aria-selected="false"
-                  tabindex="-1"
-                >
-                  <span class="num">5</span> DEMO
-                </button>
-              </div>
+              <button
+                type="button"
+                role="tab"
+                id="tab-why"
+                aria-controls="panel-why"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">2</span> WHY
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-how"
+                aria-controls="panel-how"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">3</span> HOW
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-changelog"
+                aria-controls="panel-changelog"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">4</span> CHANGELOG
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-demo"
+                aria-controls="panel-demo"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">5</span> DEMO
+              </button>
             </div>
 
             <div class="scroller" id="scroller">
+              <section class="hero t-off" aria-labelledby="hero-title">
+                <p class="eyebrow">project</p>
+                <h1 id="hero-title">pr sniper</h1>
+                <p class="hero-tagline">
+                  Locking onto bugs. Handing off to brains.
+                </p>
+                <p class="hero-lede">
+                  Desktop utility. Catch pull requests. Audit with AI. Hand over
+                  to human queue.
+                </p>
+                <div class="cmd hero-cmd">
+                  <code>brew install --cask jdylanmc/pr-sniper/pr-sniper</code>
+                  <button type="button" class="copy" data-copy="hero">
+                    <span class="t-on">[COPY]</span
+                    ><span class="t-off">COPY</span>
+                  </button>
+                </div>
+                <p class="hero-actions">
+                  <a class="btn" href="#install">Install</a>
+                  <a
+                    class="btn btn--ghost"
+                    href="https://github.com/jdylanmc/pr-sniper"
+                    >GitHub ↗</a
+                  >
+                </p>
+                <!-- Keep in step with package.json; tests/site checks it. -->
+                <p class="hero-facts">
+                  <span id="hero-version">v0.4.0</span> · macOS 13.5+ · Apple
+                  Silicon · MIT
+                </p>
+              </section>
+              <section
+                class="panel panel-demo"
+                role="tabpanel"
+                id="panel-demo"
+                aria-labelledby="tab-demo"
+                tabindex="0"
+                hidden
+              >
+                <div class="demo-stage" id="demo-stage">
+                  <h2 class="t-off sr-only" id="demo">Demo</h2>
+                  <div class="demo-screen frame">
+                    <div class="demo-viewport" id="demo-viewport">
+                      <iframe
+                        id="demo-frame"
+                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
+                        data-src="demo/index.html"
+                        width="1440"
+                        height="810"
+                        loading="lazy"
+                      ></iframe>
+                    </div>
+                    <button
+                      type="button"
+                      id="demo-full"
+                      class="demo-full"
+                      aria-controls="demo-stage"
+                      aria-pressed="false"
+                      aria-label="Full screen"
+                    >
+                      <span class="t-on">[FULL]</span>
+                      <svg
+                        class="t-off icon-enter"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"></path>
+                      </svg>
+                      <svg
+                        class="t-off icon-exit"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </section>
               <section
                 class="panel"
                 role="tabpanel"
@@ -206,14 +295,16 @@
                 aria-labelledby="tab-what"
                 tabindex="0"
               >
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>WHAT
+                <h2 id="what">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true">features</span
+                  >WHAT
                 </h2>
-                <p class="lede">
+                <p class="lede t-on">
                   Desktop utility. Catch pull requests. Audit with AI. Hand over
                   to human queue.
                 </p>
-                <p>Configurable. Extensible. Customizable.</p>
+                <p class="t-on">Configurable. Extensible. Customizable.</p>
                 <dl class="terms">
                   <div>
                     <dt>Configurable</dt>
@@ -237,8 +328,169 @@
                     </dd>
                   </div>
                 </dl>
+              </section>
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-why"
+                aria-labelledby="tab-why"
+                tabindex="0"
+                hidden
+              >
+                <h2 id="why">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >motivation</span
+                  >WHY
+                </h2>
+                <ul class="bullets">
+                  <li>Pull request queue grow. Human time not.</li>
+                  <li>Agent read diff fast. Agent never bored.</li>
+                  <li>Human read only pull requests Agent already vetted.</li>
+                  <li>
+                    One list for human: <b>Ready for you</b>. Problems go to
+                    <b>Needs attention</b>.
+                  </li>
+                </ul>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>HUMAN KEEP
+                  LAST WORD
+                </h3>
+                <ul class="bullets">
+                  <li>Agent prepare work. Human decide.</li>
+                  <li>Nothing post unless permission say so.</li>
+                  <li>Never merge without explicit grant.</li>
+                  <li>Results stay local.</li>
+                </ul>
+              </section>
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-how"
+                aria-labelledby="tab-how"
+                tabindex="0"
+                hidden
+              >
+                <h2 id="how">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >under the hood</span
+                  >HOW
+                </h2>
+                <ol class="steps">
+                  <li>Poll each enabled repository on own schedule.</li>
+                  <li>
+                    Admission pick which pull requests enter: <b>All</b>, or
+                    ordered <b>Filtered</b> rules (assigned, mentioned, include
+                    or exclude users and paths). First enabled match win.
+                  </li>
+                  <li>
+                    One review per head SHA. New push mean new revision, new
+                    review. Same revision: Agent only reply to new comments.
+                  </li>
+                  <li>
+                    Agent see description, changed files, all comments. Agent
+                    act only with explicit permission.
+                  </li>
+                  <li>
+                    Results land in <b>Queue</b>: <b>Ready for you</b> or
+                    <b>Needs attention</b>. Transient failure retry with
+                    backoff, 3 attempts, then park. Parked failure auto-resume.
+                  </li>
+                  <li>
+                    Merged or closed pull request move to <b>Reviewed</b>.
+                  </li>
+                </ol>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>TERMS
+                </h3>
+                <dl class="terms">
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>
+                      Copilot account and model, prompt, ordered Doctrines.
+                      Assigned per repository.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Voice</dt>
+                    <dd>
+                      Optional writing style for what people read. Ship Caveman,
+                      Gilfoyle, Merlin.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Rubber Duck</dt>
+                    <dd>
+                      Optional second Agent. Primary ask before post. Verdict:
+                      confirmed, revise, rejected or unverifiable.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Schedule</dt>
+                    <dd>
+                      Per repository: every 5–30 min or 1–4 h, hourly, daily or
+                      cron. New repository poll every 30 min.
+                    </dd>
+                  </div>
+                </dl>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>SAFETY
+                </h3>
+                <ul class="bullets">
+                  <li>
+                    One review per revision. Publish recheck head SHA before and
+                    after.
+                  </li>
+                  <li>
+                    GitHub and Copilot identity separate. Connect one never
+                    connect other.
+                  </li>
+                  <li>
+                    Approve and merge: opt-in, primary Agent only, fail closed.
+                  </li>
+                  <li>
+                    Agent get host-owned review tools (reads plus one exit).
+                    Boundary, not sandbox.
+                  </li>
+                </ul>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  >PERMISSIONS
+                </h3>
+                <table class="grants">
+                  <thead>
+                    <tr>
+                      <th scope="col">Permission</th>
+                      <th scope="col">Default</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Publish Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Reply Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Approve</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>&amp; Merge</td>
+                      <td>[ ] off</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+              <section class="install-block" id="install">
                 <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>INSTALL
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >get started</span
+                  >INSTALL
                 </h2>
                 <ol class="steps install">
                   <li>
@@ -332,10 +584,10 @@
                     </div>
                   </li>
                 </ol>
-                <h2>
+                <h3>
                   <span class="prompt" aria-hidden="true">&gt; </span>NO
                   HOMEBREW
-                </h2>
+                </h3>
                 <p>
                   Get signed, notarized ZIP from
                   <a href="https://github.com/jdylanmc/pr-sniper/releases"
@@ -343,155 +595,6 @@
                   >. Unzip. Move PR Sniper to Applications. Update by hand.
                 </p>
               </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-why"
-                aria-labelledby="tab-why"
-                tabindex="0"
-                hidden
-              >
-                <h2><span class="prompt" aria-hidden="true">&gt; </span>WHY</h2>
-                <ul class="bullets">
-                  <li>Pull request queue grow. Human time not.</li>
-                  <li>Agent read diff fast. Agent never bored.</li>
-                  <li>Human read only pull requests Agent already vetted.</li>
-                  <li>
-                    One list for human: <b>Ready for you</b>. Problems go to
-                    <b>Needs attention</b>.
-                  </li>
-                </ul>
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>HUMAN KEEP
-                  LAST WORD
-                </h2>
-                <ul class="bullets">
-                  <li>Agent prepare work. Human decide.</li>
-                  <li>Nothing post unless permission say so.</li>
-                  <li>Never merge without explicit grant.</li>
-                  <li>Results stay local.</li>
-                </ul>
-              </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-how"
-                aria-labelledby="tab-how"
-                tabindex="0"
-                hidden
-              >
-                <h2><span class="prompt" aria-hidden="true">&gt; </span>HOW</h2>
-                <ol class="steps">
-                  <li>Poll each enabled repository on own schedule.</li>
-                  <li>
-                    Admission pick which pull requests enter: <b>All</b>, or
-                    ordered <b>Filtered</b> rules (assigned, mentioned, include
-                    or exclude users and paths). First enabled match win.
-                  </li>
-                  <li>
-                    One review per head SHA. New push mean new revision, new
-                    review. Same revision: Agent only reply to new comments.
-                  </li>
-                  <li>
-                    Agent see description, changed files, all comments. Agent
-                    act only with explicit permission.
-                  </li>
-                  <li>
-                    Results land in <b>Queue</b>: <b>Ready for you</b> or
-                    <b>Needs attention</b>. Transient failure retry with
-                    backoff, 3 attempts, then park. Parked failure auto-resume.
-                  </li>
-                  <li>
-                    Merged or closed pull request move to <b>Reviewed</b>.
-                  </li>
-                </ol>
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>TERMS
-                </h2>
-                <dl class="terms">
-                  <div>
-                    <dt>Agent</dt>
-                    <dd>
-                      Copilot account and model, prompt, ordered Doctrines.
-                      Assigned per repository.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Voice</dt>
-                    <dd>
-                      Optional writing style for what people read. Ship Caveman,
-                      Gilfoyle, Merlin.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Rubber Duck</dt>
-                    <dd>
-                      Optional second Agent. Primary ask before post. Verdict:
-                      confirmed, revise, rejected or unverifiable.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Schedule</dt>
-                    <dd>
-                      Per repository: every 5–30 min or 1–4 h, hourly, daily or
-                      cron. New repository poll every 30 min.
-                    </dd>
-                  </div>
-                </dl>
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>SAFETY
-                </h2>
-                <ul class="bullets">
-                  <li>
-                    One review per revision. Publish recheck head SHA before and
-                    after.
-                  </li>
-                  <li>
-                    GitHub and Copilot identity separate. Connect one never
-                    connect other.
-                  </li>
-                  <li>
-                    Approve and merge: opt-in, primary Agent only, fail closed.
-                  </li>
-                  <li>
-                    Agent get host-owned review tools (reads plus one exit).
-                    Boundary, not sandbox.
-                  </li>
-                </ul>
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span
-                  >PERMISSIONS
-                </h2>
-                <table class="grants">
-                  <thead>
-                    <tr>
-                      <th scope="col">Permission</th>
-                      <th scope="col">Default</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Publish Comment</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>Reply Comment</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>Approve</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>&amp; Merge</td>
-                      <td>[ ] off</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
-
               <section
                 class="panel"
                 role="tabpanel"
@@ -500,78 +603,42 @@
                 tabindex="0"
                 hidden
               >
-                <h2>
-                  <span class="prompt" aria-hidden="true">&gt; </span>CHANGELOG
+                <h2 id="changelog">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >latest release</span
+                  >CHANGELOG
                 </h2>
-                <div class="changelog" id="changelog">
+                <div class="changelog t-on" id="changelog-body">
                   <p class="dim">Loading…</p>
                 </div>
-              </section>
-
-              <section
-                class="panel panel-demo"
-                role="tabpanel"
-                id="panel-demo"
-                aria-labelledby="tab-demo"
-                tabindex="0"
-                hidden
-              >
-                <div class="demo-stage" id="demo-stage">
-                  <div class="demo-screen frame">
-                    <div class="demo-viewport" id="demo-viewport">
-                      <iframe
-                        id="demo-frame"
-                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
-                        data-src="demo/index.html"
-                        width="1440"
-                        height="810"
-                        loading="lazy"
-                      ></iframe>
-                    </div>
-                    <button
-                      type="button"
-                      id="demo-full"
-                      class="demo-full"
-                      aria-controls="demo-stage"
-                      aria-pressed="false"
-                      aria-label="Full screen"
-                    >
-                      <span class="t-on">[FULL]</span>
-                      <svg
-                        class="t-off icon-enter"
-                        viewBox="0 0 16 16"
-                        width="16"
-                        height="16"
-                        aria-hidden="true"
-                        focusable="false"
-                      >
-                        <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"></path>
-                      </svg>
-                      <svg
-                        class="t-off icon-exit"
-                        viewBox="0 0 16 16"
-                        width="16"
-                        height="16"
-                        aria-hidden="true"
-                        focusable="false"
-                      >
-                        <path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"></path>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
+                <div class="changelog t-off" id="changelog-latest"></div>
+                <p class="t-off changelog-more">
+                  <a
+                    href="https://github.com/jdylanmc/pr-sniper/blob/main/CHANGELOG.md"
+                    >Full changelog ↗</a
+                  >
+                </p>
               </section>
             </div>
           </main>
         </div>
         <footer class="foot">
-          <span class="hints"
+          <span class="hints t-on"
             >←/→ section · 1-5 jump · ↑/↓ scroll<span class="t-on">
               · T theme · M sound</span
             >
             · H thematic</span
           >
-          <span class="foot-controls">
+          <nav class="foot-links t-off" aria-label="Project">
+            <a href="https://github.com/jdylanmc/pr-sniper">Source</a>
+            <a href="https://github.com/jdylanmc/pr-sniper/releases"
+              >Releases</a
+            >
+            <a href="https://github.com/jdylanmc/pr-sniper/issues">Issues</a>
+          </nav>
+          <span class="foot-meta t-off">MIT · dylan mccurry</span>
+          <span class="foot-controls t-on">
             <button type="button" id="theme-btn" class="t-on">
               [THEME P1 GREEN]
             </button>
@@ -582,10 +649,6 @@
               aria-pressed="false"
             >
               [SOUND OFF]
-            </button>
-            <button type="button" id="thematic-btn" aria-pressed="false">
-              <span class="t-on">[THEMATIC OFF]</span
-              ><span class="t-off">THEMATIC OFF</span>
             </button>
           </span>
         </footer>

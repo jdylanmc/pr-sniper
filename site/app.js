@@ -157,7 +157,9 @@ setTheme(read("localStorage", THEME_KEY) || "p1", false);
 const thematicButton = document.getElementById("thematic-btn");
 function syncThematic() {
   const on = isThematic();
-  setLabel(thematicButton, on ? "THEMATIC ON" : "THEMATIC OFF");
+  thematicButton.querySelector(".t-on").textContent = on
+    ? "[THEMATIC ON]"
+    : "[THEMATIC OFF]";
   thematicButton.setAttribute("aria-pressed", String(on));
   themeMeta.setAttribute("content", on ? currentTheme().bg : NORD_BG);
 }
@@ -169,21 +171,11 @@ function toggleThematic() {
   if (on) write("sessionStorage", BOOT_KEY, "1");
   else if (sound.on) toggleSound();
   syncThematic();
-  fitDemo();
+  applyMode();
   announce(on ? "Thematic on" : "Thematic off");
 }
 thematicButton.addEventListener("click", toggleThematic);
 syncThematic();
-
-// About: with thematic off the sidebar starts collapsed on every load.
-const aboutButton = document.getElementById("about-btn");
-const layout = document.querySelector(".layout");
-aboutButton.addEventListener("click", () => {
-  const open = aboutButton.getAttribute("aria-expanded") !== "true";
-  aboutButton.setAttribute("aria-expanded", String(open));
-  layout.classList.toggle("about-open", open);
-  fitDemo();
-});
 
 // Frames
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
@@ -197,8 +189,8 @@ const demoViewport = document.getElementById("demo-viewport");
 const demoScreen = demoViewport.parentElement;
 const stacked = matchMedia("(max-width: 900px)");
 
-// Below the desktop when thematic is off: the main card's padding and border.
-const DEMO_BOTTOM_GAP = 32;
+// With thematic off, room kept around the desktop so it fits in the window.
+const DEMO_WINDOW_GAP = 120;
 
 function fitDemo() {
   if (!demoStage.getClientRects().length) return;
@@ -210,9 +202,8 @@ function fitDemo() {
   if (isDemoFull()) {
     height = demoStage.clientHeight - padY;
   } else if (!isThematic()) {
-    // The document scrolls, so fit the width and cap at the viewport height.
-    const top = demoScreen.getBoundingClientRect().top + window.scrollY;
-    height = window.innerHeight - top - padY - DEMO_BOTTOM_GAP;
+    // The page scrolls, so fit the width and cap at the window height.
+    height = window.innerHeight - padY - DEMO_WINDOW_GAP;
     if (height < 160) height = Infinity;
   } else {
     height = stacked.matches ? Infinity : demoStage.clientHeight - padY;
@@ -306,6 +297,7 @@ let current = 0;
 let redrawOnSwitch = false;
 
 function selectTab(index, focus) {
+  if (!isThematic()) return;
   const previous = current;
   current = (index + tabs.length) % tabs.length;
   tabs.forEach((tab, i) => {
@@ -320,16 +312,14 @@ function selectTab(index, focus) {
     tabs[current].getAttribute("aria-controls"),
   );
   if (redrawOnSwitch && previous !== current && !reducedMotion) {
-    const effect = isThematic() ? "redraw" : "fade";
-    shown.classList.remove("redraw", "fade");
+    shown.classList.remove("redraw");
     void shown.offsetWidth;
-    shown.classList.add(effect);
+    shown.classList.add("redraw");
   }
   scroller.scrollTop = 0;
   if (names[current] === "changelog") loadChangelog();
   if (names[current] === "demo") {
-    const demoFrame = document.getElementById("demo-frame");
-    if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
+    loadDemo();
     fitDemo();
   }
   const hash = current === 0 ? "" : `#${names[current]}`;
@@ -340,8 +330,7 @@ function selectTab(index, focus) {
 
 for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
   panel.addEventListener("animationend", (event) => {
-    if (event.animationName === "redraw" || event.animationName === "fade")
-      panel.classList.remove(event.animationName);
+    if (event.animationName === "redraw") panel.classList.remove("redraw");
   });
 }
 
@@ -393,6 +382,14 @@ document.addEventListener("keydown", (event) => {
   if (isTyping(target)) return;
   const onTab = tabs.includes(target);
   const key = event.key;
+  if (key === "h" || key === "H") {
+    toggleThematic();
+    event.preventDefault();
+    sound.click();
+    return;
+  }
+  // With thematic off the page keeps normal keyboard behaviour.
+  if (!isThematic()) return;
   let handled = true;
   if (key === "ArrowRight") selectTab(current + 1, onTab);
   else if (key === "ArrowLeft") selectTab(current - 1, onTab);
@@ -401,10 +398,8 @@ document.addEventListener("keydown", (event) => {
   else if (/^[1-5]$/.test(key)) selectTab(Number(key) - 1, onTab);
   else if (key === "ArrowDown") scrollMain(1);
   else if (key === "ArrowUp") scrollMain(-1);
-  else if (/^[tTmM]$/.test(key) && !isThematic()) handled = false;
   else if (key === "t" || key === "T") cycleTheme();
   else if (key === "m" || key === "M") toggleSound();
-  else if (key === "h" || key === "H") toggleThematic();
   else handled = false;
   if (handled) {
     event.preventDefault();
@@ -576,24 +571,40 @@ async function fetchChangelog() {
   return null;
 }
 
+// The newest released version's section, skipping Unreleased.
+export function latestRelease(source) {
+  const sections = source.replace(/\r\n?/g, "\n").split(/^(?=## )/m);
+  return (
+    sections.find(
+      (part) => /^## /.test(part) && !/^## +unreleased\b/i.test(part),
+    ) ?? null
+  );
+}
+
 async function loadChangelog() {
   if (changelogLoaded) return;
   changelogLoaded = true;
-  const root = document.getElementById("changelog");
+  const full = document.getElementById("changelog-body");
+  const latest = document.getElementById("changelog-latest");
   const text = await fetchChangelog();
-  root.replaceChildren();
+  full.replaceChildren();
+  latest.replaceChildren();
   if (!text) {
-    const p = document.createElement("p");
-    p.append("Changelog unavailable. Read it on ");
-    const a = document.createElement("a");
-    a.href = `${REPO_BLOB}CHANGELOG.md`;
-    a.textContent = "GitHub";
-    p.append(a, ".");
-    root.append(p);
+    for (const root of [full, latest]) {
+      const p = document.createElement("p");
+      p.append("Changelog unavailable. Read it on ");
+      const a = document.createElement("a");
+      a.href = `${REPO_BLOB}CHANGELOG.md`;
+      a.textContent = "GitHub";
+      p.append(a, ".");
+      root.append(p);
+    }
     changelogLoaded = false;
     return;
   }
-  renderMarkdown(text, root);
+  renderMarkdown(text, full);
+  const release = latestRelease(text);
+  if (release) renderMarkdown(release, latest);
 }
 
 // Header uptime
@@ -660,7 +671,63 @@ function boot() {
   bootNode.addEventListener("pointerdown", endBoot);
 }
 
+// Thematic on: the tabbed terminal. Off: one scrolling page with every
+// section shown in order and no tab semantics.
+const panels = tabs.map((tab) =>
+  document.getElementById(tab.getAttribute("aria-controls")),
+);
+const installBlock = document.getElementById("install");
+const whatPanel = document.getElementById("panel-what");
+const howPanel = document.getElementById("panel-how");
+
+function applyMode() {
+  if (isThematic()) {
+    whatPanel.append(installBlock);
+    panels.forEach((panel, i) => {
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabs[i].id);
+      panel.tabIndex = 0;
+    });
+    // Re-applies hidden, tabindex and the hash for the current tab.
+    const previous = redrawOnSwitch;
+    redrawOnSwitch = false;
+    selectTab(current, false);
+    redrawOnSwitch = previous;
+  } else {
+    howPanel.after(installBlock);
+    for (const panel of panels) {
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-labelledby");
+      panel.removeAttribute("tabindex");
+      panel.hidden = false;
+      panel.classList.remove("redraw");
+    }
+    loadChangelog();
+    demoObserver?.observe(demoStage);
+  }
+  fitDemo();
+}
+
+// With thematic off the demo loads as it nears the viewport.
+function loadDemo() {
+  const demoFrame = document.getElementById("demo-frame");
+  if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
+}
+const demoObserver =
+  "IntersectionObserver" in window
+    ? new IntersectionObserver(
+        (entries) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return;
+          loadDemo();
+          demoObserver.disconnect();
+        },
+        { rootMargin: "100px 0px" },
+      )
+    : null;
+if (!demoObserver && !isThematic()) loadDemo();
+
 const initial = names.indexOf(location.hash.slice(1));
-selectTab(initial > 0 ? initial : 0, false);
+current = initial > 0 ? initial : 0;
+applyMode();
 redrawOnSwitch = true;
 boot();
