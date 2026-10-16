@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-thematic="off">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,7 +8,7 @@
       name="description"
       content="PR Sniper. Desktop utility. Catch pull requests, audit with AI, hand over to human queue. Configurable, extensible, customizable."
     />
-    <meta name="theme-color" content="#021a0a" />
+    <meta name="theme-color" content="#2e3440" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="PR Sniper" />
     <meta
@@ -18,13 +18,33 @@
     <meta property="og:url" content="https://jdylanmc.github.io/pr-sniper/" />
     <meta property="og:site_name" content="PR Sniper" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-    <link
-      rel="preload"
-      href="fonts/vt323-termlink.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
+    <!-- Thematic is off unless saved on; set before first paint. -->
+    <script>
+      (function () {
+        var on = false;
+        try {
+          on = localStorage.getItem("termlink-thematic") === "on";
+        } catch (e) {}
+        document.documentElement.setAttribute(
+          "data-thematic",
+          on ? "on" : "off",
+        );
+        var font = document.createElement("link");
+        font.rel = "preload";
+        font.as = "font";
+        font.type = "font/woff2";
+        font.crossOrigin = "";
+        font.href = on
+          ? "fonts/vt323-termlink.woff2"
+          : "fonts/jetbrains-mono-400.woff2";
+        document.head.appendChild(font);
+        if (on) {
+          document
+            .querySelector('meta[name="theme-color"]')
+            .setAttribute("content", "#021a0a");
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="app.js"></script>
   </head>
@@ -33,20 +53,33 @@
     <div class="crt">
       <div class="screen" id="screen">
         <header class="head">
-          <span class="head-name">PR SNIPER (TM) TERMLINK PROTOCOL</span>
+          <span class="head-name"
+            ><span class="t-on">PR SNIPER (TM) TERMLINK PROTOCOL</span
+            ><span class="t-off">PR Sniper</span></span
+          >
           <span class="head-clock" aria-hidden="true"
             >UPTIME <span id="uptime">00:00:00</span></span
           >
-          <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
-            >[GITHUB]</a
-          >
+          <span class="head-links">
+            <a class="head-home" href="https://jdylanmc.github.io/"
+              ><span class="t-on" aria-hidden="true">[</span>dylan mccurry<span
+                class="t-on"
+                aria-hidden="true"
+                >]</span
+              ></a
+            >
+            <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
+              ><span class="t-on">[GITHUB]</span
+              ><span class="t-off">GitHub</span></a
+            >
+          </span>
         </header>
-        <p class="statusline">
+        <p class="statusline t-on">
           &gt; LINK ESTABLISHED · 5 SECTIONS · CLEARANCE: READ-ONLY
         </p>
         <div class="layout">
           <aside class="info frame" aria-label="About PR Sniper">
-            <pre class="scope" aria-hidden="true">
+            <pre class="scope t-on" aria-hidden="true">
          │
    ┌─────┼─────┐
    │     │     │
@@ -79,7 +112,7 @@
             <div class="cmd">
               <code>brew install --cask jdylanmc/pr-sniper/pr-sniper</code>
               <button type="button" class="copy" data-copy="brew-info">
-                [COPY]
+                <span class="t-on">[COPY]</span><span class="t-off">COPY</span>
               </button>
             </div>
             <p class="label">LINKS</p>
@@ -162,7 +195,9 @@
                 aria-labelledby="tab-what"
                 tabindex="0"
               >
-                <h2>&gt; WHAT</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>WHAT
+                </h2>
                 <p class="lede">
                   Desktop utility. Catch pull requests. Audit with AI. Hand over
                   to human queue.
@@ -191,7 +226,9 @@
                     </dd>
                   </div>
                 </dl>
-                <h2>&gt; INSTALL</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>INSTALL
+                </h2>
                 <ol class="steps install">
                   <li>
                     <h3>Need</h3>
@@ -212,7 +249,8 @@
                         >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
                       >
                       <button type="button" class="copy" data-copy="install">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -222,7 +260,8 @@
                     <div class="cmd">
                       <code>open -a "PR Sniper"</code>
                       <button type="button" class="copy" data-copy="launch">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -255,7 +294,8 @@
                     <div class="cmd">
                       <code>brew upgrade --cask pr-sniper</code>
                       <button type="button" class="copy" data-copy="upgrade">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -275,12 +315,16 @@
                     <div class="cmd">
                       <code>brew uninstall --cask pr-sniper</code>
                       <button type="button" class="copy" data-copy="uninstall">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
                 </ol>
-                <h2>&gt; NO HOMEBREW</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>NO
+                  HOMEBREW
+                </h2>
                 <p>
                   Get signed, notarized ZIP from
                   <a href="https://github.com/jdylanmc/pr-sniper/releases"
@@ -297,7 +341,7 @@
                 tabindex="0"
                 hidden
               >
-                <h2>&gt; WHY</h2>
+                <h2><span class="prompt" aria-hidden="true">&gt; </span>WHY</h2>
                 <ul class="bullets">
                   <li>Pull request queue grow. Human time not.</li>
                   <li>Agent read diff fast. Agent never bored.</li>
@@ -307,7 +351,10 @@
                     <b>Needs attention</b>.
                   </li>
                 </ul>
-                <h2>&gt; HUMAN KEEP LAST WORD</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>HUMAN KEEP
+                  LAST WORD
+                </h2>
                 <ul class="bullets">
                   <li>Agent prepare work. Human decide.</li>
                   <li>Nothing post unless permission say so.</li>
@@ -324,7 +371,7 @@
                 tabindex="0"
                 hidden
               >
-                <h2>&gt; HOW</h2>
+                <h2><span class="prompt" aria-hidden="true">&gt; </span>HOW</h2>
                 <ol class="steps">
                   <li>Poll each enabled repository on own schedule.</li>
                   <li>
@@ -349,7 +396,9 @@
                     Merged or closed pull request move to <b>Reviewed</b>.
                   </li>
                 </ol>
-                <h2>&gt; TERMS</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>TERMS
+                </h2>
                 <dl class="terms">
                   <div>
                     <dt>Agent</dt>
@@ -380,7 +429,9 @@
                     </dd>
                   </div>
                 </dl>
-                <h2>&gt; SAFETY</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>SAFETY
+                </h2>
                 <ul class="bullets">
                   <li>
                     One review per revision. Publish recheck head SHA before and
@@ -398,7 +449,10 @@
                     Boundary, not sandbox.
                   </li>
                 </ul>
-                <h2>&gt; PERMISSIONS</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  >PERMISSIONS
+                </h2>
                 <table class="grants">
                   <thead>
                     <tr>
@@ -435,7 +489,9 @@
                 tabindex="0"
                 hidden
               >
-                <h2>&gt; CHANGELOG</h2>
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span>CHANGELOG
+                </h2>
                 <div class="changelog" id="changelog">
                   <p class="dim">Loading…</p>
                 </div>
@@ -471,7 +527,8 @@
                     aria-controls="demo-stage"
                     aria-pressed="false"
                   >
-                    [FULL SCREEN]
+                    <span class="t-on">[FULL SCREEN]</span
+                    ><span class="t-off">FULL SCREEN</span>
                   </button>
                 </div>
               </section>
@@ -480,12 +537,26 @@
         </div>
         <footer class="foot">
           <span class="hints"
-            >←/→ section · 1-5 jump · ↑/↓ scroll · T theme · M sound</span
+            >←/→ section · 1-5 jump · ↑/↓ scroll<span class="t-on">
+              · T theme · M sound</span
+            >
+            · H thematic</span
           >
           <span class="foot-controls">
-            <button type="button" id="theme-btn">[THEME P1 GREEN]</button>
-            <button type="button" id="sound-btn" aria-pressed="false">
+            <button type="button" id="theme-btn" class="t-on">
+              [THEME P1 GREEN]
+            </button>
+            <button
+              type="button"
+              id="sound-btn"
+              class="t-on"
+              aria-pressed="false"
+            >
               [SOUND OFF]
+            </button>
+            <button type="button" id="thematic-btn" aria-pressed="false">
+              <span class="t-on">[THEMATIC OFF]</span
+              ><span class="t-off">THEMATIC OFF</span>
             </button>
           </span>
         </footer>

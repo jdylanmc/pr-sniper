@@ -4,6 +4,20 @@
   font-display: block;
 }
 
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono-700.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
 /* P1 is the default; the OS colour scheme is ignored on purpose. */
 :root,
 [data-theme="p1"] {
@@ -129,8 +143,8 @@ button {
   appearance: none;
 }
 
-a:focus-visible,
-button:focus-visible {
+html:not([data-thematic="off"]) a:focus-visible,
+html:not([data-thematic="off"]) button:focus-visible {
   outline: none;
   background: var(--fg);
   color: var(--bg);
@@ -143,6 +157,12 @@ button:focus-visible {
 }
 
 [hidden] {
+  display: none !important;
+}
+
+/* Parts that exist in one look only. */
+[data-thematic="off"] .t-on,
+html:not([data-thematic="off"]) .t-off {
   display: none !important;
 }
 
@@ -365,6 +385,19 @@ button:focus-visible {
   justify-content: space-between;
   gap: calc(var(--cw) * 2);
   white-space: nowrap;
+}
+
+/* The home link sits left of [GITHUB] without taking flex space, so the
+   header keeps its spacing. */
+.head-links {
+  position: relative;
+}
+
+.head-home {
+  position: absolute;
+  right: 100%;
+  margin-right: calc(var(--cw) * 2);
+  text-transform: uppercase;
 }
 
 .statusline {
@@ -605,6 +638,7 @@ button:focus-visible {
 
 .foot-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: calc(var(--cw) * 2);
   color: var(--fg);
 }
@@ -745,6 +779,16 @@ button:focus-visible {
   }
 }
 
+.fade {
+  animation: fade 0.15s ease-out both;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -795,8 +839,22 @@ button:focus-visible {
     padding: calc(var(--lh) * 0.5) var(--cw);
   }
 
+  .head {
+    flex-wrap: wrap;
+  }
+
   .head-clock {
     display: none;
+  }
+
+  .head-links {
+    display: flex;
+    gap: 0 calc(var(--cw) * 2);
+  }
+
+  .head-home {
+    position: static;
+    margin: 0;
   }
 
   .layout {
@@ -837,5 +895,452 @@ button:focus-visible {
 
   .foot .hints {
     display: none;
+  }
+}
+
+/* Thematic off: Nord, matching https://jdylanmc.github.io/. Overrides the
+   terminal rules above; the phosphor theme stays on body for when it is on. */
+
+html[data-thematic="off"],
+html[data-thematic="off"] body {
+  --bg: #2e3440;
+  --bg-elevated: #3b4252;
+  --fg: #eceff4;
+  --fg-muted: #9fb0c9;
+  --accent: #88c0d0;
+  --accent-contrast: #2e3440;
+  --border: #4c566a;
+  --radius: 4px;
+  --font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --dim: var(--fg-muted);
+  --bar: var(--bg-elevated);
+  --glow-text: none;
+  --fs: 16px;
+  --fs-big: 28px;
+  --cw: 9.6px;
+  --lh: 26px;
+  --gutter: 24px;
+  --page: 1200px;
+  background: var(--bg);
+}
+
+[data-thematic="off"] body {
+  font-family: var(--font);
+  line-height: 1.65;
+  text-shadow: none;
+  -webkit-font-smoothing: auto;
+}
+
+[data-thematic="off"] b,
+[data-thematic="off"] strong {
+  font-weight: 700;
+  text-shadow: none;
+}
+
+[data-thematic="off"] h1,
+[data-thematic="off"] h2,
+[data-thematic="off"] h3,
+[data-thematic="off"] h4 {
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: lowercase;
+}
+
+[data-thematic="off"] a {
+  color: var(--accent);
+}
+
+[data-thematic="off"] a:hover {
+  opacity: 0.8;
+}
+
+[data-thematic="off"] code {
+  font-size: 0.88em;
+}
+
+[data-thematic="off"] a:focus-visible,
+[data-thematic="off"] button:focus-visible,
+[data-thematic="off"] .tabs [role="tab"]:focus-visible,
+[data-thematic="off"] [tabindex]:not(button):not(a):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+[data-thematic="off"] .skip {
+  left: var(--gutter);
+  padding: 0.25rem 0.75rem;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .crt {
+  padding: 0;
+  background: var(--bg);
+}
+
+[data-thematic="off"] .crt::before,
+[data-thematic="off"] .crt::after,
+[data-thematic="off"] .boot,
+[data-thematic="off"] .fb,
+[data-thematic="off"] .head-clock,
+[data-thematic="off"] .prompt {
+  display: none;
+}
+
+[data-thematic="off"] .screen {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 0;
+  background: var(--bg);
+  border-radius: 0;
+}
+
+/* Header: the homepage site-header, brand left, links right. */
+[data-thematic="off"] .head {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1.1rem;
+  padding: 1rem max(var(--gutter), calc((100% - var(--page)) / 2));
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+
+[data-thematic="off"] .head-links {
+  display: contents;
+}
+
+[data-thematic="off"] .head-home {
+  position: static;
+  order: -1;
+  margin: 0 auto 0 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--fg);
+  text-decoration: none;
+  text-transform: none;
+}
+
+[data-thematic="off"] .head-home:hover {
+  opacity: 1;
+}
+
+[data-thematic="off"] .head-name,
+[data-thematic="off"] .head-link {
+  font-size: 0.92rem;
+  text-decoration: none;
+}
+
+[data-thematic="off"] .head-name {
+  color: var(--accent);
+}
+
+[data-thematic="off"] .head-link {
+  color: var(--fg-muted);
+}
+
+[data-thematic="off"] .head-link:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* Cards */
+[data-thematic="off"] .layout {
+  width: 100%;
+  max-width: calc(var(--page) + var(--gutter) * 2);
+  margin: 0 auto;
+  padding: 2rem var(--gutter) 0;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 1.1rem;
+}
+
+[data-thematic="off"] .frame {
+  padding: 1.5rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+[data-thematic="off"] .info > * + * {
+  margin-top: 1rem;
+}
+
+[data-thematic="off"] .info > .label + .cmd,
+[data-thematic="off"] .info > .label + .links {
+  margin-top: 0.5rem;
+}
+
+[data-thematic="off"] .title {
+  font-size: var(--fs-big);
+  line-height: 1.2;
+}
+
+[data-thematic="off"] .facts > div {
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  align-items: baseline;
+}
+
+[data-thematic="off"] .facts dt,
+[data-thematic="off"] .label,
+[data-thematic="off"] .grants th {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-thematic="off"] .label {
+  color: var(--accent);
+}
+
+[data-thematic="off"] .dot {
+  color: #a3be8c;
+  animation: none;
+}
+
+[data-thematic="off"] .links {
+  gap: 0 1.1rem;
+}
+
+[data-thematic="off"] .cmd {
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0.5rem 0.5rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .cmd code {
+  flex: 1 1 12rem;
+}
+
+/* Buttons: the homepage .btn--ghost. */
+[data-thematic="off"] .copy,
+[data-thematic="off"] #demo-full,
+[data-thematic="off"] #thematic-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  color: var(--fg);
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: lowercase;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .copy:hover,
+[data-thematic="off"] #demo-full:hover,
+[data-thematic="off"] #thematic-btn:hover {
+  border-color: var(--accent);
+}
+
+/* Tabs: the homepage nav, accent for the current one. */
+[data-thematic="off"] .tabs {
+  gap: 0 1.5rem;
+  margin: -0.5rem 0 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+[data-thematic="off"] .tabs [role="tab"] {
+  padding: 0.5rem 0;
+  margin-bottom: -1px;
+  color: var(--fg-muted);
+  text-transform: lowercase;
+  border-bottom: 2px solid transparent;
+}
+
+[data-thematic="off"] .tabs [role="tab"]:hover,
+[data-thematic="off"] .tabs [role="tab"][aria-selected="true"] {
+  color: var(--accent);
+  background: none;
+}
+
+[data-thematic="off"] .tabs [role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--accent);
+}
+
+[data-thematic="off"] .tabs .num {
+  display: none;
+}
+
+[data-thematic="off"] .scroller {
+  scrollbar-color: var(--border) transparent;
+}
+
+/* Sections */
+[data-thematic="off"] .panel > * + * {
+  margin-top: 1rem;
+}
+
+[data-thematic="off"] .panel > h2:not(:first-child) {
+  margin-top: 2.25rem;
+}
+
+[data-thematic="off"] .panel h2 {
+  font-size: 1.3rem;
+}
+
+[data-thematic="off"] .panel p,
+[data-thematic="off"] .panel li {
+  max-width: 72ch;
+}
+
+[data-thematic="off"] .lede {
+  font-size: 1.05rem;
+}
+
+[data-thematic="off"] .terms > div {
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+}
+
+[data-thematic="off"] .terms > div + div,
+[data-thematic="off"] .steps > li + li {
+  margin-top: 0.75rem;
+}
+
+[data-thematic="off"] .terms dt {
+  color: var(--accent);
+}
+
+[data-thematic="off"] .steps > li {
+  padding-left: 2.25rem;
+}
+
+[data-thematic="off"] .steps > li::before {
+  content: counter(step) ".";
+  color: var(--accent);
+}
+
+[data-thematic="off"] .install h3 {
+  font-size: 1rem;
+}
+
+[data-thematic="off"] .install > li > * + * {
+  margin-top: 0.5rem;
+}
+
+[data-thematic="off"] .install > li > .cmd {
+  margin-top: 0.75rem;
+}
+
+[data-thematic="off"] .sub > li {
+  padding-left: 1.75rem;
+}
+
+[data-thematic="off"] .bullets > li,
+[data-thematic="off"] .changelog li {
+  padding-left: 1.5rem;
+}
+
+[data-thematic="off"] .grants {
+  width: 100%;
+  max-width: 36rem;
+}
+
+[data-thematic="off"] .grants th,
+[data-thematic="off"] .grants td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+[data-thematic="off"] .changelog > * + * {
+  margin-top: 0.75rem;
+}
+
+[data-thematic="off"] .changelog h3 {
+  display: block;
+  margin-top: 2rem;
+  padding: 0;
+  font-size: 1.1rem;
+  color: var(--fg);
+  background: none;
+}
+
+[data-thematic="off"] .changelog h4 {
+  margin-top: 1rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+[data-thematic="off"] .changelog h4 + ul {
+  margin-top: 0.35rem;
+}
+
+[data-thematic="off"] .changelog pre {
+  padding: 1rem;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Demo */
+[data-thematic="off"] .demo-screen {
+  padding: 0.5rem;
+  box-shadow: none;
+}
+
+[data-thematic="off"] .demo-viewport {
+  border-radius: 2px;
+}
+
+[data-thematic="off"] .demo-caption {
+  align-items: center;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+}
+
+/* Footer: the homepage site-footer. */
+[data-thematic="off"] .foot {
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  margin: 1.5rem 0 0;
+  padding: 0.75rem max(var(--gutter), calc((100% - var(--page)) / 2));
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+@media (min-width: 901px) and (max-width: 1279px) {
+  [data-thematic="off"] .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  html[data-thematic="off"],
+  html[data-thematic="off"] body {
+    --gutter: 16px;
+  }
+
+  [data-thematic="off"] .head {
+    flex-wrap: wrap;
+    gap: 0.25rem 1.1rem;
+  }
+
+  [data-thematic="off"] .layout {
+    display: block;
+    padding-top: 1.25rem;
+  }
+
+  [data-thematic="off"] .info {
+    margin-bottom: 1.1rem;
+  }
+
+  [data-thematic="off"] .main {
+    padding: 1.5rem 1rem;
+  }
+
+  [data-thematic="off"] .tabs {
+    gap: 0 1.1rem;
+  }
+
+  [data-thematic="off"] .terms > div {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

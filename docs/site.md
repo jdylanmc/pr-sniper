@@ -10,9 +10,23 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 | `site/frame.js`                          | Box-drawing borders on the character grid                |
 | `prototypes/v2/`                         | Design prototype embedded as the DEMO tab at `/demo/`    |
 | `site/fonts/`                            | VT323 Termlink (OFL, `OFL.txt`), built by the script     |
+| `site/fonts/jetbrains-mono-*.woff2`      | JetBrains Mono 400/700 (OFL, `OFL-JetBrainsMono.txt`)    |
 | `scripts/site-font.py`                   | Adds box-drawing, block and arrow glyphs to VT323        |
 | `tests/site/`                            | Playwright suite and a server for the artifact layout    |
 | `.github/workflows/pages.yml`            | Tests on PRs; tests and deploys on `main` and on request |
+
+## Thematic
+
+| State         | Look                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| Off (default) | Nord, JetBrains Mono, plain bordered cards; matches <https://jdylanmc.github.io/>. No boot, sound, theme |
+| On            | CRT terminal: VT323, phosphor themes (T), boot once per session, sound (M), redraw on tab switch         |
+
+- Footer button `[THEMATIC OFF]` / `[THEMATIC ON]` (`aria-pressed`) or H. Saved in `localStorage` `termlink-thematic` (`on` / `off`).
+- `<html data-thematic>` is `off` in the markup. The inline `<head>` script sets the saved state, preloads that look's font and sets `theme-color` before first paint. A Content Security Policy would need its `sha256` hash.
+- Turning it on never boots mid-session; the boot can run next session.
+- Both looks: header link home to <https://jdylanmc.github.io/> ("dylan mccurry").
+- Markup that exists in one look only uses `.t-on` / `.t-off`; off-look rules live at the end of `style.css` under `[data-thematic="off"]`.
 
 ## Preview
 
@@ -31,7 +45,9 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 - Needs **Settings › Pages › Source: GitHub Actions** once. Until then the deploy job fails at `configure-pages`.
 - The shown version is hardcoded in `site/index.html`; a test fails when it drifts from `package.json`.
 
-## Font
+## Fonts
+
+JetBrains Mono: `JetBrainsMono-Regular.woff2` and `JetBrainsMono-Bold.woff2` from `fonts/webfonts/` and `OFL.txt` in [JetBrains/JetBrainsMono v2.304](https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip) (zip SHA-256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`). Fonts unmodified; `OFL-JetBrainsMono.txt` has trailing spaces trimmed.
 
 Upstream VT323 has no box-drawing glyphs. Rebuild after editing the script:
 

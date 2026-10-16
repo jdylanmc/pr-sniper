@@ -10,6 +10,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Project website at https://jdylanmc.github.io/pr-sniper/: a terminal-style
   landing page with What (and install steps), Why, How, this changelog and
   the interactive v2 design prototype as its demo. It deploys from `site/` to GitHub Pages.
+- Website **Thematic** toggle (footer button or H): off by default, a Nord
+  look matching https://jdylanmc.github.io/; on restores the terminal look
+  with themes, boot and sound. The header links home to dylan mccurry.
 
 ## 0.4.0 - 2026-10-15
 

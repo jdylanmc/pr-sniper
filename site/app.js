@@ -7,6 +7,8 @@ const THEMES = [
   { id: "p7", name: "P7 BLUE", bg: "#031422" },
 ];
 const THEME_KEY = "termlink-theme";
+const THEMATIC_KEY = "termlink-thematic";
+const NORD_BG = "#2e3440";
 const BOOT_KEY = "termlink-booted";
 const REPO_BLOB = "https://github.com/jdylanmc/pr-sniper/blob/main/";
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -32,6 +34,15 @@ const write = (kind, key, value) => {
     // Private browsing can refuse storage; the page still works.
   }
 };
+
+const root = document.documentElement;
+const isThematic = () => root.dataset.thematic === "on";
+
+// Buttons carry a bracketed terminal label and a plain one; CSS shows one.
+function setLabel(button, text) {
+  button.querySelector(".t-on").textContent = `[${text}]`;
+  button.querySelector(".t-off").textContent = text;
+}
 
 const announcer = document.getElementById("announcer");
 function announce(text) {
@@ -105,6 +116,7 @@ const sound = {
 
 const soundButton = document.getElementById("sound-btn");
 function toggleSound() {
+  if (!isThematic() && !sound.on) return;
   sound.on = !sound.on;
   soundButton.textContent = sound.on ? "[SOUND ON]" : "[SOUND OFF]";
   soundButton.setAttribute("aria-pressed", String(sound.on));
@@ -115,17 +127,23 @@ soundButton.addEventListener("click", toggleSound);
 // Themes: always start on P1 unless the visitor picked another.
 const themeButton = document.getElementById("theme-btn");
 const themeMeta = document.querySelector('meta[name="theme-color"]');
+function currentTheme() {
+  return (
+    THEMES.find((item) => item.id === document.body.dataset.theme) || THEMES[0]
+  );
+}
 function setTheme(id, save) {
   const theme = THEMES.find((item) => item.id === id) || THEMES[0];
   document.body.dataset.theme = theme.id;
   themeButton.textContent = `[THEME ${theme.name}]`;
-  themeMeta.setAttribute("content", theme.bg);
+  themeMeta.setAttribute("content", isThematic() ? theme.bg : NORD_BG);
   if (save) {
     write("localStorage", THEME_KEY, theme.id);
     announce(`Theme ${theme.name}`);
   }
 }
 function cycleTheme() {
+  if (!isThematic()) return;
   const index = THEMES.findIndex(
     (item) => item.id === document.body.dataset.theme,
   );
@@ -133,6 +151,29 @@ function cycleTheme() {
 }
 themeButton.addEventListener("click", cycleTheme);
 setTheme(read("localStorage", THEME_KEY) || "p1", false);
+
+// Thematic: the CRT terminal look. Off by default (Nord); the inline script
+// in index.html applies the saved state before first paint.
+const thematicButton = document.getElementById("thematic-btn");
+function syncThematic() {
+  const on = isThematic();
+  setLabel(thematicButton, on ? "THEMATIC ON" : "THEMATIC OFF");
+  thematicButton.setAttribute("aria-pressed", String(on));
+  themeMeta.setAttribute("content", on ? currentTheme().bg : NORD_BG);
+}
+function toggleThematic() {
+  const on = !isThematic();
+  root.dataset.thematic = on ? "on" : "off";
+  write("localStorage", THEMATIC_KEY, on ? "on" : "off");
+  // Turning it on never forces a boot in this session.
+  if (on) write("sessionStorage", BOOT_KEY, "1");
+  else if (sound.on) toggleSound();
+  syncThematic();
+  fitDemo();
+  announce(on ? "Thematic on" : "Thematic off");
+}
+thematicButton.addEventListener("click", toggleThematic);
+syncThematic();
 
 // Frames
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
@@ -182,7 +223,7 @@ function isDemoFull() {
 function syncFull() {
   const on = isDemoFull();
   demoFull.setAttribute("aria-pressed", String(on));
-  demoFull.textContent = on ? "[EXIT FULL SCREEN · ESC]" : "[FULL SCREEN]";
+  setLabel(demoFull, on ? "EXIT FULL SCREEN · ESC" : "FULL SCREEN");
   fitDemo();
 }
 
@@ -255,9 +296,10 @@ function selectTab(index, focus) {
     tabs[current].getAttribute("aria-controls"),
   );
   if (redrawOnSwitch && previous !== current && !reducedMotion) {
-    shown.classList.remove("redraw");
+    const effect = isThematic() ? "redraw" : "fade";
+    shown.classList.remove("redraw", "fade");
     void shown.offsetWidth;
-    shown.classList.add("redraw");
+    shown.classList.add(effect);
   }
   scroller.scrollTop = 0;
   if (names[current] === "changelog") loadChangelog();
@@ -274,7 +316,8 @@ function selectTab(index, focus) {
 
 for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
   panel.addEventListener("animationend", (event) => {
-    if (event.animationName === "redraw") panel.classList.remove("redraw");
+    if (event.animationName === "redraw" || event.animationName === "fade")
+      panel.classList.remove(event.animationName);
   });
 }
 
@@ -334,8 +377,10 @@ document.addEventListener("keydown", (event) => {
   else if (/^[1-5]$/.test(key)) selectTab(Number(key) - 1, onTab);
   else if (key === "ArrowDown") scrollMain(1);
   else if (key === "ArrowUp") scrollMain(-1);
+  else if (/^[tTmM]$/.test(key) && !isThematic()) handled = false;
   else if (key === "t" || key === "T") cycleTheme();
   else if (key === "m" || key === "M") toggleSound();
+  else if (key === "h" || key === "H") toggleThematic();
   else handled = false;
   if (handled) {
     event.preventDefault();
@@ -374,13 +419,10 @@ for (const button of document.querySelectorAll(".copy")) {
       .querySelector("code")
       .textContent.trim();
     const ok = await copyText(text);
-    button.textContent = ok ? "[Copied]" : "[Copy failed]";
+    setLabel(button, ok ? "Copied" : "Copy failed");
     announce(ok ? "Copied" : "Copy failed");
     window.clearTimeout(button.resetTimer);
-    button.resetTimer = window.setTimeout(
-      () => (button.textContent = "[COPY]"),
-      2000,
-    );
+    button.resetTimer = window.setTimeout(() => setLabel(button, "COPY"), 2000);
   });
 }
 
@@ -572,7 +614,8 @@ function endBoot() {
 }
 
 function boot() {
-  if (reducedMotion || read("sessionStorage", BOOT_KEY)) return;
+  if (!isThematic() || reducedMotion || read("sessionStorage", BOOT_KEY))
+    return;
   write("sessionStorage", BOOT_KEY, "1");
   booting = true;
   bootNode.hidden = false;
