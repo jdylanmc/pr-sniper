@@ -4,14 +4,14 @@ import { readFileSync } from "node:fs";
 const { version } = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 );
-const sections = ["how", "safety", "install", "changelog", "demo"];
+const sections = ["what", "why", "how", "changelog", "demo"];
 
 async function open(page) {
   await page.addInitScript(() =>
     sessionStorage.setItem("termlink-booted", "1"),
   );
   await page.goto("/");
-  await expect(page.locator("#tab-how")).toHaveAttribute(
+  await expect(page.locator("#tab-what")).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -41,25 +41,25 @@ test("tabs switch by click and keep a roving tabindex", async ({ page }) => {
   await expect(
     page.locator('[role="tablist"][aria-label="Sections"]'),
   ).toBeVisible();
-  await expectSection(page, "how");
-  await page.locator("#tab-changelog").click();
-  await expectSection(page, "changelog");
-  await page.locator("#tab-demo").click();
-  await expectSection(page, "demo");
+  await expectSection(page, "what");
   await page.locator("#tab-how").click();
   await expectSection(page, "how");
+  await page.locator("#tab-demo").click();
+  await expectSection(page, "demo");
+  await page.locator("#tab-what").click();
+  await expectSection(page, "what");
 });
 
 test("number keys and arrows switch tabs", async ({ page }) => {
   await open(page);
   await blur(page);
   await page.keyboard.press("2");
-  await expectSection(page, "safety");
+  await expectSection(page, "why");
   await page.keyboard.press("ArrowRight");
-  await expectSection(page, "install");
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
   await expectSection(page, "how");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expectSection(page, "what");
   await page.keyboard.press("4");
   await expectSection(page, "changelog");
   await page.keyboard.press("ArrowRight");
@@ -70,8 +70,8 @@ test("number keys and arrows switch tabs", async ({ page }) => {
   await expectSection(page, "demo");
   await page.locator("#tab-demo").focus();
   await page.keyboard.press("ArrowRight");
-  await expectSection(page, "how");
-  await expect(page.locator("#tab-how")).toBeFocused();
+  await expectSection(page, "what");
+  await expect(page.locator("#tab-what")).toBeFocused();
 });
 
 test("T cycles the theme and the choice persists", async ({ page }) => {
@@ -106,7 +106,7 @@ test.describe("reduced motion", () => {
   test("skips the boot", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#boot")).toBeHidden();
-    await expect(page.locator("#tab-how")).toHaveAttribute(
+    await expect(page.locator("#tab-what")).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -128,7 +128,7 @@ test("changelog renders versions from CHANGELOG.md", async ({ page }) => {
   );
 });
 
-test("install steps each copy their command", async ({
+test("What tab install steps each copy their command", async ({
   page,
   context,
   browserName,
@@ -137,10 +137,10 @@ test("install steps each copy their command", async ({
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   }
   await open(page);
-  await page.locator("#tab-install").click();
-  const steps = page.locator("#panel-install .steps > li");
+  await expect(page.locator("#panel-what")).toBeVisible();
+  const steps = page.locator("#panel-what .install > li");
   await expect(steps).toHaveCount(6);
-  const buttons = page.locator("#panel-install .copy");
+  const buttons = page.locator("#panel-what .copy");
   await expect(buttons).toHaveCount(4);
   const expected = [
     "brew install --cask jdylanmc/pr-sniper/pr-sniper",

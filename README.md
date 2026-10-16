@@ -1,6 +1,6 @@
 # PR Sniper
 
-**Review bot with manners. You keep the last word.**
+**Locking onto bugs. Handing off to brains.**
 
 Site and live demo: [jdylanmc.github.io/pr-sniper](https://jdylanmc.github.io/pr-sniper/).
 

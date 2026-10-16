@@ -3,17 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PR Sniper: review bot with manners</title>
+    <title>PR Sniper: Locking onto bugs. Handing off to brains.</title>
     <meta
       name="description"
-      content="PR Sniper is a macOS menu-bar app. Copilot Agents review each pull request revision once, reply to new comments and leave the final call to you."
+      content="PR Sniper. Desktop utility. Catch pull requests, audit with AI, hand over to human queue. Configurable, extensible, customizable."
     />
     <meta name="theme-color" content="#021a0a" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="PR Sniper" />
     <meta
       property="og:description"
-      content="Review bot with manners. You keep the last word."
+      content="Locking onto bugs. Handing off to brains."
     />
     <meta property="og:url" content="https://jdylanmc.github.io/pr-sniper/" />
     <meta property="og:site_name" content="PR Sniper" />
@@ -55,7 +55,7 @@
    └─────┼─────┘
          │</pre>
             <h1 class="title">PR SNIPER</h1>
-            <p>Review bot with manners. You keep the last word.</p>
+            <p>Locking onto bugs. Handing off to brains.</p>
             <dl class="facts">
               <!-- Keep in step with package.json; tests/site checks it. -->
               <div>
@@ -105,32 +105,32 @@
               <button
                 type="button"
                 role="tab"
-                id="tab-how"
-                aria-controls="panel-how"
+                id="tab-what"
+                aria-controls="panel-what"
                 aria-selected="true"
                 tabindex="0"
               >
-                <span class="num">1</span> HOW IT WORKS
+                <span class="num">1</span> WHAT
               </button>
               <button
                 type="button"
                 role="tab"
-                id="tab-safety"
-                aria-controls="panel-safety"
+                id="tab-why"
+                aria-controls="panel-why"
                 aria-selected="false"
                 tabindex="-1"
               >
-                <span class="num">2</span> SAFETY
+                <span class="num">2</span> WHY
               </button>
               <button
                 type="button"
                 role="tab"
-                id="tab-install"
-                aria-controls="panel-install"
+                id="tab-how"
+                aria-controls="panel-how"
                 aria-selected="false"
                 tabindex="-1"
               >
-                <span class="num">3</span> INSTALL
+                <span class="num">3</span> HOW
               </button>
               <button
                 type="button"
@@ -158,40 +158,195 @@
               <section
                 class="panel"
                 role="tabpanel"
+                id="panel-what"
+                aria-labelledby="tab-what"
+                tabindex="0"
+              >
+                <h2>&gt; WHAT</h2>
+                <p class="lede">
+                  Desktop utility. Catch pull requests. Audit with AI. Hand over
+                  to human queue.
+                </p>
+                <p>Configurable. Extensible. Customizable.</p>
+                <dl class="terms">
+                  <div>
+                    <dt>Configurable</dt>
+                    <dd>
+                      Schedule per repository. Admission rules pick which pull
+                      requests enter.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Extensible</dt>
+                    <dd>
+                      Agents, Doctrines, Voices. Optional Rubber Duck check
+                      before post.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Customizable</dt>
+                    <dd>
+                      Permissions per assignment, all off at start. Light, Dark
+                      or OS theme.
+                    </dd>
+                  </div>
+                </dl>
+                <h2>&gt; INSTALL</h2>
+                <ol class="steps install">
+                  <li>
+                    <h3>Need</h3>
+                    <ul class="bullets">
+                      <li>Apple Silicon Mac.</li>
+                      <li>macOS 13.5 or later.</li>
+                      <li>
+                        Homebrew. No Homebrew? Get at
+                        <a href="https://brew.sh">brew.sh</a>.
+                      </li>
+                    </ul>
+                  </li>
+                  <li>
+                    <h3>Install</h3>
+                    <p>One command. Tap repository, install app.</p>
+                    <div class="cmd">
+                      <code
+                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                      >
+                      <button type="button" class="copy" data-copy="install">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>Launch</h3>
+                    <p>App live in menu bar. No Dock icon.</p>
+                    <div class="cmd">
+                      <code>open -a "PR Sniper"</code>
+                      <button type="button" class="copy" data-copy="launch">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>First run</h3>
+                    <ol class="sub" type="a">
+                      <li>
+                        <b>Settings › Accounts</b>: connect GitHub account (Git
+                        Repository) and Copilot account (AI Tooling). Browser
+                        sign-in. No pasted tokens.
+                      </li>
+                      <li>
+                        Add repository. Pick GitHub account. Pick admission: All
+                        or Filtered.
+                      </li>
+                      <li>
+                        Create Agent (Copilot account and model). Assign to
+                        repository. Set Permissions. Mark one assignment
+                        Primary.
+                      </li>
+                      <li>Enable repository. Watch Queue.</li>
+                    </ol>
+                  </li>
+                  <li>
+                    <h3>Update</h3>
+                    <p>
+                      Quit PR Sniper first. Homebrew own updates. No in-app
+                      updater. Settings and credentials stay.
+                    </p>
+                    <div class="cmd">
+                      <code>brew upgrade --cask pr-sniper</code>
+                      <button type="button" class="copy" data-copy="upgrade">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>Uninstall</h3>
+                    <p>
+                      Remove app only. Settings and state stay in
+                      <code
+                        >~/Library/Application
+                        Support/com.jdylanmc.pr-sniper/</code
+                      >. Credentials stay in macOS Keychain. See
+                      <a
+                        href="https://github.com/jdylanmc/pr-sniper/blob/main/docs/local-data.md"
+                        >local data</a
+                      >.
+                    </p>
+                    <div class="cmd">
+                      <code>brew uninstall --cask pr-sniper</code>
+                      <button type="button" class="copy" data-copy="uninstall">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                </ol>
+                <h2>&gt; NO HOMEBREW</h2>
+                <p>
+                  Get signed, notarized ZIP from
+                  <a href="https://github.com/jdylanmc/pr-sniper/releases"
+                    >GitHub Releases</a
+                  >. Unzip. Move PR Sniper to Applications. Update by hand.
+                </p>
+              </section>
+
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-why"
+                aria-labelledby="tab-why"
+                tabindex="0"
+                hidden
+              >
+                <h2>&gt; WHY</h2>
+                <ul class="bullets">
+                  <li>Pull request queue grow. Human time not.</li>
+                  <li>Agent read diff fast. Agent never bored.</li>
+                  <li>Human read only pull requests Agent already vetted.</li>
+                  <li>
+                    One list for human: <b>Ready for you</b>. Problems go to
+                    <b>Needs attention</b>.
+                  </li>
+                </ul>
+                <h2>&gt; HUMAN KEEP LAST WORD</h2>
+                <ul class="bullets">
+                  <li>Agent prepare work. Human decide.</li>
+                  <li>Nothing post unless permission say so.</li>
+                  <li>Never merge without explicit grant.</li>
+                  <li>Results stay local.</li>
+                </ul>
+              </section>
+
+              <section
+                class="panel"
+                role="tabpanel"
                 id="panel-how"
                 aria-labelledby="tab-how"
                 tabindex="0"
                 hidden
               >
-                <h2>&gt; HOW IT WORKS</h2>
+                <h2>&gt; HOW</h2>
                 <ol class="steps">
-                  <li>Poll each enabled repository on its own schedule.</li>
+                  <li>Poll each enabled repository on own schedule.</li>
                   <li>
-                    Admission decides which pull requests enter:
-                    <b>All</b>, or ordered <b>Filtered</b> rules (assigned,
-                    mentioned, include or exclude users and paths). The first
-                    enabled matching rule wins.
+                    Admission pick which pull requests enter: <b>All</b>, or
+                    ordered <b>Filtered</b> rules (assigned, mentioned, include
+                    or exclude users and paths). First enabled match win.
                   </li>
                   <li>
-                    One review per head SHA. A new push is a new revision and
-                    gets another review. On the same revision the Agent only
-                    replies to new comments.
+                    One review per head SHA. New push mean new revision, new
+                    review. Same revision: Agent only reply to new comments.
                   </li>
                   <li>
-                    Agents see the description, changed files and all comments.
-                    They act only with explicit permissions:
-                    <b>Publish Comment</b>, <b>Reply Comment</b>,
-                    <b>Approve</b>, <b>&amp; Merge</b>. New assignments start
-                    with every grant off.
+                    Agent see description, changed files, all comments. Agent
+                    act only with explicit permission.
                   </li>
                   <li>
                     Results land in <b>Queue</b>: <b>Ready for you</b> or
-                    <b>Needs attention</b>. Transient failures retry with
-                    backoff, 3 attempts, then park. Parked failures auto-resume.
+                    <b>Needs attention</b>. Transient failure retry with
+                    backoff, 3 attempts, then park. Parked failure auto-resume.
                   </li>
                   <li>
-                    Merged or closed pull requests move to <b>Reviewed</b>.
-                    Results stay local.
+                    Merged or closed pull request move to <b>Reviewed</b>.
                   </li>
                 </ol>
                 <h2>&gt; TERMS</h2>
@@ -199,62 +354,48 @@
                   <div>
                     <dt>Agent</dt>
                     <dd>
-                      A Copilot account and model, a prompt and ordered
-                      Doctrines, assigned per repository.
+                      Copilot account and model, prompt, ordered Doctrines.
+                      Assigned per repository.
                     </dd>
                   </div>
                   <div>
                     <dt>Voice</dt>
                     <dd>
-                      Optional writing style for what people read. Ships
-                      Caveman, Gilfoyle and Merlin.
+                      Optional writing style for what people read. Ship Caveman,
+                      Gilfoyle, Merlin.
                     </dd>
                   </div>
                   <div>
                     <dt>Rubber Duck</dt>
                     <dd>
-                      Optional second Agent the primary asks before posting.
-                      Verdicts: confirmed, revise, rejected, unverifiable.
+                      Optional second Agent. Primary ask before post. Verdict:
+                      confirmed, revise, rejected or unverifiable.
                     </dd>
                   </div>
                   <div>
                     <dt>Schedule</dt>
                     <dd>
                       Per repository: every 5–30 min or 1–4 h, hourly, daily or
-                      cron. New repositories poll every 30 minutes.
+                      cron. New repository poll every 30 min.
                     </dd>
                   </div>
                 </dl>
-              </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-safety"
-                aria-labelledby="tab-safety"
-                tabindex="0"
-                hidden
-              >
-                <h2>&gt; SAFETY MODEL</h2>
+                <h2>&gt; SAFETY</h2>
                 <ul class="bullets">
                   <li>
-                    Local results. Nothing posts unless a permission says so.
+                    One review per revision. Publish recheck head SHA before and
+                    after.
                   </li>
                   <li>
-                    One review per revision. Publication revalidates the head
-                    SHA before and after.
+                    GitHub and Copilot identity separate. Connect one never
+                    connect other.
                   </li>
                   <li>
-                    GitHub and Copilot identities are separate. Connecting one
-                    never connects the other.
+                    Approve and merge: opt-in, primary Agent only, fail closed.
                   </li>
                   <li>
-                    Approve and merge are opt-in, primary-Agent-only and fail
-                    closed.
-                  </li>
-                  <li>
-                    Agents get host-owned review tools (reads plus one exit).
-                    That is a boundary, not a sandbox.
+                    Agent get host-owned review tools (reads plus one exit).
+                    Boundary, not sandbox.
                   </li>
                 </ul>
                 <h2>&gt; PERMISSIONS</h2>
@@ -284,118 +425,6 @@
                     </tr>
                   </tbody>
                 </table>
-              </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-install"
-                aria-labelledby="tab-install"
-                tabindex="0"
-                hidden
-              >
-                <h2>&gt; HOW TO INSTALL</h2>
-                <ol class="steps install">
-                  <li>
-                    <h3>Requirements</h3>
-                    <ul class="bullets">
-                      <li>Apple Silicon Mac.</li>
-                      <li>macOS 13.5 or later.</li>
-                      <li>
-                        Homebrew. Don't have it? See
-                        <a href="https://brew.sh">brew.sh</a>.
-                      </li>
-                    </ul>
-                  </li>
-                  <li>
-                    <h3>Install</h3>
-                    <p>One command taps the repository and installs the app.</p>
-                    <div class="cmd">
-                      <code
-                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
-                      >
-                      <button type="button" class="copy" data-copy="install">
-                        [COPY]
-                      </button>
-                    </div>
-                  </li>
-                  <li>
-                    <h3>Launch</h3>
-                    <p>
-                      Open PR Sniper from Applications. It lives in the menu
-                      bar, with no Dock icon.
-                    </p>
-                    <div class="cmd">
-                      <code>open -a "PR Sniper"</code>
-                      <button type="button" class="copy" data-copy="launch">
-                        [COPY]
-                      </button>
-                    </div>
-                  </li>
-                  <li>
-                    <h3>First run</h3>
-                    <p>Accounts → Repository → Agent → Enable.</p>
-                    <ol class="sub" type="a">
-                      <li>
-                        <b>Settings › Accounts</b>: connect a GitHub account
-                        (Git Repository) and a Copilot account (AI Tooling).
-                        Browser sign-in, no pasted tokens.
-                      </li>
-                      <li>
-                        Add a repository, pick its GitHub account and admission:
-                        All or Filtered.
-                      </li>
-                      <li>
-                        Create an Agent (Copilot account and model), assign it
-                        to the repository, set Permissions and mark one
-                        assignment Primary.
-                      </li>
-                      <li>Enable the repository and watch Queue.</li>
-                    </ol>
-                  </li>
-                  <li>
-                    <h3>Update</h3>
-                    <p>
-                      Quit PR Sniper first. Homebrew owns updates; there is no
-                      in-app updater. Settings and credentials are kept.
-                    </p>
-                    <div class="cmd">
-                      <code>brew upgrade --cask pr-sniper</code>
-                      <button type="button" class="copy" data-copy="upgrade">
-                        [COPY]
-                      </button>
-                    </div>
-                  </li>
-                  <li>
-                    <h3>Uninstall</h3>
-                    <p>
-                      Removes the app. Settings and state stay in
-                      <code
-                        >~/Library/Application
-                        Support/com.jdylanmc.pr-sniper/</code
-                      >
-                      and credentials stay in the macOS Keychain. See
-                      <a
-                        href="https://github.com/jdylanmc/pr-sniper/blob/main/docs/local-data.md"
-                        >local data</a
-                      >.
-                    </p>
-                    <div class="cmd">
-                      <code>brew uninstall --cask pr-sniper</code>
-                      <button type="button" class="copy" data-copy="uninstall">
-                        [COPY]
-                      </button>
-                    </div>
-                  </li>
-                </ol>
-                <h2>&gt; WITHOUT HOMEBREW</h2>
-                <p>
-                  Download the signed, notarized ZIP from
-                  <a href="https://github.com/jdylanmc/pr-sniper/releases"
-                    >GitHub Releases</a
-                  >, unzip it and move PR Sniper to Applications. You then
-                  update by hand.
-                </p>
               </section>
 
               <section
@@ -435,7 +464,7 @@
                   </div>
                 </div>
                 <div class="demo-caption">
-                  <span>Sample data</span>
+                  <span>Fake data. Not touch GitHub.</span>
                   <button
                     type="button"
                     id="demo-full"
