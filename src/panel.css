@@ -1417,12 +1417,28 @@ body:has(.panel-shell) {
   display: none;
 }
 
-.panel-shell[data-detail="true"][data-evidence="item"] .panel-context {
+/* Matches the generic detail rule's specificity (each :not() adds one) so the
+   overlapping status card leaves the title an 18px gap instead of covering it. */
+.panel-shell[data-detail="true"][data-evidence="item"]:not(
+    [data-changelog="true"]
+  )
+  .panel-context {
   padding-bottom: 41px;
 }
 .panel-shell[data-evidence="item"] .queue-status {
   position: relative;
   margin-top: -23px;
+}
+@media (max-height: 440px) {
+  .panel-shell[data-detail="true"][data-evidence="item"]:not(
+      [data-changelog="true"]
+    )
+    .panel-context {
+    padding-bottom: 24px;
+  }
+  .panel-shell[data-evidence="item"] .queue-status {
+    margin-top: -10px;
+  }
 }
 .panel-shell .queue-status-actions .queue-secondary {
   display: flex;
