@@ -1,4 +1,6 @@
 import { frame } from "./frame.js";
+import { createDemo } from "./demo.js";
+import { startMini } from "./mini.js";
 
 const THEMES = [
   { id: "p1", name: "P1 GREEN", bg: "#021a0a" },
@@ -181,113 +183,15 @@ syncThematic();
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
   frame(node);
 
-// Demo: a 1440x810 desktop scaled uniformly to fit, always 16:9.
-const DEMO_W = 1440;
-const DEMO_H = 810;
+// Demo: the v2 prototype in the DEMO tab (thematic on only).
 const demoStage = document.getElementById("demo-stage");
-const demoViewport = document.getElementById("demo-viewport");
-const demoScreen = demoViewport.parentElement;
 const stacked = matchMedia("(max-width: 900px)");
-
-// With thematic off, room kept around the desktop so it fits in the window.
-const DEMO_WINDOW_GAP = 120;
-
-function fitDemo() {
-  if (!demoStage.getClientRects().length) return;
-  const screen = getComputedStyle(demoScreen);
-  const padX = parseFloat(screen.paddingLeft) + parseFloat(screen.paddingRight);
-  const padY = parseFloat(screen.paddingTop) + parseFloat(screen.paddingBottom);
-  const width = demoStage.clientWidth - padX;
-  let height;
-  if (isDemoFull()) {
-    height = demoStage.clientHeight - padY;
-  } else if (!isThematic()) {
-    // The page scrolls, so fit the width and cap at the window height.
-    height = window.innerHeight - padY - DEMO_WINDOW_GAP;
-    if (height < 160) height = Infinity;
-  } else {
-    height = stacked.matches ? Infinity : demoStage.clientHeight - padY;
-  }
-  const scale = Math.max(0.1, Math.min(width / DEMO_W, height / DEMO_H));
-  demoViewport.style.width = `${Math.floor(DEMO_W * scale)}px`;
-  demoViewport.firstElementChild.style.transform = `scale(${scale})`;
-}
-
-new ResizeObserver(fitDemo).observe(demoStage);
-window.addEventListener("resize", fitDemo);
-stacked.addEventListener?.("change", fitDemo);
-
-// Full screen: the browser's Fullscreen API where it exists (Esc exits
-// natively), else a fixed overlay that Esc closes from the page or the demo.
-const demoFull = document.getElementById("demo-full");
-const nativeFull = Boolean(
-  demoStage.requestFullscreen || demoStage.webkitRequestFullscreen,
-);
-
-function fullElement() {
-  return document.fullscreenElement || document.webkitFullscreenElement;
-}
-
-function isDemoFull() {
-  return (
-    fullElement() === demoStage || demoStage.classList.contains("demo-overlay")
-  );
-}
-
-function syncFull() {
-  const on = isDemoFull();
-  demoFull.setAttribute("aria-pressed", String(on));
-  demoFull.setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
-  demoFull.querySelector(".t-on").textContent = on ? "[EXIT]" : "[FULL]";
-  fitDemo();
-}
-
-function enterFull() {
-  if (nativeFull) {
-    const request =
-      demoStage.requestFullscreen || demoStage.webkitRequestFullscreen;
-    Promise.resolve(request.call(demoStage)).catch(() => {
-      demoStage.classList.add("demo-overlay");
-      syncFull();
-    });
-  } else {
-    demoStage.classList.add("demo-overlay");
-    syncFull();
-  }
-}
-
-function exitFull() {
-  if (demoStage.classList.contains("demo-overlay")) {
-    demoStage.classList.remove("demo-overlay");
-    syncFull();
-    demoFull.focus();
-  } else if (fullElement()) {
-    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-  }
-}
-
-demoFull.addEventListener("click", () => {
-  if (isDemoFull()) exitFull();
-  else enterFull();
-  sound.click();
+const demo = createDemo({
+  fitHeight: (padY) =>
+    stacked.matches ? Infinity : demoStage.clientHeight - padY,
+  onToggle: () => sound.click(),
 });
-document.addEventListener("fullscreenchange", syncFull);
-document.addEventListener("webkitfullscreenchange", syncFull);
-
-// Esc inside the (same-origin) demo also closes the overlay fallback.
-document.getElementById("demo-frame").addEventListener("load", (event) => {
-  try {
-    event.target.contentDocument.addEventListener("keydown", (inner) => {
-      if (
-        inner.key === "Escape" &&
-        demoStage.classList.contains("demo-overlay")
-      )
-        exitFull();
-    });
-  } catch {
-    // Cross-origin in some previews; the page-level Esc still works.
-  }
-});
+stacked.addEventListener?.("change", demo.fit);
 
 // Tabs
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
@@ -319,8 +223,8 @@ function selectTab(index, focus) {
   scroller.scrollTop = 0;
   if (names[current] === "changelog") loadChangelog();
   if (names[current] === "demo") {
-    loadDemo();
-    fitDemo();
+    demo.load();
+    demo.fit();
   }
   const hash = current === 0 ? "" : `#${names[current]}`;
   if (location.hash !== hash) {
@@ -371,9 +275,9 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (isDemoFull()) {
+  if (demo.isFull()) {
     if (event.key === "Escape") {
-      exitFull();
+      demo.exit();
       event.preventDefault();
     }
     return;
@@ -703,28 +607,12 @@ function applyMode() {
       panel.classList.remove("redraw");
     }
     loadChangelog();
-    demoObserver?.observe(demoStage);
   }
-  fitDemo();
+  demo.fit();
 }
 
-// With thematic off the demo loads as it nears the viewport.
-function loadDemo() {
-  const demoFrame = document.getElementById("demo-frame");
-  if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
-}
-const demoObserver =
-  "IntersectionObserver" in window
-    ? new IntersectionObserver(
-        (entries) => {
-          if (!entries.some((entry) => entry.isIntersecting)) return;
-          loadDemo();
-          demoObserver.disconnect();
-        },
-        { rootMargin: "100px 0px" },
-      )
-    : null;
-if (!demoObserver && !isThematic()) loadDemo();
+// With thematic off the hero shows the mini panel instead of the desktop.
+startMini(document.getElementById("mini"));
 
 const initial = names.indexOf(location.hash.slice(1));
 current = initial > 0 ? initial : 0;

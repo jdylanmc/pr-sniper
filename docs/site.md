@@ -4,16 +4,20 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 
 ## Files
 
-| Path                                     | Holds                                                    |
-| ---------------------------------------- | -------------------------------------------------------- |
-| `site/index.html`, `style.css`, `app.js` | Chrome, tabs, themes, boot, sound, changelog renderer    |
-| `site/frame.js`                          | Box-drawing borders on the character grid                |
-| `prototypes/v2/`                         | Design prototype embedded as the DEMO tab at `/demo/`    |
-| `site/fonts/`                            | VT323 Termlink (OFL, `OFL.txt`), built by the script     |
-| `site/fonts/jetbrains-mono-*.woff2`      | JetBrains Mono 400/700 (OFL, `OFL-JetBrainsMono.txt`)    |
-| `scripts/site-font.py`                   | Adds box-drawing, block and arrow glyphs to VT323        |
-| `tests/site/`                            | Playwright suite and a server for the artifact layout    |
-| `.github/workflows/pages.yml`            | Tests on PRs; tests and deploys on `main` and on request |
+| Path                                     | Holds                                                      |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| `site/index.html`, `style.css`, `app.js` | Chrome, tabs, themes, boot, sound, changelog renderer      |
+| `site/frame.js`                          | Box-drawing borders on the character grid                  |
+| `site/mini.js`                           | Hero mini panel loop (thematic off)                        |
+| `site/demo.js`                           | 16:9 desktop fit and full screen, shared by both pages     |
+| `site/demo.html`, `demo-page.js`         | Plain demo page: header and the full desktop               |
+| `site/img/sniper-mark.png`               | Copy of `prototypes/v2/sniper-mark.png` for the mini panel |
+| `prototypes/v2/`                         | Design prototype embedded as the DEMO tab at `/demo/`      |
+| `site/fonts/`                            | VT323 Termlink (OFL, `OFL.txt`), built by the script       |
+| `site/fonts/jetbrains-mono-*.woff2`      | JetBrains Mono 400/700 (OFL, `OFL-JetBrainsMono.txt`)      |
+| `scripts/site-font.py`                   | Adds box-drawing, block and arrow glyphs to VT323          |
+| `tests/site/`                            | Playwright suite and a server for the artifact layout      |
+| `.github/workflows/pages.yml`            | Tests on PRs; tests and deploys on `main` and on request   |
 
 ## Thematic
 
@@ -25,9 +29,11 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 - Header button `[THEMATIC ON]` / `[THEMATIC OFF]` (on) or "thematic" switch (off), `aria-pressed`, or H. Saved in `localStorage` `termlink-thematic` (`on` / `off`).
 - `<html data-thematic>` is `off` in the markup. The inline `<head>` script sets the saved state, preloads that look's font and sets `theme-color` before first paint. A Content Security Policy would need its `sha256` hash.
 - Turning it on never boots mid-session; the boot can run next session.
-- Off page order: header (home, anchors, GitHub, toggle), hero, demo, what, why, how, install (`#install`), changelog (latest release + full link), footer.
+- Off page order: header (home, anchors, demo page, GitHub, toggle), hero, what, why, how, install (`#install`), changelog (latest release + full link), footer.
+- Off hero: text left and the mini panel right at ≥1024px, stacked below. The mini panel is hand-built from the v2 prototype's values (408px, scaled), not an iframe. Its ~11 s loop: a pull request starts reviewing, the scope locks on, it turns Ready for you, the count goes up, a notification shows, the oldest row leaves. It pauses off-screen or in a hidden tab and shows a still under reduced motion. `data-step` / `data-cycle` expose the loop to tests.
+- `demo.html`: always plain; the desktop fits the window below the header. Its thematic switch (or H) saves on and opens `index.html#demo`.
 - One set of sections serves both looks. The markup is in page order; `applyMode()` in `app.js` adds tab roles, `hidden` and moves `#install` into WHAT when on, and removes them when off. CSS shows every section before `app.js` runs.
-- Off: keys 1–5 and arrows keep browser behaviour; anchors scroll smoothly unless reduced motion; the demo loads near the viewport (`IntersectionObserver`), fits the width and is capped by the window height.
+- Off: keys 1–5 and arrows keep browser behaviour; anchors scroll smoothly unless reduced motion.
 - DEMO is only the 16:9 desktop. Full screen is a small button on the frame's bottom edge (`[FULL]` on, icon off; name "Full screen" / "Exit full screen"); Esc exits.
 - Both looks: header link home to <https://jdylanmc.github.io/> ("dylan mccurry").
 - Markup that exists in one look only uses `.t-on` / `.t-off`; off-look rules live at the end of `style.css` under `[data-thematic="off"]`.

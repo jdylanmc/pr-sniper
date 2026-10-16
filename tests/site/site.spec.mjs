@@ -8,7 +8,6 @@ const sections = ["what", "why", "how", "changelog", "demo"];
 // Landing page order with thematic off.
 const pageOrder = [
   ".hero",
-  "#panel-demo",
   "#panel-what",
   "#panel-why",
   "#panel-how",
@@ -57,11 +56,19 @@ async function expectSection(page, name) {
   }
 }
 
-// Thematic on: the DEMO tab. Off: scroll the desktop into view.
-async function showDemo(page, thematic) {
-  if (thematic) await page.locator("#tab-demo").click();
-  else await page.locator("#demo-stage").scrollIntoViewIfNeeded();
+// Thematic on: the DEMO tab. Off: the demo page.
+async function openDemo(page, thematic) {
+  if (thematic) {
+    await open(page, { thematic });
+    await page.locator("#tab-demo").click();
+  } else {
+    await page.goto("/demo.html");
+  }
+  await expect(page.locator("#demo-viewport")).toBeVisible();
 }
+
+const step = (page) =>
+  page.locator("#mini").evaluate((node) => node.dataset.step);
 
 async function expectLanding(page) {
   await expect(page.locator("html")).toHaveAttribute("data-thematic", "off");
@@ -70,6 +77,9 @@ async function expectLanding(page) {
   await expect(page.locator('[role="tab"]:visible')).toHaveCount(0);
   await expect(page.locator('[role="tabpanel"]')).toHaveCount(0);
   await expect(page.locator("#scroller section[hidden]")).toHaveCount(0);
+  // The desktop demo lives on demo.html.
+  await expect(page.locator("#panel-demo")).toBeHidden();
+  await expect(page.locator("#demo-frame")).not.toHaveAttribute("src", /.+/);
   let previous = -Infinity;
   for (const selector of pageOrder) {
     const node = page.locator(selector);
@@ -118,12 +128,12 @@ test("thematic is off by default: the Nord landing page", async ({ page }) => {
     "href",
     "#install",
   );
-  await expect(page.locator(".hero .btn--ghost")).toHaveAttribute(
+  await expect(page.locator(".hero-actions .btn--ghost")).toHaveAttribute(
     "href",
     "https://github.com/jdylanmc/pr-sniper",
   );
   await expect(page.locator("#panel-what .terms > div")).toHaveCount(3);
-  await expect(page.locator("#demo-full")).toBeVisible();
+  await expect(page.locator(".hero figure.mini")).toBeVisible();
   const button = page.locator(".head #thematic-btn");
   await expect(button).toBeVisible();
   await expect(button).toHaveAttribute("aria-pressed", "false");
@@ -188,11 +198,14 @@ test("header anchors scroll to their sections", async ({ page }) => {
   await open(page);
   const nav = page.locator('.head nav[aria-label="Page"] a');
   await expect(nav).toHaveText(["what", "why", "how", "demo", "changelog"]);
-  for (const name of ["changelog", "why", "demo", "how", "what"]) {
+  await expect(page.locator(".head nav").getByText("demo")).toHaveAttribute(
+    "href",
+    "demo.html",
+  );
+  for (const name of ["changelog", "why", "how", "what"]) {
     await page.locator(`.head nav a[href="#${name}"]`).click();
     await expect.poll(() => new URL(page.url()).hash).toBe(`#${name}`);
-    // The demo's heading is visually hidden; check the desktop instead.
-    const target = page.locator(name === "demo" ? "#demo-stage" : `#${name}`);
+    const target = page.locator(`#${name}`);
     await expect(target).toBeInViewport();
     // Lands near the top, with the heading in view.
     await expect
@@ -225,25 +238,157 @@ test("the hero copies the install command", async ({
   }
 });
 
-test("the demo loads when scrolled into view and stays 16:9", async ({
+test("the hero mini panel sits beside the text, or under it on phones", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1280, height: 360 });
-  await open(page);
-  const frame = page.locator("#demo-frame");
-  await expect(frame).not.toHaveAttribute("src", /.+/);
-  await page.locator("#demo-stage").scrollIntoViewIfNeeded();
-  await expect(frame).toHaveAttribute("src", "demo/index.html");
   await page.setViewportSize({ width: 1440, height: 900 });
-  const viewport = page.locator("#demo-viewport");
-  await expect
-    .poll(async () => {
-      const box = await viewport.boundingBox();
-      return Math.abs(box.width / box.height - 16 / 9);
-    })
-    .toBeLessThan(0.02);
+  await open(page);
+  const mini = page.locator(".hero figure.mini");
+  await expect(mini).toBeVisible();
+  await expect(mini.locator("figcaption")).toHaveClass(/sr-only/);
+  await expect(mini.locator(".mini-scale")).toHaveAttribute(
+    "aria-hidden",
+    "true",
+  );
+  expect(
+    await mini.evaluate(
+      (node) => node.querySelectorAll("a, button, input, [tabindex]").length,
+    ),
+  ).toBe(0);
+  const text = await page.locator(".hero-text").boundingBox();
+  let box = await mini.boundingBox();
+  expect(box.x).toBeGreaterThan(text.x + text.width);
+  expect(box.width).toBeGreaterThanOrEqual(340);
+  expect(box.width).toBeLessThanOrEqual(380);
+  // Vertically centred against the text.
+  expect(
+    Math.abs(box.y + box.height / 2 - (text.y + text.height / 2)),
+  ).toBeLessThan(80);
+  const link = page.getByRole("link", { name: "Try the full demo ↗" });
+  await expect(link).toHaveAttribute("href", "demo.html");
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  const actions = await page.locator(".hero-actions").boundingBox();
+  box = await mini.boundingBox();
+  expect(box.y).toBeGreaterThan(actions.y + actions.height);
+  expect(box.width).toBeLessThanOrEqual(420);
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(375);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(375);
+});
+
+test("the mini panel acts out a review and hands it off", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const mini = page.locator("#mini");
+  const count = mini.locator(".mini-count");
+  const badge = mini.locator(".mini-badge");
+  await expect(count).toHaveText("2");
+  await expect(mini).toHaveAttribute("data-step", "enter", { timeout: 4000 });
+  await expect(mini.locator(".mini-row").first()).toHaveClass(/is-reviewing/);
+  await expect(mini.locator(".mini-row").first()).toContainText(
+    "Fix token refresh race",
+  );
+  await expect(badge).toHaveText("1");
+  await expect(mini).toHaveAttribute("data-step", "lock", { timeout: 6000 });
+  await expect(mini.locator(".mini-reticle")).toHaveClass(/is-locked/);
+  await expect(mini).toHaveAttribute("data-step", "handoff", {
+    timeout: 4000,
+  });
+  await expect(mini.locator(".mini-row").first()).not.toHaveClass(
+    /is-reviewing/,
+  );
+  await expect(mini.locator(".mini-row").first()).toContainText(
+    "Ready for you",
+  );
+  await expect(count).toHaveText("3");
+  await expect(badge).toHaveText("0");
+  await expect(mini.locator(".mini-note")).toHaveClass(/is-shown/, {
+    timeout: 4000,
+  });
+  // The loop resets and the next pull request comes in.
+  await expect(mini).toHaveAttribute("data-cycle", "1", { timeout: 8000 });
+  await expect(count).toHaveText("2");
+  await expect(mini.locator(".mini-row")).toHaveCount(2);
+  await expect(mini).toHaveAttribute("data-step", "enter", { timeout: 4000 });
+  await expect(mini.locator(".mini-row").first()).toContainText(
+    "Escape markdown in titles",
+  );
+});
+
+test("the mini panel pauses off-screen", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const mini = page.locator("#mini");
+  await expect(mini).toHaveClass(/is-running/);
+  await page.locator("#panel-changelog").scrollIntoViewIfNeeded();
+  await expect(mini).not.toHaveClass(/is-running/);
+  const before = await step(page);
+  const cycle = await mini.getAttribute("data-cycle");
+  await page.waitForTimeout(4500);
+  expect(await step(page)).toBe(before);
+  expect(await mini.getAttribute("data-cycle")).toBe(cycle);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(mini).toHaveClass(/is-running/);
+  await expect.poll(() => step(page), { timeout: 8000 }).not.toBe(before);
+});
+
+test.describe("reduced motion mini panel", () => {
+  test.use({ reducedMotion: "reduce" });
+
+  test("shows a still of the lock-on", async ({ page }) => {
+    await open(page);
+    const mini = page.locator("#mini");
+    await expect(mini).toHaveAttribute("data-step", "static");
+    await expect(mini.locator(".mini-reticle")).toHaveClass(/is-locked/);
+    await expect(mini.locator(".mini-row")).toHaveCount(3);
+    await page.waitForTimeout(2000);
+    await expect(mini).toHaveAttribute("data-step", "static");
+    expect(
+      await mini
+        .locator(".mini-spin")
+        .evaluate((node) => getComputedStyle(node).animationName),
+    ).toBe("none");
+  });
+});
+
+test("the demo page shows the full desktop", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.getByRole("link", { name: "Try the full demo ↗" }).click();
+  await expect(page).toHaveURL(/\/demo\.html$/);
+  await expect(page.locator("html")).toHaveAttribute("data-thematic", "off");
+  const home = page.getByRole("link", { name: "dylan mccurry", exact: true });
+  await expect(home).toHaveAttribute("href", HOME);
+  await expect(page.locator(".head nav a[aria-current=page]")).toHaveText(
+    "demo",
+  );
+  await expect(
+    page.locator('.head nav a[href="index.html#why"]'),
+  ).toBeVisible();
+  const frame = page.locator("#demo-frame");
+  await expect(frame).toHaveAttribute("src", "demo/index.html");
   const demo = page.frameLocator("#demo-frame");
   await expect(demo.locator("body")).not.toBeEmpty();
+  // Fills the window below the header.
+  const header = await page.locator(".head").boundingBox();
+  const box = await page.locator("#demo-viewport").boundingBox();
+  expect(box.y).toBeGreaterThan(header.y + header.height);
+  expect(box.y + box.height).toBeLessThanOrEqual(900);
+  expect(box.width).toBeGreaterThan(1200);
+});
+
+test("the demo page's thematic switch opens the terminal DEMO tab", async ({
+  page,
+}) => {
+  await page.goto("/demo.html");
+  await page.locator("#thematic-btn").click();
+  await expect(page).toHaveURL(/\/index\.html#demo$/);
+  await expect(page.locator("html")).toHaveAttribute("data-thematic", "on");
+  await expect(page.locator("#boot")).toBeHidden();
+  await expectSection(page, "demo");
 });
 
 test("the changelog shows the latest release and links the full one", async ({
@@ -385,8 +530,7 @@ for (const saved of ["on", "off"]) {
           bg: getComputedStyle(screen).backgroundColor,
           hero: getComputedStyle(hero).display,
           tabs: getComputedStyle(tabs).display,
-          demoFirst:
-            demo.getBoundingClientRect().top < what.getBoundingClientRect().top,
+          demoShown: getComputedStyle(demo).display,
           whyShown: getComputedStyle(document.getElementById("panel-why"))
             .display,
         };
@@ -404,9 +548,9 @@ for (const saved of ["on", "off"]) {
       expect(first.whyShown).toBe("none");
     } else {
       expect(first.bg).toBe(NORD_BG);
-      expect(first.hero).toBe("block");
+      expect(first.hero).toBe("grid");
       expect(first.tabs).toBe("none");
-      expect(first.demoFirst).toBe(true);
+      expect(first.demoShown).toBe("none");
       expect(first.whyShown).toBe("block");
     }
   });
@@ -605,8 +749,12 @@ for (const thematic of [false, true]) {
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(375);
-    await showDemo(page, thematic);
-    await expect(page.locator("#demo-frame")).toBeVisible();
+    if (thematic) {
+      await page.locator("#tab-demo").click();
+      await expect(page.locator("#demo-frame")).toBeVisible();
+    } else {
+      await expect(page.locator(".hero figure.mini")).toBeVisible();
+    }
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(375);
@@ -661,8 +809,7 @@ for (const [width, height] of [
       page,
     }) => {
       await page.setViewportSize({ width, height });
-      await open(page, { thematic });
-      await showDemo(page, thematic);
+      await openDemo(page, thematic);
       const viewport = page.locator("#demo-viewport");
       await expect(viewport).toBeVisible();
       await expect
@@ -679,8 +826,8 @@ for (const [width, height] of [
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth),
       ).toBeLessThanOrEqual(width);
-      // With thematic off the page scrolls; the desktop still fits the window.
-      if (!thematic) expect(box.height).toBeLessThanOrEqual(height);
+      // The demo page fits the desktop in the window.
+      if (!thematic) expect(box.y + box.height).toBeLessThanOrEqual(height);
     });
   }
 }
@@ -690,8 +837,7 @@ for (const thematic of [false, true]) {
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await open(page, { thematic });
-    await showDemo(page, thematic);
+    await openDemo(page, thematic);
     const button = page.locator("#demo-full");
     const viewport = page.locator("#demo-viewport");
     const before = await viewport.boundingBox();
@@ -713,9 +859,10 @@ for (const thematic of [false, true]) {
     await button.click();
     await expect(button).toHaveAttribute("aria-pressed", "true");
     await expect(button).toHaveAccessibleName("Exit full screen");
+    // The demo page already fills the window, so it grows less there.
     await expect
       .poll(async () => (await viewport.boundingBox()).width)
-      .toBeGreaterThan(before.width + 100);
+      .toBeGreaterThan(before.width + (thematic ? 100 : 20));
     const full = await viewport.boundingBox();
     expect(Math.abs(full.width / full.height - 16 / 9)).toBeLessThan(0.02);
     // Tab keys are ignored while full screen.
@@ -737,11 +884,14 @@ for (const thematic of [false, true]) {
 
 test("the demo is only the desktop, with no caption row", async ({ page }) => {
   for (const thematic of [false, true]) {
-    await open(page, { thematic });
-    await showDemo(page, thematic);
+    await openDemo(page, thematic);
     await expect(page.locator(".demo-caption")).toHaveCount(0);
-    await expect(page.locator("#panel-demo")).not.toContainText("Fake data");
-    await expect(page.locator("#panel-demo > *")).toHaveCount(1);
+    await expect(page.locator("body")).not.toContainText("Fake data");
+    const stage = page.locator(thematic ? "#panel-demo" : "main");
+    await expect(stage.locator(":scope > .demo-stage")).toHaveCount(1);
+    await expect(
+      stage.locator(":scope > :not(.demo-stage):not(.sr-only)"),
+    ).toHaveCount(0);
   }
 });
 
@@ -754,8 +904,7 @@ for (const thematic of [false, true]) {
       Element.prototype.requestFullscreen = undefined;
       Element.prototype.webkitRequestFullscreen = undefined;
     });
-    await open(page, { thematic });
-    await showDemo(page, thematic);
+    await openDemo(page, thematic);
     const demo = page.frameLocator("#demo-frame");
     await expect(demo.locator("body")).not.toBeEmpty();
     await page.locator("#demo-full").click();

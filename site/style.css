@@ -943,8 +943,7 @@ html[data-thematic="off"] body {
   --cw: 9.6px;
   --lh: 26px;
   --gutter: 1.5rem;
-  --wrap: 1040px;
-  --wide: 1200px;
+  --wrap: 1120px;
   height: auto;
   background: var(--bg);
 }
@@ -1162,12 +1161,9 @@ html[data-thematic="off"] body {
   border-top: 0;
 }
 
-[data-thematic="off"] .panel-demo {
-  display: block;
-  height: auto;
-  max-width: var(--wide);
-  padding: 1rem 0 3.5rem;
-  border-top: 0;
+/* The desktop demo has its own page (demo.html). */
+[data-thematic="off"] #panel-demo {
+  display: none !important;
 }
 
 [data-thematic="off"] .panel > * + *,
@@ -1219,8 +1215,30 @@ html[data-thematic="off"] body {
 }
 
 /* Hero */
-[data-thematic="off"] .hero > * + * {
+[data-thematic="off"] .hero {
+  display: grid;
+  gap: 3rem;
+  padding-bottom: 3.5rem;
+}
+
+[data-thematic="off"] .hero-text > * + * {
   margin-top: 1rem;
+}
+
+[data-thematic="off"] .hero-demo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.75rem;
+  justify-self: center;
+}
+
+@media (min-width: 1024px) {
+  [data-thematic="off"] .hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 4.5rem;
+    align-items: center;
+  }
 }
 
 [data-thematic="off"] .hero h1 {
@@ -1544,4 +1562,628 @@ html[data-thematic="off"] body {
   [data-thematic="off"] .terms > div {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Hero mini panel: PR Sniper's tray popover in miniature, built at the v2
+   prototype's own size and values (prototypes/v2/style.css), then scaled. */
+
+.mini {
+  --s: 0.88;
+  --navy: #243247;
+  --orange: #f68743;
+  --paper: #ffffff;
+  --mist: #eff2f5;
+  --ink: #202b3b;
+  --muted: #647082;
+  position: relative;
+  width: calc(408px * var(--s));
+  height: calc(574px * var(--s));
+  margin: 0;
+  color: var(--ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  line-height: normal;
+  text-transform: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mini-scale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 408px;
+  transform: scale(var(--s));
+  transform-origin: 0 0;
+}
+
+.mini-pop {
+  position: relative;
+  padding-top: 34px;
+  filter: drop-shadow(0 18px 34px #0717274d);
+}
+
+/* The menu-bar item the panel drops from. */
+.mini-tray {
+  position: absolute;
+  top: 0;
+  left: calc(100% - 90px);
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 22px;
+  border-radius: 5px;
+  color: #eceff4;
+  background: rgba(236, 239, 244, 0.14);
+  transform: translateX(-50%);
+}
+
+.mini-tray .mini-icon {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.2;
+}
+
+.mini-pop::before {
+  content: "";
+  position: absolute;
+  top: 28px;
+  left: calc(100% - 90px);
+  width: 14px;
+  height: 14px;
+  border-radius: 3px 0 0;
+  background: var(--navy);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.mini-surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 540px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--mist);
+  border: 1px solid #ffffff28;
+  box-shadow: 0 0 0 1px #15233316;
+}
+
+.mini-icon,
+.mini-chevron {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mini-header {
+  position: relative;
+  flex: none;
+  padding: 18px 20px 40px;
+  background: var(--navy);
+}
+
+.mini-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mini-brand > .mini-icon {
+  width: 22px;
+  height: 22px;
+  color: #ffa66f;
+  stroke-width: 1.9;
+}
+
+.mini-monitor {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 5px 0 5px 5px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #cfebea;
+}
+
+.mini-switch {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 15px;
+  border-radius: 9px;
+  background: #66aba7;
+}
+
+.mini-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 13px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+.mini-close {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: #ffffff12;
+  color: #d7dfe8;
+}
+
+.mini-close .mini-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.mini-title {
+  margin-top: 20px;
+  font-size: 29px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.9px;
+  color: #ffffff;
+}
+
+.mini-art {
+  position: absolute;
+  right: 21px;
+  bottom: 36px;
+  width: 127px;
+  height: 46px;
+  opacity: 0.8;
+}
+
+/* Cards overlap the navy band by 23px. */
+.mini-view {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: -23px;
+  background: linear-gradient(var(--navy) 0 23px, var(--mist) 23px);
+}
+
+.mini-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0 17px 12px;
+}
+
+.mini-metric {
+  padding: 9px 12px;
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid #e3e7ec;
+}
+
+.mini-metric.is-on {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: #202b3b;
+}
+
+.mini-metric-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mini-metric-label .mini-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.mini-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #6c7a8a;
+}
+
+.mini-metric.is-on .mini-metric-value {
+  color: #4a3025;
+}
+
+.mini-metric-value > :first-child {
+  display: inline-block;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  color: var(--ink);
+}
+
+.mini-list {
+  margin: 0 17px;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border: 1px solid #e5e9ee;
+  border-radius: 14px;
+  background: var(--paper);
+}
+
+.mini-row {
+  position: relative;
+  max-height: 96px;
+  overflow: hidden;
+  transition:
+    max-height 0.55s cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 0.45s ease,
+    background-color 0.5s ease,
+    box-shadow 0.3s ease;
+}
+
+.mini-row + .mini-row {
+  border-top: 1px solid #edf0f4;
+}
+
+.mini-row.is-entering,
+.mini-row.is-leaving {
+  max-height: 0;
+  opacity: 0;
+}
+
+.mini-row.is-reviewing {
+  background: #fffaf5;
+}
+
+.mini-row.is-targeted {
+  box-shadow: inset 0 0 0 1.5px var(--orange);
+}
+
+.mini-row-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 10px 14px;
+}
+
+.mini-row-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.mini-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 650;
+  background: #e7f4f1;
+  color: #22665e;
+  transition:
+    background-color 0.4s ease,
+    color 0.4s ease;
+}
+
+.mini-pill .mini-icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+}
+
+.is-reviewing .mini-pill {
+  background: #fff0e4;
+  color: #a94a16;
+}
+
+.mini-spin {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin: 1px;
+  border: 2px solid #f6c7a4;
+  border-top-color: var(--orange);
+  border-radius: 50%;
+  animation: mini-spin 900ms linear infinite;
+}
+
+@keyframes mini-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mini-row-title {
+  display: block;
+  margin: 6px 0 2px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.25px;
+}
+
+.mini-ref {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.mini-ref .mini-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.mini-chevron {
+  width: 13px;
+  height: 13px;
+  color: #8f9ca9;
+}
+
+/* While reviewing, a soft orange sweep along the row's foot. */
+.mini-shimmer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent, var(--orange), transparent)
+    no-repeat;
+  background-size: 40% 100%;
+  transition: opacity 0.4s ease;
+}
+
+.is-reviewing .mini-shimmer {
+  opacity: 0.7;
+  animation: mini-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes mini-shimmer {
+  from {
+    background-position: -60% 0;
+  }
+  to {
+    background-position: 160% 0;
+  }
+}
+
+/* The lock-on: the app's scope mark closes in on the row. */
+.mini-reticle {
+  position: absolute;
+  top: 0;
+  left: 64%;
+  z-index: 2;
+  width: 58px;
+  height: 58px;
+  margin: -29px 0 0 -29px;
+  color: var(--orange);
+  opacity: 0;
+  transform: scale(1.9) rotate(-60deg);
+  transition:
+    opacity 0.35s ease,
+    transform 0.75s cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+
+.mini-reticle .mini-icon {
+  width: 100%;
+  height: 100%;
+  stroke-width: 1.5;
+}
+
+.mini-reticle::after {
+  content: "";
+  position: absolute;
+  inset: 13px;
+  border: 1.5px solid var(--orange);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.mini-reticle.is-locked {
+  opacity: 1;
+  transform: none;
+}
+
+.mini-reticle.is-locked::after {
+  animation: mini-lock 0.7s ease-out 0.6s both;
+}
+
+@keyframes mini-lock {
+  from {
+    opacity: 0.8;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2);
+  }
+}
+
+.is-bumped {
+  animation: mini-bump 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes mini-bump {
+  from {
+    opacity: 0;
+    transform: translateY(45%);
+  }
+}
+
+.mini-nav {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 9px 10px 10px;
+  background: #ffffff;
+  border-top: 1px solid #e5e9ee;
+}
+
+.mini-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 4px;
+  border-radius: 9px;
+  font-size: 9px;
+  font-weight: 500;
+  color: #748091;
+}
+
+.mini-nav-item.is-current {
+  color: #a94a16;
+  background: #fff0e4;
+  font-weight: 700;
+}
+
+.mini-nav-item .mini-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.mini-nav-icon {
+  position: relative;
+  display: flex;
+}
+
+.mini-badge {
+  position: absolute;
+  top: -5px;
+  right: -9px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 8px;
+  background: #ecf0f3;
+  color: #526274;
+}
+
+/* A macOS-style notification for the hand-off. */
+.mini-note {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #f6f7f9;
+  box-shadow:
+    0 10px 24px rgba(7, 23, 39, 0.28),
+    0 0 0 1px rgba(21, 35, 51, 0.08);
+  opacity: 0;
+  transform: translateY(-130%);
+  transition:
+    transform 0.55s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.35s ease;
+}
+
+.mini-note.is-shown {
+  opacity: 1;
+  transform: none;
+}
+
+.mini-note-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--navy);
+  color: #ffa66f;
+}
+
+.mini-note-icon .mini-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
+}
+
+.mini-note-copy {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mini-note-app {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 600;
+  color: #526274;
+}
+
+.mini-note-app > span {
+  font-weight: 400;
+  color: #8f9ca9;
+}
+
+.mini-note-title {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mini-note-ref {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Paused off-screen or in a hidden tab. */
+.mini:not(.is-running) .mini-spin,
+.mini:not(.is-running) .mini-shimmer {
+  animation-play-state: paused;
+}
+
+[data-thematic="off"] .hero-demo-link {
+  font-size: 0.85rem;
+  padding: 0.4rem 0.85rem;
+}
+
+@media (max-width: 1023px) {
+  [data-thematic="off"] .hero-demo {
+    width: 100%;
+    max-width: 420px;
+  }
+}
+
+@media (max-width: 420px) {
+  .mini {
+    --s: 0.8;
+  }
+}
+
+/* demo.html: the desktop fills the window below the header. */
+[data-thematic="off"] .demo-main {
+  padding: 1.5rem var(--gutter) 1.5rem;
+}
+
+[data-thematic="off"] .demo-main:focus {
+  outline: none;
 }
