@@ -948,10 +948,10 @@ button:focus-visible {
 .banners {
   position: absolute;
   top: 0;
-  right: 0;
+  right: var(--banner-right, 0px);
   z-index: 5;
   width: calc(var(--cw) * 38);
-  max-width: 100%;
+  max-width: calc(100% - var(--banner-right, 0px));
   display: flex;
   flex-direction: column;
 }
@@ -1028,6 +1028,18 @@ button:focus-visible {
 }
 
 /* Narrow screens: stack and let the page scroll. */
+
+/* Small laptops: the sidebar repeats the header link and INSTALL tab, so give
+   the demo its width back to keep the log, banners and panel side by side. */
+@media (min-width: 901px) and (max-width: 1279px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .info {
+    display: none;
+  }
+}
 
 @media (max-width: 900px) {
   html,

@@ -348,3 +348,31 @@ test("stays usable at 375px", async ({ page }) => {
   await page.locator("#tp-tab-running").click();
   await expect(page.locator(".tp-title")).toHaveText("Work queue");
 });
+
+for (const [width, height] of [
+  [1024, 768],
+  [1440, 900],
+  [1920, 1080],
+]) {
+  test(`banners stay clear of the open panel at ${width}x${height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await open(page);
+    await pauseAndRestart(page);
+    await step(page, 7);
+    const banner = page.locator(".banner").first();
+    await expect(banner).toBeVisible();
+    await expect(page.locator("#tray-panel")).toBeVisible();
+    // Let any slide-in finish before measuring.
+    await expect
+      .poll(() => banner.evaluate((node) => getComputedStyle(node).transform))
+      .toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+    const b = await banner.boundingBox();
+    const p = await page.locator("#tray-panel").boundingBox();
+    const d = await page.locator("#desktop").boundingBox();
+    expect(b.x + b.width).toBeLessThanOrEqual(p.x + 1);
+    expect(b.x).toBeGreaterThanOrEqual(d.x - 1);
+    expect(b.width).toBeGreaterThan(0);
+  });
+}

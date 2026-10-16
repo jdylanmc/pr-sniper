@@ -583,7 +583,10 @@ export function createDemo({ root, announce, sound, reducedMotion }) {
   }
 
   function place() {
-    if (slot.hidden) return;
+    if (slot.hidden) {
+      desktop.style.setProperty("--banner-right", "0px");
+      return;
+    }
     const desk = desktop.getBoundingClientRect();
     const icon = tray.getBoundingClientRect();
     const width = slot.getBoundingClientRect().width;
@@ -593,6 +596,12 @@ export function createDemo({ root, announce, sound, reducedMotion }) {
       ? 0
       : Math.max(0, Math.round(desk.right - (center + width / 2)));
     slot.style.setProperty("--slot-right", `${right}px`);
+    // Banners keep clear of the open panel, as macOS keeps them off a popover.
+    const gap = parseFloat(getComputedStyle(desktop).columnGap) || 0;
+    desktop.style.setProperty(
+      "--banner-right",
+      stacked ? "0px" : `${right + width + gap}px`,
+    );
     const left = slot.getBoundingClientRect().left;
     const half = 8;
     const x = Math.min(
