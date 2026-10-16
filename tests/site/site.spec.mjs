@@ -195,7 +195,6 @@ test("demo is the last tab and loads the v2 prototype only when opened", async (
   await expect(frame).toHaveAttribute("title", /design prototype/);
   const box = await frame.boundingBox();
   expect(box.width).toBeGreaterThan(600);
-  expect(box.height).toBeGreaterThan(400);
   const demo = page.frameLocator("#demo-frame");
   await expect(demo.locator("body")).not.toBeEmpty();
   await expect(demo.locator("img[src*='sniper-mark']").first()).toBeAttached();
@@ -215,3 +214,33 @@ test("the prototype's own assets load", async ({ request }) => {
   }
   expect((await request.get("demo/README.md")).ok()).toBe(false);
 });
+
+for (const [width, height] of [
+  [1920, 1080],
+  [1440, 900],
+  [1024, 768],
+  [1280, 1024],
+  [375, 812],
+]) {
+  test(`demo screen keeps 16:9 at ${width}x${height}`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await open(page);
+    await page.locator("#tab-demo").click();
+    const viewport = page.locator("#demo-viewport");
+    await expect(viewport).toBeVisible();
+    await expect
+      .poll(async () => {
+        const box = await viewport.boundingBox();
+        return Math.abs(box.width / box.height - 16 / 9);
+      })
+      .toBeLessThan(0.02);
+    const box = await viewport.boundingBox();
+    const frame = await page.locator("#demo-frame").boundingBox();
+    // The scaled desktop fills the viewport exactly.
+    expect(Math.abs(frame.width - box.width)).toBeLessThan(2);
+    expect(Math.abs(frame.height - box.height)).toBeLessThan(2);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+  });
+}

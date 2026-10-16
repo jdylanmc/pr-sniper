@@ -420,13 +420,19 @@
                 tabindex="0"
                 hidden
               >
-                <div class="demo-screen frame">
-                  <iframe
-                    id="demo-frame"
-                    title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
-                    data-src="demo/index.html"
-                    loading="lazy"
-                  ></iframe>
+                <div class="demo-stage" id="demo-stage">
+                  <div class="demo-screen frame">
+                    <div class="demo-viewport" id="demo-viewport">
+                      <iframe
+                        id="demo-frame"
+                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
+                        data-src="demo/index.html"
+                        width="1440"
+                        height="810"
+                        loading="lazy"
+                      ></iframe>
+                    </div>
+                  </div>
                 </div>
                 <p class="caption">
                   Interactive design prototype. Synthetic accounts, repositories

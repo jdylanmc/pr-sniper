@@ -138,6 +138,29 @@ setTheme(read("localStorage", THEME_KEY) || "p1", false);
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
   frame(node);
 
+// Demo: a 1440x810 desktop scaled uniformly to fit, always 16:9.
+const DEMO_W = 1440;
+const DEMO_H = 810;
+const demoStage = document.getElementById("demo-stage");
+const demoViewport = document.getElementById("demo-viewport");
+const demoScreen = demoViewport.parentElement;
+const stacked = matchMedia("(max-width: 900px)");
+
+function fitDemo() {
+  if (demoStage.offsetParent === null) return;
+  const screen = getComputedStyle(demoScreen);
+  const padX = parseFloat(screen.paddingLeft) + parseFloat(screen.paddingRight);
+  const padY = parseFloat(screen.paddingTop) + parseFloat(screen.paddingBottom);
+  const width = demoStage.clientWidth - padX;
+  const height = stacked.matches ? Infinity : demoStage.clientHeight - padY;
+  const scale = Math.max(0.1, Math.min(width / DEMO_W, height / DEMO_H));
+  demoViewport.style.width = `${Math.floor(DEMO_W * scale)}px`;
+  demoViewport.firstElementChild.style.transform = `scale(${scale})`;
+}
+
+new ResizeObserver(fitDemo).observe(demoStage);
+stacked.addEventListener?.("change", fitDemo);
+
 // Tabs
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
 const scroller = document.getElementById("scroller");
@@ -158,6 +181,7 @@ function selectTab(index, focus) {
   if (names[current] === "demo") {
     const demoFrame = document.getElementById("demo-frame");
     if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
+    fitDemo();
   }
   const hash = current === 0 ? "" : `#${names[current]}`;
   if (location.hash !== hash) {

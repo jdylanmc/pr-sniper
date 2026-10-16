@@ -659,20 +659,37 @@ button:focus-visible {
   display: none;
 }
 
+.demo-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
 .demo-screen {
   position: relative;
-  flex: 1;
-  min-height: calc(var(--lh) * 22);
+  flex: none;
   padding: calc(var(--lh) * 0.5) var(--cw);
 }
 
-.demo-screen iframe {
-  display: block;
+/* JS sizes the viewport to 16:9 and scales the 1440x810 desktop into it. */
+.demo-viewport {
+  position: relative;
+  overflow: hidden;
   width: 100%;
-  height: 100%;
-  min-height: calc(var(--lh) * 21);
-  border: 0;
+  aspect-ratio: 16 / 9;
   background: var(--bg);
+}
+
+.demo-viewport iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1440px;
+  height: 810px;
+  border: 0;
+  transform-origin: 0 0;
 }
 
 .caption {
@@ -765,8 +782,8 @@ button:focus-visible {
     overflow: visible;
   }
 
-  .demo-screen {
-    min-height: 70vh;
+  .demo-stage {
+    display: block;
   }
 
   .foot .hints {
