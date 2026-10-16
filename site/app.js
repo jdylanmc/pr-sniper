@@ -238,8 +238,10 @@ const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
 const scroller = document.getElementById("scroller");
 const names = tabs.map((tab) => tab.id.replace("tab-", ""));
 let current = 0;
+let redrawOnSwitch = false;
 
 function selectTab(index, focus) {
+  const previous = current;
   current = (index + tabs.length) % tabs.length;
   tabs.forEach((tab, i) => {
     const on = i === current;
@@ -248,6 +250,15 @@ function selectTab(index, focus) {
     document.getElementById(tab.getAttribute("aria-controls")).hidden = !on;
   });
   if (focus) tabs[current].focus();
+  // Redraw the newly shown section like a terminal printing it.
+  const shown = document.getElementById(
+    tabs[current].getAttribute("aria-controls"),
+  );
+  if (redrawOnSwitch && previous !== current && !reducedMotion) {
+    shown.classList.remove("redraw");
+    void shown.offsetWidth;
+    shown.classList.add("redraw");
+  }
   scroller.scrollTop = 0;
   if (names[current] === "changelog") loadChangelog();
   if (names[current] === "demo") {
@@ -259,6 +270,12 @@ function selectTab(index, focus) {
   if (location.hash !== hash) {
     history.replaceState(null, "", hash || location.pathname + location.search);
   }
+}
+
+for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
+  panel.addEventListener("animationend", (event) => {
+    if (event.animationName === "redraw") panel.classList.remove("redraw");
+  });
 }
 
 tabs.forEach((tab, index) => {
@@ -578,4 +595,5 @@ function boot() {
 
 const initial = names.indexOf(location.hash.slice(1));
 selectTab(initial > 0 ? initial : 0, false);
+redrawOnSwitch = true;
 boot();

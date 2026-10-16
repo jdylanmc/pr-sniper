@@ -723,6 +723,28 @@ button:focus-visible {
   color: var(--dim);
 }
 
+/* Tab switch: the section prints top to bottom in line steps, with a brief
+   phosphor flash. */
+.redraw {
+  animation: redraw 0.32s steps(14, end) both;
+}
+
+@keyframes redraw {
+  0% {
+    -webkit-clip-path: inset(0 0 100% 0);
+    clip-path: inset(0 0 100% 0);
+    filter: brightness(1.8);
+  }
+  60% {
+    filter: brightness(1.25);
+  }
+  100% {
+    -webkit-clip-path: inset(0 0 0 0);
+    clip-path: inset(0 0 0 0);
+    filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

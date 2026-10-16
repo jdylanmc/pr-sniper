@@ -295,3 +295,24 @@ test("Esc inside the demo closes the full screen overlay", async ({ page }) => {
     "false",
   );
 });
+
+test("switching tabs redraws the new section once", async ({ page }) => {
+  await open(page);
+  await expect(page.locator("#panel-what")).not.toHaveClass(/redraw/);
+  await page.locator("#tab-why").click();
+  await expect(page.locator("#panel-why")).toHaveClass(/redraw/);
+  await expect(page.locator("#panel-why")).not.toHaveClass(/redraw/, {
+    timeout: 2000,
+  });
+});
+
+test.describe("reduced motion tabs", () => {
+  test.use({ reducedMotion: "reduce" });
+
+  test("switch without the redraw", async ({ page }) => {
+    await open(page);
+    await page.locator("#tab-how").click();
+    await expect(page.locator("#panel-how")).toBeVisible();
+    await expect(page.locator("#panel-how")).not.toHaveClass(/redraw/);
+  });
+});
