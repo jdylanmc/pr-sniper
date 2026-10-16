@@ -8,8 +8,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 ### Added
 
 - Project website at https://jdylanmc.github.io/pr-sniper/: a terminal-style
-  landing page with a scripted demo of the tray panel, install steps and this
-  changelog. It deploys from `site/` to GitHub Pages.
+  landing page with install steps, this changelog and the interactive v2
+  design prototype as its demo. It deploys from `site/` to GitHub Pages.
 
 ## 0.4.0 - 2026-10-15
 

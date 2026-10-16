@@ -7,7 +7,8 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 | Path                                     | Holds                                                    |
 | ---------------------------------------- | -------------------------------------------------------- |
 | `site/index.html`, `style.css`, `app.js` | Chrome, tabs, themes, boot, sound, changelog renderer    |
-| `site/demo.js`                           | Scripted tray-panel demo; fictional repos and people     |
+| `site/frame.js`                          | Box-drawing borders on the character grid                |
+| `prototypes/v2/`                         | Design prototype embedded as the DEMO tab at `/demo/`    |
 | `site/fonts/`                            | VT323 Termlink (OFL, `OFL.txt`), built by the script     |
 | `scripts/site-font.py`                   | Adds box-drawing, block and arrow glyphs to VT323        |
 | `tests/site/`                            | Playwright suite and a server for the artifact layout    |
@@ -26,9 +27,9 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 
 ## Deploy
 
-- `pages.yml` copies `site/` and `CHANGELOG.md` into one artifact and deploys it on pushes to `main` that touch `site/**`, `CHANGELOG.md`, `tests/site/**` or the workflow, and on manual runs.
+- `pages.yml` copies `site/`, `CHANGELOG.md` and the v2 prototype's runtime files (to `demo/`) into one artifact and deploys it on pushes to `main` that touch `site/**`, `prototypes/v2/**`, `CHANGELOG.md`, `tests/site/**` or the workflow, and on manual runs.
 - Needs **Settings › Pages › Source: GitHub Actions** once. Until then the deploy job fails at `configure-pages`.
-- The shown version is hardcoded in `site/index.html` and `site/demo.js`; a test fails when it drifts from `package.json`.
+- The shown version is hardcoded in `site/index.html`; a test fails when it drifts from `package.json`.
 
 ## Font
 

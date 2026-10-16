@@ -4,14 +4,14 @@ import { readFileSync } from "node:fs";
 const { version } = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 );
-const sections = ["demo", "how", "safety", "install", "changelog"];
+const sections = ["how", "safety", "install", "changelog", "demo"];
 
 async function open(page) {
   await page.addInitScript(() =>
     sessionStorage.setItem("termlink-booted", "1"),
   );
   await page.goto("/");
-  await expect(page.locator("#tab-demo")).toHaveAttribute(
+  await expect(page.locator("#tab-how")).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -34,18 +34,6 @@ async function expectSection(page, name) {
   }
 }
 
-async function pauseAndRestart(page) {
-  const play = page.locator("#demo-play");
-  if ((await play.textContent()).includes("PAUSE")) await play.click();
-  await expect(play).toContainText("PLAY");
-  await page.locator("#demo-restart").click();
-  await expect(page.locator("#demo-progress")).toHaveText("STEP 00/21");
-}
-
-async function step(page, count) {
-  for (let i = 0; i < count; i += 1) await page.locator("#demo-step").click();
-}
-
 const blur = (page) => page.evaluate(() => document.activeElement?.blur());
 
 test("tabs switch by click and keep a roving tabindex", async ({ page }) => {
@@ -53,31 +41,32 @@ test("tabs switch by click and keep a roving tabindex", async ({ page }) => {
   await expect(
     page.locator('[role="tablist"][aria-label="Sections"]'),
   ).toBeVisible();
-  await page.locator("#tab-how").click();
   await expectSection(page, "how");
   await page.locator("#tab-changelog").click();
   await expectSection(page, "changelog");
   await page.locator("#tab-demo").click();
   await expectSection(page, "demo");
+  await page.locator("#tab-how").click();
+  await expectSection(page, "how");
 });
 
 test("number keys and arrows switch tabs", async ({ page }) => {
   await open(page);
   await blur(page);
-  await page.keyboard.press("3");
+  await page.keyboard.press("2");
   await expectSection(page, "safety");
   await page.keyboard.press("ArrowRight");
   await expectSection(page, "install");
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("ArrowLeft");
   await expectSection(page, "how");
-  await page.keyboard.press("5");
+  await page.keyboard.press("4");
   await expectSection(page, "changelog");
   await page.keyboard.press("ArrowRight");
   await expectSection(page, "demo");
   await page.keyboard.press("ArrowLeft");
   await expectSection(page, "changelog");
-  await page.keyboard.press("1");
+  await page.keyboard.press("5");
   await expectSection(page, "demo");
   await page.locator("#tab-demo").focus();
   await page.keyboard.press("ArrowRight");
@@ -114,169 +103,14 @@ test("boot runs once per session and any key skips it", async ({ page }) => {
 test.describe("reduced motion", () => {
   test.use({ reducedMotion: "reduce" });
 
-  test("skips the boot and opens the demo paused mid-loop", async ({
-    page,
-  }) => {
+  test("skips the boot", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#boot")).toBeHidden();
-    await expect(page.locator("#demo-play")).toContainText("PLAY");
-    await expect(page.locator("#demo-progress")).toHaveText("STEP 12/21");
-    await page.waitForTimeout(2500);
-    await expect(page.locator("#demo-progress")).toHaveText("STEP 12/21");
-    await page.locator("#demo-step").click();
-    await expect(page.locator("#demo-progress")).toHaveText("STEP 13/21");
+    await expect(page.locator("#tab-how")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
-
-  test("shows banners without sliding", async ({ page }) => {
-    await page.goto("/");
-    await page.locator("#demo-restart").click();
-    await step(page, 7);
-    const banner = page.locator(".banner");
-    await expect(banner).toHaveCount(1);
-    expect(
-      await banner.evaluate((node) => getComputedStyle(node).animationName),
-    ).toBe("none");
-  });
-});
-
-test("demo advances and space pauses it", async ({ page }) => {
-  await open(page);
-  const progress = page.locator("#demo-progress");
-  await expect(page.locator("#demo-play")).toContainText("PAUSE");
-  await expect(progress).not.toHaveText("STEP 00/21", { timeout: 5000 });
-  await expect(page.locator("#log li").nth(1)).toContainText(
-    "tick lumen/ledger",
-  );
-  await blur(page);
-  await page.keyboard.press(" ");
-  await expect(page.locator("#demo-play")).toContainText("PLAY");
-  const paused = await progress.textContent();
-  await page.waitForTimeout(2600);
-  await expect(progress).toHaveText(paused);
-  await page.keyboard.press(" ");
-  await expect(page.locator("#demo-play")).toContainText("PAUSE");
-});
-
-test("panel sub-tabs switch by click and arrow keys", async ({ page }) => {
-  await open(page);
-  await pauseAndRestart(page);
-  const tab = (name) => page.locator(`#tp-tab-${name}`);
-  await tab("reviewed").click();
-  await expect(tab("reviewed")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".tp-title")).toHaveText("Reviewed");
-  await expect(page.locator(".tp-list .row")).toHaveCount(2);
-  await tab("reviewed").focus();
-  await page.keyboard.press("ArrowLeft");
-  await expect(tab("running")).toHaveAttribute("aria-selected", "true");
-  await expect(tab("running")).toBeFocused();
-  await expect(page.locator(".tp-title")).toHaveText("Work queue");
-  await expectSection(page, "demo");
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
-  await expect(tab("queue")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".tp-title")).toHaveText("Your queue");
-});
-
-test("tray icon toggles the panel and badges queue items", async ({ page }) => {
-  await open(page);
-  await pauseAndRestart(page);
-  const tray = page.locator("#tray");
-  const badge = page.locator("#tray-badge");
-  await expect(tray).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator("#tray-panel")).toBeVisible();
-  await expect(badge).toHaveText("1");
-  await tray.click();
-  await expect(tray).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator("#tray-panel")).toBeHidden();
-  await tray.focus();
-  await page.keyboard.press("Enter");
-  await expect(tray).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator("#tray-panel")).toBeVisible();
-  await step(page, 7);
-  await expect(badge).toHaveText("2");
-  await expect(tray).toHaveAttribute("aria-label", "PR Sniper, 2 in queue");
-  await step(page, 12);
-  await expect(badge).toHaveText("4");
-  await step(page, 1);
-  await expect(badge).toHaveText("3");
-});
-
-test("a banner fires at the Ready step and opens its row", async ({ page }) => {
-  await open(page);
-  await pauseAndRestart(page);
-  await step(page, 6);
-  await expect(page.locator(".banner")).toHaveCount(0);
-  await step(page, 1);
-  const banner = page.locator(".banner");
-  await expect(banner).toHaveCount(1);
-  await expect(banner).toContainText("Ready for your final review");
-  await expect(page.locator("#announcer")).toHaveText(
-    /Ready for your final review/,
-  );
-  await page.locator("#tp-tab-reviewed").click();
-  await page.locator("#tray").click();
-  await expect(page.locator("#tray-panel")).toBeHidden();
-  await banner.click();
-  await expect(page.locator(".banner")).toHaveCount(0);
-  await expect(page.locator("#tray-panel")).toBeVisible();
-  await expect(page.locator("#tp-tab-queue")).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await expect(page.locator('.tp-card[data-card="ready"]')).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  const row = page.locator('[data-key="ready:p142"]');
-  await expect(row).toHaveAttribute("aria-current", "true");
-  await expect(row).toBeFocused();
-});
-
-test("banners pause with the demo and auto-dismiss while playing", async ({
-  page,
-}) => {
-  await open(page);
-  await pauseAndRestart(page);
-  await step(page, 7);
-  await expect(page.locator(".banner")).toHaveCount(1);
-  await page.waitForTimeout(5600);
-  await expect(page.locator(".banner")).toHaveCount(1);
-  await page.locator("#demo-play").click();
-  await expect(page.locator(".banner")).toHaveCount(0, { timeout: 7000 });
-});
-
-test("failure and merge banners open Needs attention and Reviewed", async ({
-  page,
-}) => {
-  await open(page);
-  await pauseAndRestart(page);
-  await step(page, 19);
-  await expect(page.locator(".banner").first()).toContainText(
-    "PR Sniper needs attention",
-  );
-  await page.locator(".banner").first().click();
-  await expect(page.locator('.tp-card[data-card="attention"]')).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.locator('[data-key="attention:p61"]')).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
-  await step(page, 1);
-  await expect(page.locator(".banner").first()).toContainText(
-    "PR merged on GitHub",
-  );
-  expect(await page.locator(".banner").count()).toBeLessThanOrEqual(3);
-  await page.locator(".banner").first().click();
-  await expect(page.locator("#tp-tab-reviewed")).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await expect(page.locator('[data-key="reviewed:p58"]')).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
 });
 
 test("changelog renders versions from CHANGELOG.md", async ({ page }) => {
@@ -333,46 +167,51 @@ test("install steps each copy their command", async ({
 test("shown version matches package.json", async ({ page }) => {
   await open(page);
   await expect(page.locator("#version")).toHaveText(`v${version}`);
-  await expect(page.locator(".tp-version")).toHaveText(`v${version}`);
 });
 
 test("stays usable at 375px", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await open(page);
+  await page.locator("#tab-demo").click();
+  await expect(page.locator("#demo-frame")).toBeVisible();
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(375);
-  await expect(page.locator("#tray")).toBeVisible();
-  await expect(page.locator(".menubar-left")).toBeHidden();
-  await expect(page.locator("#tray-panel")).toBeVisible();
-  await page.locator("#tp-tab-running").click();
-  await expect(page.locator(".tp-title")).toHaveText("Work queue");
 });
 
-for (const [width, height] of [
-  [1024, 768],
-  [1440, 900],
-  [1920, 1080],
-]) {
-  test(`banners stay clear of the open panel at ${width}x${height}`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width, height });
-    await open(page);
-    await pauseAndRestart(page);
-    await step(page, 7);
-    const banner = page.locator(".banner").first();
-    await expect(banner).toBeVisible();
-    await expect(page.locator("#tray-panel")).toBeVisible();
-    // Let any slide-in finish before measuring.
-    await expect
-      .poll(() => banner.evaluate((node) => getComputedStyle(node).transform))
-      .toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
-    const b = await banner.boundingBox();
-    const p = await page.locator("#tray-panel").boundingBox();
-    const d = await page.locator("#desktop").boundingBox();
-    expect(b.x + b.width).toBeLessThanOrEqual(p.x + 1);
-    expect(b.x).toBeGreaterThanOrEqual(d.x - 1);
-    expect(b.width).toBeGreaterThan(0);
-  });
-}
+test("demo is the last tab and loads the v2 prototype only when opened", async ({
+  page,
+}) => {
+  await open(page);
+  const frame = page.locator("#demo-frame");
+  await expect(frame).not.toHaveAttribute("src", /.+/);
+  const tabs = page.locator(
+    '[role="tablist"][aria-label="Sections"] [role="tab"]',
+  );
+  await expect(tabs.last()).toHaveAttribute("id", "tab-demo");
+  await expect(tabs.last()).toContainText("5 DEMO");
+  await page.locator("#tab-demo").click();
+  await expect(frame).toHaveAttribute("src", "demo/index.html");
+  await expect(frame).toHaveAttribute("title", /design prototype/);
+  const box = await frame.boundingBox();
+  expect(box.width).toBeGreaterThan(600);
+  expect(box.height).toBeGreaterThan(400);
+  const demo = page.frameLocator("#demo-frame");
+  await expect(demo.locator("body")).not.toBeEmpty();
+  await expect(demo.locator("img[src*='sniper-mark']").first()).toBeAttached();
+});
+
+test("the prototype's own assets load", async ({ request }) => {
+  for (const path of [
+    "demo/index.html",
+    "demo/style.css",
+    "demo/app.js",
+    "demo/model.js",
+    "demo/sniper-mark.png",
+    "demo/wallpaper.svg",
+  ]) {
+    const response = await request.get(path);
+    expect(response.status(), path).toBe(200);
+  }
+  expect((await request.get("demo/README.md")).ok()).toBe(false);
+});

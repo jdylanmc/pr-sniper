@@ -1,4 +1,4 @@
-import { createDemo, frame } from "./demo.js";
+import { frame } from "./frame.js";
 
 const THEMES = [
   { id: "p1", name: "P1 GREEN", bg: "#021a0a" },
@@ -135,15 +135,8 @@ themeButton.addEventListener("click", cycleTheme);
 setTheme(read("localStorage", THEME_KEY) || "p1", false);
 
 // Frames
-for (const node of document.querySelectorAll(".info, .main")) frame(node);
-
-// Demo
-const demo = createDemo({
-  root: document.getElementById("demo"),
-  announce,
-  sound,
-  reducedMotion,
-});
+for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
+  frame(node);
 
 // Tabs
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
@@ -161,8 +154,11 @@ function selectTab(index, focus) {
   });
   if (focus) tabs[current].focus();
   scroller.scrollTop = 0;
-  demo.setActive(current === 0);
   if (names[current] === "changelog") loadChangelog();
+  if (names[current] === "demo") {
+    const demoFrame = document.getElementById("demo-frame");
+    if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
+  }
   const hash = current === 0 ? "" : `#${names[current]}`;
   if (location.hash !== hash) {
     history.replaceState(null, "", hash || location.pathname + location.search);
@@ -220,13 +216,7 @@ document.addEventListener("keydown", (event) => {
   else if (key === "ArrowUp") scrollMain(-1);
   else if (key === "t" || key === "T") cycleTheme();
   else if (key === "m" || key === "M") toggleSound();
-  else if (
-    key === " " &&
-    current === 0 &&
-    !target.closest?.("button, a, summary")
-  ) {
-    demo.toggle();
-  } else handled = false;
+  else handled = false;
   if (handled) {
     event.preventDefault();
     sound.click();
@@ -459,14 +449,10 @@ function endBoot() {
   bootNode.hidden = true;
   document.body.classList.add("booting");
   window.setTimeout(() => document.body.classList.remove("booting"), 800);
-  demo.start();
 }
 
 function boot() {
-  if (reducedMotion || read("sessionStorage", BOOT_KEY)) {
-    demo.start();
-    return;
-  }
+  if (reducedMotion || read("sessionStorage", BOOT_KEY)) return;
   write("sessionStorage", BOOT_KEY, "1");
   booting = true;
   bootNode.hidden = false;

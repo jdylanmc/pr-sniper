@@ -105,22 +105,12 @@
               <button
                 type="button"
                 role="tab"
-                id="tab-demo"
-                aria-controls="panel-demo"
+                id="tab-how"
+                aria-controls="panel-how"
                 aria-selected="true"
                 tabindex="0"
               >
-                <span class="num">1</span> DEMO
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-how"
-                aria-controls="panel-how"
-                aria-selected="false"
-                tabindex="-1"
-              >
-                <span class="num">2</span> HOW IT WORKS
+                <span class="num">1</span> HOW IT WORKS
               </button>
               <button
                 type="button"
@@ -130,7 +120,7 @@
                 aria-selected="false"
                 tabindex="-1"
               >
-                <span class="num">3</span> SAFETY
+                <span class="num">2</span> SAFETY
               </button>
               <button
                 type="button"
@@ -140,7 +130,7 @@
                 aria-selected="false"
                 tabindex="-1"
               >
-                <span class="num">4</span> INSTALL
+                <span class="num">3</span> INSTALL
               </button>
               <button
                 type="button"
@@ -150,119 +140,21 @@
                 aria-selected="false"
                 tabindex="-1"
               >
-                <span class="num">5</span> CHANGELOG
+                <span class="num">4</span> CHANGELOG
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-demo"
+                aria-controls="panel-demo"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">5</span> DEMO
               </button>
             </div>
 
             <div class="scroller" id="scroller">
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-demo"
-                aria-labelledby="tab-demo"
-                tabindex="0"
-              >
-                <div class="demo" id="demo">
-                  <div class="menubar" role="group" aria-label="Menu bar">
-                    <span class="menubar-left" aria-hidden="true">
-                      <span class="mb-logo">◆</span>
-                      <b>Burrow</b>
-                      <span>File</span>
-                      <span>Edit</span>
-                      <span>View</span>
-                      <span>Go</span>
-                    </span>
-                    <span class="menubar-right">
-                      <button
-                        type="button"
-                        class="tray"
-                        id="tray"
-                        aria-expanded="true"
-                        aria-controls="tray-panel"
-                        aria-label="PR Sniper"
-                      >
-                        <svg viewBox="0 0 32 32" aria-hidden="true">
-                          <circle cx="16" cy="16" r="9" />
-                          <path d="M16 2v9m0 10v9M2 16h9m10 0h9" />
-                        </svg>
-                        <span class="badge" id="tray-badge" hidden></span>
-                      </button>
-                      <svg
-                        class="mb-icon"
-                        viewBox="0 0 32 32"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="10" width="23" height="13" />
-                        <path d="M29 14v5" />
-                        <path class="fill" d="M6 13h14v7H6z" />
-                      </svg>
-                      <svg
-                        class="mb-icon"
-                        viewBox="0 0 32 32"
-                        aria-hidden="true"
-                      >
-                        <path
-                          d="M3 13a19 19 0 0 1 26 0M7.5 17.5a12.5 12.5 0 0 1 17 0M12 22a6 6 0 0 1 8 0"
-                        />
-                        <path class="fill" d="M14.5 25.5h3v3h-3z" />
-                      </svg>
-                      <svg
-                        class="mb-icon"
-                        viewBox="0 0 32 32"
-                        aria-hidden="true"
-                      >
-                        <circle cx="13" cy="13" r="8" />
-                        <path d="M19 19l9 9" />
-                      </svg>
-                      <svg
-                        class="mb-icon"
-                        viewBox="0 0 32 32"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="7" width="26" height="7" rx="3.5" />
-                        <rect x="3" y="18" width="26" height="7" rx="3.5" />
-                        <path class="fill" d="M21 9h5v3h-5zM6 20h5v3H6z" />
-                      </svg>
-                      <span class="mb-clock" id="mb-clock">Thu 9:41 AM</span>
-                    </span>
-                  </div>
-
-                  <div class="desktop" id="desktop">
-                    <div
-                      class="log frame"
-                      aria-label="Activity log"
-                      role="region"
-                    >
-                      <span class="frame-title" aria-hidden="true"
-                        >ACTIVITY LOG</span
-                      >
-                      <ol class="log-lines" id="log"></ol>
-                    </div>
-                    <div class="tray-slot" id="tray-slot">
-                      <span class="caret" id="caret" aria-hidden="true"></span>
-                      <div
-                        class="tray-panel frame"
-                        id="tray-panel"
-                        role="region"
-                        aria-label="PR Sniper panel"
-                      ></div>
-                    </div>
-                    <div class="banners" id="banners"></div>
-                  </div>
-
-                  <div class="demo-bar">
-                    <button type="button" id="demo-play">[▶ PLAY]</button>
-                    <button type="button" id="demo-step">[STEP]</button>
-                    <button type="button" id="demo-restart">[RESTART]</button>
-                    <span class="demo-step-count" id="demo-progress"></span>
-                  </div>
-                  <p class="caption">
-                    Simulation. Scripted events with fictional repositories,
-                    people and pull requests. Nothing here talks to GitHub.
-                  </p>
-                </div>
-              </section>
-
               <section
                 class="panel"
                 role="tabpanel"
@@ -519,13 +411,38 @@
                   <p class="dim">Loading…</p>
                 </div>
               </section>
+
+              <section
+                class="panel panel-demo"
+                role="tabpanel"
+                id="panel-demo"
+                aria-labelledby="tab-demo"
+                tabindex="0"
+                hidden
+              >
+                <div class="demo-screen frame">
+                  <iframe
+                    id="demo-frame"
+                    title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
+                    data-src="demo/index.html"
+                    loading="lazy"
+                  ></iframe>
+                </div>
+                <p class="caption">
+                  Interactive design prototype. Synthetic accounts, repositories
+                  and pull requests; nothing here talks to GitHub. Click inside
+                  to use it.
+                  <a href="demo/index.html" target="_blank" rel="noopener"
+                    >Open full screen</a
+                  >
+                </p>
+              </section>
             </div>
           </main>
         </div>
         <footer class="foot">
           <span class="hints"
-            >←/→ section · 1-5 jump · ↑/↓ scroll · T theme · M sound · SPACE
-            pause</span
+            >←/→ section · 1-5 jump · ↑/↓ scroll · T theme · M sound</span
           >
           <span class="foot-controls">
             <button type="button" id="theme-btn">[THEME P1 GREEN]</button>

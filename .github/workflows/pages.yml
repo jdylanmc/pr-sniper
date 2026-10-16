@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "prototypes/v2/**"
       - "CHANGELOG.md"
       - "tests/site/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "site/**"
+      - "prototypes/v2/**"
       - "CHANGELOG.md"
       - "tests/site/**"
       - ".github/workflows/pages.yml"
@@ -65,6 +67,10 @@ jobs:
           mkdir _site
           cp -R site/. _site/
           cp CHANGELOG.md _site/CHANGELOG.md
+          mkdir _site/demo
+          cp prototypes/v2/index.html prototypes/v2/style.css prototypes/v2/app.js \
+            prototypes/v2/model.js prototypes/v2/sniper-mark.png \
+            prototypes/v2/wallpaper.svg _site/demo/
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
