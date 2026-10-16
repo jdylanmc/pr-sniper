@@ -16,6 +16,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   on its own page; on restores the tabbed terminal with themes, boot and
   sound. The header links home to dylan mccurry.
 
+### Fixed
+
+- Queue › Saved evidence: the status card no longer covers the bottom of the
+  "Saved evidence" title; the title keeps clear space above the card at every
+  panel size, including the short-panel layout.
+
 ## 0.4.0 - 2026-10-15
 
 ### Added
