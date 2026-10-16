@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-thematic="off">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,7 +8,7 @@
       name="description"
       content="PR Sniper. Desktop utility. Catch pull requests, audit with AI, hand over to human queue. Configurable, extensible, customizable."
     />
-    <meta name="theme-color" content="#021a0a" />
+    <meta name="theme-color" content="#2e3440" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="PR Sniper" />
     <meta
@@ -18,13 +18,33 @@
     <meta property="og:url" content="https://jdylanmc.github.io/pr-sniper/" />
     <meta property="og:site_name" content="PR Sniper" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-    <link
-      rel="preload"
-      href="fonts/vt323-termlink.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
+    <!-- Thematic is off unless saved on; set before first paint. -->
+    <script>
+      (function () {
+        var on = false;
+        try {
+          on = localStorage.getItem("termlink-thematic") === "on";
+        } catch (e) {}
+        document.documentElement.setAttribute(
+          "data-thematic",
+          on ? "on" : "off",
+        );
+        var font = document.createElement("link");
+        font.rel = "preload";
+        font.as = "font";
+        font.type = "font/woff2";
+        font.crossOrigin = "";
+        font.href = on
+          ? "fonts/vt323-termlink.woff2"
+          : "fonts/jetbrains-mono-400.woff2";
+        document.head.appendChild(font);
+        if (on) {
+          document
+            .querySelector('meta[name="theme-color"]')
+            .setAttribute("content", "#021a0a");
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="app.js"></script>
   </head>
@@ -33,20 +53,48 @@
     <div class="crt">
       <div class="screen" id="screen">
         <header class="head">
-          <span class="head-name">PR SNIPER (TM) TERMLINK PROTOCOL</span>
+          <span class="head-name t-on">PR SNIPER (TM) TERMLINK PROTOCOL</span>
           <span class="head-clock" aria-hidden="true"
             >UPTIME <span id="uptime">00:00:00</span></span
           >
-          <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
-            >[GITHUB]</a
-          >
+          <div class="head-links">
+            <a class="head-home" href="https://jdylanmc.github.io/"
+              ><span class="t-on" aria-hidden="true">[</span>dylan mccurry<span
+                class="t-on"
+                aria-hidden="true"
+                >]</span
+              ></a
+            >
+            <nav class="head-nav t-off" aria-label="Page">
+              <a href="#what">what</a>
+              <a href="#why">why</a>
+              <a href="#how">how</a>
+              <a href="demo.html">demo</a>
+              <a href="#changelog">changelog</a>
+            </nav>
+            <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
+              ><span class="t-on">[GITHUB]</span
+              ><span class="t-off">GitHub</span></a
+            >
+            <button
+              type="button"
+              id="thematic-btn"
+              class="thematic-btn"
+              aria-pressed="false"
+            >
+              <span class="t-on">[THEMATIC OFF]</span
+              ><span class="t-off"
+                >thematic<span class="switch" aria-hidden="true"></span
+              ></span>
+            </button>
+          </div>
         </header>
-        <p class="statusline">
+        <p class="statusline t-on">
           &gt; LINK ESTABLISHED · 5 SECTIONS · CLEARANCE: READ-ONLY
         </p>
         <div class="layout">
-          <aside class="info frame" aria-label="About PR Sniper">
-            <pre class="scope" aria-hidden="true">
+          <aside class="info frame t-on" aria-label="About PR Sniper">
+            <pre class="scope t-on" aria-hidden="true">
          │
    ┌─────┼─────┐
    │     │     │
@@ -79,7 +127,7 @@
             <div class="cmd">
               <code>brew install --cask jdylanmc/pr-sniper/pr-sniper</code>
               <button type="button" class="copy" data-copy="brew-info">
-                [COPY]
+                <span class="t-on">[COPY]</span><span class="t-off">COPY</span>
               </button>
             </div>
             <p class="label">LINKS</p>
@@ -155,6 +203,303 @@
             </div>
 
             <div class="scroller" id="scroller">
+              <section class="hero t-off" aria-labelledby="hero-title">
+                <div class="hero-text">
+                  <p class="eyebrow">project</p>
+                  <h1 id="hero-title">pr sniper</h1>
+                  <p class="hero-tagline">
+                    Locking onto bugs. Handing off to brains.
+                  </p>
+                  <p class="hero-lede">
+                    Desktop utility. Catch pull requests. Audit with AI. Hand
+                    over to human queue.
+                  </p>
+                  <div class="cmd hero-cmd">
+                    <code
+                      >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                    >
+                    <button type="button" class="copy" data-copy="hero">
+                      <span class="t-on">[COPY]</span
+                      ><span class="t-off">COPY</span>
+                    </button>
+                  </div>
+                  <p class="hero-actions">
+                    <a class="btn" href="#install">Install</a>
+                    <a
+                      class="btn btn--ghost"
+                      href="https://github.com/jdylanmc/pr-sniper"
+                      >GitHub ↗</a
+                    >
+                  </p>
+                  <!-- Keep in step with package.json; tests/site checks it. -->
+                  <p class="hero-facts">
+                    <span id="hero-version">v0.4.0</span> · macOS 13.5+ · Apple
+                    Silicon · MIT
+                  </p>
+                </div>
+                <div class="hero-demo">
+                  <figure class="mini" id="mini">
+                    <figcaption class="sr-only">
+                      Animated preview of the PR Sniper menu-bar panel: a new
+                      pull request is reviewed, marked Ready for you, and the
+                      Ready for you count goes up.
+                    </figcaption>
+                    <div class="mini-scale" aria-hidden="true">
+                      <div class="mini-pop">
+                        <span class="mini-tray"
+                          ><svg class="mini-icon" viewBox="0 0 32 32">
+                            <circle cx="16" cy="16" r="10" />
+                            <path d="M16 1v9m0 12v9M1 16h9m12 0h9" /></svg
+                        ></span>
+                        <div class="mini-surface">
+                          <div class="mini-note">
+                            <span class="mini-note-icon"
+                              ><svg class="mini-icon" viewBox="0 0 32 32">
+                                <circle cx="16" cy="16" r="10" />
+                                <path d="M16 1v9m0 12v9M1 16h9m12 0h9" /></svg
+                            ></span>
+                            <span class="mini-note-copy">
+                              <span class="mini-note-app"
+                                >PR Sniper<span>now</span></span
+                              >
+                              <span class="mini-note-title"
+                                >Ready for your final review</span
+                              >
+                              <span class="mini-note-ref"
+                                >lumen/ledger #142</span
+                              >
+                            </span>
+                          </div>
+                          <div class="mini-header">
+                            <div class="mini-brand">
+                              <svg class="mini-icon" viewBox="0 0 32 32">
+                                <circle cx="16" cy="16" r="10" />
+                                <path d="M16 1v9m0 12v9M1 16h9m12 0h9" />
+                              </svg>
+                              <span>PR Sniper</span>
+                              <span class="mini-monitor"
+                                >Monitoring<span class="mini-switch"></span
+                              ></span>
+                              <span class="mini-close"
+                                ><svg class="mini-icon" viewBox="0 0 24 24">
+                                  <path d="m6 6 12 12M6 18 18 6" /></svg
+                              ></span>
+                            </div>
+                            <p class="mini-title">Your queue</p>
+                            <img
+                              class="mini-art"
+                              src="img/sniper-mark.png"
+                              alt=""
+                              width="127"
+                              height="46"
+                            />
+                          </div>
+                          <div class="mini-view">
+                            <div class="mini-metrics">
+                              <div class="mini-metric is-on">
+                                <span class="mini-metric-label"
+                                  >Ready for you<svg
+                                    class="mini-icon"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      d="m4 4-2 11v5h20v-5L20 4ZM2 15h6l2 3h4l2-3h6M8 8h8M7 11h10"
+                                    /></svg
+                                ></span>
+                                <span class="mini-metric-value"
+                                  ><span class="mini-count">2</span
+                                  ><span>need your eyes</span></span
+                                >
+                              </div>
+                              <div class="mini-metric">
+                                <span class="mini-metric-label"
+                                  >Needs attention<svg
+                                    class="mini-icon"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path
+                                      d="M9 8a3 3 0 1 1 5 2.2c-1.3.8-2 1.3-2 3M12 17h.01"
+                                    />
+                                    <circle cx="12" cy="12" r="10" /></svg
+                                ></span>
+                                <span class="mini-metric-value"
+                                  ><span>1</span
+                                  ><span>need your input</span></span
+                                >
+                              </div>
+                            </div>
+                            <ul class="mini-list">
+                              <li class="mini-row">
+                                <div class="mini-row-inner">
+                                  <span class="mini-row-copy"
+                                    ><span class="mini-pill"
+                                      ><svg
+                                        class="mini-icon"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path d="m5 12 4 4L19 6" /></svg
+                                      >Ready for you</span
+                                    ><span class="mini-row-title"
+                                      >Pin parser to 2.4</span
+                                    ><span class="mini-ref"
+                                      ><svg
+                                        class="mini-icon"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <circle cx="6" cy="5" r="2" />
+                                        <circle cx="6" cy="19" r="2" />
+                                        <circle cx="18" cy="19" r="2" />
+                                        <path
+                                          d="M6 7v10M18 17v-6a6 6 0 0 0-6-6m0 0 3-3m-3 3 3 3"
+                                        /></svg
+                                      >fern/atlas #19</span
+                                    ></span
+                                  ><svg
+                                    class="mini-chevron"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path d="m9 5 7 7-7 7" />
+                                  </svg>
+                                </div>
+                              </li>
+                              <li class="mini-row">
+                                <div class="mini-row-inner">
+                                  <span class="mini-row-copy"
+                                    ><span class="mini-pill"
+                                      ><svg
+                                        class="mini-icon"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path d="m5 12 4 4L19 6" /></svg
+                                      >Ready for you</span
+                                    ><span class="mini-row-title"
+                                      >Trim the CI matrix</span
+                                    ><span class="mini-ref"
+                                      ><svg
+                                        class="mini-icon"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <circle cx="6" cy="5" r="2" />
+                                        <circle cx="6" cy="19" r="2" />
+                                        <circle cx="18" cy="19" r="2" />
+                                        <path
+                                          d="M6 7v10M18 17v-6a6 6 0 0 0-6-6m0 0 3-3m-3 3 3 3"
+                                        /></svg
+                                      >kiln/forge #204</span
+                                    ></span
+                                  ><svg
+                                    class="mini-chevron"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <path d="m9 5 7 7-7 7" />
+                                  </svg>
+                                </div>
+                              </li>
+                            </ul>
+                            <span class="mini-reticle"
+                              ><svg class="mini-icon" viewBox="0 0 32 32">
+                                <circle cx="16" cy="16" r="10" />
+                                <path d="M16 1v9m0 12v9M1 16h9m12 0h9" /></svg
+                            ></span>
+                          </div>
+                          <div class="mini-nav">
+                            <span class="mini-nav-item is-current"
+                              ><svg class="mini-icon" viewBox="0 0 24 24">
+                                <path
+                                  d="m4 4-2 11v5h20v-5L20 4ZM2 15h6l2 3h4l2-3h6M8 8h8M7 11h10"
+                                /></svg
+                              >Queue</span
+                            >
+                            <span class="mini-nav-item"
+                              ><span class="mini-nav-icon"
+                                ><svg class="mini-icon" viewBox="0 0 24 24">
+                                  <path d="M2 12h5l3-8 4 16 3-8h5" /></svg
+                                ><span class="mini-badge">0</span></span
+                              >Running</span
+                            >
+                            <span class="mini-nav-item"
+                              ><svg class="mini-icon" viewBox="0 0 24 24">
+                                <rect
+                                  x="4"
+                                  y="3"
+                                  width="16"
+                                  height="18"
+                                  rx="3"
+                                />
+                                <path d="m8 10 3 3 5-5M8 17h8" /></svg
+                              >Reviewed</span
+                            >
+                            <span class="mini-nav-item"
+                              ><svg class="mini-icon" viewBox="0 0 24 24">
+                                <path d="M4 6h16M4 12h16M4 18h16" />
+                                <circle cx="8" cy="6" r="2" />
+                                <circle cx="16" cy="12" r="2" />
+                                <circle cx="10" cy="18" r="2" /></svg
+                              >Settings</span
+                            >
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </figure>
+                  <a class="btn btn--ghost hero-demo-link" href="demo.html"
+                    >Try the full demo ↗</a
+                  >
+                </div>
+              </section>
+              <section
+                class="panel panel-demo"
+                role="tabpanel"
+                id="panel-demo"
+                aria-labelledby="tab-demo"
+                tabindex="0"
+                hidden
+              >
+                <div class="demo-stage" id="demo-stage">
+                  <div class="demo-screen frame">
+                    <div class="demo-viewport" id="demo-viewport">
+                      <iframe
+                        id="demo-frame"
+                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
+                        data-src="demo/index.html"
+                        width="1440"
+                        height="810"
+                        loading="lazy"
+                      ></iframe>
+                    </div>
+                    <button
+                      type="button"
+                      id="demo-full"
+                      class="demo-full"
+                      aria-controls="demo-stage"
+                      aria-pressed="false"
+                      aria-label="Full screen"
+                    >
+                      <span class="t-on">[FULL]</span>
+                      <svg
+                        class="t-off icon-enter"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"></path>
+                      </svg>
+                      <svg
+                        class="t-off icon-exit"
+                        viewBox="0 0 16 16"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </section>
               <section
                 class="panel"
                 role="tabpanel"
@@ -162,12 +507,16 @@
                 aria-labelledby="tab-what"
                 tabindex="0"
               >
-                <h2>&gt; WHAT</h2>
-                <p class="lede">
+                <h2 id="what">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true">features</span
+                  >WHAT
+                </h2>
+                <p class="lede t-on">
                   Desktop utility. Catch pull requests. Audit with AI. Hand over
                   to human queue.
                 </p>
-                <p>Configurable. Extensible. Customizable.</p>
+                <p class="t-on">Configurable. Extensible. Customizable.</p>
                 <dl class="terms">
                   <div>
                     <dt>Configurable</dt>
@@ -191,7 +540,170 @@
                     </dd>
                   </div>
                 </dl>
-                <h2>&gt; INSTALL</h2>
+              </section>
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-why"
+                aria-labelledby="tab-why"
+                tabindex="0"
+                hidden
+              >
+                <h2 id="why">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >motivation</span
+                  >WHY
+                </h2>
+                <ul class="bullets">
+                  <li>Pull request queue grow. Human time not.</li>
+                  <li>Agent read diff fast. Agent never bored.</li>
+                  <li>Human read only pull requests Agent already vetted.</li>
+                  <li>
+                    One list for human: <b>Ready for you</b>. Problems go to
+                    <b>Needs attention</b>.
+                  </li>
+                </ul>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>HUMAN KEEP
+                  LAST WORD
+                </h3>
+                <ul class="bullets">
+                  <li>Agent prepare work. Human decide.</li>
+                  <li>Nothing post unless permission say so.</li>
+                  <li>Never merge without explicit grant.</li>
+                  <li>Results stay local.</li>
+                </ul>
+              </section>
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-how"
+                aria-labelledby="tab-how"
+                tabindex="0"
+                hidden
+              >
+                <h2 id="how">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >under the hood</span
+                  >HOW
+                </h2>
+                <ol class="steps">
+                  <li>Poll each enabled repository on own schedule.</li>
+                  <li>
+                    Admission pick which pull requests enter: <b>All</b>, or
+                    ordered <b>Filtered</b> rules (assigned, mentioned, include
+                    or exclude users and paths). First enabled match win.
+                  </li>
+                  <li>
+                    One review per head SHA. New push mean new revision, new
+                    review. Same revision: Agent only reply to new comments.
+                  </li>
+                  <li>
+                    Agent see description, changed files, all comments. Agent
+                    act only with explicit permission.
+                  </li>
+                  <li>
+                    Results land in <b>Queue</b>: <b>Ready for you</b> or
+                    <b>Needs attention</b>. Transient failure retry with
+                    backoff, 3 attempts, then park. Parked failure auto-resume.
+                  </li>
+                  <li>
+                    Merged or closed pull request move to <b>Reviewed</b>.
+                  </li>
+                </ol>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>TERMS
+                </h3>
+                <dl class="terms">
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>
+                      Copilot account and model, prompt, ordered Doctrines.
+                      Assigned per repository.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Voice</dt>
+                    <dd>
+                      Optional writing style for what people read. Ship Caveman,
+                      Gilfoyle, Merlin.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Rubber Duck</dt>
+                    <dd>
+                      Optional second Agent. Primary ask before post. Verdict:
+                      confirmed, revise, rejected or unverifiable.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Schedule</dt>
+                    <dd>
+                      Per repository: every 5–30 min or 1–4 h, hourly, daily or
+                      cron. New repository poll every 30 min.
+                    </dd>
+                  </div>
+                </dl>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>SAFETY
+                </h3>
+                <ul class="bullets">
+                  <li>
+                    One review per revision. Publish recheck head SHA before and
+                    after.
+                  </li>
+                  <li>
+                    GitHub and Copilot identity separate. Connect one never
+                    connect other.
+                  </li>
+                  <li>
+                    Approve and merge: opt-in, primary Agent only, fail closed.
+                  </li>
+                  <li>
+                    Agent get host-owned review tools (reads plus one exit).
+                    Boundary, not sandbox.
+                  </li>
+                </ul>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  >PERMISSIONS
+                </h3>
+                <table class="grants">
+                  <thead>
+                    <tr>
+                      <th scope="col">Permission</th>
+                      <th scope="col">Default</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Publish Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Reply Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Approve</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>&amp; Merge</td>
+                      <td>[ ] off</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+              <section class="install-block" id="install">
+                <h2>
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >get started</span
+                  >INSTALL
+                </h2>
                 <ol class="steps install">
                   <li>
                     <h3>Need</h3>
@@ -212,7 +724,8 @@
                         >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
                       >
                       <button type="button" class="copy" data-copy="install">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -222,7 +735,8 @@
                     <div class="cmd">
                       <code>open -a "PR Sniper"</code>
                       <button type="button" class="copy" data-copy="launch">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -255,7 +769,8 @@
                     <div class="cmd">
                       <code>brew upgrade --cask pr-sniper</code>
                       <button type="button" class="copy" data-copy="upgrade">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
@@ -275,12 +790,16 @@
                     <div class="cmd">
                       <code>brew uninstall --cask pr-sniper</code>
                       <button type="button" class="copy" data-copy="uninstall">
-                        [COPY]
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
                       </button>
                     </div>
                   </li>
                 </ol>
-                <h2>&gt; NO HOMEBREW</h2>
+                <h3>
+                  <span class="prompt" aria-hidden="true">&gt; </span>NO
+                  HOMEBREW
+                </h3>
                 <p>
                   Get signed, notarized ZIP from
                   <a href="https://github.com/jdylanmc/pr-sniper/releases"
@@ -288,145 +807,6 @@
                   >. Unzip. Move PR Sniper to Applications. Update by hand.
                 </p>
               </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-why"
-                aria-labelledby="tab-why"
-                tabindex="0"
-                hidden
-              >
-                <h2>&gt; WHY</h2>
-                <ul class="bullets">
-                  <li>Pull request queue grow. Human time not.</li>
-                  <li>Agent read diff fast. Agent never bored.</li>
-                  <li>Human read only pull requests Agent already vetted.</li>
-                  <li>
-                    One list for human: <b>Ready for you</b>. Problems go to
-                    <b>Needs attention</b>.
-                  </li>
-                </ul>
-                <h2>&gt; HUMAN KEEP LAST WORD</h2>
-                <ul class="bullets">
-                  <li>Agent prepare work. Human decide.</li>
-                  <li>Nothing post unless permission say so.</li>
-                  <li>Never merge without explicit grant.</li>
-                  <li>Results stay local.</li>
-                </ul>
-              </section>
-
-              <section
-                class="panel"
-                role="tabpanel"
-                id="panel-how"
-                aria-labelledby="tab-how"
-                tabindex="0"
-                hidden
-              >
-                <h2>&gt; HOW</h2>
-                <ol class="steps">
-                  <li>Poll each enabled repository on own schedule.</li>
-                  <li>
-                    Admission pick which pull requests enter: <b>All</b>, or
-                    ordered <b>Filtered</b> rules (assigned, mentioned, include
-                    or exclude users and paths). First enabled match win.
-                  </li>
-                  <li>
-                    One review per head SHA. New push mean new revision, new
-                    review. Same revision: Agent only reply to new comments.
-                  </li>
-                  <li>
-                    Agent see description, changed files, all comments. Agent
-                    act only with explicit permission.
-                  </li>
-                  <li>
-                    Results land in <b>Queue</b>: <b>Ready for you</b> or
-                    <b>Needs attention</b>. Transient failure retry with
-                    backoff, 3 attempts, then park. Parked failure auto-resume.
-                  </li>
-                  <li>
-                    Merged or closed pull request move to <b>Reviewed</b>.
-                  </li>
-                </ol>
-                <h2>&gt; TERMS</h2>
-                <dl class="terms">
-                  <div>
-                    <dt>Agent</dt>
-                    <dd>
-                      Copilot account and model, prompt, ordered Doctrines.
-                      Assigned per repository.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Voice</dt>
-                    <dd>
-                      Optional writing style for what people read. Ship Caveman,
-                      Gilfoyle, Merlin.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Rubber Duck</dt>
-                    <dd>
-                      Optional second Agent. Primary ask before post. Verdict:
-                      confirmed, revise, rejected or unverifiable.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Schedule</dt>
-                    <dd>
-                      Per repository: every 5–30 min or 1–4 h, hourly, daily or
-                      cron. New repository poll every 30 min.
-                    </dd>
-                  </div>
-                </dl>
-                <h2>&gt; SAFETY</h2>
-                <ul class="bullets">
-                  <li>
-                    One review per revision. Publish recheck head SHA before and
-                    after.
-                  </li>
-                  <li>
-                    GitHub and Copilot identity separate. Connect one never
-                    connect other.
-                  </li>
-                  <li>
-                    Approve and merge: opt-in, primary Agent only, fail closed.
-                  </li>
-                  <li>
-                    Agent get host-owned review tools (reads plus one exit).
-                    Boundary, not sandbox.
-                  </li>
-                </ul>
-                <h2>&gt; PERMISSIONS</h2>
-                <table class="grants">
-                  <thead>
-                    <tr>
-                      <th scope="col">Permission</th>
-                      <th scope="col">Default</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Publish Comment</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>Reply Comment</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>Approve</td>
-                      <td>[ ] off</td>
-                    </tr>
-                    <tr>
-                      <td>&amp; Merge</td>
-                      <td>[ ] off</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
-
               <section
                 class="panel"
                 role="tabpanel"
@@ -435,56 +815,51 @@
                 tabindex="0"
                 hidden
               >
-                <h2>&gt; CHANGELOG</h2>
-                <div class="changelog" id="changelog">
+                <h2 id="changelog">
+                  <span class="prompt" aria-hidden="true">&gt; </span
+                  ><span class="eyebrow t-off" aria-hidden="true"
+                    >latest release</span
+                  >CHANGELOG
+                </h2>
+                <div class="changelog t-on" id="changelog-body">
                   <p class="dim">Loading…</p>
                 </div>
-              </section>
-
-              <section
-                class="panel panel-demo"
-                role="tabpanel"
-                id="panel-demo"
-                aria-labelledby="tab-demo"
-                tabindex="0"
-                hidden
-              >
-                <div class="demo-stage" id="demo-stage">
-                  <div class="demo-screen frame">
-                    <div class="demo-viewport" id="demo-viewport">
-                      <iframe
-                        id="demo-frame"
-                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
-                        data-src="demo/index.html"
-                        width="1440"
-                        height="810"
-                        loading="lazy"
-                      ></iframe>
-                    </div>
-                  </div>
-                </div>
-                <div class="demo-caption">
-                  <span>Fake data. Not touch GitHub.</span>
-                  <button
-                    type="button"
-                    id="demo-full"
-                    aria-controls="demo-stage"
-                    aria-pressed="false"
+                <div class="changelog t-off" id="changelog-latest"></div>
+                <p class="t-off changelog-more">
+                  <a
+                    href="https://github.com/jdylanmc/pr-sniper/blob/main/CHANGELOG.md"
+                    >Full changelog ↗</a
                   >
-                    [FULL SCREEN]
-                  </button>
-                </div>
+                </p>
               </section>
             </div>
           </main>
         </div>
         <footer class="foot">
-          <span class="hints"
-            >←/→ section · 1-5 jump · ↑/↓ scroll · T theme · M sound</span
+          <span class="hints t-on"
+            >←/→ section · 1-5 jump · ↑/↓ scroll<span class="t-on">
+              · T theme · M sound</span
+            >
+            · H thematic</span
           >
-          <span class="foot-controls">
-            <button type="button" id="theme-btn">[THEME P1 GREEN]</button>
-            <button type="button" id="sound-btn" aria-pressed="false">
+          <nav class="foot-links t-off" aria-label="Project">
+            <a href="https://github.com/jdylanmc/pr-sniper">Source</a>
+            <a href="https://github.com/jdylanmc/pr-sniper/releases"
+              >Releases</a
+            >
+            <a href="https://github.com/jdylanmc/pr-sniper/issues">Issues</a>
+          </nav>
+          <span class="foot-meta t-off">MIT · dylan mccurry</span>
+          <span class="foot-controls t-on">
+            <button type="button" id="theme-btn" class="t-on">
+              [THEME P1 GREEN]
+            </button>
+            <button
+              type="button"
+              id="sound-btn"
+              class="t-on"
+              aria-pressed="false"
+            >
               [SOUND OFF]
             </button>
           </span>

@@ -1,4 +1,6 @@
 import { frame } from "./frame.js";
+import { createDemo } from "./demo.js";
+import { startMini } from "./mini.js";
 
 const THEMES = [
   { id: "p1", name: "P1 GREEN", bg: "#021a0a" },
@@ -7,6 +9,8 @@ const THEMES = [
   { id: "p7", name: "P7 BLUE", bg: "#031422" },
 ];
 const THEME_KEY = "termlink-theme";
+const THEMATIC_KEY = "termlink-thematic";
+const NORD_BG = "#2e3440";
 const BOOT_KEY = "termlink-booted";
 const REPO_BLOB = "https://github.com/jdylanmc/pr-sniper/blob/main/";
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -32,6 +36,15 @@ const write = (kind, key, value) => {
     // Private browsing can refuse storage; the page still works.
   }
 };
+
+const root = document.documentElement;
+const isThematic = () => root.dataset.thematic === "on";
+
+// Buttons carry a bracketed terminal label and a plain one; CSS shows one.
+function setLabel(button, text) {
+  button.querySelector(".t-on").textContent = `[${text}]`;
+  button.querySelector(".t-off").textContent = text;
+}
 
 const announcer = document.getElementById("announcer");
 function announce(text) {
@@ -105,6 +118,7 @@ const sound = {
 
 const soundButton = document.getElementById("sound-btn");
 function toggleSound() {
+  if (!isThematic() && !sound.on) return;
   sound.on = !sound.on;
   soundButton.textContent = sound.on ? "[SOUND ON]" : "[SOUND OFF]";
   soundButton.setAttribute("aria-pressed", String(sound.on));
@@ -115,17 +129,23 @@ soundButton.addEventListener("click", toggleSound);
 // Themes: always start on P1 unless the visitor picked another.
 const themeButton = document.getElementById("theme-btn");
 const themeMeta = document.querySelector('meta[name="theme-color"]');
+function currentTheme() {
+  return (
+    THEMES.find((item) => item.id === document.body.dataset.theme) || THEMES[0]
+  );
+}
 function setTheme(id, save) {
   const theme = THEMES.find((item) => item.id === id) || THEMES[0];
   document.body.dataset.theme = theme.id;
   themeButton.textContent = `[THEME ${theme.name}]`;
-  themeMeta.setAttribute("content", theme.bg);
+  themeMeta.setAttribute("content", isThematic() ? theme.bg : NORD_BG);
   if (save) {
     write("localStorage", THEME_KEY, theme.id);
     announce(`Theme ${theme.name}`);
   }
 }
 function cycleTheme() {
+  if (!isThematic()) return;
   const index = THEMES.findIndex(
     (item) => item.id === document.body.dataset.theme,
   );
@@ -134,104 +154,44 @@ function cycleTheme() {
 themeButton.addEventListener("click", cycleTheme);
 setTheme(read("localStorage", THEME_KEY) || "p1", false);
 
+// Thematic: the CRT terminal look. Off by default (Nord); the inline script
+// in index.html applies the saved state before first paint.
+const thematicButton = document.getElementById("thematic-btn");
+function syncThematic() {
+  const on = isThematic();
+  thematicButton.querySelector(".t-on").textContent = on
+    ? "[THEMATIC ON]"
+    : "[THEMATIC OFF]";
+  thematicButton.setAttribute("aria-pressed", String(on));
+  themeMeta.setAttribute("content", on ? currentTheme().bg : NORD_BG);
+}
+function toggleThematic() {
+  const on = !isThematic();
+  root.dataset.thematic = on ? "on" : "off";
+  write("localStorage", THEMATIC_KEY, on ? "on" : "off");
+  // Turning it on never forces a boot in this session.
+  if (on) write("sessionStorage", BOOT_KEY, "1");
+  else if (sound.on) toggleSound();
+  syncThematic();
+  applyMode();
+  announce(on ? "Thematic on" : "Thematic off");
+}
+thematicButton.addEventListener("click", toggleThematic);
+syncThematic();
+
 // Frames
 for (const node of document.querySelectorAll(".info, .main, .demo-screen"))
   frame(node);
 
-// Demo: a 1440x810 desktop scaled uniformly to fit, always 16:9.
-const DEMO_W = 1440;
-const DEMO_H = 810;
+// Demo: the v2 prototype in the DEMO tab (thematic on only).
 const demoStage = document.getElementById("demo-stage");
-const demoViewport = document.getElementById("demo-viewport");
-const demoScreen = demoViewport.parentElement;
 const stacked = matchMedia("(max-width: 900px)");
-
-function fitDemo() {
-  if (!demoStage.getClientRects().length) return;
-  const screen = getComputedStyle(demoScreen);
-  const padX = parseFloat(screen.paddingLeft) + parseFloat(screen.paddingRight);
-  const padY = parseFloat(screen.paddingTop) + parseFloat(screen.paddingBottom);
-  const width = demoStage.clientWidth - padX;
-  const height =
-    stacked.matches && !isDemoFull() ? Infinity : demoStage.clientHeight - padY;
-  const scale = Math.max(0.1, Math.min(width / DEMO_W, height / DEMO_H));
-  demoViewport.style.width = `${Math.floor(DEMO_W * scale)}px`;
-  demoViewport.firstElementChild.style.transform = `scale(${scale})`;
-}
-
-new ResizeObserver(fitDemo).observe(demoStage);
-stacked.addEventListener?.("change", fitDemo);
-
-// Full screen: the browser's Fullscreen API where it exists (Esc exits
-// natively), else a fixed overlay that Esc closes from the page or the demo.
-const demoFull = document.getElementById("demo-full");
-const nativeFull = Boolean(
-  demoStage.requestFullscreen || demoStage.webkitRequestFullscreen,
-);
-
-function fullElement() {
-  return document.fullscreenElement || document.webkitFullscreenElement;
-}
-
-function isDemoFull() {
-  return (
-    fullElement() === demoStage || demoStage.classList.contains("demo-overlay")
-  );
-}
-
-function syncFull() {
-  const on = isDemoFull();
-  demoFull.setAttribute("aria-pressed", String(on));
-  demoFull.textContent = on ? "[EXIT FULL SCREEN · ESC]" : "[FULL SCREEN]";
-  fitDemo();
-}
-
-function enterFull() {
-  if (nativeFull) {
-    const request =
-      demoStage.requestFullscreen || demoStage.webkitRequestFullscreen;
-    Promise.resolve(request.call(demoStage)).catch(() => {
-      demoStage.classList.add("demo-overlay");
-      syncFull();
-    });
-  } else {
-    demoStage.classList.add("demo-overlay");
-    syncFull();
-  }
-}
-
-function exitFull() {
-  if (demoStage.classList.contains("demo-overlay")) {
-    demoStage.classList.remove("demo-overlay");
-    syncFull();
-    demoFull.focus();
-  } else if (fullElement()) {
-    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-  }
-}
-
-demoFull.addEventListener("click", () => {
-  if (isDemoFull()) exitFull();
-  else enterFull();
-  sound.click();
+const demo = createDemo({
+  fitHeight: (padY) =>
+    stacked.matches ? Infinity : demoStage.clientHeight - padY,
+  onToggle: () => sound.click(),
 });
-document.addEventListener("fullscreenchange", syncFull);
-document.addEventListener("webkitfullscreenchange", syncFull);
-
-// Esc inside the (same-origin) demo also closes the overlay fallback.
-document.getElementById("demo-frame").addEventListener("load", (event) => {
-  try {
-    event.target.contentDocument.addEventListener("keydown", (inner) => {
-      if (
-        inner.key === "Escape" &&
-        demoStage.classList.contains("demo-overlay")
-      )
-        exitFull();
-    });
-  } catch {
-    // Cross-origin in some previews; the page-level Esc still works.
-  }
-});
+stacked.addEventListener?.("change", demo.fit);
 
 // Tabs
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
@@ -241,6 +201,7 @@ let current = 0;
 let redrawOnSwitch = false;
 
 function selectTab(index, focus) {
+  if (!isThematic()) return;
   const previous = current;
   current = (index + tabs.length) % tabs.length;
   tabs.forEach((tab, i) => {
@@ -262,9 +223,8 @@ function selectTab(index, focus) {
   scroller.scrollTop = 0;
   if (names[current] === "changelog") loadChangelog();
   if (names[current] === "demo") {
-    const demoFrame = document.getElementById("demo-frame");
-    if (!demoFrame.src) demoFrame.src = demoFrame.dataset.src;
-    fitDemo();
+    demo.load();
+    demo.fit();
   }
   const hash = current === 0 ? "" : `#${names[current]}`;
   if (location.hash !== hash) {
@@ -315,9 +275,9 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (isDemoFull()) {
+  if (demo.isFull()) {
     if (event.key === "Escape") {
-      exitFull();
+      demo.exit();
       event.preventDefault();
     }
     return;
@@ -326,6 +286,14 @@ document.addEventListener("keydown", (event) => {
   if (isTyping(target)) return;
   const onTab = tabs.includes(target);
   const key = event.key;
+  if (key === "h" || key === "H") {
+    toggleThematic();
+    event.preventDefault();
+    sound.click();
+    return;
+  }
+  // With thematic off the page keeps normal keyboard behaviour.
+  if (!isThematic()) return;
   let handled = true;
   if (key === "ArrowRight") selectTab(current + 1, onTab);
   else if (key === "ArrowLeft") selectTab(current - 1, onTab);
@@ -374,13 +342,10 @@ for (const button of document.querySelectorAll(".copy")) {
       .querySelector("code")
       .textContent.trim();
     const ok = await copyText(text);
-    button.textContent = ok ? "[Copied]" : "[Copy failed]";
+    setLabel(button, ok ? "Copied" : "Copy failed");
     announce(ok ? "Copied" : "Copy failed");
     window.clearTimeout(button.resetTimer);
-    button.resetTimer = window.setTimeout(
-      () => (button.textContent = "[COPY]"),
-      2000,
-    );
+    button.resetTimer = window.setTimeout(() => setLabel(button, "COPY"), 2000);
   });
 }
 
@@ -510,24 +475,40 @@ async function fetchChangelog() {
   return null;
 }
 
+// The newest released version's section, skipping Unreleased.
+export function latestRelease(source) {
+  const sections = source.replace(/\r\n?/g, "\n").split(/^(?=## )/m);
+  return (
+    sections.find(
+      (part) => /^## /.test(part) && !/^## +unreleased\b/i.test(part),
+    ) ?? null
+  );
+}
+
 async function loadChangelog() {
   if (changelogLoaded) return;
   changelogLoaded = true;
-  const root = document.getElementById("changelog");
+  const full = document.getElementById("changelog-body");
+  const latest = document.getElementById("changelog-latest");
   const text = await fetchChangelog();
-  root.replaceChildren();
+  full.replaceChildren();
+  latest.replaceChildren();
   if (!text) {
-    const p = document.createElement("p");
-    p.append("Changelog unavailable. Read it on ");
-    const a = document.createElement("a");
-    a.href = `${REPO_BLOB}CHANGELOG.md`;
-    a.textContent = "GitHub";
-    p.append(a, ".");
-    root.append(p);
+    for (const root of [full, latest]) {
+      const p = document.createElement("p");
+      p.append("Changelog unavailable. Read it on ");
+      const a = document.createElement("a");
+      a.href = `${REPO_BLOB}CHANGELOG.md`;
+      a.textContent = "GitHub";
+      p.append(a, ".");
+      root.append(p);
+    }
     changelogLoaded = false;
     return;
   }
-  renderMarkdown(text, root);
+  renderMarkdown(text, full);
+  const release = latestRelease(text);
+  if (release) renderMarkdown(release, latest);
 }
 
 // Header uptime
@@ -572,7 +553,8 @@ function endBoot() {
 }
 
 function boot() {
-  if (reducedMotion || read("sessionStorage", BOOT_KEY)) return;
+  if (!isThematic() || reducedMotion || read("sessionStorage", BOOT_KEY))
+    return;
   write("sessionStorage", BOOT_KEY, "1");
   booting = true;
   bootNode.hidden = false;
@@ -593,7 +575,47 @@ function boot() {
   bootNode.addEventListener("pointerdown", endBoot);
 }
 
+// Thematic on: the tabbed terminal. Off: one scrolling page with every
+// section shown in order and no tab semantics.
+const panels = tabs.map((tab) =>
+  document.getElementById(tab.getAttribute("aria-controls")),
+);
+const installBlock = document.getElementById("install");
+const whatPanel = document.getElementById("panel-what");
+const howPanel = document.getElementById("panel-how");
+
+function applyMode() {
+  if (isThematic()) {
+    whatPanel.append(installBlock);
+    panels.forEach((panel, i) => {
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabs[i].id);
+      panel.tabIndex = 0;
+    });
+    // Re-applies hidden, tabindex and the hash for the current tab.
+    const previous = redrawOnSwitch;
+    redrawOnSwitch = false;
+    selectTab(current, false);
+    redrawOnSwitch = previous;
+  } else {
+    howPanel.after(installBlock);
+    for (const panel of panels) {
+      panel.removeAttribute("role");
+      panel.removeAttribute("aria-labelledby");
+      panel.removeAttribute("tabindex");
+      panel.hidden = false;
+      panel.classList.remove("redraw");
+    }
+    loadChangelog();
+  }
+  demo.fit();
+}
+
+// With thematic off the hero shows the mini panel instead of the desktop.
+startMini(document.getElementById("mini"));
+
 const initial = names.indexOf(location.hash.slice(1));
-selectTab(initial > 0 ? initial : 0, false);
+current = initial > 0 ? initial : 0;
+applyMode();
 redrawOnSwitch = true;
 boot();
