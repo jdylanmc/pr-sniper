@@ -1,6 +1,8 @@
 # PR Sniper
 
-**Review bot with manners. You keep the last word.**
+**Locking onto bugs. Handing off to brains.**
+
+Site and live demo: [jdylanmc.github.io/pr-sniper](https://jdylanmc.github.io/pr-sniper/).
 
 Menu-bar macOS app. Watches your GitHub repos. Copilot agents review each pull request revision once, reply to new comments, and leave the final call to you. It prepares work. It never merges without an explicit grant.
 

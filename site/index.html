@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PR Sniper: Locking onto bugs. Handing off to brains.</title>
+    <meta
+      name="description"
+      content="PR Sniper. Desktop utility. Catch pull requests, audit with AI, hand over to human queue. Configurable, extensible, customizable."
+    />
+    <meta name="theme-color" content="#021a0a" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="PR Sniper" />
+    <meta
+      property="og:description"
+      content="Locking onto bugs. Handing off to brains."
+    />
+    <meta property="og:url" content="https://jdylanmc.github.io/pr-sniper/" />
+    <meta property="og:site_name" content="PR Sniper" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="fonts/vt323-termlink.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body data-theme="p1">
+    <a class="skip" href="#sections">Skip to sections</a>
+    <div class="crt">
+      <div class="screen" id="screen">
+        <header class="head">
+          <span class="head-name">PR SNIPER (TM) TERMLINK PROTOCOL</span>
+          <span class="head-clock" aria-hidden="true"
+            >UPTIME <span id="uptime">00:00:00</span></span
+          >
+          <a class="head-link" href="https://github.com/jdylanmc/pr-sniper"
+            >[GITHUB]</a
+          >
+        </header>
+        <p class="statusline">
+          &gt; LINK ESTABLISHED · 5 SECTIONS · CLEARANCE: READ-ONLY
+        </p>
+        <div class="layout">
+          <aside class="info frame" aria-label="About PR Sniper">
+            <pre class="scope" aria-hidden="true">
+         │
+   ┌─────┼─────┐
+   │     │     │
+───┼─────┼─────┼───
+   │     │     │
+   └─────┼─────┘
+         │</pre>
+            <h1 class="title">PR SNIPER</h1>
+            <p>Locking onto bugs. Handing off to brains.</p>
+            <dl class="facts">
+              <!-- Keep in step with package.json; tests/site checks it. -->
+              <div>
+                <dt>VERSION</dt>
+                <dd id="version">v0.4.0</dd>
+              </div>
+              <div>
+                <dt>STATUS</dt>
+                <dd>ONLINE <span class="dot" aria-hidden="true">●</span></dd>
+              </div>
+              <div>
+                <dt>HOST</dt>
+                <dd>macOS 13.5+ · Apple Silicon</dd>
+              </div>
+              <div>
+                <dt>LICENSE</dt>
+                <dd>MIT</dd>
+              </div>
+            </dl>
+            <p class="label">INSTALL</p>
+            <div class="cmd">
+              <code>brew install --cask jdylanmc/pr-sniper/pr-sniper</code>
+              <button type="button" class="copy" data-copy="brew-info">
+                [COPY]
+              </button>
+            </div>
+            <p class="label">LINKS</p>
+            <ul class="links">
+              <li>
+                <a href="https://github.com/jdylanmc/pr-sniper">Source</a>
+              </li>
+              <li>
+                <a href="https://github.com/jdylanmc/pr-sniper/releases"
+                  >Releases</a
+                >
+              </li>
+              <li>
+                <a href="https://github.com/jdylanmc/pr-sniper/issues"
+                  >Issues</a
+                >
+              </li>
+            </ul>
+          </aside>
+
+          <main class="main frame" id="sections" tabindex="-1">
+            <div class="tabs" role="tablist" aria-label="Sections">
+              <button
+                type="button"
+                role="tab"
+                id="tab-what"
+                aria-controls="panel-what"
+                aria-selected="true"
+                tabindex="0"
+              >
+                <span class="num">1</span> WHAT
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-why"
+                aria-controls="panel-why"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">2</span> WHY
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-how"
+                aria-controls="panel-how"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">3</span> HOW
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-changelog"
+                aria-controls="panel-changelog"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">4</span> CHANGELOG
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-demo"
+                aria-controls="panel-demo"
+                aria-selected="false"
+                tabindex="-1"
+              >
+                <span class="num">5</span> DEMO
+              </button>
+            </div>
+
+            <div class="scroller" id="scroller">
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-what"
+                aria-labelledby="tab-what"
+                tabindex="0"
+              >
+                <h2>&gt; WHAT</h2>
+                <p class="lede">
+                  Desktop utility. Catch pull requests. Audit with AI. Hand over
+                  to human queue.
+                </p>
+                <p>Configurable. Extensible. Customizable.</p>
+                <dl class="terms">
+                  <div>
+                    <dt>Configurable</dt>
+                    <dd>
+                      Schedule per repository. Admission rules pick which pull
+                      requests enter.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Extensible</dt>
+                    <dd>
+                      Agents, Doctrines, Voices. Optional Rubber Duck check
+                      before post.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Customizable</dt>
+                    <dd>
+                      Permissions per assignment, all off at start. Light, Dark
+                      or OS theme.
+                    </dd>
+                  </div>
+                </dl>
+                <h2>&gt; INSTALL</h2>
+                <ol class="steps install">
+                  <li>
+                    <h3>Need</h3>
+                    <ul class="bullets">
+                      <li>Apple Silicon Mac.</li>
+                      <li>macOS 13.5 or later.</li>
+                      <li>
+                        Homebrew. No Homebrew? Get at
+                        <a href="https://brew.sh">brew.sh</a>.
+                      </li>
+                    </ul>
+                  </li>
+                  <li>
+                    <h3>Install</h3>
+                    <p>One command. Tap repository, install app.</p>
+                    <div class="cmd">
+                      <code
+                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                      >
+                      <button type="button" class="copy" data-copy="install">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>Launch</h3>
+                    <p>App live in menu bar. No Dock icon.</p>
+                    <div class="cmd">
+                      <code>open -a "PR Sniper"</code>
+                      <button type="button" class="copy" data-copy="launch">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>First run</h3>
+                    <ol class="sub" type="a">
+                      <li>
+                        <b>Settings › Accounts</b>: connect GitHub account (Git
+                        Repository) and Copilot account (AI Tooling). Browser
+                        sign-in. No pasted tokens.
+                      </li>
+                      <li>
+                        Add repository. Pick GitHub account. Pick admission: All
+                        or Filtered.
+                      </li>
+                      <li>
+                        Create Agent (Copilot account and model). Assign to
+                        repository. Set Permissions. Mark one assignment
+                        Primary.
+                      </li>
+                      <li>Enable repository. Watch Queue.</li>
+                    </ol>
+                  </li>
+                  <li>
+                    <h3>Update</h3>
+                    <p>
+                      Quit PR Sniper first. Homebrew own updates. No in-app
+                      updater. Settings and credentials stay.
+                    </p>
+                    <div class="cmd">
+                      <code>brew upgrade --cask pr-sniper</code>
+                      <button type="button" class="copy" data-copy="upgrade">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    <h3>Uninstall</h3>
+                    <p>
+                      Remove app only. Settings and state stay in
+                      <code
+                        >~/Library/Application
+                        Support/com.jdylanmc.pr-sniper/</code
+                      >. Credentials stay in macOS Keychain. See
+                      <a
+                        href="https://github.com/jdylanmc/pr-sniper/blob/main/docs/local-data.md"
+                        >local data</a
+                      >.
+                    </p>
+                    <div class="cmd">
+                      <code>brew uninstall --cask pr-sniper</code>
+                      <button type="button" class="copy" data-copy="uninstall">
+                        [COPY]
+                      </button>
+                    </div>
+                  </li>
+                </ol>
+                <h2>&gt; NO HOMEBREW</h2>
+                <p>
+                  Get signed, notarized ZIP from
+                  <a href="https://github.com/jdylanmc/pr-sniper/releases"
+                    >GitHub Releases</a
+                  >. Unzip. Move PR Sniper to Applications. Update by hand.
+                </p>
+              </section>
+
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-why"
+                aria-labelledby="tab-why"
+                tabindex="0"
+                hidden
+              >
+                <h2>&gt; WHY</h2>
+                <ul class="bullets">
+                  <li>Pull request queue grow. Human time not.</li>
+                  <li>Agent read diff fast. Agent never bored.</li>
+                  <li>Human read only pull requests Agent already vetted.</li>
+                  <li>
+                    One list for human: <b>Ready for you</b>. Problems go to
+                    <b>Needs attention</b>.
+                  </li>
+                </ul>
+                <h2>&gt; HUMAN KEEP LAST WORD</h2>
+                <ul class="bullets">
+                  <li>Agent prepare work. Human decide.</li>
+                  <li>Nothing post unless permission say so.</li>
+                  <li>Never merge without explicit grant.</li>
+                  <li>Results stay local.</li>
+                </ul>
+              </section>
+
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-how"
+                aria-labelledby="tab-how"
+                tabindex="0"
+                hidden
+              >
+                <h2>&gt; HOW</h2>
+                <ol class="steps">
+                  <li>Poll each enabled repository on own schedule.</li>
+                  <li>
+                    Admission pick which pull requests enter: <b>All</b>, or
+                    ordered <b>Filtered</b> rules (assigned, mentioned, include
+                    or exclude users and paths). First enabled match win.
+                  </li>
+                  <li>
+                    One review per head SHA. New push mean new revision, new
+                    review. Same revision: Agent only reply to new comments.
+                  </li>
+                  <li>
+                    Agent see description, changed files, all comments. Agent
+                    act only with explicit permission.
+                  </li>
+                  <li>
+                    Results land in <b>Queue</b>: <b>Ready for you</b> or
+                    <b>Needs attention</b>. Transient failure retry with
+                    backoff, 3 attempts, then park. Parked failure auto-resume.
+                  </li>
+                  <li>
+                    Merged or closed pull request move to <b>Reviewed</b>.
+                  </li>
+                </ol>
+                <h2>&gt; TERMS</h2>
+                <dl class="terms">
+                  <div>
+                    <dt>Agent</dt>
+                    <dd>
+                      Copilot account and model, prompt, ordered Doctrines.
+                      Assigned per repository.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Voice</dt>
+                    <dd>
+                      Optional writing style for what people read. Ship Caveman,
+                      Gilfoyle, Merlin.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Rubber Duck</dt>
+                    <dd>
+                      Optional second Agent. Primary ask before post. Verdict:
+                      confirmed, revise, rejected or unverifiable.
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Schedule</dt>
+                    <dd>
+                      Per repository: every 5–30 min or 1–4 h, hourly, daily or
+                      cron. New repository poll every 30 min.
+                    </dd>
+                  </div>
+                </dl>
+                <h2>&gt; SAFETY</h2>
+                <ul class="bullets">
+                  <li>
+                    One review per revision. Publish recheck head SHA before and
+                    after.
+                  </li>
+                  <li>
+                    GitHub and Copilot identity separate. Connect one never
+                    connect other.
+                  </li>
+                  <li>
+                    Approve and merge: opt-in, primary Agent only, fail closed.
+                  </li>
+                  <li>
+                    Agent get host-owned review tools (reads plus one exit).
+                    Boundary, not sandbox.
+                  </li>
+                </ul>
+                <h2>&gt; PERMISSIONS</h2>
+                <table class="grants">
+                  <thead>
+                    <tr>
+                      <th scope="col">Permission</th>
+                      <th scope="col">Default</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Publish Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Reply Comment</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>Approve</td>
+                      <td>[ ] off</td>
+                    </tr>
+                    <tr>
+                      <td>&amp; Merge</td>
+                      <td>[ ] off</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <section
+                class="panel"
+                role="tabpanel"
+                id="panel-changelog"
+                aria-labelledby="tab-changelog"
+                tabindex="0"
+                hidden
+              >
+                <h2>&gt; CHANGELOG</h2>
+                <div class="changelog" id="changelog">
+                  <p class="dim">Loading…</p>
+                </div>
+              </section>
+
+              <section
+                class="panel panel-demo"
+                role="tabpanel"
+                id="panel-demo"
+                aria-labelledby="tab-demo"
+                tabindex="0"
+                hidden
+              >
+                <div class="demo-stage" id="demo-stage">
+                  <div class="demo-screen frame">
+                    <div class="demo-viewport" id="demo-viewport">
+                      <iframe
+                        id="demo-frame"
+                        title="PR Sniper design prototype: an interactive Mac desktop with the menu-bar app"
+                        data-src="demo/index.html"
+                        width="1440"
+                        height="810"
+                        loading="lazy"
+                      ></iframe>
+                    </div>
+                  </div>
+                </div>
+                <div class="demo-caption">
+                  <span>Fake data. Not touch GitHub.</span>
+                  <button
+                    type="button"
+                    id="demo-full"
+                    aria-controls="demo-stage"
+                    aria-pressed="false"
+                  >
+                    [FULL SCREEN]
+                  </button>
+                </div>
+              </section>
+            </div>
+          </main>
+        </div>
+        <footer class="foot">
+          <span class="hints"
+            >←/→ section · 1-5 jump · ↑/↓ scroll · T theme · M sound</span
+          >
+          <span class="foot-controls">
+            <button type="button" id="theme-btn">[THEME P1 GREEN]</button>
+            <button type="button" id="sound-btn" aria-pressed="false">
+              [SOUND OFF]
+            </button>
+          </span>
+        </footer>
+      </div>
+      <div class="sr-only" aria-live="polite" id="announcer"></div>
+      <div class="boot" id="boot" hidden aria-hidden="true">
+        <pre class="boot-text" id="boot-text"></pre>
+      </div>
+    </div>
+  </body>
+</html>

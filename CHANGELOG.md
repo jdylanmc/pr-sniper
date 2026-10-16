@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Project website at https://jdylanmc.github.io/pr-sniper/: a terminal-style
+  landing page with What (and install steps), Why, How, this changelog and
+  the interactive v2 design prototype as its demo. It deploys from `site/` to GitHub Pages.
+
 ## 0.4.0 - 2026-10-15
 
 ### Added

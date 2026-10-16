@@ -64,6 +64,7 @@ grants no approval, ready, or merge authority.
 - `src-tauri/doctrines`: app doctrine catalog, independent of `.agents/skills/doctrine`.
 - `src-tauri/voices`: app Voice seeds ([ADR 0022](docs/adr/0022-voices.md)).
 - `tests/settings/`: Playwright. `tests/release/`: release/packaging tests. `scripts/`: sign, release, icons, Windows.
+- `site/`: static GitHub Pages site, no build step ([docs/site.md](docs/site.md)). `tests/site/`: its Playwright suite.
 
 ### Local development
 
@@ -104,6 +105,7 @@ grants no approval, ready, or merge authority.
 | `npm run format` / `format:check`                | Prettier + `cargo fmt` (owned files only)                 |
 | `npm test`                                       | `cargo test --locked`                                     |
 | `npm run test:settings`                          | Playwright vs real Rust storage                           |
+| `npm run test:site`                              | Site Playwright, Chromium + WebKit                        |
 | `npm run test:skills`                            | Skill package/link + repo-policy contracts (checks links) |
 | `npm run test:release`                           | Release script + workflow tests                           |
 | `npm run bundle`                                 | `.app` with required local ad-hoc signature               |
