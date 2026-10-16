@@ -147,12 +147,13 @@ const demoScreen = demoViewport.parentElement;
 const stacked = matchMedia("(max-width: 900px)");
 
 function fitDemo() {
-  if (demoStage.offsetParent === null) return;
+  if (!demoStage.getClientRects().length) return;
   const screen = getComputedStyle(demoScreen);
   const padX = parseFloat(screen.paddingLeft) + parseFloat(screen.paddingRight);
   const padY = parseFloat(screen.paddingTop) + parseFloat(screen.paddingBottom);
   const width = demoStage.clientWidth - padX;
-  const height = stacked.matches ? Infinity : demoStage.clientHeight - padY;
+  const height =
+    stacked.matches && !isDemoFull() ? Infinity : demoStage.clientHeight - padY;
   const scale = Math.max(0.1, Math.min(width / DEMO_W, height / DEMO_H));
   demoViewport.style.width = `${Math.floor(DEMO_W * scale)}px`;
   demoViewport.firstElementChild.style.transform = `scale(${scale})`;
@@ -160,6 +161,77 @@ function fitDemo() {
 
 new ResizeObserver(fitDemo).observe(demoStage);
 stacked.addEventListener?.("change", fitDemo);
+
+// Full screen: the browser's Fullscreen API where it exists (Esc exits
+// natively), else a fixed overlay that Esc closes from the page or the demo.
+const demoFull = document.getElementById("demo-full");
+const nativeFull = Boolean(
+  demoStage.requestFullscreen || demoStage.webkitRequestFullscreen,
+);
+
+function fullElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement;
+}
+
+function isDemoFull() {
+  return (
+    fullElement() === demoStage || demoStage.classList.contains("demo-overlay")
+  );
+}
+
+function syncFull() {
+  const on = isDemoFull();
+  demoFull.setAttribute("aria-pressed", String(on));
+  demoFull.textContent = on ? "[EXIT FULL SCREEN · ESC]" : "[FULL SCREEN]";
+  fitDemo();
+}
+
+function enterFull() {
+  if (nativeFull) {
+    const request =
+      demoStage.requestFullscreen || demoStage.webkitRequestFullscreen;
+    Promise.resolve(request.call(demoStage)).catch(() => {
+      demoStage.classList.add("demo-overlay");
+      syncFull();
+    });
+  } else {
+    demoStage.classList.add("demo-overlay");
+    syncFull();
+  }
+}
+
+function exitFull() {
+  if (demoStage.classList.contains("demo-overlay")) {
+    demoStage.classList.remove("demo-overlay");
+    syncFull();
+    demoFull.focus();
+  } else if (fullElement()) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
+}
+
+demoFull.addEventListener("click", () => {
+  if (isDemoFull()) exitFull();
+  else enterFull();
+  sound.click();
+});
+document.addEventListener("fullscreenchange", syncFull);
+document.addEventListener("webkitfullscreenchange", syncFull);
+
+// Esc inside the (same-origin) demo also closes the overlay fallback.
+document.getElementById("demo-frame").addEventListener("load", (event) => {
+  try {
+    event.target.contentDocument.addEventListener("keydown", (inner) => {
+      if (
+        inner.key === "Escape" &&
+        demoStage.classList.contains("demo-overlay")
+      )
+        exitFull();
+    });
+  } catch {
+    // Cross-origin in some previews; the page-level Esc still works.
+  }
+});
 
 // Tabs
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
@@ -224,6 +296,13 @@ document.addEventListener("keydown", (event) => {
   if (booting) {
     endBoot();
     event.preventDefault();
+    return;
+  }
+  if (isDemoFull()) {
+    if (event.key === "Escape") {
+      exitFull();
+      event.preventDefault();
+    }
     return;
   }
   const target = event.target;

@@ -244,3 +244,54 @@ for (const [width, height] of [
     ).toBeLessThanOrEqual(width);
   });
 }
+
+test("full screen fills the window at 16:9 and Esc closes it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.locator("#tab-demo").click();
+  const button = page.locator("#demo-full");
+  const viewport = page.locator("#demo-viewport");
+  const before = await viewport.boundingBox();
+  await button.click();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await viewport.boundingBox()).width)
+    .toBeGreaterThan(before.width + 100);
+  const full = await viewport.boundingBox();
+  expect(Math.abs(full.width / full.height - 16 / 9)).toBeLessThan(0.02);
+  // Tab keys are ignored while full screen.
+  await page.keyboard.press("1");
+  await expect(page.locator("#tab-demo")).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.keyboard.press("Escape");
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  await expect(button).toHaveText("[FULL SCREEN]");
+  await expect
+    .poll(async () => Math.round((await viewport.boundingBox()).width))
+    .toBe(Math.round(before.width));
+});
+
+test("Esc inside the demo closes the full screen overlay", async ({ page }) => {
+  await page.addInitScript(() => {
+    // Force the overlay fallback, as on browsers without the Fullscreen API.
+    Element.prototype.requestFullscreen = undefined;
+    Element.prototype.webkitRequestFullscreen = undefined;
+  });
+  await open(page);
+  await page.locator("#tab-demo").click();
+  const demo = page.frameLocator("#demo-frame");
+  await expect(demo.locator("body")).not.toBeEmpty();
+  await page.locator("#demo-full").click();
+  await expect(page.locator("#demo-stage")).toHaveClass(/demo-overlay/);
+  await demo.locator("body").click({ position: { x: 5, y: 400 } });
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#demo-stage")).not.toHaveClass(/demo-overlay/);
+  await expect(page.locator("#demo-full")).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+});
