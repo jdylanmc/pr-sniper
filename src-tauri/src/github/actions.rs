@@ -327,9 +327,12 @@ impl<T: QueryTransport> GithubClient<T> {
             {
                 checks = Some("MISSING_REQUIRED".into());
             }
-            if protection["requiredApprovingReviewCount"]
-                .as_u64()
-                .is_none()
+            let review_count_complete = match protection.get("requiredApprovingReviewCount") {
+                Some(Value::Null) => protection["requiresApprovingReviews"] == false,
+                Some(count) => count.as_u64().is_some(),
+                None => false,
+            };
+            if !review_count_complete
                 || protection["requiredStatusCheckContexts"]
                     .as_array()
                     .is_none_or(|values| values.iter().any(|v| v.as_str().is_none()))

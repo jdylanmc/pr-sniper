@@ -16,6 +16,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   on its own page; on restores the tabbed terminal with themes, boot and
   sound. The header links home to dylan mccurry.
 
+### Fixed
+
+- Reviews no longer fail with `IncompleteRead` when branch protection requires
+  status checks but does not require approving reviews.
+
 ## 0.4.0 - 2026-10-15
 
 ### Added
