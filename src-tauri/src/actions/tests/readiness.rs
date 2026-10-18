@@ -135,6 +135,7 @@ fn prepare(
             acting_login: "actor",
             write_capability: true,
             teammates: crate::review::teammates::entries(store, &run).unwrap(),
+            ownership: vec![],
             iterations: &[],
             last_consumed_at: None,
         },
