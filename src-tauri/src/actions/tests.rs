@@ -27,6 +27,7 @@ const NOW: i64 = 1_800_000_000;
 mod approve_exits;
 mod fixwave;
 mod legacy_compat;
+mod readiness;
 
 fn output() -> ReviewResult {
     serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),"output":{"synopsis":"Review completed.",
