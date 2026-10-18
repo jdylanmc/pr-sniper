@@ -228,6 +228,61 @@ async fn a_duck_call_returns_a_fenced_verdict_and_is_recorded_with_the_primary()
 }
 
 #[tokio::test]
+async fn fixed_verification_requires_independent_original_thread_and_head_code_reads() {
+    for (scenario, confirmed) in [
+        ("verdict-fixed-read", true),
+        ("verdict-fixed-no-thread", false),
+        ("verdict-fixed-partial-thread", false),
+        ("verdict-ok", false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut duck = duck(&root.path().join("duck"), scenario, limits(8, 180), false);
+        duck.setup.prep.threads = vec!["existing".into()];
+        duck.setup.prep.tools.insert(0, "get_thread".into());
+        let mut request = primary_request(duck.setup);
+        request.exits.facts = Arc::new(ToolFacts {
+            conversation: crate::packet::Conversation {
+                threads: vec![crate::packet::ThreadFact {
+                    id: "existing".into(),
+                    path: Some("source.rs".into()),
+                    line: Some(1),
+                    resolved: false,
+                    outdated: true,
+                    mine: true,
+                    new_since_last_review: false,
+                    targeted_revision: Some("1".into()),
+                    comments: vec![crate::packet::CommentFact {
+                        id: "root".into(),
+                        author: "reviewer".into(),
+                        body: "Original defect.".into(),
+                    }],
+                }],
+                comments: vec![],
+            },
+            ..Default::default()
+        });
+        let result = execute(
+            options(root.path(), "duck-fixed"),
+            &identity(),
+            &operation(600),
+            request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.ducks.len(), 1);
+        assert_eq!(
+            matches!(&result.ducks[0].outcome, DuckOutcome::Verdict {verdict}
+            if verdict.verdict == VerdictKind::Confirmed),
+            confirmed,
+            "{scenario}: {:?}",
+            result.ducks
+        );
+        stopped(root.path());
+        stopped(&root.path().join("duck"));
+    }
+}
+
+#[tokio::test]
 async fn parallel_calls_run_one_at_a_time_and_stop_at_the_preference_limit() {
     let (root, result, _) = review("duck-parallel", "verdict-ok", limits(1, 180), 600).await;
     let result = result.unwrap();

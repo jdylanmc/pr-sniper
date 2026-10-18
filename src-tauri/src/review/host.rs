@@ -661,7 +661,7 @@ async fn execute_attempt(
                 .capabilities
                 .comment
                 == crate::github::provider::CommentCapability::Available;
-            let (teammates, iterations, last_consumed_at) = {
+            let (teammates, iterations, last_consumed_at, ownership) = {
                 let store = host
                     .store
                     .lock()
@@ -675,6 +675,12 @@ async fn execute_attempt(
                         .map_err(Failure::permanent)?
                         .get(&crate::retention::Binding::job(&preparation_run.job))
                         .and_then(|r| r.consumed_at),
+                    super::findings::proofs(
+                        &store,
+                        &preparation_run.job,
+                        &preparation_run.assignment_id,
+                    )
+                    .map_err(Failure::permanent)?,
                 )
             };
             super::packet_run::prepare(
@@ -689,6 +695,7 @@ async fn execute_attempt(
                     teammates,
                     iterations: &iterations,
                     last_consumed_at,
+                    ownership,
                 },
             )?
         };

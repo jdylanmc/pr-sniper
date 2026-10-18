@@ -8,8 +8,6 @@ use super::{
 use crate::github::{actions::Observation, review::ReviewContext, state::PrSnapshot};
 use serde_json::Value;
 
-pub const OWN_MARKER: &str = "<!-- pr-sniper:";
-
 fn str_of(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
@@ -39,9 +37,7 @@ pub fn conversation(observation: &Observation) -> Conversation {
                     line: root.and_then(|c| c["line"].as_u64().or(c["originalLine"].as_u64())),
                     resolved: thread.resolved,
                     outdated: thread.outdated,
-                    mine: comments
-                        .first()
-                        .is_some_and(|c| c.body.contains(OWN_MARKER)),
+                    mine: false,
                     new_since_last_review: false,
                     targeted_revision: None,
                     comments,

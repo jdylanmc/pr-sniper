@@ -149,6 +149,7 @@ fn prepared(origin: &Publication) -> FollowUp {
         byte_coverage: false,
         coverage: None,
         ducks: vec![],
+        finding_dispositions: vec![],
     });
     run.analysis = Some(run.operation("thread_analysis", 100));
     run.analysis.as_mut().unwrap().state = OperationState::Completed;

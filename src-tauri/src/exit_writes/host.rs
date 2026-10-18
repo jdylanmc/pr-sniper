@@ -3,7 +3,6 @@ use crate::{
     github::{
         http::HttpTransport,
         provider::{GithubClient, RemoteRepository},
-        threads::Provenance,
     },
     monitoring::OperationFailure,
     now_seconds, Host,
@@ -249,6 +248,15 @@ impl Environment for Native {
         if pull.state != crate::github::metadata::Lifecycle::Open {
             return Err(Failure::permanent("PR is no longer open."));
         }
+        if write
+            .reviewed_base_sha
+            .as_ref()
+            .is_some_and(|base| *base != pull.base_sha)
+        {
+            return Err(Failure::permanent(
+                "PR base moved; nothing further was written.",
+            ));
+        }
         Ok(pull.head_sha)
     }
 
@@ -258,23 +266,7 @@ impl Environment for Native {
             .store
             .lock()
             .map_err(|_| storage("Exit write storage unavailable."))?;
-        let mut proofs: Vec<Ownership> = store
-            .load_publications()
-            .map_err(storage)?
-            .iter()
-            .filter(|p| crate::feedback::same_pr(&p.review.job, &write.job))
-            .filter_map(|p| p.ownership().ok())
-            .collect();
-        proofs.extend(
-            crate::retention::load(&store)
-                .map_err(storage)?
-                .receipts
-                .into_iter()
-                .flat_map(|r| r.owned)
-                .filter(|o| o.matches(&write.job))
-                .map(|o| o.proof),
-        );
-        Ok(proofs)
+        crate::review::findings::proofs(&store, &write.job, &write.assignment_id).map_err(storage)
     }
 
     fn thread(&mut self, write: &ExitWrite, id: &str) -> Result<Option<Thread>, Failure> {

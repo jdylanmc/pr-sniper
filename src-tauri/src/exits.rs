@@ -87,8 +87,9 @@ impl Exit {
     pub fn schema(self) -> Value {
         let comment = json!({"type":"object","additionalProperties":false,
             "properties":{"path":{"type":"string"},"line":{"type":"integer","minimum":1},
+                "finding_id":{"type":["string","null"],"description":"null for a distinct new finding; existing thread id updates that finding in its original thread, including mistaken resolutions."},
                 "side":{"type":"string","enum":["base","head"]},"body":{"type":"string"}},
-            "required":["path","line","body"]});
+            "required":["path","line","body","finding_id"]});
         let reply = json!({"type":"object","additionalProperties":false,
             "properties":{"thread_id":{"type":"string"},"body":{"type":"string"}},
             "required":["thread_id","body"]});
@@ -98,7 +99,7 @@ impl Exit {
                 "full":{"type":"string","description":"At most 4096 bytes."},
                 "fix":{"type":"string","description":"At most 4096 bytes."}},
             "required":["file","line","nano","full","fix"]});
-        let (properties, required) = match self {
+        let (mut properties, required) = match self {
             Exit::LeaveComments => (
                 json!({"new_comments":{"type":"array","items":comment},
                     "body":{"type":"string","description":"PR-level review body. At most 8192 bytes. For points not on a diff line."},
@@ -120,6 +121,15 @@ impl Exit {
             ),
             Exit::SubmitVerdict => return crate::review::duck::verdict_schema(),
         };
+        if matches!(
+            self,
+            Exit::LeaveComments
+                | Exit::ReadyForHuman
+                | Exit::ApprovePullRequest
+                | Exit::ApproveAndMerge
+        ) {
+            properties["finding_dispositions"] = crate::review::findings::assessment_schema();
+        }
         json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
     }
 }

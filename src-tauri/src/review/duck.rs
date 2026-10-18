@@ -63,6 +63,9 @@ pub struct EvidenceRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DuckInput {
+    /// Independently test whether an existing finding is fixed, not whether a new defect exists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verify_fixed: bool,
     pub kind: TargetKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -276,7 +279,7 @@ fn range(line: Option<u64>, end_line: Option<u64>) -> Result<(), String> {
     }
 }
 
-fn evidence(refs: &[EvidenceRef]) -> Result<(), String> {
+pub(crate) fn evidence(refs: &[EvidenceRef]) -> Result<(), String> {
     if refs.len() > MAX_EVIDENCE {
         return Err(format!("At most {MAX_EVIDENCE} evidence refs."));
     }
@@ -297,6 +300,9 @@ impl DuckInput {
         let input: Self = serde_json::from_value(args.clone()).map_err(|_| {
             "Malformed rubber_duck arguments; match the schema exactly.".to_string()
         })?;
+        if input.verify_fixed && input.kind != TargetKind::Thread {
+            return Err("verify_fixed requires kind thread and its stable thread_id.".into());
+        }
         if input.claim.trim().is_empty()
             || words(&input.claim) > MAX_CLAIM_WORDS
             || input.claim.len() > MAX_CLAIM_BYTES
@@ -369,6 +375,9 @@ impl DuckInput {
         if let Some(thread) = &self.thread_id {
             out.push_str(&format!("thread: {thread}\n"));
         }
+        if self.verify_fixed {
+            out.push_str("verify_fixed: Independently check this existing finding against current head code. confirmed means the original defect is fixed; rejected means still applies; unverifiable means insufficient evidence. Outdated is not proof. Read the original thread and cite current-head code yourself.\n");
+        }
         out.push_str(&format!("claim: {}\n", self.claim));
         out.push_str(&format!("proposed_body:\n{}\n", self.proposed_body));
         for r in &self.evidence {
@@ -426,7 +435,7 @@ impl Verdict {
     }
 }
 
-fn reference_schema() -> Value {
+pub(crate) fn reference_schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "properties":{"path":{"type":"string","maxLength":1024},"side":{"type":"string","enum":["base","head"]},
             "line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},
@@ -437,6 +446,7 @@ fn reference_schema() -> Value {
 pub fn input_schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "properties":{
+            "verify_fixed":{"type":"boolean","description":"kind thread only. Independently verify an existing finding is fixed on current head; confirmed means fixed, not a real defect."},
             "kind":{"type":"string","enum":["line","thread","pr"],"description":"line: inline comment; thread: reply; pr: review body point."},
             "path":{"type":"string","maxLength":1024,"description":"kind line only: a changed file."},
             "line":{"type":"integer","minimum":1},

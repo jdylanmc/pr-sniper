@@ -2,6 +2,13 @@
 
 Status: accepted (owner, 2026-10-14). Plan: [Rubber duck plan](../agent/design/rubber-duck.md). Extends [ADR 0013](0013-shared-ai-capacity.md), [0020](0020-constrained-host-owned-review-tools.md), [0021](0021-review-packet.md), [0022](0022-voices.md). Keeps [0010](0010-native-mutation-owner-intent-before-effect.md), [0016](0016-revision-safe-publication.md), [0017](0017-opt-in-provider-actions.md). Resolves review-packet OQ-06 (`rubber_duck` model, budget, payer, concurrency).
 
+## Scoped amendment: finding lifecycle (owner, 2026-10-18)
+
+- New-finding verification remains optional. For an existing finding's proposed `fixed` disposition, a configured Rubber Duck must independently confirm it on the same state.
+- `rubber_duck` adds optional `verify_fixed` (default false, thread targets only). Confirmed then means the original defect is fixed, not that a new defect exists. Duck must read the original thread and cite current-head code lines actually served to it.
+- Primary binds the verdict ordinal to the exact thread, rationale and evidence in `finding_dispositions`. A failure, stale verdict, different claim or missing independent reads cannot support resolution. No new grant, publication authority or background stage.
+- This narrowly supersedes the original “never a mandatory gate” / “verdict never blocks” language for `fixed` dispositions only. Full contract: [finding reconciliation](../review-packet.md#finding-reconciliation).
+
 ## Context
 
 - Teammates (e.g. SOLID, Security) report in parallel; the primary runs last and posts ([ADR 0021](0021-review-packet.md)). Teammate order stays irrelevant.

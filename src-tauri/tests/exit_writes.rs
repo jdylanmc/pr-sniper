@@ -93,8 +93,75 @@ impl Environment for Env {
 }
 
 fn write(replies: Value, resolutions: Value, new_comments: Value) -> ExitWrite {
-    let review = fake::review(new_comments, replies, resolutions, &fake::settings());
+    let mut review = fake::review(
+        new_comments,
+        replies,
+        resolutions.clone(),
+        &fake::settings(),
+    );
+    review.result.as_mut().unwrap().finding_dispositions = resolutions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| {
+            serde_json::from_value(json!({
+                "thread_id":id,"disposition":"fixed","head_sha":HEAD,"base_sha":"b".repeat(40),
+                "rationale":"Current head removes the invalid branch.",
+                "evidence":[{"path":"src/lib.rs","side":"head","line":1}]
+            }))
+            .unwrap()
+        })
+        .collect();
     exit_writes::plan(&review, 100).expect("replies or resolutions planned")
+}
+
+#[test]
+fn resolve_without_current_code_proof_is_denied_before_any_effect() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let review = fake::review(json!([]), json!([]), json!(["T1"]), &fake::settings());
+    let mut w = exit_writes::plan(&review, 100).unwrap();
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+    assert!(!wire.thread("T1").resolved);
+}
+
+#[test]
+fn resumed_verified_write_cannot_resolve_without_proof_or_on_a_different_head() {
+    for moved in [false, true] {
+        let wire = wire();
+        let mut env = Env::new(&wire);
+        let mut w = write(json!([]), json!(["T1"]), json!([]));
+        w.phase = Phase::Verified;
+        w.steps[0].root_id = Some("100".into());
+        if moved {
+            wire.0.lock().unwrap().head = "other".into();
+        } else {
+            w.steps[0].resolution_evidence = None;
+        }
+
+        drive(&mut env, &mut w);
+        assert_eq!(w.phase, Phase::Tossed);
+        assert!(wire.log().is_empty());
+    }
+}
+
+#[test]
+fn another_assignments_publication_and_a_different_evidence_base_cannot_resolve() {
+    for foreign in [true, false] {
+        let wire = wire();
+        let mut env = Env::new(&wire);
+        let mut w = write(json!([]), json!(["T1"]), json!([]));
+        if foreign {
+            env.proofs[0].assignment_id = "other-assignment".into();
+        } else {
+            w.steps[0].resolution_evidence.as_mut().unwrap().base_sha = "old-base".into();
+        }
+        drive(&mut env, &mut w);
+        assert_eq!(w.phase, Phase::Tossed);
+        assert!(wire.log().is_empty());
+    }
 }
 
 fn wire() -> Wire {

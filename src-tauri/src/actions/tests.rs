@@ -260,6 +260,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         &snapshot,
         packet_run::Caller {
             acting_login: "actor",
+            ownership: vec![],
             write_capability: true,
             teammates: vec![],
             iterations: &[],
@@ -340,6 +341,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &snapshot,
             packet_run::Caller {
                 acting_login: "actor",
+                ownership: vec![],
                 write_capability: true,
                 teammates: vec![],
                 iterations: &known,
@@ -456,6 +458,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &snapshot,
             packet_run::Caller {
                 acting_login: "actor",
+                ownership: vec![],
                 write_capability: true,
                 teammates: vec![],
                 iterations: &[],

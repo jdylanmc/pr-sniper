@@ -22,12 +22,18 @@ pub enum Refusal {
 }
 
 pub(crate) type ExitGate = Arc<dyn Fn(&ExitCall) -> Result<(), Refusal> + Send + Sync>;
+pub(super) type FindingGate = Arc<
+    dyn Fn(&mut ExitCall, &[crate::review::findings::Assessment]) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 #[derive(Default)]
 pub(super) struct ExitState {
     slot: Mutex<Option<ExitCall>>,
     rejected: AtomicU32,
     failure: Mutex<Option<Failure>>,
+    pub(super) findings: Mutex<Vec<crate::review::findings::Assessment>>,
 }
 
 impl ExitState {
@@ -54,6 +60,8 @@ pub(super) struct ExitTools {
     pub gate: ExitGate,
     pub diagnostics: Option<Arc<Trace>>,
     pub calls: AtomicU64,
+    pub(super) finding_gate: Option<FindingGate>,
+    pub(super) require_finding_identity: bool,
 }
 
 fn error(message: &str) -> ToolResult {
@@ -68,6 +76,8 @@ impl ExitTools {
             gate,
             diagnostics,
             calls: AtomicU64::new(0),
+            finding_gate: None,
+            require_finding_identity: false,
         }
     }
 
@@ -85,7 +95,30 @@ impl ExitTools {
         let Some(exit) = Exit::parse(name).filter(|exit| self.offered.contains(exit)) else {
             return (error("Exit not offered."), true);
         };
-        let call = match ExitCall::parse(name, args) {
+        if self.require_finding_identity
+            && args
+                .get("new_comments")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|comments| comments.iter().any(|c| c.get("finding_id").is_none()))
+        {
+            return (self.reject("Each new_comments item needs finding_id: null for a distinct new finding, or the existing thread id to update it.".into()), true);
+        }
+        let (arguments, findings) = match crate::review::findings::extract(args) {
+            Ok(value) => value,
+            Err(message) => return (self.reject(message), true),
+        };
+        if !findings.is_empty()
+            && matches!(
+                exit,
+                Exit::PanicExit | Exit::SubmitReport | Exit::SubmitVerdict
+            )
+        {
+            return (
+                self.reject("Finding dispositions are primary-only.".into()),
+                true,
+            );
+        }
+        let mut call = match ExitCall::parse(name, &arguments) {
             Ok(call) => call,
             Err(message) => return (self.reject(message), true),
         };
@@ -95,6 +128,11 @@ impl ExitTools {
         };
         if slot.is_some() {
             return (error("An exit was already taken. Stop."), true);
+        }
+        if let Some(gate) = &self.finding_gate {
+            if let Err(reason) = gate(&mut call, &findings) {
+                return (error(&reason), true);
+            }
         }
         if exit != Exit::PanicExit {
             if let Err(refusal) = (self.gate)(&call) {
@@ -107,6 +145,10 @@ impl ExitTools {
                 };
             }
         }
+        let Ok(mut saved) = self.state.findings.lock() else {
+            return (error("Finding tracking unavailable."), true);
+        };
+        *saved = findings;
         *slot = Some(call);
         (ToolResult::Text("ok".into()), false)
     }
@@ -131,6 +173,7 @@ impl ToolHandler for ExitTools {
                 query_bytes: Some(invocation.arguments.to_string().len()),
             });
         }
+
         // The exit gate re-reads the PR over blocking HTTP.
         let (result, failed) =
             super::off_runtime(|| self.handle(&invocation.tool_name, &invocation.arguments));
@@ -151,3 +194,7 @@ impl ToolHandler for ExitTools {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+#[path = "exit_tools_tests.rs"]
+mod tests;
