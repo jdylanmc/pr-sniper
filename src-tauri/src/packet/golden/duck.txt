@@ -1,8 +1,8 @@
 # PR Sniper rubber duck packet
 
 ## Meta
-packet_id: 4aa0cd1b7b1b23fd
-schema: 7
+packet_id: f703bae23731cc82
+schema: 8
 state_id: head1:base1
 primary_packet: primaryhash
 call: 2

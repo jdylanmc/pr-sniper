@@ -11,7 +11,112 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+const CORRECTION: &str = "Correction: my earlier resolution was mistaken.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Correction {
+    thread_id: String,
+    root_id: Option<String>,
+    body: String,
+    text: String,
+    receipt: Option<String>,
+    pending: bool,
+}
+
+impl Correction {
+    fn confirmed_in(&self, thread: &ThreadFact) -> bool {
+        !self.pending
+            && thread.comments.first().map(|c| &c.id) == self.root_id.as_ref()
+            && self.receipt.as_ref().is_some_and(|receipt| {
+                thread
+                    .comments
+                    .iter()
+                    .any(|comment| comment.id == *receipt && comment.body == self.body)
+            })
+    }
+}
+
+/// A compact view of existing write intents, not another persisted ledger.
+pub(crate) fn corrections(
+    writes: &[crate::exit_writes::ExitWrite],
+    job: &QueueJob,
+    assignment: &str,
+) -> Vec<Correction> {
+    use crate::exit_writes::{StepKind, StepState, SIGNATURE};
+    let mut ordered: Vec<_> = writes
+        .iter()
+        .enumerate()
+        .filter(|(_, write)| {
+            crate::feedback::same_pr(&write.job, job) && write.assignment_id == assignment
+        })
+        .collect();
+    ordered.sort_by_key(|(index, write)| (write.operation.initial_attempt_at, *index));
+    let mut latest: BTreeMap<String, Vec<Correction>> = BTreeMap::new();
+    for (_, write) in ordered {
+        for (index, step) in write.steps.iter().enumerate() {
+            if step.state == StepState::Planned {
+                continue;
+            }
+            if step.kind == StepKind::Resolve {
+                if step.state == StepState::Done && step.receipt.as_deref() == Some("already") {
+                    continue;
+                }
+                // A later resolution is a new episode, even at the same head/base.
+                latest.remove(&step.thread_id);
+                if step.state == StepState::Done {
+                    continue;
+                }
+                latest.insert(
+                    step.thread_id.clone(),
+                    vec![Correction {
+                        thread_id: step.thread_id.clone(),
+                        root_id: step.root_id.clone(),
+                        body: String::new(),
+                        text: String::new(),
+                        receipt: None,
+                        pending: true,
+                    }],
+                );
+                continue;
+            }
+            if !step.body.starts_with(CORRECTION) {
+                continue;
+            }
+            let Some(revision) = &step.revision else {
+                continue;
+            };
+            let suffix = format!(
+                "\n\n{}\n<!-- pr-sniper:revision:{revision} -->\n\n{SIGNATURE}",
+                write.reply_marker(index)
+            );
+            let Some(text) = step.body.strip_suffix(&suffix) else {
+                continue;
+            };
+            latest
+                .entry(step.thread_id.clone())
+                .or_default()
+                .push(Correction {
+                    thread_id: step.thread_id.clone(),
+                    root_id: step.root_id.clone(),
+                    body: step.body.clone(),
+                    text: text.to_string(),
+                    receipt: step.receipt.clone(),
+                    pending: step.state != StepState::Done,
+                });
+        }
+    }
+    latest.into_values().flatten().collect()
+}
+
+fn correction_text(body: &str) -> String {
+    if body.starts_with(CORRECTION) {
+        body.trim_end().to_string()
+    } else {
+        format!("{CORRECTION}\n\n{}", body.trim_end())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,6 +260,7 @@ pub(crate) struct Contract {
     pub state_id: String,
     pub threads: Vec<ThreadFact>,
     pub duck_required: bool,
+    pub corrections: Vec<Correction>,
 }
 
 impl Contract {
@@ -174,14 +280,13 @@ impl Contract {
                         .iter()
                         .any(|t| t.id == a.thread_id && t.resolved)
             }) {
-                let reply = reply_comments
+                let Some(reply) = reply_comments
                     .iter_mut()
                     .find(|r| r.thread_id == a.thread_id && r.body.contains(&a.rationale))
-                    .ok_or("Correction reply missing.")?;
-                const CORRECTION: &str = "Correction: my earlier resolution was mistaken.";
-                if !reply.body.starts_with(CORRECTION) {
-                    reply.body = format!("{CORRECTION}\n\n{}", reply.body);
-                }
+                else {
+                    continue;
+                };
+                reply.body = correction_text(&reply.body);
                 if reply.body.len() > crate::exits::MAX_COMMENT_BYTES {
                     return Err("Correction reply exceeds 16384 bytes; shorten it.".into());
                 }
@@ -206,6 +311,31 @@ impl Contract {
             } else {
                 Err("Finding dispositions are primary-only.".into())
             };
+        }
+        if let ExitCall::LeaveComments { reply_comments, .. } = call {
+            for reply in reply_comments {
+                let previous: Vec<_> = self
+                    .corrections
+                    .iter()
+                    .filter(|c| c.thread_id == reply.thread_id)
+                    .collect();
+                if previous.is_empty() {
+                    continue;
+                }
+                let thread = self.threads.iter().find(|t| t.id == reply.thread_id);
+                if previous
+                    .iter()
+                    .any(|c| !thread.is_some_and(|t| c.confirmed_in(t)))
+                {
+                    return Err("Earlier correction outcome is unresolved or its receipt is unreadable; no replacement reply will be posted. Omit that reply or choose ready_for_human.".into());
+                }
+                if previous
+                    .iter()
+                    .any(|c| correction_text(&reply.body) == c.text)
+                {
+                    return Err("That correction is already confirmed on the original thread. Omit the duplicate reply or choose ready_for_human; revise only for new information.".into());
+                }
+            }
         }
         let own: BTreeSet<_> = self
             .threads
@@ -239,7 +369,10 @@ impl Contract {
                 }
             }
             let thread = self.threads.iter().find(|t| t.id == a.thread_id).unwrap();
-            if thread.resolved && a.disposition == Disposition::StillApplies {
+            if thread.resolved
+                && a.disposition == Disposition::StillApplies
+                && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
+            {
                 let corrected = matches!(call, ExitCall::LeaveComments { reply_comments, .. }
                     if reply_comments.iter().any(|r| r.thread_id == a.thread_id && r.body.contains(&a.rationale)));
                 if !corrected {

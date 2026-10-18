@@ -1460,6 +1460,7 @@ mod exits {
     fn pull_tools_page_and_never_cut() {
         use crate::packet::{CheckFact, CommentFact, Conversation, ThreadFact};
         let facts = Arc::new(ToolFacts {
+            corrections: Vec::new(),
             description: Some("d".repeat(70_000)),
             conversation: Conversation {
                 threads: vec![ThreadFact {

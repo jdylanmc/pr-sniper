@@ -230,5 +230,6 @@ pub fn tool_facts(
         description,
         conversation: conversation.clone(),
         checks: checks.to_vec(),
+        corrections: Vec::new(),
     }
 }

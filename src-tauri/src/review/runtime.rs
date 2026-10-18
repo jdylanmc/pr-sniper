@@ -1095,6 +1095,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     .unwrap_or_default(),
                 threads: request.exits.facts.conversation.threads.clone(),
                 duck_required: c.rubber_duck.is_some(),
+                corrections: request.exits.facts.corrections.clone(),
             });
         let duck_log = request.duck.as_ref().map(|d| d.log.clone());
         // The duck is part of this run's setup: no duck, no inference.
