@@ -80,7 +80,7 @@ const queued = () =>
   state.reviews
     .filter(
       (review) =>
-        ["queued", "failed", "stale"].includes(review.state) && !review.nextId,
+        review.state === "queued" && repoFor(review)?.enabled && !review.nextId,
     )
     .sort(
       (a, b) => Number(b.restart) - Number(a.restart) || a.number - b.number,

@@ -1683,6 +1683,97 @@ fn poll_operation(monitor: &Monitor) -> pr_sniper_lib::monitoring::JobOperation 
 }
 
 #[test]
+fn revision_races_requeue_the_poll_without_parking_or_changing_saved_prs() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Ok(poll_result(
+                vec![pull(
+                    "1",
+                    1,
+                    "11",
+                    "author",
+                    &[],
+                    HEAD_A,
+                    "2027-01-15T08:00:00Z",
+                )],
+                "current-login",
+            )),
+            1_800_000_001,
+        )
+        .unwrap();
+    let saved_queue = store.load_queue_state().unwrap();
+    let saved_cursors = store.load_monitoring_state().unwrap().cursors;
+    let mut now = 1_800_000_010;
+    let mut tickets = monitor.prepare_checks(&store, now, true).unwrap();
+    let operation_id = poll_operation(&monitor).id;
+    for _ in 0..4 {
+        assert_eq!(tickets.len(), 1);
+        monitor
+            .finish(
+                &store,
+                tickets.remove(0),
+                Err(ConnectionError::RevisionChanged),
+                now + 1,
+            )
+            .unwrap();
+        let health = monitor.snapshot().remove(0);
+        let operation = health.operation.unwrap();
+        assert_eq!(operation.id, operation_id);
+        assert_eq!(operation.state, OperationState::Queued);
+        assert_eq!(operation.attempt_count, 0);
+        assert_eq!(operation.failure, None);
+        assert_eq!(health.last_failure, None);
+        assert_eq!(health.last_success, Some(1_800_000_001));
+        assert!(health.scan_pending);
+        assert!(health.schedule_available);
+        assert_eq!(store.load_queue_state().unwrap(), saved_queue);
+        assert_eq!(
+            store.load_monitoring_state().unwrap().cursors,
+            saved_cursors
+        );
+        assert!(store.load_backpressure().unwrap().gates.is_empty());
+        now = operation.next_attempt_at.unwrap();
+        assert!(monitor
+            .prepare_checks(&store, now - 1, false)
+            .unwrap()
+            .is_empty());
+        monitor = Monitor::restore(&store).unwrap();
+        tickets = monitor.prepare_checks(&store, now, false).unwrap();
+    }
+    monitor
+        .finish(
+            &store,
+            tickets.remove(0),
+            Ok(poll_result(
+                vec![pull(
+                    "1",
+                    1,
+                    "11",
+                    "author",
+                    &[],
+                    HEAD_B,
+                    "2027-01-15T08:01:00Z",
+                )],
+                "current-login",
+            )),
+            now + 1,
+        )
+        .unwrap();
+    assert_eq!(poll_operation(&monitor).state, OperationState::Completed);
+    assert_eq!(monitor.snapshot()[0].last_success, Some(now + 1));
+    assert!(store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .any(|job| job.head_sha == HEAD_B));
+}
+
+#[test]
 fn parked_permanent_poll_requeues_once_per_scheduled_scan() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();

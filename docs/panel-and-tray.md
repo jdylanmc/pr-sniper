@@ -44,6 +44,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 ## Running tab
 
 - Native shared-capacity jobs: active, queued, stopping. Counts jobs, not triggers. Assigned Agents beyond capacity wait.
+- Disabled-repository and superseded entries stay out of Running and waiting counts; saved evidence stays. A live worker remains visible until teardown releases its slot.
 - Active rows first, then waiting in arrival order with reason. Only active rows animate; static under reduced motion.
 - Row opens the exact job. No second PR drill-in.
 - Job inspector: purpose (normal, primary-final, reply, mention); immutable execution config vs current planned config; canonical iteration; per-Agent work ordinals; retry attempts. Missing legacy evidence shows "unavailable"; never rebuilt from Settings.

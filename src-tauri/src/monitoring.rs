@@ -2242,6 +2242,10 @@ impl Monitor {
             }
         };
         let configured = configured_schedules(&settings);
+        enum PollCompletion {
+            Observed(String),
+            RevisionChanged,
+        }
         let outcome = match self.synchronize_jobs(store, &configured, accounts) {
             Ok(()) => match result {
                 Ok(result) => self
@@ -2257,8 +2261,9 @@ impl Monitor {
                             failure: OperationFailure::Provider,
                             retry_after_seconds: None,
                         })?;
-                        Ok(login)
+                        Ok(PollCompletion::Observed(login))
                     }),
+                Err(ConnectionError::RevisionChanged) => Ok(PollCompletion::RevisionChanged),
                 Err(error) => Err(check_error(error)),
             },
             Err(error) => Err(MonitoringError::Storage(error)),
@@ -2267,10 +2272,11 @@ impl Monitor {
         let github = crate::backpressure::Scope::github(&ticket.provider_account_id);
         let mut paced_until = None;
         match &outcome {
-            Ok(_) => {
+            Ok(PollCompletion::Observed(_)) => {
                 // Gate bookkeeping never fails a poll that succeeded.
                 let _ = crate::backpressure::succeeded(store, &github);
             }
+            Ok(PollCompletion::RevisionChanged) => {}
             Err(MonitoringError::Backpressure {
                 retry_after_seconds,
                 ..
@@ -2300,7 +2306,7 @@ impl Monitor {
         {
             if let Some(health) = self.state.health.get_mut(&ticket.health_key) {
                 match &outcome {
-                    Ok(login) => {
+                    Ok(PollCompletion::Observed(login)) => {
                         health.account_login = Some(login.clone());
                         health.last_success = Some(now);
                         health.last_failure = None;
@@ -2310,6 +2316,15 @@ impl Monitor {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
                             operation.failure = None;
+                        }
+                    }
+                    Ok(PollCompletion::RevisionChanged) => {
+                        health.last_failure = None;
+                        health.last_error = None;
+                        if let Some(operation) = health.operation.as_mut() {
+                            operation.requeue_superseded(now, None);
+                            health.next_run = operation.next_attempt_at.unwrap_or(now);
+                            health.schedule_available = true;
                         }
                     }
                     Err(MonitoringError::Backpressure { .. }) => {

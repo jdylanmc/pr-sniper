@@ -11,6 +11,7 @@ Reference for scheduled detection, admission rules, the read-only GitHub connect
 - Legacy `global_scan` state folds into each repository on restore: shared next run, pending and request.
 - Poll operation persists before the read. Restart keeps it. A waiting or interrupted poll whose window ran out before it could run (quit, sleep, account rate limit) restarts with a fresh window and keeps its cause; it never parks on the deadline alone. An account rate limit also extends the window of every poll on that account.
 - Retry: transient failures back off, 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately. A parked poll is requeued at its repository's next occurrence (once per occurrence); credential failures wait for reconnect.
+- A revision changing during a poll requeues that same poll after 30 seconds without spending an attempt or showing a failure. Saved PRs, cursors and the last successful poll stay unchanged until a complete fresh read.
 - Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else 30s x2^n (cap 15m); no attempt spent, no failure shown. Other repos on the same account wait too, whatever their schedule (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
 - Schedule health keeps pending/success/failure per account/repo read in `monitoring_snapshot`; no Status screen.
 - Detection never clones, executes repo code, mutates GitHub or publishes.
