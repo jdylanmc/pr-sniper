@@ -67,6 +67,24 @@ not prove OS banner presentation or the notification-center callback.
    failed, unknown and not-sent states retain in-app context. Focus behavior
    remains under the user's existing OS settings; no critical/time-sensitive
    authorization is requested.
+7. Seed multiple saved iterations of one merged synthetic PR. Only one merge
+   notice is eligible per provider/account/repository/PR, opening the latest
+   saved iteration at admission. Reordering or pruning iterations, receipt
+   enrichment and restart must not repeat it. Another PR or account remains
+   independent. GitHub merge evidence does not identify PR Sniper as the writer.
+
+## Merge history compatibility
+
+| Boundary | Expected |
+| --- | --- |
+| Ledger predates durable merge identities | First observation silently adopts existing merges; other notification types retain their transitions |
+| Legacy queued merge notices | Retained as not sent; accepted, failed and unknown outcomes stay unchanged |
+| Queue or notification detail pruned | Merge tombstones survive; the same PR never alerts again |
+| Merge category muted or notifications enabled | Current merges become a silent baseline; unmuting never replays them |
+| Saved destination removed | Existing notice retains its exact identity; no substitute iteration opens |
+
+Synthetic regression coverage lives in `src-tauri/src/notifications/tests.rs`;
+it does not prove native banner presentation.
 
 ## Evidence and cleanup
 
