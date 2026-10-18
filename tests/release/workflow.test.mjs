@@ -714,14 +714,15 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
     "node-version-file": ".node-version",
     cache: "npm",
   });
-  assert.equal(job.steps.length, 6);
+  assert.equal(job.steps.length, 7);
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
     [
       "rustup show active-toolchain",
       "npm ci",
       "npm exec playwright install webkit",
-      "npm run test:settings -- --browser=webkit --workers=2",
+      "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge",
+      "npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2",
     ],
   );
   for (const step of job.steps) {
@@ -738,19 +739,24 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
   );
 });
 
-test("WebKit bounded full-suite execution uses isolated file workers without extending deadlines", async () => {
+test("WebKit build and full suite have separate budgets and isolated file workers", async () => {
   const webkit = parse(
     readFileSync(".github/workflows/macos-webkit.yml", "utf8"),
   );
   const job = webkit.jobs.webkit;
-  const suite = job.steps.find((step) =>
-    step.run?.startsWith("npm run test:settings"),
+  const build = job.steps.find(
+    (step) => step.name === "Build frontend and Store bridge",
+  );
+  const suite = job.steps.find(
+    (step) => step.name === "Run the full WebKit suite",
   );
   assert.equal(job["timeout-minutes"], 60);
+  assert.equal(build["timeout-minutes"], 30);
   assert.equal(suite["timeout-minutes"], 30);
+  assert.equal(job.steps.indexOf(suite), job.steps.indexOf(build) + 1);
   assert.equal(
     suite.run,
-    "npm run test:settings -- --browser=webkit --workers=2",
+    "npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2",
   );
   const { default: browser } =
     await import("../settings/playwright.config.mjs");

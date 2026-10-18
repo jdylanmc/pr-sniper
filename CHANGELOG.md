@@ -18,6 +18,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Repository saves completed from another destination now dismiss the retained
+  editor without moving focus; returning to Settings no longer reopens it.
+- WebKit CI gives the cold frontend/Store build and the full browser suite
+  separate execution budgets instead of timing out after passing every test.
 - Reviews no longer fail with `IncompleteRead` when branch protection requires
   status checks but does not require approving reviews.
 
