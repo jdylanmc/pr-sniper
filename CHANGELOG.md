@@ -5,6 +5,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-18
+
 ### Added
 
 - Project website at https://jdylanmc.github.io/pr-sniper/: a terminal-style
