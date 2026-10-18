@@ -843,7 +843,7 @@ export async function mountPanel(app: HTMLElement) {
       (work) =>
         ["waiting", "blocked"].includes(work.state) &&
         !work.failure &&
-        !["failed", "manual_retry"].includes(
+        !["failed", "manual_retry", "superseded"].includes(
           (snapshot &&
             workPresentation(snapshot, work.key.kind, work.key.id)?.state) ??
             "",
@@ -886,9 +886,11 @@ export async function mountPanel(app: HTMLElement) {
       // Parked failures belong to Queue > Needs attention, never here.
       const running = rows.filter(
         (row) =>
-          row.work?.state === "superseded" ||
+          ["active", "stopping"].includes(row.state) ||
           (!row.failure &&
-            !["failed", "manual_retry"].includes(row.work?.state ?? "")),
+            !["failed", "manual_retry", "superseded"].includes(
+              row.work?.state ?? "",
+            )),
       );
       rows.splice(0, rows.length, ...running);
       draw("running", rows, now);

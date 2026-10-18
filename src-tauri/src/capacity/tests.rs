@@ -185,7 +185,7 @@ fn automatic_start_preserves_pause_disable_assignment_and_account_gates() {
         if gate == "pause" {
             assert!(snapshot.paused);
             assert_eq!(snapshot.waiting, 1);
-        } else if gate == "unassigned" {
+        } else if matches!(gate, "unassigned" | "disabled") {
             assert!(snapshot.work.is_empty());
         } else {
             assert_eq!(snapshot.blocked, 1, "{gate}");
@@ -489,6 +489,58 @@ fn failed_dispatch_does_not_lose_previously_reserved_workers() {
         store.load_reviews().unwrap()[0].operation.state,
         OperationState::Failed
     );
+}
+
+#[test]
+fn disabled_and_superseded_candidates_leave_capacity_but_keep_their_evidence() {
+    let (_root, store) = fixture(3, 1, true);
+    review::host::request(&store, "normal-2", false, 100).unwrap();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    store.save_settings(&settings).unwrap();
+    let mut jobs = store.load_queue().unwrap();
+    jobs[0].waiting = crate::monitoring::WAITING_REPOSITORY_DISABLED.into();
+    jobs[1].waiting = crate::monitoring::WAITING_SUPERSEDED.into();
+    store.save_queue(&jobs).unwrap();
+    let evidence = store.load_reviews().unwrap();
+    let coordinator = Coordinator::default();
+    let snapshot = coordinator.snapshot(&store, 101).unwrap();
+    assert_eq!(snapshot.work.len(), 1);
+    assert_eq!(snapshot.work[0].key.id, "normal-3");
+    assert_eq!((snapshot.waiting, snapshot.blocked), (1, 0));
+    assert_eq!(store.load_queue().unwrap(), jobs);
+    assert_eq!(store.load_reviews().unwrap(), evidence);
+
+    settings.repositories[0].enabled = true;
+    store.save_settings(&settings).unwrap();
+    jobs[0].waiting = crate::monitoring::WAITING_AI_CAPACITY.into();
+    store.save_queue(&jobs).unwrap();
+    let snapshot = coordinator.snapshot(&store, 102).unwrap();
+    assert_eq!(snapshot.work[0].key.id, "normal-1");
+}
+
+#[test]
+fn disabling_a_repository_keeps_its_live_reservation_visible_until_teardown() {
+    let (_root, store) = fixture(1, 1, true);
+    let coordinator = Coordinator::default();
+    let worker = dispatch(&coordinator, &store, 100).remove(0);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].enabled = false;
+    store.save_settings(&settings).unwrap();
+    let mut jobs = store.load_queue().unwrap();
+    jobs[0].waiting = crate::monitoring::WAITING_REPOSITORY_DISABLED.into();
+    store.save_queue(&jobs).unwrap();
+    store.save_automation(&Automation { paused: true }).unwrap();
+    assert!(dispatch(&coordinator, &store, 101).is_empty());
+    let snapshot = coordinator.snapshot(&store, 101).unwrap();
+    assert_eq!((snapshot.active, snapshot.stopping), (1, 1));
+    assert_eq!(snapshot.work.len(), 1);
+    assert_eq!(snapshot.work[0].state, "stopping");
+    let Dispatch::Review(run, _) = worker;
+    coordinator
+        .release(&snapshot.work[0].key, &run.operation.id)
+        .unwrap();
+    assert!(coordinator.snapshot(&store, 102).unwrap().work.is_empty());
 }
 
 #[test]

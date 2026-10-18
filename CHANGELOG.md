@@ -27,6 +27,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Queue › Saved evidence: the status card no longer covers the bottom of the
   "Saved evidence" title; the title keeps clear space above the card at every
   panel size, including the short-panel layout.
+- Running no longer lists disabled-repository or superseded jobs as queued
+  work; their saved evidence stays available.
+- A PR revision changing during a repository poll now retries the read without
+  parking the repository or marking its PRs failed.
 
 ## 0.4.0 - 2026-10-15
 

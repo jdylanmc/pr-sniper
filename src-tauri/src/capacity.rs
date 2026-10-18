@@ -171,14 +171,13 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         }) {
             continue;
         }
-        // Running lists only real work: a retired entry can never run. A
-        // superseded entry stays listed, distinct, until its PR ends or is cleaned.
+        // Reservations are added back by snapshot until their workers finish teardown.
         if crate::monitoring::retired(&candidate.job)
-            && candidate.job.waiting != crate::monitoring::WAITING_SUPERSEDED
-            && candidate
-                .run
-                .as_ref()
-                .is_none_or(|r| r.operation.state != OperationState::Running)
+            || candidate.job.waiting == crate::monitoring::WAITING_REPOSITORY_DISABLED
+            || repositories
+                .iter()
+                .find(|repository| repository.id == candidate.job.configuration_id)
+                .is_some_and(|repository| !repository.enabled)
         {
             continue;
         }

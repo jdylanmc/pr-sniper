@@ -841,7 +841,7 @@ test("polling preserves selected inspector controls on unrelated work and keyed 
   await expect(raw).toHaveAttribute("open", "");
 });
 
-test("seven failed Agents produce one human PR card; superseded and completed jobs stay distinct", async ({
+test("seven failed Agents produce one human PR card; superseded history leaves Running and completed jobs stay distinct", async ({
   page,
   store,
 }) => {
@@ -869,10 +869,18 @@ test("seven failed Agents produce one human PR card; superseded and completed jo
   await store("seed_queue_state", fixture.state);
   await tab(page, "Queue").click();
   await tab(page, "Running").click();
-  await expect(page.locator("[data-running-list] article")).toHaveCount(1);
-  await expect(
-    page.locator('[data-job-id="normal:visual-work-7"] .work-state'),
-  ).toHaveText("Superseded");
+  await expect(page.locator("[data-running-list] article")).toHaveCount(0);
+  await page.evaluate(
+    (id) =>
+      window.__TAURI_INTERNALS__.invoke("panel_navigate", {
+        route: {
+          tab: "running",
+          detail: { type: "job", kind: "normal", id },
+        },
+      }),
+    fixture.state.reviews[6].key,
+  );
+  await expect(page.locator(".job-status strong")).toHaveText("Superseded");
   await tab(page, "Reviewed").click();
   const completed = page.locator(
     '[data-panel-view="reviewed"] [data-job-id="normal:visual-work-1"]',

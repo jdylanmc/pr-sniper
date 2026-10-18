@@ -388,6 +388,61 @@ test("Running and Reviewed use real native jobs and exact kind identities withou
   expect((await store("monitoring_snapshot")).reviews).toEqual(before.reviews);
 });
 
+for (const retired of ["repository_disabled", "superseded"]) {
+  for (const started of [false, true]) {
+    test(`Running excludes ${retired} ${started ? "queued attempts" : "unstarted jobs"} without deleting evidence`, async ({
+      page,
+      store,
+    }) => {
+      const fixture = await queueFixture(store);
+      const waiting = fixture.state.reviews.find((r) => r.job.number === 3);
+      waiting.job.waiting = retired;
+      waiting.operation.state = "queued";
+      waiting.operation.initial_attempt_at = 0;
+      waiting.operation.retry_deadline = 0;
+      waiting.operation.attempt_count = 0;
+      waiting.result = null;
+      if (!started)
+        fixture.state.reviews = fixture.state.reviews.filter(
+          (review) => review !== waiting,
+        );
+      fixture.state.publications = fixture.state.publications.filter(
+        (publication) => publication.review.job.number !== 3,
+      );
+      if (retired === "repository_disabled") {
+        fixture.settings.repositories[0].enabled = false;
+        await store("seed_settings", fixture.settings);
+      }
+      await store("seed_queue_state", fixture.state);
+      const before = await store("monitoring_snapshot");
+      await page.goto("/");
+      await tab(page, "Running").click();
+      await expect(page.locator("[data-running-list] article")).toHaveCount(0);
+      await expect(page.locator("[data-summary-detail]")).toContainText(
+        "0 waiting",
+      );
+      await tab(page, "Reviewed").click();
+      await expect(
+        page
+          .locator('[data-panel-view="reviewed"] article')
+          .filter({ hasText: "example/repo #9" }),
+      ).toHaveCount(1);
+      await invoke(page, "panel_navigate", {
+        route: {
+          tab: "running",
+          detail: { type: "job", kind: "normal", id: waiting.key },
+        },
+      });
+      await expect(page.locator("#agent-reviews")).toContainText(
+        "example/repo #3",
+      );
+      expect((await store("monitoring_snapshot")).reviews).toEqual(
+        before.reviews,
+      );
+    });
+  }
+}
+
 test("external auth blur and retained URL entry preserve unsaved preferences and connecting identity", async ({
   page,
   store,
