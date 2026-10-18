@@ -330,6 +330,41 @@ for (const name of ["empty", "populated", "attention"]) {
   });
 }
 
+for (const size of [
+  { width: 408, height: 744 },
+  { width: 320, height: 600 },
+  { width: 408, height: 420 },
+]) {
+  test(`Saved evidence title clears the overlapping status card at ${size.width}x${size.height}`, async ({
+    page,
+    store,
+  }, testInfo) => {
+    await scenario(store, "populated");
+    await page.setViewportSize(size);
+    await page.goto("/");
+    await page.locator("[data-queue-filter=attention]").click();
+    await page
+      .getByRole("article", { name: "example/repo #3", exact: true })
+      .getByRole("button", { name: "Evidence and actions" })
+      .click();
+    await expect(page.locator("[data-panel-heading]")).toHaveText(
+      "Saved evidence",
+    );
+    await capture(
+      page,
+      testInfo,
+      `saved-evidence-${size.width}x${size.height}`,
+    );
+    const [heading, band, card] = await Promise.all(
+      ["[data-panel-heading]", ".panel-context", "[data-queue-status]"].map(
+        (selector) => page.locator(selector).boundingBox(),
+      ),
+    );
+    expect(card.y - (heading.y + heading.height)).toBeGreaterThanOrEqual(12);
+    expect(card.y).toBeLessThan(band.y + band.height);
+  });
+}
+
 test("Queue keeps exact handoff, stale destination, keyboard and scroll focus across refresh and Back", async ({
   page,
   store,

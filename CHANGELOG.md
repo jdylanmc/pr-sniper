@@ -24,6 +24,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   separate execution budgets instead of timing out after passing every test.
 - Reviews no longer fail with `IncompleteRead` when branch protection requires
   status checks but does not require approving reviews.
+- Queue › Saved evidence: the status card no longer covers the bottom of the
+  "Saved evidence" title; the title keeps clear space above the card at every
+  panel size, including the short-panel layout.
 
 ## 0.4.0 - 2026-10-15
 
