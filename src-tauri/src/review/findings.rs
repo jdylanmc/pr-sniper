@@ -157,6 +157,19 @@ impl Assessment {
     }
 }
 
+pub(crate) fn action_clearance(assessments: &[Assessment]) -> Result<(), String> {
+    if assessments.iter().any(|a| {
+        matches!(
+            a.disposition,
+            Disposition::StillApplies | Disposition::Unverifiable
+        )
+    }) {
+        Err("Applicable or unverifiable findings prevent approval and merge; use ready_for_human or leave_comments.".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn proofs(
     store: &Store,
     job: &QueueJob,
@@ -395,6 +408,12 @@ impl Contract {
             }) {
                 return Err("Only own findings classified fixed with current-code evidence may be resolved.".into());
             }
+        }
+        if matches!(
+            call.exit(),
+            Exit::ApprovePullRequest | Exit::ApproveAndMerge
+        ) {
+            action_clearance(assessments)?;
         }
         Ok(())
     }

@@ -594,7 +594,12 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                 resolution_proof(write, &step)?;
             }
             if thread.resolved {
-                done(write, index, "already".into());
+                let receipt = if step.state == StepState::Attempted {
+                    write.request_id(index)
+                } else {
+                    "already".into()
+                };
+                done(write, index, receipt);
                 return env.save(write);
             }
             let proofs = own_proofs(env, write)?;
@@ -613,7 +618,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     env.save(write)
                 }
                 Err(error) => {
-                    write.uncertain = error.uncertain;
+                    write.uncertain = error.uncertain || step.state == StepState::Attempted;
                     if env
                         .thread(write, &step.thread_id)
                         .is_ok_and(|t| t.is_some_and(|t| t.resolved))
@@ -622,7 +627,11 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                         return env.save(write);
                     }
                     // Resolving twice is a no-op, so an unconfirmed attempt may be retried.
-                    write.steps[index].state = StepState::Planned;
+                    write.steps[index].state = if write.uncertain {
+                        StepState::Attempted
+                    } else {
+                        StepState::Planned
+                    };
                     env.save(write)?;
                     Err(error.failure)
                 }

@@ -217,6 +217,36 @@ fn confirmed_correction_survives_another_assessment_without_another_reply() {
     );
 }
 
+#[test]
+fn finding_clearance_denies_approval_of_applicable_or_unverifiable_corrected_findings() {
+    let mut c = contract(true, false);
+    let write = correction_write();
+    add_correction(&mut c, &write);
+    c.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    for disposition in [Disposition::StillApplies, Disposition::Unverifiable] {
+        let a = assessment(disposition);
+        for name in ["approve_pull_request", "approve_and_merge"] {
+            let mut call = ExitCall::parse(name, &json!({"comment":"Looks good."})).unwrap();
+            assert!(
+                c.prepare(&mut call, std::slice::from_ref(&a), &[], |_| true)
+                    .is_err(),
+                "{name} cannot clear {disposition:?}, regardless of provider resolution"
+            );
+        }
+        let mut ready = ExitCall::ReadyForHuman {
+            summary: "Existing concern needs human attention.".into(),
+        };
+        assert!(c.prepare(&mut ready, &[a], &[], |_| true).is_ok());
+    }
+    for disposition in [Disposition::Fixed, Disposition::Withdrawn] {
+        let mut call =
+            ExitCall::parse("approve_and_merge", &json!({"comment":"Reviewed."})).unwrap();
+        assert!(c
+            .prepare(&mut call, &[assessment(disposition)], &[], |_| true)
+            .is_ok());
+    }
+}
+
 fn correction_write() -> crate::exit_writes::ExitWrite {
     let a = assessment(Disposition::StillApplies);
     let mut write: crate::exit_writes::ExitWrite = serde_json::from_value(json!({
@@ -409,6 +439,119 @@ fn historical_correction_reposts_are_denied_after_a_genuine_update_and_noop_reso
         summary: "Already corrected.".into(),
     };
     assert!(c.prepare(&mut ready, &[a], &[], |_| true).is_ok());
+}
+
+#[test]
+fn reconciled_resolution_receipt_requires_a_new_correction_after_restart() {
+    use crate::{
+        exit_writes::{self, Dependency, Environment, ExitWrite, Phase, StepKind, StepState},
+        github::threads::Thread,
+        review::Failure,
+    };
+    struct Reconcile {
+        store: Store,
+        thread: Thread,
+    }
+    impl Environment for Reconcile {
+        fn now(&self) -> Result<i64, Failure> {
+            Ok(20)
+        }
+        fn save(&mut self, write: &mut ExitWrite) -> Result<(), Failure> {
+            let mut ledger = self.store.load_feedback().map_err(Failure::permanent)?;
+            *ledger
+                .exit_writes
+                .iter_mut()
+                .find(|w| w.id == write.id)
+                .unwrap() = write.clone();
+            self.store
+                .save_feedback(&ledger)
+                .map_err(Failure::permanent)
+        }
+        fn gate(&mut self, _: &ExitWrite) -> Result<(), Failure> {
+            Ok(())
+        }
+        fn dependency(&mut self, _: &ExitWrite) -> Result<Dependency, Failure> {
+            unreachable!()
+        }
+        fn head(&mut self, _: &ExitWrite) -> Result<String, Failure> {
+            Ok("head".into())
+        }
+        fn proofs(&mut self, _: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
+            unreachable!()
+        }
+        fn thread(&mut self, _: &ExitWrite, _: &str) -> Result<Option<Thread>, Failure> {
+            Ok(Some(self.thread.clone()))
+        }
+        fn revision(&mut self, _: &ExitWrite, _: Option<&str>) -> String {
+            unreachable!()
+        }
+        fn reply(
+            &mut self,
+            _: &ExitWrite,
+            _: &str,
+            _: &str,
+        ) -> Result<String, crate::publication::WriteFailure> {
+            unreachable!("Reconciliation must never re-post a correction")
+        }
+        fn resolve(
+            &mut self,
+            _: &ExitWrite,
+            _: &str,
+            _: &str,
+        ) -> Result<(), crate::publication::WriteFailure> {
+            unreachable!("A landed resolution must not be repeated")
+        }
+        fn confirmed(&mut self, _: &ExitWrite) -> Result<(), Failure> {
+            Ok(())
+        }
+    }
+    let prior = correction_write();
+    let mut attempted = prior.clone();
+    attempted.id = "later-resolution".into();
+    attempted.phase = Phase::Verified;
+    attempted.consumed = false;
+    attempted.uncertain = true;
+    attempted.operation.initial_attempt_at = 2;
+    attempted.operation.state = crate::monitoring::OperationState::Running;
+    attempted.steps[0].kind = StepKind::Resolve;
+    attempted.steps[0].state = StepState::Attempted;
+    attempted.steps[0].body.clear();
+    attempted.steps[0].receipt = None;
+    attempted.steps[0].resolution_evidence = Some(assessment(Disposition::Fixed));
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes = vec![prior.clone(), attempted];
+    store.save_feedback(&ledger).unwrap();
+    drop(store);
+    let mut env = Reconcile {
+        store: Store::new(root.path().into()),
+        thread: serde_json::from_value(json!({
+            "id":"existing","resolved":true,"can_reply":true,
+            "comments":[{"id":"root","body":"Original defect","created_at":"","published_at":""}]
+        }))
+        .unwrap(),
+    };
+    let mut resumed = env.store.load_feedback().unwrap().exit_writes.remove(1);
+    exit_writes::run(&mut env, &mut resumed).unwrap();
+    let mut c = contract(true, false);
+    add_correction(&mut c, &prior);
+    c.corrections = corrections(
+        &env.store.load_feedback().unwrap().exit_writes,
+        &prior.job,
+        "assignment",
+    );
+    let a = assessment(Disposition::StillApplies);
+    let mut ready = ExitCall::ReadyForHuman {
+        summary: "Old correction is not enough.".into(),
+    };
+    assert!(
+        c.prepare(&mut ready, std::slice::from_ref(&a), &[], |_| true)
+            .is_err(),
+        "The earlier acknowledgment cannot cover a later landed resolution"
+    );
+    let mut correction = correction_call(&a.rationale);
+    assert!(c.prepare(&mut correction, &[a], &[], |_| true).is_ok());
 }
 
 #[test]

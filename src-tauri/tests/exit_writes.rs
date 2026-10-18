@@ -22,6 +22,7 @@ struct Env {
     saved: Vec<ExitWrite>,
     confirmed: usize,
     fail_confirm: bool,
+    fail_resolve_save: bool,
     known: Vec<(String, u64)>,
     gate: Option<String>,
 }
@@ -36,6 +37,7 @@ impl Env {
             saved: vec![],
             confirmed: 0,
             fail_confirm: false,
+            fail_resolve_save: false,
             known: vec![(HEAD.into(), 1)],
             gate: None,
         }
@@ -53,6 +55,15 @@ impl Environment for Env {
         Ok(self.now)
     }
     fn save(&mut self, write: &mut ExitWrite) -> Result<(), Failure> {
+        if self.fail_resolve_save
+            && write.steps.iter().any(|step| {
+                step.kind == exit_writes::StepKind::Resolve && step.state == StepState::Done
+            })
+        {
+            return Err(Failure::permanent(
+                "Injected interruption before resolution receipt save.",
+            ));
+        }
         self.saved.push(write.clone());
         Ok(())
     }
@@ -559,6 +570,99 @@ fn an_already_resolved_own_thread_is_done_without_a_mutation() {
     exit_writes::run(&mut env, &mut w).unwrap();
     assert_eq!(w.phase, Phase::Completed);
     assert!(wire.log().is_empty());
+    assert_eq!(w.steps[0].receipt.as_deref(), Some("already"));
+}
+
+#[test]
+fn reconciled_landed_resolution_preserves_attempt_provenance_after_store_restart() {
+    let wire = wire();
+    wire.0.lock().unwrap().threads[0].resolved = true;
+    let mut env = Env::new(&wire);
+    let mut prior = write(
+        json!([reply(
+            "T1",
+            "Correction: my earlier resolution was mistaken.\n\nThe bug still applies."
+        )]),
+        json!([]),
+        json!([]),
+    );
+    prior.id = "prior-correction".into();
+    drive(&mut env, &mut prior);
+    assert_eq!(prior.phase, Phase::Completed);
+    wire.0.lock().unwrap().threads[0].resolved = false;
+    let mut later = write(json!([]), json!(["T1"]), json!([]));
+    later.id = "later-fixed-resolution".into();
+    env.now = 200;
+    env.fail_resolve_save = true;
+    assert!(exit_writes::run(&mut env, &mut later).is_err());
+    assert!(
+        wire.thread("T1").resolved,
+        "Provider accepted before the interruption"
+    );
+    let saved = env.last();
+    assert_eq!(saved.steps[0].state, StepState::Attempted);
+    let root = tempfile::tempdir().unwrap();
+    let store = pr_sniper_lib::storage::Store::new(root.path().into());
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes = vec![prior, saved];
+    store.save_feedback(&ledger).unwrap();
+    drop(store);
+    let restored = pr_sniper_lib::storage::Store::new(root.path().into());
+    let mut ledger = restored.load_feedback().unwrap();
+    let resumed = &mut ledger.exit_writes[1];
+    let mut after = Env::new(&wire);
+    after.now = 300;
+    drive(&mut after, resumed);
+    assert_eq!(resumed.phase, Phase::Completed);
+    assert_ne!(
+        resumed.steps[0].receipt.as_deref(),
+        Some("already"),
+        "A landed attempted mutation starts a new correction episode, not a no-op"
+    );
+    assert!(resumed.steps[0].receipt.is_some());
+    restored.save_feedback(&ledger).unwrap();
+    assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+}
+
+#[test]
+fn uncertain_resolution_keeps_attempt_provenance_across_a_retry() {
+    let wire = wire();
+    wire.fault("resolve", Fault::Before);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    assert!(exit_writes::run(&mut env, &mut w).is_err());
+    assert!(w.uncertain);
+    assert_eq!(
+        w.steps[0].state,
+        StepState::Attempted,
+        "An uncertain mutation cannot become an unattempted no-op on a later retry"
+    );
+    let mut restored: ExitWrite =
+        serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+    // The earlier request can land after the first reconciliation read.
+    wire.0.lock().unwrap().threads[0].resolved = true;
+    env.now = restored.operation.next_attempt_at.unwrap_or(300).max(300);
+    drive(&mut env, &mut restored);
+    assert_eq!(restored.phase, Phase::Completed);
+    assert_ne!(restored.steps[0].receipt.as_deref(), Some("already"));
+    assert_eq!(wire.log(), ["resolve:T1"]);
+}
+
+#[test]
+fn a_definite_retry_rejection_cannot_erase_an_earlier_uncertain_resolution() {
+    let wire = wire();
+    wire.fault("resolve", Fault::Before);
+    let mut env = Env::new(&wire);
+    let mut w = write(json!([]), json!(["T1"]), json!([]));
+    assert!(exit_writes::run(&mut env, &mut w).is_err());
+    let mut restored: ExitWrite =
+        serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+    wire.fault("resolve", Fault::Reject);
+    env.now = restored.operation.next_attempt_at.unwrap_or(300).max(300);
+    assert!(exit_writes::run(&mut env, &mut restored).is_err());
+    assert!(restored.uncertain, "The earlier attempt might still land");
+    assert_eq!(restored.steps[0].state, StepState::Attempted);
+    assert_eq!(wire.log(), ["resolve:T1", "resolve:T1"]);
 }
 
 #[test]
