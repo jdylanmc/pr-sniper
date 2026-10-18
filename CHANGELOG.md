@@ -31,6 +31,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   work; their saved evidence stays available.
 - A PR revision changing during a repository poll now retries the read without
   parking the repository or marking its PRs failed.
+- Cancelled, failed or timed-out Copilot model discovery now reaps its owned
+  macOS runtime before returning.
 
 ## 0.4.0 - 2026-10-15
 

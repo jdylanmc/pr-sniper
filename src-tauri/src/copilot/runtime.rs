@@ -7,6 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+#[path = "catalog_process.rs"]
+mod catalog_process;
+
 // Shared account-isolated environment for catalog queries and restricted reviews.
 pub(crate) fn options(
     program: PathBuf,
@@ -302,11 +306,29 @@ async fn query_with_deadline(
     if Instant::now() >= deadline {
         return Err("Copilot operation timed out. Retry.".into());
     }
-    let client = tokio::select! {
-        _ = cancellation(cancelled) => return Err("Copilot model lookup cancelled.".into()),
-        result = tokio::time::timeout_at((Instant::now() + Duration::from_secs(30)).min(deadline).into(), Client::start(options)) => {
-            result.map_err(|_| "Copilot runtime startup timed out. Retry.")?
-                .map_err(|_| "The Copilot runtime could not start. Retry or reinstall PR Sniper.")?
+    #[cfg(unix)]
+    let mut process = catalog_process::CatalogProcess::spawn(&options)
+        .map_err(|_| "The Copilot runtime could not start. Retry or reinstall PR Sniper.")?;
+    #[cfg(unix)]
+    let startup = process.connect();
+    #[cfg(not(unix))]
+    let startup = Client::start(options);
+    let started = tokio::select! {
+        _ = cancellation(cancelled) => Err("Copilot model lookup cancelled."),
+        result = tokio::time::timeout_at((Instant::now() + Duration::from_secs(30)).min(deadline).into(), startup) => {
+            result.map_err(|_| "Copilot runtime startup timed out. Retry.")
+                .and_then(|result| result.map_err(|_| "The Copilot runtime could not start. Retry or reinstall PR Sniper."))
+        }
+    };
+    let client = match started {
+        Ok(client) => client,
+        Err(error) => {
+            #[cfg(unix)]
+            process
+                .terminate()
+                .await
+                .map_err(|_| "Copilot runtime cleanup could not be verified. Retry.")?;
+            return Err(error.into());
         }
     };
     let outcome = tokio::select! {
@@ -331,6 +353,12 @@ async fn query_with_deadline(
             Ok(models)
         }) => result.unwrap_or_else(|_| Err("Copilot model listing timed out. Retry.".into())),
     };
+    #[cfg(unix)]
+    process
+        .shutdown(&client)
+        .await
+        .map_err(|_| "Copilot runtime cleanup could not be verified. Retry.")?;
+    #[cfg(not(unix))]
     shutdown(&client).await;
     outcome
 }
@@ -813,6 +841,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inherited_deadline_during_startup_reaps_the_child() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let pending = async {
+            wait_for_fixture_method(root.path(), "connect").await;
+            assert!(Instant::now() < deadline);
+        };
+        let (result, ()) =
+            tokio::time::timeout_at((deadline + Duration::from_secs(2)).into(), async {
+                tokio::join!(
+                    query_with_deadline(
+                        fixture_options(root.path(), "waiting-start"),
+                        "waiting-start",
+                        &cancel,
+                        deadline,
+                    ),
+                    pending
+                )
+            })
+            .await
+            .expect("startup and child reaping must respect the inherited deadline");
+        assert_eq!(
+            result.unwrap_err(),
+            "Copilot runtime startup timed out. Retry."
+        );
+        assert_stopped_and_catalog_only(root.path());
+    }
+
+    #[tokio::test]
     #[cfg(windows)]
     async fn windows_cancellation_terminates_owned_descendants_even_if_shutdown_stalls() {
         for (token, stall) in [
@@ -967,10 +1025,21 @@ mod tests {
         }
         let path = root.path().to_path_buf();
         let (outcome, cleanup, pid) = with_directory(root, async {
+            #[cfg(unix)]
+            let mut process = catalog_process::CatalogProcess::spawn(&config).unwrap();
+            #[cfg(unix)]
+            let client = tokio::time::timeout(Duration::from_secs(30), process.connect())
+                .await
+                .unwrap()
+                .unwrap();
+            #[cfg(not(unix))]
             let client = tokio::time::timeout(Duration::from_secs(30), Client::start(config))
                 .await
                 .unwrap()
                 .unwrap();
+            #[cfg(unix)]
+            let pid = process.pid();
+            #[cfg(not(unix))]
             let pid = client.pid().expect("owned bundled runtime process");
             let outcome = tokio::time::timeout(Duration::from_secs(10), async {
                 let status = client.get_status().await.unwrap();
@@ -979,6 +1048,10 @@ mod tests {
                 (status, auth, models)
             })
             .await;
+            #[cfg(unix)]
+            let cleanup =
+                tokio::time::timeout(Duration::from_secs(5), process.shutdown(&client)).await;
+            #[cfg(not(unix))]
             let cleanup = tokio::time::timeout(Duration::from_secs(5), client.stop()).await;
             if !matches!(&cleanup, Ok(Ok(()))) {
                 client.force_stop();
