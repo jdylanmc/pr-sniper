@@ -18,6 +18,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Merge notifications now appear once per pull request across saved iterations,
+  restarts and cleanup; upgrading no longer replays historical merges.
 - Repository saves completed from another destination now dismiss the retained
   editor without moving focus; returning to Settings no longer reopens it.
 - WebKit CI gives the cold frontend/Store build and the full browser suite

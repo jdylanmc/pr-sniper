@@ -95,6 +95,10 @@ pub struct Event {
 
 impl Event {
     fn fingerprint(&self) -> String {
+        if self.category == Category::Merged {
+            // Saved evidence and receipt availability may change; a PR merges only once.
+            return digest(&serde_json::json!([self.category, self.group]).to_string());
+        }
         digest(&serde_json::json!([self.category, self.destination, self.cause]).to_string())
     }
 }
@@ -111,7 +115,31 @@ fn digest(value: &str) -> String {
 
 pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
     let mut frames = Vec::new();
+    let mut merged = BTreeMap::<String, &queue::Item>::new();
     for item in &snapshot.items {
+        if item.state == queue::State::Merged && item.action_status.is_some() {
+            let identity = digest(
+                &serde_json::json!([
+                    item.job.provider,
+                    item.job.account_id,
+                    item.job.repository_id,
+                    item.job.pull_request_id
+                ])
+                .to_string(),
+            );
+            let candidate = merged.entry(identity).or_insert(item);
+            let rank = |item: &queue::Item| {
+                (
+                    item.job.work.as_ref().map_or(0, |work| work.iteration),
+                    item.job.detected_at,
+                    item.id.clone(),
+                )
+            };
+            if rank(item) > rank(candidate) {
+                *candidate = item;
+            }
+            continue;
+        }
         let mut category = match item.state {
             queue::State::ConfirmationRequired => Some(Category::Confirmation),
             queue::State::WaitingForHuman => Some(Category::HumanInput),
@@ -123,9 +151,6 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             && item.action_status.as_ref().is_some_and(|s| s.final_valid)
         {
             category = Some(Category::FinalReviewCleared);
-        }
-        if item.state == queue::State::Merged && item.action_status.is_some() {
-            category = Some(Category::Merged);
         }
         if item.state == queue::State::Approved {
             category = Some(Category::Approved);
@@ -235,6 +260,33 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             }),
         });
     }
+    for (identity, item) in merged {
+        let merge_commit = item.action_status.as_ref().and_then(|status| {
+            status.effects.iter().find_map(|effect| {
+                effect
+                    .receipt
+                    .as_ref()
+                    .filter(|receipt| {
+                        receipt.action == crate::github::actions::Action::Merge
+                            && effect.observation.account_id == item.job.account_id
+                            && effect.observation.repository_id == item.job.repository_id
+                            && effect.observation.pull_request_id == item.job.pull_request_id
+                    })
+                    .and_then(|receipt| receipt.merge_commit.as_deref())
+            })
+        });
+        frames.push(Frame {
+            source: format!("merged:{identity}"),
+            event: Some(Event {
+                category: Category::Merged,
+                destination: Destination::QueueItem {
+                    item_id: item.id.clone(),
+                },
+                cause: digest(&serde_json::json!([identity, merge_commit]).to_string()),
+                group: identity,
+            }),
+        });
+    }
     for health in &snapshot.health {
         let source = digest(
             &serde_json::json!([
@@ -314,6 +366,10 @@ pub struct Ledger {
     /// Turned-off categories; absent in older files, so every category defaults on.
     #[serde(default)]
     pub muted: BTreeSet<Category>,
+    /// Durable merge tombstones, independent of retained queue/notice detail.
+    /// Missing in legacy ledgers: first observation silently adopts merge history.
+    #[serde(default)]
+    pub merged_sources: Option<BTreeSet<String>>,
     pub observations: BTreeMap<String, Observation>,
     pub notices: Vec<Notice>,
 }
@@ -328,6 +384,7 @@ impl Default for Ledger {
             profile_id: uuid::Uuid::new_v4().to_string(),
             enabled: false,
             muted: BTreeSet::new(),
+            merged_sources: Some(BTreeSet::new()),
             observations: BTreeMap::new(),
             notices: vec![],
         }
@@ -365,12 +422,46 @@ impl Ledger {
     /// baseline, so turning one back on never replays what happened while off.
     fn record(&mut self, frames: &[Frame], now: i64, notify: bool) -> Result<bool, String> {
         let mut changed = false;
+        if self.merged_sources.is_none() {
+            self.merged_sources = Some(
+                frames
+                    .iter()
+                    .filter(|frame| {
+                        frame
+                            .event
+                            .as_ref()
+                            .is_some_and(|event| event.category == Category::Merged)
+                    })
+                    .map(|frame| frame.source.clone())
+                    .collect(),
+            );
+            self.drop_queued(
+                |notice| notice.event.category == Category::Merged,
+                "Historical merge notifications were adopted without replay.",
+            );
+            changed = true;
+        }
         let mut sources = BTreeSet::new();
         for frame in frames {
             if !sources.insert(frame.source.clone()) {
                 return Err("Duplicate notification source.".into());
             }
             let fingerprint = frame.event.as_ref().map(Event::fingerprint);
+            let first_merge = if frame
+                .event
+                .as_ref()
+                .is_some_and(|event| event.category == Category::Merged)
+            {
+                let inserted = self
+                    .merged_sources
+                    .as_mut()
+                    .unwrap()
+                    .insert(frame.source.clone());
+                changed |= inserted;
+                inserted
+            } else {
+                true
+            };
             let previous = self.observations.entry(frame.source.clone()).or_default();
             if previous.fingerprint == fingerprint {
                 continue;
@@ -382,7 +473,7 @@ impl Ledger {
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
-                if !notify || self.muted.contains(&event.category) {
+                if !notify || !first_merge || self.muted.contains(&event.category) {
                     continue;
                 }
                 self.notices.push(Notice {

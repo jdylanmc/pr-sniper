@@ -342,6 +342,291 @@ fn job() -> QueueJob {
     })).unwrap()
 }
 
+fn merged_snapshot(count: usize) -> queue::Snapshot {
+    queue::Snapshot {
+        pending_threads: vec![],
+        feedback: Default::default(),
+        mentions: vec![],
+        tracked: vec![],
+        health: vec![],
+        jobs: vec![],
+        reviews: vec![],
+        publications: vec![],
+        follow_ups: vec![],
+        exit_writes: vec![],
+        pr_states: Default::default(),
+        items: (0..count)
+            .map(|iteration| {
+                let mut job = job();
+                job.head_sha = format!("{iteration:040x}");
+                job.detected_at += iteration as i64;
+                job.work = Some(crate::monitoring::NormalWork {
+                    id: format!("job-{iteration}"),
+                    item_id: format!("iteration-{iteration}"),
+                    iteration_id: format!("iteration-{iteration}"),
+                    iteration: iteration as u64 + 1,
+                    agent_id: "synthetic-agent".into(),
+                    enqueue_order: iteration as u64 + 1,
+                    pass_ordinal: 1,
+                    trigger: crate::monitoring::WorkTrigger::NewRevision,
+                    admission: crate::monitoring::Admission {
+                        watched_author: true,
+                        all_authors: false,
+                        requested_reviewer: false,
+                    },
+                    legacy_item_id: None,
+                    state_seq: 1,
+                });
+                let id = queue::item_id(&job);
+                queue::Item {
+                    action_status: Some(crate::actions::Status {
+                        item_id: id.clone(),
+                        final_valid: false,
+                        provider_observed_at: Some(200),
+                        observation_retry_blocker: None,
+                        primary_assignment_id: None,
+                        machine_clear: false,
+                        personal_review: "",
+                        permissions: Default::default(),
+                        provider_approval: None,
+                        final_review: None,
+                        effects: vec![],
+                        blockers: vec![],
+                    }),
+                    exit: None,
+                    exit_run_id: None,
+                    progress: None,
+                    feedback: vec![],
+                    aliases: vec![],
+                    id,
+                    job,
+                    state: queue::State::Merged,
+                    failure_class: None,
+                    failure_cause: None,
+                    failed_teammate: None,
+                    failed_duck: None,
+                    blocked_by: None,
+                    resume_at: None,
+                    summary: "",
+                    review_keys: vec![],
+                    follow_up_ids: vec![],
+                    warnings: vec![],
+                }
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn merged_history_emits_once_and_keeps_the_latest_exact_destination() {
+    let snapshot = merged_snapshot(21);
+    let expected = snapshot.items.last().unwrap().id.clone();
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    ledger.observe(&frames(&snapshot), 201).unwrap();
+    assert_eq!(ledger.notices.len(), 1);
+    assert_eq!(
+        ledger.notices[0].event.destination,
+        Destination::QueueItem { item_id: expected }
+    );
+    assert!(ledger.current(&ledger.notices[0]));
+    // Neither ordering nor retention of the newest iteration changes merge identity.
+    let mut snapshot = snapshot;
+    snapshot.items.reverse();
+    assert!(!ledger.observe(&frames(&snapshot), 202).unwrap());
+    snapshot.items.remove(0);
+    ledger.observe(&frames(&snapshot), 203).unwrap();
+    assert_eq!(ledger.notices.len(), 1);
+    assert!(ledger.current(&ledger.notices[0]));
+}
+
+#[test]
+fn merged_identity_isolates_prs_accounts_repositories_and_providers() {
+    let mut snapshot = merged_snapshot(5);
+    snapshot.items[1].job.pull_request_id = "other-pr".into();
+    snapshot.items[2].job.account_id = "other-account".into();
+    snapshot.items[3].job.repository_id = "other-repository".into();
+    snapshot.items[4].job.provider = "other-provider".into();
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    ledger.observe(&frames(&snapshot), 201).unwrap();
+    assert_eq!(ledger.notices.len(), 5);
+    for notice in &ledger.notices {
+        assert!(snapshot.items.iter().any(|item| notice.event.destination
+            == Destination::QueueItem {
+                item_id: item.id.clone()
+            }));
+    }
+    for item in &mut snapshot.items {
+        item.job.configuration_id = "replacement-configuration".into();
+        item.job.account_login = "renamed-login".into();
+        item.job.repository_name = "renamed/repository".into();
+    }
+    ledger.observe(&frames(&snapshot), 202).unwrap();
+    assert_eq!(ledger.notices.len(), 5);
+}
+
+#[test]
+fn merge_receipt_enrichment_does_not_create_a_second_alert_or_change_navigation() {
+    let mut snapshot = merged_snapshot(21);
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let before = frames(&snapshot);
+    ledger.observe(&before, 201).unwrap();
+    let effect = serde_json::from_value(serde_json::json!({
+        "id":"merge-effect","final_id":"final","item_id":"iteration-20","action":"merge",
+        "operation":{
+            "id":"merge-operation","provider":"github","account_id":"22",
+            "configuration_id":"config","repository_id":"100","pull_request_id":"9",
+            "head_sha":"a".repeat(40),"trigger_policy":"policy","operation_type":"merge",
+            "state":"completed","attempt_count":1,"initial_attempt_at":100,
+            "retry_deadline":200,"next_attempt_at":null,"failure":null,
+            "attempted_mutation":null,"pending_review_id":null,"owned_thread_id":null,
+            "triggering_external_comment_id":null,"confirmed_receipt":null
+        },
+        "observation":{
+            "write_capability":true,"node_id":"node","repository_id":"100",
+            "pull_request_id":"9","account_id":"22","author_id":"11",
+            "head_repository_id":null,"head":"a".repeat(40),"base":"b".repeat(40),
+            "base_name":"main","merge_rules":null,"merge_rules_error":null,
+            "state":"MERGED","draft":false,"permission":"WRITE",
+            "mergeable":"MERGEABLE","merge_state":"CLEAN","review_decision":null,
+            "checks":null,"check_contexts":[],"in_merge_queue":false,"method":null,
+            "protection":null,"threads":[],"reviews":[],"comments":[],
+            "merged_by":"22","merged_at":null,"merge_commit":"c".repeat(40)
+        },
+        "body":"","state":"confirmed","error":null,
+        "receipt":{
+            "id":"receipt","actor_id":"22","head":"a".repeat(40),
+            "action":"merge","merge_commit":"c".repeat(40)
+        }
+    }))
+    .unwrap();
+    snapshot
+        .items
+        .last_mut()
+        .unwrap()
+        .action_status
+        .as_mut()
+        .unwrap()
+        .effects
+        .push(effect);
+    let after = frames(&snapshot);
+    assert_ne!(
+        before[0].event.as_ref().unwrap().cause,
+        after[0].event.as_ref().unwrap().cause
+    );
+    assert!(!ledger.observe(&after, 202).unwrap());
+    assert_eq!(ledger.notices.len(), 1);
+    assert!(ledger.current(&ledger.notices[0]));
+    assert_eq!(
+        ledger.notices[0].event.destination,
+        before[0].event.as_ref().unwrap().destination
+    );
+}
+
+#[test]
+fn merged_pruning_and_persisted_restart_never_reemit() {
+    let snapshot = merged_snapshot(21);
+    let (root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    ledger.observe(&frames(&snapshot), 201).unwrap();
+    assert_eq!(ledger.notices.len(), 1);
+    ledger.observe(&[], 202).unwrap();
+    // Notification detail can be pruned independently of its durable merge tombstone.
+    ledger.notices.clear();
+    store.save_notifications(&ledger).unwrap();
+    let restored = Store::new(root.path().into());
+    restore(&restored).unwrap();
+    let mut ledger = restored.load_notifications().unwrap();
+    ledger.observe(&frames(&snapshot), 203).unwrap();
+    assert!(ledger.notices.is_empty());
+    assert!(!ledger.observe(&frames(&snapshot), 204).unwrap());
+}
+
+#[test]
+fn legacy_merge_upgrade_baselines_history_without_replaying_or_deleting_notices() {
+    let mut old = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    old.observe(
+        &[queue_frame("historical-item", Category::Merged, "old")],
+        1,
+    )
+    .unwrap();
+    let legacy_id = old.notices[0].id.clone();
+    let mut json = serde_json::to_value(&old).unwrap();
+    json.as_object_mut().unwrap().remove("merged_sources");
+    let mut ledger: Ledger = serde_json::from_value(json).unwrap();
+    ledger.validate().unwrap();
+    let mut snapshot = merged_snapshot(21);
+    ledger.observe(&frames(&snapshot), 201).unwrap();
+    assert_eq!(ledger.notices.len(), 1);
+    assert_eq!(ledger.notices[0].id, legacy_id);
+    assert_eq!(ledger.notices[0].phase, Phase::NotSent);
+    assert!(ledger.next().is_none());
+    snapshot.items[0].job.pull_request_id = "newly-merged-pr".into();
+    ledger.observe(&frames(&snapshot), 202).unwrap();
+    assert_eq!(ledger.notices.len(), 2);
+    assert_eq!(ledger.next().unwrap().event.category, Category::Merged);
+}
+
+#[test]
+fn merge_upgrade_preserves_other_categories_and_interrupted_delivery_evidence() {
+    let mut old = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let initial = [
+        queue_frame("ready", Category::Ready, "review"),
+        queue_frame("approved", Category::Approved, "approval"),
+        queue_frame("failure", Category::Failure, "failure"),
+        queue_frame("merged", Category::Merged, "merge"),
+    ];
+    old.observe(&initial, 1).unwrap();
+    let merge_id = old.notices[3].id.clone();
+    old.begin(&merge_id).unwrap();
+    let mut json = serde_json::to_value(&old).unwrap();
+    json.as_object_mut().unwrap().remove("merged_sources");
+    let mut ledger: Ledger = serde_json::from_value(json).unwrap();
+    assert!(ledger.restore());
+    let mut current = initial[..3].to_vec();
+    current.extend(frames(&merged_snapshot(21)));
+    ledger.observe(&current, 201).unwrap();
+    assert_eq!(ledger.notices.len(), 4);
+    assert!(ledger.notices[..3]
+        .iter()
+        .all(|notice| notice.phase == Phase::Queued && ledger.current(notice)));
+    assert_eq!(ledger.notices[3].phase, Phase::OutcomeUnknown);
+    assert!(ledger.notices[3].error.is_some());
+    let mut restored: Ledger =
+        serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();
+    assert!(!restored.observe(&current, 202).unwrap());
+    assert_eq!(restored.notices.len(), 4);
+}
+
+#[test]
+fn muted_merges_remain_consumed_after_retention_and_unmuting() {
+    let snapshot = merged_snapshot(21);
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    ledger.set_category(Category::Merged, false).unwrap();
+    ledger.observe(&frames(&snapshot), 201).unwrap();
+    ledger.observe(&[], 202).unwrap();
+    ledger.set_category(Category::Merged, true).unwrap();
+    ledger.observe(&frames(&snapshot), 203).unwrap();
+    assert!(ledger.notices.is_empty());
+}
+
 #[test]
 fn exact_destinations_and_profile_identity_survive_restart_without_fallback() {
     let (root, store) = store();
