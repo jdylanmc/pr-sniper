@@ -3562,10 +3562,8 @@ export async function mountSettings(
             }
             return;
           }
-          if (currentEditor() && saveRoute === routeGeneration) {
-            modal.close();
-            render();
-          }
+          modal.close();
+          render();
         } catch (cause) {
           if (currentEditor() && saveRoute === routeGeneration) {
             const alert = modal.querySelector<HTMLElement>(

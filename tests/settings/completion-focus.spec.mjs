@@ -700,6 +700,11 @@ for (const focusTarget of ["Running", "Settings"]) {
           doctrine: "Editing Target doctrine",
           assignment: "Edit assignment",
         }[resource];
+        const completedEditor = page.getByRole("dialog", {
+          name: editorHeading,
+          exact: true,
+          includeHidden: true,
+        });
         const heading =
           focusTarget === "Running" ? "Work queue" : editorHeading;
         await expect(page.locator("[data-panel-heading]")).toHaveText(heading);
@@ -717,6 +722,7 @@ for (const focusTarget of ["Running", "Settings"]) {
           await frames.attach(testInfo);
         }
         await settled(page);
+        await expect(completedEditor).toHaveCount(0);
         await expect(tab(page, focusTarget)).toBeFocused();
         await expect(page.locator("[data-panel-heading]")).toHaveText(
           focusTarget === "Running"

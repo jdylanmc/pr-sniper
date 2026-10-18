@@ -9,6 +9,136 @@ const USER: &str = "/user";
 const REPOSITORY: &str = "/repos/jdylanmc/pr-sniper";
 const PULLS: &str = "/repos/jdylanmc/pr-sniper/pulls?state=open&per_page=1";
 
+mod action_observation {
+    use super::*;
+    use pr_sniper_lib::github::{
+        actions::Action, provider::RemoteRepository, threads::QueryTransport,
+    };
+
+    struct ActionTransport(Value);
+
+    impl Transport for ActionTransport {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            assert!(
+                matches!(
+                    path,
+                    "/repos/example/repo/pulls/1/reviews?per_page=100&page=1"
+                        | "/repos/example/repo/issues/1/comments?per_page=100&page=1"
+                        | "/repos/example/repo/rules/branches/main"
+                ),
+                "unexpected GET path: {path}"
+            );
+            Ok(response(200, json!([])))
+        }
+    }
+
+    impl QueryTransport for ActionTransport {
+        fn query(&self, _: &str, _: Value) -> Result<Response, ConnectionError> {
+            let checks = json!({"state": "SUCCESS", "contexts": {
+                "totalCount": 1, "pageInfo": {"hasNextPage": false},
+                "nodes": [{"__typename": "CheckRun", "name": "ci-gate",
+                    "status": "COMPLETED", "conclusion": "SUCCESS"}]
+            }});
+            let pull = json!({
+                "id": "PR_1", "fullDatabaseId": 1,
+                "baseRefOid": "b".repeat(40), "baseRefName": "main",
+                "headRefOid": "a".repeat(40), "isDraft": false,
+                "state": "OPEN", "mergeStateStatus": "CLEAN",
+                "mergeable": "MERGEABLE", "reviewDecision": null,
+                "isInMergeQueue": false, "author": {"databaseId": 11},
+                "headRepository": {"databaseId": 100},
+                "mergedBy": null, "mergedAt": null, "mergeCommit": null,
+                "baseRef": {"branchProtectionRule": self.0},
+                "commits": {"nodes": [{"commit": {
+                    "oid": "a".repeat(40), "statusCheckRollup": checks
+                }}]},
+                "reviewThreads": {"totalCount": 0,
+                    "pageInfo": {"hasNextPage": false}, "nodes": []}
+            });
+            Ok(response(
+                200,
+                json!({"data": {
+                    "viewer": {"databaseId": 22},
+                    "repository": {
+                        "databaseId": 100, "viewerPermission": "WRITE",
+                        "viewerDefaultMergeMethod": "SQUASH", "squashMergeAllowed": true,
+                        "pullRequest": pull
+                    }
+                }}),
+            ))
+        }
+    }
+
+    fn protection() -> Value {
+        json!({
+            "requiresApprovingReviews": false, "requiredApprovingReviewCount": null,
+            "requiresCodeOwnerReviews": false, "requiresConversationResolution": false,
+            "requiresStatusChecks": true, "requiresStrictStatusChecks": false,
+            "requiredStatusCheckContexts": ["ci-gate"]
+        })
+    }
+
+    fn observe(
+        protection: Value,
+    ) -> Result<pr_sniper_lib::github::actions::Observation, ConnectionError> {
+        GithubClient::new(ActionTransport(protection)).action_observation(
+            &RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            },
+            1,
+        )
+    }
+
+    #[test]
+    fn nullable_unused_approval_count_does_not_block_review_preparation() {
+        let observation = observe(protection()).unwrap();
+        assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
+        assert_eq!(
+            observation.protection["requiredApprovingReviewCount"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn required_approval_count_still_requires_complete_numeric_evidence() {
+        for required in [false, true] {
+            for count in [None, Some(Value::Null), Some(json!("1")), Some(json!(-1))] {
+                if !required && count == Some(Value::Null) {
+                    continue;
+                }
+                let mut rule = protection();
+                rule["requiresApprovingReviews"] = json!(required);
+                match count {
+                    Some(ref count) => rule["requiredApprovingReviewCount"] = count.clone(),
+                    None => {
+                        rule.as_object_mut()
+                            .unwrap()
+                            .remove("requiredApprovingReviewCount");
+                    }
+                }
+                assert_eq!(
+                    observe(rule).unwrap_err(),
+                    ConnectionError::IncompleteRead,
+                    "required: {required}, count: {count:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn required_approvals_still_gate_merge_after_observation() {
+        let mut rule = protection();
+        rule["requiresApprovingReviews"] = json!(true);
+        rule["requiredApprovingReviewCount"] = json!(1);
+        let mut observation = observe(rule).unwrap();
+        observation.write_capability = true;
+        assert!(observation.blocker(Action::Merge).is_some());
+        observation.review_decision = Some("APPROVED".into());
+        assert_eq!(observation.blocker(Action::Merge), None);
+    }
+}
+
 fn response(status: u16, body: Value) -> Response {
     Response {
         status,

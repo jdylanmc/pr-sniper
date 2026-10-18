@@ -30,6 +30,9 @@ jobs:
       - name: Install matching WebKit browser
         run: npm exec playwright install webkit
         timeout-minutes: 5
-      - name: Build frontend and Store bridge, then run the full WebKit suite
-        run: npm run test:settings -- --browser=webkit --workers=2
+      - name: Build frontend and Store bridge
+        run: npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge
+        timeout-minutes: 30
+      - name: Run the full WebKit suite
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2
         timeout-minutes: 30
