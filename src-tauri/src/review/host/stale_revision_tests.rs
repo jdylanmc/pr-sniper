@@ -881,7 +881,7 @@ fn a_run_in_flight_at_merge_finishes_superseded_and_ends_next_cycle() {
 }
 
 #[test]
-fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
+fn superseded_and_merged_entries_leave_running_but_keep_their_history() {
     let (_root, store, mut monitor) = configured(false);
     scan(&mut monitor, &store, vec![pull('a')], NOW);
     let run = dispatch(&store, TEAMMATE, NOW + 2);
@@ -891,7 +891,7 @@ fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
     assert!(stored(&store, &run.operation.id)
         .operation
         .ended_superseded());
-    // A new revision superseded the old entries: they stay distinct, never runnable.
+    // A new revision preserves the old entries as history, not live work.
     let work = crate::capacity::candidates(&store, NOW + 160).unwrap();
     let superseded: Vec<_> = store
         .load_queue()
@@ -902,11 +902,10 @@ fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
     assert_eq!(superseded.len(), 2);
     for job in &superseded {
         let id = key(job, job.assignment_id.as_deref().unwrap());
-        let entry = work
-            .iter()
-            .find(|w| w.key.id == id)
-            .expect("superseded entry listed");
-        assert!(entry.reason.is_some(), "superseded entries never dispatch");
+        assert!(
+            !work.iter().any(|w| w.key.id == id),
+            "superseded entry stays in saved history, not Running"
+        );
     }
     assert_quiet(&store, &monitor);
     // Once merged, every entry of the PR, superseded or not, leaves Running.
@@ -921,7 +920,7 @@ fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
         .filter(|j| j.waiting == crate::monitoring::WAITING_MERGED)
         .collect();
     assert_eq!(merged.len(), 4);
-    // Only the new head's attempt already in flight stays listed until it finishes.
+    // Saved in-flight metadata is not a live coordinator reservation.
     let in_flight: Vec<_> = store
         .load_reviews()
         .unwrap()
@@ -930,9 +929,5 @@ fn superseded_entries_stay_visible_in_running_while_merged_ones_leave() {
         .map(|r| r.key)
         .collect();
     assert_eq!(in_flight.len(), 1);
-    assert!(merged.iter().all(|j| {
-        let id = key(j, j.assignment_id.as_deref().unwrap());
-        in_flight.contains(&id) || !work.iter().any(|w| w.key.id == id)
-    }));
-    assert_eq!(work.len(), 1);
+    assert!(work.is_empty());
 }
