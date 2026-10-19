@@ -1107,6 +1107,41 @@ async fn blocked_host_read_expires_and_cannot_return_a_late_result() {
     stopped(root.path());
 }
 
+#[test]
+fn late_tool_completion_is_rejected_before_success_diagnostics() {
+    struct RetiringRead(Arc<Watchdog>);
+    impl Transport for RetiringRead {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            self.0.retire();
+            Synthetic.get(path)
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let progress = Arc::new(Watchdog::new(
+        (Instant::now() + Duration::from_secs(60)).into(),
+        Duration::from_secs(10),
+    ));
+    let tools = ReadTools::new(
+        Some(diagnostic_trace(root.path().join("profile"))),
+        context(true),
+        Arc::new(GithubClient::new(RetiringRead(progress.clone()))),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    )
+    .with_progress(Some(progress));
+    let error = tools
+        .execute("read_source", json!({"side":"head","path":"source.rs"}))
+        .unwrap_err();
+    assert!(error.cancelled);
+    let records = diagnostic_records(root.path());
+    let finished = records
+        .iter()
+        .find(|r| r["event"]["kind"] == "tool_finished")
+        .unwrap();
+    assert_eq!(finished["event"]["failure"], "cancelled");
+    assert!(finished["event"]["response_bytes"].is_null());
+}
+
 #[tokio::test]
 async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
     for scenario in ["cancel", "timeout", "gate"] {

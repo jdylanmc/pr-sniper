@@ -447,7 +447,15 @@ impl<T: Transport> ReadTools<T> {
             });
         }
         let mut rejected_by_limit = false;
-        let result = self.execute_inner(name, args, &mut rejected_by_limit);
+        let result = self
+            .execute_inner(name, args, &mut rejected_by_limit)
+            .and_then(|value| {
+                (self.gate)()?;
+                if let Some(progress) = &self.progress {
+                    progress.progress()?;
+                }
+                Ok(value)
+            });
         if rejected_by_limit {
             if let Ok(mut failure) = self.limit_failure.lock() {
                 failure.get_or_insert_with(|| {
@@ -492,7 +500,9 @@ impl<T: Transport> ReadTools<T> {
                 failure: result.as_ref().err().map(|error| {
                     if rejected_by_limit {
                         FailureKind::ResponseLimit
-                    } else if matches!(error.kind, crate::monitoring::OperationFailure::Permanent) {
+                    } else if !error.cancelled
+                        && matches!(error.kind, crate::monitoring::OperationFailure::Permanent)
+                    {
                         FailureKind::ToolError
                     } else {
                         super::diagnostics::failure_kind(error)
@@ -509,14 +519,6 @@ impl<T: Transport> ReadTools<T> {
                         .collect::<Vec<_>>(),
                     &read,
                 );
-            }
-        }
-        (self.gate)()?;
-        if let Some(progress) = &self.progress {
-            if result.is_ok() {
-                progress.progress()?;
-            } else {
-                progress.check()?;
             }
         }
         result
