@@ -337,6 +337,7 @@
       onboarded: true,
       monitoring: true,
       limit: 4,
+      inactivity: 15,
       nextNumber: 500,
       preferences: {
         automaticStart: true,
@@ -996,9 +997,22 @@
           integer(payload.limit),
           "Enter a positive whole number of concurrent reviews.",
         );
+        if (
+          payload.inactivity !== undefined &&
+          (!Number.isInteger(payload.inactivity) ||
+            payload.inactivity < 1 ||
+            payload.inactivity > 4294967295)
+        ) {
+          throw new Error("Review inactivity must be positive whole minutes.");
+        }
         state.limit = payload.limit;
+        state.inactivity = payload.inactivity ?? state.inactivity ?? 15;
         if (payload.duck) {
-          const ranges = { calls: [1, 32], timeout: [30, 600], window: [5, 120] };
+          const ranges = {
+            calls: [1, 32],
+            timeout: [30, 600],
+            window: [5, 120],
+          };
           requireValue(
             Object.entries(ranges).every(
               ([key, [min, max]]) =>

@@ -188,6 +188,7 @@ pub(super) struct DuckTool<T: Transport> {
     pub operation: Operation,
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
+    progress: Option<Arc<super::Watchdog>>,
     started: AtomicU32,
     tool_calls: AtomicU64,
     /// Calls run as their own task so dropping the primary's handler cannot drop a
@@ -207,6 +208,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         operation: Operation,
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
+        progress: Option<Arc<super::Watchdog>>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             engine,
@@ -219,6 +221,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             operation,
             local_gate,
             diagnostics,
+            progress,
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
             me: me.clone(),
@@ -369,7 +372,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 self.repository_name.clone(),
                 self.local_gate.clone(),
             )
-            .with_facts(self.facts.clone()),
+            .with_facts(self.facts.clone())
+            .with_progress(self.progress.clone()),
         );
         let exits = Arc::new(ExitTools::new(
             vec![Exit::SubmitVerdict],
@@ -448,6 +452,9 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         let mut events = Events::default();
         loop {
             let event = subscription.recv().await.map_err(|_| DuckFailure::Failed)?;
+            if let Some(progress) = &self.progress {
+                progress.event(&event.event_type, &event.data);
+            }
             events
                 .push(&event.event_type, &event.data)
                 .map_err(|failure| {

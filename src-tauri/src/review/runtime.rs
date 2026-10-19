@@ -36,9 +36,11 @@ use std::{
 
 mod duck_tool;
 mod exit_tools;
+mod watchdog;
 pub(crate) use duck_tool::{DuckLaunch, DuckLog, DuckPrep, DuckSetup, Gated, Pacing};
 use exit_tools::ExitState;
 pub(crate) use exit_tools::{ExitGate, Refusal};
+use watchdog::Watchdog;
 
 // The Copilot runtime redirects tool output above ~50 KB to a file the model cannot
 // read. Every response stays far below that and is paged, never cut.
@@ -101,6 +103,7 @@ pub(crate) struct ExitSetup {
 }
 
 pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
+    pub inactivity: Duration,
     pub diagnostics: Option<Arc<super::diagnostics::Trace>>,
     pub context: ReviewContext,
     pub client: Arc<GithubClient<T>>,
@@ -115,6 +118,7 @@ pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
 }
 
 struct ReadTools<T: Transport> {
+    progress: Option<Arc<Watchdog>>,
     facts: Arc<ToolFacts>,
     diagnostics: Option<Arc<super::diagnostics::Trace>>,
     calls: AtomicU64,
@@ -366,6 +370,7 @@ impl<T: Transport> ReadTools<T> {
         gate: Gate,
     ) -> Self {
         Self {
+            progress: None,
             facts: Arc::new(ToolFacts::default()),
             diagnostics,
             calls: AtomicU64::new(0),
@@ -389,6 +394,11 @@ impl<T: Transport> ReadTools<T> {
         self
     }
 
+    fn with_progress(mut self, progress: Option<Arc<Watchdog>>) -> Self {
+        self.progress = progress;
+        self
+    }
+
     #[cfg(test)]
     fn execute(&self, name: &str, args: Value) -> Result<Value, Failure> {
         self.execute_call(name, args, None)
@@ -400,6 +410,10 @@ impl<T: Transport> ReadTools<T> {
         args: Value,
         runtime_call_id: Option<&str>,
     ) -> Result<Value, Failure> {
+        (self.gate)()?;
+        if let Some(progress) = &self.progress {
+            progress.check()?;
+        }
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         let started = Instant::now();
         let tool = ToolName::from_name(name);
@@ -495,6 +509,14 @@ impl<T: Transport> ReadTools<T> {
                         .collect::<Vec<_>>(),
                     &read,
                 );
+            }
+        }
+        (self.gate)()?;
+        if let Some(progress) = &self.progress {
+            if result.is_ok() {
+                progress.progress()?;
+            } else {
+                progress.check()?;
             }
         }
         result
@@ -993,7 +1015,14 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     request: Request<T, K>,
 ) -> Result<ReviewResult<K::Output>, Failure> {
     let diagnostics = request.diagnostics.clone();
-    let started = Instant::now();
+    let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
+    let original_gate = request.local_gate.clone();
+    let gate_progress = progress.clone();
+    let mut request = request;
+    request.local_gate = Arc::new(move || {
+        gate_progress.check()?;
+        original_gate()
+    });
     if let Some(trace) = &diagnostics {
         trace.coverage(
             &request
@@ -1007,18 +1036,26 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         trace.emit(DiagnosticEvent::EvidenceUnavailable {
             runtime_truncation: true,
             runtime_stop_reason: true,
-            inactivity_watchdog: true,
+            inactivity_watchdog: false,
             connectivity_transitions: true,
         });
     }
-    let client = operation
-        .wait(Client::start(options))
-        .await
-        .map_err(Failure::operation)
-        .and_then(|result| result.map_err(Failure::sdk));
+    let monitor = monitor_attempt(
+        &progress,
+        operation,
+        &request.local_gate,
+        diagnostics.as_deref(),
+    );
+    tokio::pin!(monitor);
+    let client = tokio::select! {
+        biased;
+        error = &mut monitor => Err(error),
+        result = Client::start(options) => result.map_err(Failure::sdk),
+    };
     let client = match client {
         Ok(client) => client,
         Err(error) => {
+            progress.retire();
             if let Some(trace) = &diagnostics {
                 trace.emit(DiagnosticEvent::Teardown {
                     abort: Outcome::NotRequired,
@@ -1128,11 +1165,24 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     tool_gate()
                 }),
             )
-            .with_facts(tool_facts.clone()),
+            .with_facts(tool_facts.clone())
+            .with_progress(Some(progress.clone())),
         );
         let mut exit_tools = exit_tools::ExitTools::new(
             exits.offered.clone(),
-            exits.gate.clone(),
+            {
+                let progress = progress.clone();
+                let gate = exits.gate.clone();
+                Arc::new(move |call| {
+                    progress
+                        .check()
+                        .map_err(|_| Refusal::Denied("Review attempt ended.".into()))?;
+                    gate(call)?;
+                    progress
+                        .check()
+                        .map_err(|_| Refusal::Denied("Review attempt ended.".into()))
+                })
+            },
             diagnostics.clone(),
         );
         if let Some(contract) = finding_contract {
@@ -1168,6 +1218,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     local()
                 }),
                 diagnostics.clone(),
+                Some(progress.clone()),
             )
         });
         let session = session.insert(
@@ -1209,6 +1260,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 if let Some(trace) = &diagnostics {
                     trace.event(&event.event_type, &event.data);
                 }
+                progress.event(&event.event_type, &event.data);
                 events
                     .push(&event.event_type, &event.data)
                     .inspect_err(|_| {
@@ -1284,33 +1336,15 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 read: u32::try_from(read).unwrap_or(u32::MAX),
                 changed: u32::try_from(paths.len()).unwrap_or(u32::MAX),
             });
+            operation.check().map_err(Failure::operation)?;
+            (request.local_gate)()?;
             Ok(result)
         }
         .await
     };
-    let monitor = async {
-        loop {
-            if std::time::Instant::now() >= operation.deadline {
-                if let Some(trace) = &diagnostics {
-                    trace.fail(FailureKind::TotalDurationTimeout);
-                    trace.emit(DiagnosticEvent::Watchdog {
-                        failure: FailureKind::TotalDurationTimeout,
-                        idle_ms: None,
-                        total_ms: started.elapsed().as_millis() as u64,
-                    });
-                }
-                return Failure::timeout();
-            }
-            if let Err(error) = operation.check() {
-                return Failure::operation(error);
-            }
-            if let Err(error) = (request.local_gate)() {
-                return error;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    };
-    let result = tokio::select! { biased; result = run => result, error = monitor => Err(error) };
+    let result =
+        tokio::select! { biased; error = &mut monitor => Err(error), result = run => result };
+    progress.retire();
     // Whatever ended the attempt, an in-flight duck call stops now: it aborts its turn,
     // closes its session and records itself; no new call starts.
     if let Some(engine) = &duck_engine {
@@ -1354,6 +1388,34 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         );
     }
     result
+}
+
+async fn monitor_attempt(
+    progress: &Watchdog,
+    operation: &Operation,
+    gate: &Gate,
+    diagnostics: Option<&super::diagnostics::Trace>,
+) -> Failure {
+    loop {
+        if let Some((failure, idle_ms, total_ms)) = progress.expiry() {
+            if let Some(trace) = diagnostics {
+                trace.fail(failure);
+                trace.emit(DiagnosticEvent::Watchdog {
+                    failure,
+                    idle_ms: (failure == FailureKind::InactivityTimeout).then_some(idle_ms),
+                    total_ms,
+                });
+            }
+            return Failure::timeout();
+        }
+        if let Err(error) = operation.check() {
+            return Failure::operation(error);
+        }
+        if let Err(error) = gate() {
+            return error;
+        }
+        tokio::time::sleep_until(progress.next_check()).await;
+    }
 }
 
 /// The runtime catalog must equal the run's tool set exactly, or nothing runs.

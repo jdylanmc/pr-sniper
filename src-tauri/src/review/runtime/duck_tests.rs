@@ -104,6 +104,7 @@ fn primary_request(setup: DuckSetup) -> Request<Synthetic> {
         .to_vec();
     let offered = [Exit::ReadyForHuman, Exit::PanicExit];
     Request {
+        inactivity: Duration::from_secs(900),
         exits: ExitSetup {
             tool_set: tools::tool_set(&granted, true, &offered),
             offered: offered.to_vec(),
@@ -167,6 +168,36 @@ async fn review(
     )
     .await;
     (root, result, duck.paced)
+}
+
+#[tokio::test]
+async fn only_meaningful_nested_progress_keeps_the_primary_attempt_alive() {
+    for scenario in ["verdict-progress", "verdict-heartbeat"] {
+        let root = tempfile::tempdir().unwrap();
+        let duck = duck(&root.path().join("duck"), scenario, limits(8, 180), false);
+        let mut request = primary_request(duck.setup);
+        request.inactivity = Duration::from_secs(2);
+        let result = execute(
+            options(root.path(), "duck-call"),
+            &identity(),
+            &operation(600),
+            request,
+        )
+        .await;
+        if scenario == "verdict-progress" {
+            assert!(matches!(
+                result.unwrap().ducks[0].outcome,
+                DuckOutcome::Verdict { .. }
+            ));
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind,
+                crate::monitoring::OperationFailure::Timeout
+            );
+        }
+        stopped(root.path());
+        stopped(&root.path().join("duck"));
+    }
 }
 
 #[tokio::test]

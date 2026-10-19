@@ -87,6 +87,8 @@ pub struct Settings {
     pub agents: Vec<Agent>,
     #[serde(default = "default_capacity")]
     pub capacity: u32,
+    #[serde(default = "default_review_inactivity_minutes")]
+    pub review_inactivity_minutes: u32,
     #[serde(default, skip_serializing_if = "DuckLimits::is_default")]
     pub rubber_duck: DuckLimits,
     /// Always written. Settings files without it predate admission rules and
@@ -178,6 +180,7 @@ impl Default for Settings {
             capability_notice: None,
             agents: Vec::new(),
             capacity: default_capacity(),
+            review_inactivity_minutes: default_review_inactivity_minutes(),
             rubber_duck: DuckLimits::default(),
             admission_migration_version: admission_migration_version(),
             theme: Theme::Light,
@@ -480,12 +483,29 @@ pub struct SavedSettings {
 pub struct GlobalPreferences {
     pub defaults: Policy,
     pub capacity: u32,
+    #[serde(default = "default_review_inactivity_minutes")]
+    pub review_inactivity_minutes: u32,
     pub time_zone: String,
     pub root_folder: Option<String>,
     pub presets: Vec<ReviewPreset>,
     pub default_review_preset: Option<String>,
     #[serde(default)]
     pub rubber_duck: DuckLimits,
+}
+
+pub const fn default_review_inactivity_minutes() -> u32 {
+    15
+}
+
+pub fn review_inactivity_duration(minutes: u32) -> Result<std::time::Duration, String> {
+    if minutes == 0 {
+        return Err("Review inactivity must be positive whole minutes.".into());
+    }
+    let duration = std::time::Duration::from_secs(u64::from(minutes) * 60);
+    std::time::Instant::now()
+        .checked_add(duration)
+        .ok_or("Review inactivity duration overflows the system clock.")?;
+    Ok(duration)
 }
 
 /// Saved Preferences bounding Rubber Duck use per primary attempt.
@@ -724,6 +744,7 @@ impl Settings {
         GlobalPreferences {
             defaults: self.defaults.clone(),
             capacity: self.capacity,
+            review_inactivity_minutes: self.review_inactivity_minutes,
             time_zone: self.time_zone.clone(),
             root_folder: self.root_folder.clone(),
             presets: self.presets.clone(),
@@ -844,6 +865,7 @@ impl Settings {
         if self.capacity == 0 {
             return Err("AI capacity must be a positive whole number.".into());
         }
+        review_inactivity_duration(self.review_inactivity_minutes)?;
         self.rubber_duck.validate()?;
         if self
             .root_folder
@@ -1626,6 +1648,7 @@ impl Store {
                 }
                 settings.defaults = value.defaults;
                 settings.capacity = value.capacity;
+                settings.review_inactivity_minutes = value.review_inactivity_minutes;
                 settings.time_zone = value.time_zone;
                 settings.root_folder = value.root_folder;
                 settings.presets = value.presets;

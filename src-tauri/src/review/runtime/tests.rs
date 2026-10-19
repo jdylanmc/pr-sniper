@@ -117,6 +117,7 @@ fn session_config(selection: &Selection, tools: Arc<ReadTools<Synthetic>>) -> Se
 }
 fn request(changed: bool) -> Request<Synthetic> {
     Request {
+        inactivity: Duration::from_secs(900),
         exits: exit_setup(),
         diagnostics: None,
         task: ExitReview {
@@ -959,6 +960,154 @@ fn intelligence_validation_uses_actual_model_metadata_and_pricing_not_invented_l
 }
 
 #[tokio::test]
+async fn inactivity_retires_silent_and_heartbeat_attempts_before_fresh_replacement() {
+    let identity = Identity {
+        id: "33".into(),
+        login: "review-account".into(),
+    };
+    for scenario in ["waiting", "heartbeat-only"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut request = request(false);
+        request.inactivity = Duration::from_secs(2);
+        request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+        let operation = operation(30);
+        let result = execute(
+            options(root.path(), scenario),
+            &identity,
+            &operation,
+            request,
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().kind,
+            crate::monitoring::OperationFailure::Timeout
+        );
+        assert!(Instant::now() < operation.deadline);
+        let records = diagnostic_records(root.path());
+        let watchdog = records
+            .iter()
+            .find(|r| r["event"]["kind"] == "watchdog")
+            .unwrap();
+        assert_eq!(watchdog["event"]["failure"], "inactivity_timeout");
+        assert!(watchdog["event"]["idle_ms"].as_u64().unwrap() >= 2000);
+        assert!(records.iter().any(|r| r["event"]["kind"] == "teardown"
+            && r["event"]["abort"] == "success"
+            && r["event"]["shutdown"] == "success"));
+        stopped(root.path());
+    }
+    let root = tempfile::tempdir().unwrap();
+    let replacement = execute(
+        options(root.path(), "exit-ready"),
+        &identity,
+        &operation(30),
+        request(false),
+    )
+    .await;
+    assert!(replacement.is_ok());
+    stopped(root.path());
+}
+
+#[test]
+fn inactivity_timeout_backoff_obeys_pause_and_the_existing_three_attempt_budget() {
+    use crate::capacity::{tests as fixtures, Automation, Coordinator, Dispatch};
+    use crate::monitoring::OperationState;
+    let (_root, store) = fixtures::fixture(1, 1, true);
+    let coordinator = Coordinator::default();
+    let mut now = 100;
+    for attempt in 1..=3 {
+        let batch = coordinator.dispatch(&store, now).unwrap();
+        assert!(batch.errors.is_empty());
+        assert_eq!(batch.dispatched.len(), 1);
+        let worker = &batch.dispatched[0];
+        let Dispatch::Review(run, _) = worker;
+        assert_eq!(run.operation.attempt_count, attempt);
+        crate::review::host::complete(&store, &run.operation.id, Err(Failure::timeout()), now + 1)
+            .unwrap();
+        coordinator
+            .release(&worker.key(), &run.operation.id)
+            .unwrap();
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert!(saved.result.is_none());
+        assert_eq!(saved.operation.retry_deadline, 1000);
+        if attempt < 3 {
+            now = saved.operation.next_attempt_at.unwrap();
+            store.save_automation(&Automation { paused: true }).unwrap();
+            assert!(coordinator
+                .dispatch(&store, now)
+                .unwrap()
+                .dispatched
+                .is_empty());
+            assert!(coordinator
+                .dispatch(&store, now + 1)
+                .unwrap()
+                .dispatched
+                .is_empty());
+            assert_eq!(
+                store.load_reviews().unwrap()[0].operation.attempt_count,
+                attempt
+            );
+            store
+                .save_automation(&Automation { paused: false })
+                .unwrap();
+        } else {
+            assert_eq!(saved.operation.state, OperationState::ManualRetry);
+        }
+        assert!(store.load_publications().unwrap().is_empty());
+        assert!(store.load_actions().unwrap().effects.is_empty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_host_read_expires_and_cannot_return_a_late_result() {
+    struct SlowRead(Arc<AtomicBool>);
+    impl Transport for SlowRead {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            self.0.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_secs(4));
+            Synthetic.get(path)
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let base = request(true);
+    let request = Request {
+        inactivity: Duration::from_secs(2),
+        client: Arc::new(GithubClient::new(SlowRead(called.clone()))),
+        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
+        context: base.context,
+        repository_name: base.repository_name,
+        selection: base.selection,
+        before_send: base.before_send,
+        local_gate: base.local_gate,
+        task: base.task,
+        exits: base.exits,
+        duck: None,
+    };
+    let result = execute(
+        options(root.path(), "read-full"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(30),
+        request,
+    )
+    .await;
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(
+        result.unwrap_err().kind,
+        crate::monitoring::OperationFailure::Timeout
+    );
+    assert!(
+        diagnostic_records(root.path())
+            .iter()
+            .any(|r| r["event"]["kind"] == "watchdog"
+                && r["event"]["failure"] == "inactivity_timeout")
+    );
+    stopped(root.path());
+}
+
+#[tokio::test]
 async fn cancellation_timeout_and_last_moment_gate_change_never_complete() {
     for scenario in ["cancel", "timeout", "gate"] {
         let root = tempfile::tempdir().unwrap();
@@ -1222,6 +1371,7 @@ mod exits {
     fn exit_request(offered: &[Exit], gate: ExitGate) -> Request<Synthetic, ExitReview> {
         let granted = ["read_changes".to_string(), "get_thread".to_string()];
         Request {
+            inactivity: Duration::from_secs(900),
             exits: ExitSetup {
                 tool_set: tools::tool_set(&granted, false, offered),
                 offered: offered.to_vec(),

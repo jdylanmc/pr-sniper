@@ -804,6 +804,16 @@ async fn execute_attempt(
     let read_hash = packet.packet.record.state_hash.clone();
     let client_after = client.clone();
     let request = runtime::Request {
+        inactivity: crate::storage::review_inactivity_duration(
+            app.state::<Host>()
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                .load_settings()
+                .map_err(Failure::permanent)?
+                .review_inactivity_minutes,
+        )
+        .map_err(Failure::permanent)?,
         exits: packet.setup,
         diagnostics: Some(diagnostics.clone()),
         task: runtime::ExitReview {

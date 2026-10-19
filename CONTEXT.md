@@ -130,7 +130,7 @@ Machine-wide count of concurrent AI job slots, positive integer, default 4. Shar
 _Avoid_: Concurrency limit
 
 **Saved Preferences**:
-**Time Zone**, **AI Capacity**, Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login apply natively; theme applies to the panel and persists on change. None use Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
+**Time Zone**, **AI Capacity**, review inactivity minutes (default 15), Rubber Duck limits and comment-publication defaults, saved with Settings. **Immediate Controls**: pause, notification opt-in and per-type switches, launch at login apply natively; theme applies to the panel and persists on change. None use Save or Reset. A saved request is shown apart from actual OS registration; unknown registration is never shown as enabled.
 _Avoid_: Startup checkbox as effective state
 
 ### Reviews and iterations

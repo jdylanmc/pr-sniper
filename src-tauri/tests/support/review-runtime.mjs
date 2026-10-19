@@ -246,6 +246,18 @@ process.stdin.on("data", (chunk) => {
           exitEnded = false;
         }
         if (scenario === "verdict-slow") break;
+        if (scenario === "verdict-progress") {
+          const progress = setInterval(() => event("assistant.reasoning_delta", { deltaContent: "Checking the finding." }), 200);
+          setTimeout(() => {
+            clearInterval(progress);
+            toolCall(...firstExit["verdict-ok"]);
+          }, 2500);
+          break;
+        }
+        if (scenario === "verdict-heartbeat") {
+          setInterval(() => event("session.heartbeat", {}), 50);
+          break;
+        }
         if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
           toolCall(scenario === "verdict-fixed-no-thread" ? "read_source" : "get_thread",
             scenario === "verdict-fixed-no-thread" ? { side: "head", path: "source.rs" }
@@ -292,6 +304,10 @@ process.stdin.on("data", (chunk) => {
               ? { path: "source.rs", side: "head" }
               : { path: scenario === "tool-invalid-path" ? "missing.rs" : "source.rs", part: "before" },
           });
+          break;
+        }
+        if (scenario === "heartbeat-only") {
+          setInterval(() => event("session.heartbeat", {}), 50);
           break;
         }
         if (scenario === "waiting") break;

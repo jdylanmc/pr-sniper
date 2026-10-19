@@ -4486,6 +4486,7 @@ export async function mountSettings(
       <div class="settings-group preferences-saved"><fieldset aria-label="Capacity and time zone"><legend>Capacity and time zone</legend>
       <div class="preferences-schedule">
       <label>AI capacity<input id="global-capacity" type="number" min="1" max="4294967295" step="1" value="${draft.capacity}" /></label>
+      <label>Review inactivity (min)<input id="review-inactivity" type="number" min="1" max="4294967295" step="1" value="${draft.review_inactivity_minutes ?? 15}" /></label>
       <label>Time zone<select id="global-timezone"><option value="${escape(draft.time_zone)}">${escape(draft.time_zone)}</option></select></label>
       </div></fieldset></div>
       ${duckPreferences()}
@@ -4518,6 +4519,14 @@ export async function mountSettings(
       changed();
     };
     mountDuckPreferences();
+    content.querySelector<HTMLInputElement>("#review-inactivity")!.oninput = (
+      event,
+    ) => {
+      draft.review_inactivity_minutes = Number(
+        (event.target as HTMLInputElement).value,
+      );
+      changed();
+    };
     content.querySelector<HTMLInputElement>("#global-capacity")!.oninput = (
       event,
     ) => {
@@ -4613,6 +4622,13 @@ export async function mountSettings(
     dialogs.closeAll();
     clearError();
     try {
+      const inactivity = draft.review_inactivity_minutes ?? 15;
+      if (!Number.isInteger(inactivity) || inactivity < 1) {
+        throw "Review inactivity must be positive whole minutes.";
+      }
+      if (inactivity > 4294967295) {
+        throw "Review inactivity exceeds the supported integer range.";
+      }
       await commitResource({
         kind: "preferences",
         expected: clone(globalPreferences(saved)),

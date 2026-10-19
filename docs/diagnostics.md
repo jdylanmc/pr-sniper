@@ -31,3 +31,4 @@ Raw arguments, search queries, prompts, source or comment bodies, transcripts, p
 - `storage::diagnostics::{Attempt, Record, Event}`, `Store::record_attempt`, `Store::record_attempt_decision` (correlates with the latest retained attempt; reports missing evidence).
 - `Event::Publication`: stage, ownership outcome, mismatch field, failure category only.
 - `Watchdog`, `Connectivity`, `Retry` record producer decisions, not policy. Seam tests do not prove policy.
+- Review watchdog producers distinguish `inactivity_timeout` (idle and total milliseconds) from `total_duration_timeout` (total milliseconds). Saved inactivity defaults to 15 minutes; it does not replace the total budget. Expiry retires the attempt before bounded abort/shutdown; teardown failures remain explicit. Late callbacks cannot refresh a replacement attempt.

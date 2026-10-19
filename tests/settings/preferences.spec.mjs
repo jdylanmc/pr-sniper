@@ -237,12 +237,69 @@ for (const width of [408, 320]) {
     expect(layout.occluded).toBe(0);
     expect(layout.labels.map((label) => label.text)).toEqual([
       "AI capacity",
+      "Review inactivity (min)",
       "Time zone",
     ]);
     for (const key of ["font", "weight", "field"])
       expect(new Set(layout.labels.map((label) => label[key])).size).toBe(1);
   });
 }
+
+test("Review inactivity beside capacity saves, resets, persists and rejects invalid values", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  await ready(page, store);
+  const minutes = () =>
+    page.getByLabel("Review inactivity (min)", { exact: true });
+  await expect(minutes()).toHaveValue("15");
+  await expect(
+    page.locator("#global-capacity").locator("..").locator("+ label input"),
+  ).toHaveAttribute("id", "review-inactivity");
+  await minutes().fill("7");
+  await savePreferences(page);
+  expect((await store("snapshot")).settings.review_inactivity_minutes).toBe(7);
+  const before = await readFile(join(dataRoot, "config/settings.json"));
+  for (const value of ["", "0", "-1", "1.5", "4294967296", "1e100"]) {
+    await minutes().fill(value);
+    await save(page).click();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(page.locator("#error")).toBeVisible();
+    expect(await readFile(join(dataRoot, "config/settings.json"))).toEqual(
+      before,
+    );
+  }
+  await page.locator("#reset-settings").click();
+  await expect(minutes()).toHaveValue("7");
+  await page.reload();
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Preferences");
+  await expect(minutes()).toHaveValue("7");
+});
+
+test("Review inactivity stale save retains draft without overwriting newer preferences", async ({
+  page,
+  store,
+}) => {
+  await ready(page, store);
+  await page.getByLabel("Review inactivity (min)", { exact: true }).fill("9");
+  const { settings } = await store("snapshot");
+  settings.review_inactivity_minutes = 11;
+  await store("seed_settings", settings);
+  await save(page).click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("#error")).toHaveText("Changed elsewhere");
+  expect((await store("snapshot")).settings.review_inactivity_minutes).toBe(11);
+  await expect(
+    page.getByLabel("Review inactivity (min)", { exact: true }),
+  ).toHaveValue("9");
+  await page.locator("#reload-settings").click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(
+    page.getByLabel("Review inactivity (min)", { exact: true }),
+  ).toHaveValue("11");
+});
 
 for (const width of [408, 320]) {
   test(`Time zone is a dedicated full-width dropdown of host zones at ${width}px`, async ({
@@ -1041,6 +1098,10 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
   await capacity.fill("9");
   await capacity.focus();
   await page.keyboard.press("Tab");
+  await expect(page.locator("#review-inactivity")).toBeFocused();
+  await expect(page.locator("#review-inactivity")).toBeInViewport();
+  await page.locator("#review-inactivity").fill("6");
+  await page.keyboard.press("Tab");
   await expect(page.locator("#global-timezone")).toBeFocused();
   await expect(page.locator("#global-timezone")).toBeInViewport();
   const field = await page.locator("#global-timezone").boundingBox();
@@ -1076,4 +1137,5 @@ test("compact keyboard navigation, reduced motion and hide/reopen retain the exa
   await page.locator("#copy-diagnostics").focus();
   await expect(page.locator("#copy-diagnostics")).toBeInViewport();
   await expect(capacity).toHaveValue("9");
+  await expect(page.locator("#review-inactivity")).toHaveValue("6");
 });

@@ -169,6 +169,17 @@ test("global stop discards active attempts; resume restarts without duplicates",
   }
 });
 
+test("review inactivity defaults to fifteen and saves beside capacity", () => {
+  const original = M.seed();
+  assert.equal(original.inactivity, 15);
+  const saved = M.update(original, "capacity", { limit: 4, inactivity: 7 });
+  assert.equal(saved.inactivity, 7);
+  for (const inactivity of [0, -1, 1.5, Infinity, NaN, 4294967296]) {
+    assert.throws(() => M.update(saved, "capacity", { limit: 4, inactivity }));
+    assert.equal(saved.inactivity, 7);
+  }
+});
+
 test("capacity is global, positive, and independent of saved configurations", () => {
   let state = M.update(M.seed(), "capacity", { limit: 2 });
   assert.equal(count(state, "running"), 2);
