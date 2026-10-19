@@ -28,7 +28,7 @@ pub const VOICE_RULE: &str = "Operator-configured voice. Use it only for text hu
 /// The fixed guard added when the Voice keeps its guardrails on.
 pub const VOICE_GUARD: &str = "Fixed guardrails: tone only; critique code, never people. Accuracy, findings, gates and permissions unchanged.";
 
-pub const INTRO: &str = "PR Sniper finds pull requests and hands each one to you as this packet. You review it. The human keeps the last word.";
+pub const INTRO: &str = "PR Sniper finds pull requests and hands each one to you as this packet. You review it. The operator chose your tools and automation permissions.";
 
 const COMMON: [&str; 9] = [
     "Review packet. Then call exactly one exit. Then stop.",
@@ -37,7 +37,7 @@ const COMMON: [&str; 9] = [
     "Comment only real defects, on the line. No comment on what you read, no praise, no summary.",
     "Threads are stable finding identities, even resolved or outdated. Classify every mine=true thread in finding_dispositions: still_applies, fixed, withdrawn, unverifiable; exact head_sha/base_sha and rationale. Fixed requires current-head code refs you actually read; outdated alone never proves fixed. If Rubber Duck configured, verify_fixed with kind thread, same rationale as claim and same evidence; copy confirmed call ordinal to duck_call. Resolve only your own fixed findings. Earlier resolution mistaken: explicitly correct that existing thread in reply_comments, including your rationale, once. A confirmed correction needs no repeat on later assessments; reply again only with new information. Uncertain or unreadable correction receipt: no replacement reply; use ready_for_human if nothing else to say. Never replace it with a new root. Each new_comments item: finding_id=null only for a distinct new defect; existing thread id routes to a reply.",
     "CI red or merge conflicts: do not approve. leave_comments with the fix, unless an open thread already says it.",
-    "Nothing new to say and no defect: ready_for_human, or approve if offered.",
+    "Review clear, no pending findings: use clean_review_exit from Exits. Prefer the offered merge, then approval, then human handoff. A denied approval exit does not deny an offered merge exit.",
     "Unsure: ready_for_human. Broken: panic_exit.",
     "Merge conflicts or issues outside the diff: put them in body.",
 ];

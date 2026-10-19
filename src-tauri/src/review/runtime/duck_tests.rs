@@ -17,6 +17,7 @@ fn base() -> PacketInput {
         created_at: "2026-10-14T00:00:00Z".into(),
         admitted_by: None,
         acting_login: "pr-sniper-bot".into(),
+        include_self: false,
         role: Role::Primary,
         tools: vec![],
         exits: vec![],

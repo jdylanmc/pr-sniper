@@ -5,6 +5,11 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Review packets honor the configured Include self choice and distinguish
+  permitted own-PR merges from approval votes instead of defaulting to handoff.
+
 ## 0.4.1 - 2026-10-18
 
 ### Added

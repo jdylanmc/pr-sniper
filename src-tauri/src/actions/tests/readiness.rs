@@ -122,6 +122,13 @@ fn prepare(
         .expect("heartbeat must dispatch a new review, not reuse the old exit");
     assert!(work.reason.is_none(), "{:?}", work.reason);
     let mut run = review_host::prepare_dispatch(store, &candidate.key, now).unwrap();
+    let mut context = context(state);
+    if env.wire.0.lock().unwrap().observation.author_id == run.job.account_id {
+        context.pull.author = Some(Identity {
+            id: run.job.account_id.clone(),
+            login: "actor".into(),
+        });
+    }
     let prepared = packet_run::prepare(
         &Arc::new(GithubClient::new(env.wire.clone())),
         &RemoteRepository {
@@ -129,7 +136,7 @@ fn prepare(
             name: "example/repo".into(),
         },
         &run,
-        &context(state),
+        &context,
         state,
         packet_run::Caller {
             acting_login: "actor",
@@ -171,6 +178,89 @@ fn complete(
     assert_eq!(evidence.operation.state, OperationState::Completed);
     assert_eq!(evidence.packet, run.packet);
     assert_eq!(evidence.result.as_ref().unwrap().output.exit, Some(exit));
+}
+
+#[test]
+fn readiness_include_self_reaches_the_agent_and_merges_without_an_approval_vote() {
+    for include_self in [true, false] {
+        let (_root, store, item) = fixture(1, true, true);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0]
+            .actions
+            .as_mut()
+            .unwrap()
+            .include_self = include_self;
+        store.save_settings(&settings).unwrap();
+        store.save_reviews(&[]).unwrap();
+        let state = snapshot(false, "SUCCESS");
+        poll(&store, &state, NOW + 10);
+        let mut env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            server.observation.author_id = server.observation.account_id.clone();
+        }
+        let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(prepared
+            .packet
+            .text
+            .contains(&format!("include_self: {include_self}")));
+        assert!(!prepared.setup.offered.contains(&Exit::ApprovePullRequest));
+        if !include_self {
+            assert!(!prepared.setup.offered.contains(&Exit::ApproveAndMerge));
+            assert!(prepared.packet.text.contains("Include self is off."));
+            assert!(!prepared
+                .packet
+                .text
+                .contains("clean_review_exit: approve_and_merge"));
+            assert!(env.wire.0.lock().unwrap().writes.is_empty());
+            continue;
+        }
+        assert!(prepared.setup.offered.contains(&Exit::ApproveAndMerge));
+        assert!(prepared
+            .packet
+            .text
+            .contains("clean_review_exit: approve_and_merge"));
+        assert!(prepared
+            .packet
+            .text
+            .contains("merges without an approval vote"));
+        complete(
+            &store,
+            &run,
+            &prepared,
+            ExitCall::ApproveAndMerge {
+                comment: "Current changes reviewed; configured own-PR merge permitted.".into(),
+            },
+            NOW + 13,
+        );
+        synchronize(
+            &store,
+            &item,
+            Ok(env.wire.0.lock().unwrap().observation.clone()),
+            NOW + 14,
+        )
+        .unwrap();
+        packet::adopt(&store, &item).unwrap();
+        let effect = host::prepare_next_effect(&store, &item, NOW + 15)
+            .unwrap()
+            .unwrap();
+        assert_eq!(effect.action, Action::Merge);
+        env.now = NOW + 15;
+        host::execute_action(&mut env, &effect).unwrap();
+        let server = env.wire.0.lock().unwrap();
+        assert_eq!(server.observation.state, "MERGED");
+        assert_eq!(server.writes.len(), 1);
+        assert!(server.observation.reviews.is_empty());
+        assert!(
+            store
+                .load_actions()
+                .unwrap()
+                .effects
+                .iter()
+                .all(|effect| effect.action == Action::Merge
+                    && effect.state == EffectState::Confirmed)
+        );
+    }
 }
 
 #[test]
