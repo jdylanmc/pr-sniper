@@ -1678,8 +1678,113 @@ fn fail_poll(
     id
 }
 
+#[test]
+fn offline_check_now_waits_and_runs_on_recovery_without_waiting_for_the_cron() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{record, Observation},
+    };
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_001;
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Unreachable,
+        now,
+    )
+    .unwrap();
+    assert!(monitor
+        .prepare_checks(&store, now, true)
+        .unwrap()
+        .is_empty());
+    assert!(monitor.snapshot()[0].scan_pending);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Reachable,
+        now + 5,
+    )
+    .unwrap();
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, now + 5, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 fn poll_operation(monitor: &Monitor) -> pr_sniper_lib::monitoring::JobOperation {
     monitor.snapshot()[0].operation.clone().unwrap()
+}
+
+#[test]
+fn offline_poll_preserves_prior_failure_budget_through_outage_restart_and_recovery() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{record, Observation},
+    };
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::ProviderFailure,
+    );
+    let failed = poll_operation(&monitor);
+    let retry = failed.next_attempt_at.unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, retry, false)
+        .unwrap()
+        .remove(0);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Unreachable,
+        retry + 1,
+    )
+    .unwrap();
+    let _ = monitor.finish(&store, ticket, Err(ConnectionError::Network), retry + 1);
+    let frozen = poll_operation(&monitor);
+    assert_eq!(frozen.attempt_count, 1);
+    assert_eq!(frozen.failure, Some(OperationFailure::Provider));
+    assert_eq!(frozen.retry_deadline, failed.retry_deadline);
+    let wake = retry + 10 * 86_400;
+    monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, wake, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(poll_operation(&monitor), frozen);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Reachable,
+        wake,
+    )
+    .unwrap();
+    let tickets = monitor.prepare_checks(&store, wake, false).unwrap();
+    assert_eq!(tickets.len(), 1);
+    let resumed = poll_operation(&monitor);
+    assert_eq!(resumed.id, frozen.id);
+    assert_eq!(resumed.attempt_count, 2);
+    assert_eq!(
+        resumed.retry_deadline,
+        failed.retry_deadline + wake - retry - 1
+    );
+    monitor
+        .finish(
+            &store,
+            tickets[0].clone(),
+            Ok(poll_result(vec![], "actor")),
+            wake + 1,
+        )
+        .unwrap();
+    assert_eq!(poll_operation(&monitor).state, OperationState::Completed);
 }
 
 #[test]

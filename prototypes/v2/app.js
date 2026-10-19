@@ -554,11 +554,13 @@ function workRow(review, kind) {
         ? "Running"
         : review.state === "failed"
           ? "Failed"
-          : review.state === "stale"
-            ? "Stale"
-            : blocked
-              ? "Blocked"
-              : "Queued";
+          : review.offline
+            ? "Offline"
+            : review.state === "stale"
+              ? "Stale"
+              : blocked
+                ? "Blocked"
+                : "Queued";
   const symbol =
     kind === "reviewed"
       ? "reviewed"
@@ -572,7 +574,10 @@ function workRow(review, kind) {
       ? '<span class="work-spin" aria-hidden="true"></span>'
       : `<span class="work-marker" aria-hidden="true">${icon(symbol)}</span>`;
   const agent = review.run?.name ?? agentFor(review)?.name ?? "Unassigned";
-  return `<li><button type="button" class="work-row review-open" data-action="review" data-review-id="${esc(review.id)}" data-display="${display.toLowerCase().replaceAll(" ", "-")}" title="${esc(`${review.title}; ${display}${blocked ? `. ${blocked}` : ""}`)}">${marker}<span class="work-copy"><span class="work-heading"><strong>${esc(kind === "reviewed" ? review.title : agent)}</strong><span class="work-state">${esc(display)}</span></span>${kind === "reviewed" ? "" : `<span class="work-subject">${esc(review.title)}</span>`}<span class="work-reference">${esc(review.repoName)} #${review.number}</span></span><span class="work-chevron" aria-hidden="true">${icon("chevron")}</span></button></li>`;
+  const label = review.offline?.last_success
+    ? `${display} · ${new Date(review.offline.last_success * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : display;
+  return `<li><button type="button" class="work-row review-open" data-action="review" data-review-id="${esc(review.id)}" data-display="${display.toLowerCase().replaceAll(" ", "-")}" title="${esc(`${review.title}; ${display}${blocked ? `. ${blocked}` : ""}`)}">${marker}<span class="work-copy"><span class="work-heading"><strong>${esc(kind === "reviewed" ? review.title : agent)}</strong><span class="work-state">${esc(label)}</span></span>${kind === "reviewed" ? "" : `<span class="work-subject">${esc(review.title)}</span>`}<span class="work-reference">${esc(review.repoName)} #${review.number}</span></span><span class="work-chevron" aria-hidden="true">${icon("chevron")}</span></button></li>`;
 }
 
 function quietEmpty(symbol, label) {

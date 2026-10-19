@@ -17,6 +17,7 @@ use tauri::Manager;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Interruption {
+    Offline,
     Pause,
     CapacityReduction,
     Shutdown,
@@ -47,6 +48,8 @@ pub struct Automation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Work {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offline: Option<crate::connectivity::Service>,
     pub key: WorkId,
     pub enqueue_order: u64,
     pub state: &'static str,
@@ -144,6 +147,7 @@ pub const WAITING_FOR_POLL: &str = "Waiting for the next poll.";
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
+    let connectivity = store.load_connectivity()?;
     let gates = store.load_backpressure()?;
     let reviews = review::host::candidates(store)?;
     let repositories = store.load_settings()?.repositories;
@@ -251,7 +255,18 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 now,
             )
         });
+        let offline = connectivity
+            .offline(&crate::connectivity::selection_scopes(
+                &candidate.job.account_id,
+                candidate
+                    .run
+                    .as_ref()
+                    .map(|run| &run.selection)
+                    .or(candidate.planned_selection.as_ref()),
+            ))
+            .cloned();
         result.push(Work {
+            offline: offline.clone(),
             key: WorkId {
                 kind: Kind::Normal,
                 id: candidate.key,
@@ -262,7 +277,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .as_ref()
                 .map(|w| w.enqueue_order)
                 .unwrap_or(0),
-            state: if reason.is_some() {
+            state: if reason.is_some() && offline.is_none() {
                 "blocked"
             } else {
                 "waiting"
@@ -290,7 +305,10 @@ impl Coordinator {
         work: &Work,
         prepare: impl FnOnce(Arc<AtomicBool>) -> Result<(String, T), String>,
     ) -> Result<Option<T>, String> {
-        if store.load_automation()?.paused || work.reason.is_some() || work.delayed_until.is_some()
+        if store.load_automation()?.paused
+            || work.offline.is_some()
+            || work.reason.is_some()
+            || work.delayed_until.is_some()
         {
             return Ok(None);
         }
@@ -322,6 +340,7 @@ impl Coordinator {
         let active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
         for reservation in active.values() {
             let entry = Work {
+                offline: None,
                 key: reservation.key.clone(),
                 enqueue_order: reservation.enqueue_order,
                 state: if reservation.cancelled.load(Ordering::SeqCst) {
@@ -359,9 +378,35 @@ impl Coordinator {
     /// Called under the Host Store lock, including by deterministic worker tests.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
         review::end_retired(store)?;
+        let connectivity = store.load_connectivity()?;
+        let mut reviews = store.load_reviews()?;
+        let mut connectivity_changed = false;
+        for run in &mut reviews {
+            let offline = connectivity
+                .offline(&crate::connectivity::scopes(run))
+                .and_then(|s| s.offline_since);
+            let before = run.operation.offline_since;
+            crate::connectivity::sync_operation(store, &mut run.operation, offline, now);
+            connectivity_changed |= before != run.operation.offline_since;
+        }
+        if connectivity_changed {
+            store.save_reviews(&reviews)?;
+        }
         let settings = store.load_settings()?;
         let paused = store.load_automation()?.paused;
         let mut active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
+        for reservation in active.values_mut() {
+            if reviews.iter().any(|r| {
+                r.operation.id == reservation.operation_id
+                    && r.operation.offline_since.is_some()
+                    && r.operation.state == OperationState::Running
+            }) && reservation.interruption.is_none()
+            {
+                request_interruption(store, &reservation.operation_id, Interruption::Offline)?;
+                reservation.interruption = Some(Interruption::Offline);
+                reservation.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
         let mut ordered: Vec<_> = active
             .values()
             .map(|r| (r.enqueue_order, r.key.clone()))

@@ -111,8 +111,52 @@ test("a gate on another account leaves the work runnable", async ({
       },
     ],
   });
+
   const work = (await store("automation_snapshot")).work.find((w) =>
     w.key.id.includes('"3"'),
   );
   expect(work.delayed_until ?? null).toBeNull();
+});
+
+test("offline work waits separately from failures and retains its last successful check", async ({
+  page,
+  store,
+}) => {
+  await seedWaiting(store);
+  await store("seed_connectivity", {
+    services: [
+      {
+        scope: { provider: "github", account_id: "22" },
+        offline_since: NOW,
+        last_success: NOW - 60,
+        next_check_at: NOW + 30,
+      },
+    ],
+  });
+  const work = (await store("automation_snapshot")).work.find((w) =>
+    w.key.id.includes('"3"'),
+  );
+  expect(work.offline.last_success).toBe(NOW - 60);
+  expect(work.failure).toBeNull();
+  await page.goto("/");
+  await tab(page, "Running").click();
+  const row = page
+    .locator("[data-running-list] article")
+    .filter({ hasText: "example/repo #3" });
+  await expect(row.locator("button.work-row")).toHaveAttribute(
+    "data-display",
+    "offline",
+  );
+  await expect(row.locator(".work-state")).toHaveAttribute(
+    "aria-label",
+    /Offline; last successful check/,
+  );
+  await expect(row.locator(".work-state")).toHaveText(/Offline · /);
+  await tab(page, "Queue").click();
+  await showQueueGroup(page, "attention");
+  await expect(
+    page
+      .locator('[data-queue-group="attention"]')
+      .getByRole("article", { name: "example/repo #3", exact: true }),
+  ).toHaveCount(0);
 });

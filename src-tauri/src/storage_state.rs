@@ -119,6 +119,23 @@ impl Store {
         }
     }
 
+    pub fn load_connectivity(&self) -> Result<crate::connectivity::Connectivity, String> {
+        match self.read_state("connectivity.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                "Connectivity state is invalid; repair it before running work.".into()
+            }),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("Cannot read connectivity state. No work can start.".into()),
+        }
+    }
+
+    pub fn save_connectivity(
+        &self,
+        state: &crate::connectivity::Connectivity,
+    ) -> Result<(), String> {
+        self.commit_operational("connectivity.json", state)
+    }
+
     pub fn save_backpressure(
         &self,
         backpressure: &crate::backpressure::Backpressure,

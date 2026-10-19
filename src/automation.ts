@@ -16,6 +16,7 @@ export interface AutomationSnapshot {
     failure?: FailureClass | null;
     // Rate-limit backpressure: runnable work waiting until this Unix time.
     delayed_until?: number | null;
+    offline?: { last_success: number | null; next_check_at: number } | null;
     // The primary waits for this teammate's report.
     blocked_by?: {
       teammate: { assignment_id: string; agent_name: string };

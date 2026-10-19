@@ -558,6 +558,7 @@ async fn at_ai_capacity_one_the_duck_runs_inside_the_primarys_slot() {
         .unwrap();
     let coordinator = crate::capacity::Coordinator::default();
     let work = |id: &str| crate::capacity::Work {
+        offline: None,
         key: crate::capacity::WorkId {
             kind: crate::capacity::Kind::Normal,
             id: id.into(),

@@ -580,6 +580,12 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             store.save_backpressure(&state)?;
             Ok(Value::Null)
         }
+        "seed_connectivity" => {
+            let state = serde_json::from_value(request.args)
+                .map_err(|_| "Invalid connectivity fixture.".to_string())?;
+            store.save_connectivity(&state)?;
+            Ok(Value::Null)
+        }
         // Mirrors the host: a scheduler tick while the account needs
         // reconnecting, a confirmed reconnect, then the immediate resume.
         "fixture_reconnect_account" => {

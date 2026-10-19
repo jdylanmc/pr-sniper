@@ -318,7 +318,46 @@ pub(crate) fn complete(
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
-    if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
+    let connectivity = store.load_connectivity()?;
+    let offline = connectivity
+        .offline(&crate::connectivity::scopes(current))
+        .is_some();
+    let suspended = current.operation.offline_since.is_some()
+        || current.operation.interruption == Some(crate::capacity::Interruption::Offline);
+    let suspend = (offline || suspended)
+        && outcome.as_ref().err().is_none_or(|e| {
+            e.cancelled
+                || (connectivity
+                    .offline(&[crate::backpressure::Scope::of(
+                        e.origin,
+                        &current.job.account_id,
+                        current
+                            .selection
+                            .agent
+                            .ai_account
+                            .as_ref()
+                            .map(|a| a.account_id.as_str()),
+                    )])
+                    .is_some()
+                    && matches!(
+                        e.kind,
+                        monitoring::OperationFailure::Network
+                            | monitoring::OperationFailure::Timeout
+                    ))
+        });
+    if suspend {
+        let since = connectivity
+            .offline(&crate::connectivity::scopes(current))
+            .and_then(|s| s.offline_since)
+            .or(current.operation.offline_since)
+            .unwrap_or(now);
+        crate::connectivity::sync_operation(store, &mut current.operation, Some(since), now);
+        current.operation.suspend_offline(now);
+        current.result = None;
+        current.attempt_ducks.clear();
+        current.phase = "Offline".into();
+        current.error = None;
+    } else if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
@@ -536,7 +575,19 @@ pub(crate) async fn execute(
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::PreparingContext,
     });
-    let result = execute_attempt(app, run, cancelled, diagnostics.clone(), ducks).await;
+    let result = execute_attempt(
+        app.clone(),
+        run.clone(),
+        cancelled,
+        diagnostics.clone(),
+        ducks,
+    )
+    .await;
+    if let Err(error) = &result {
+        if let Err(error) = crate::connectivity::confirm_failure(&app, &run, error).await {
+            crate::report(&app, error);
+        }
+    }
     diagnostics.finish(
         crate::storage::diagnostics::CompletionStage::Attempt,
         result.as_ref().err(),
