@@ -215,6 +215,8 @@ fn offline_does_not_hide_credentials_permissions_or_invalid_results() {
         assert_eq!(saved.operation.state, OperationState::Failed);
         assert_eq!(saved.operation.failure, Some(kind));
         assert_eq!(saved.operation.attempt_count, 1);
+        let snapshot = coordinator.snapshot(&store, 111).unwrap();
+        assert_eq!((snapshot.waiting, snapshot.blocked), (0, 1));
     }
 }
 

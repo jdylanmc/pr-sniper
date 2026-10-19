@@ -266,7 +266,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             ))
             .cloned();
         result.push(Work {
-            offline: offline.clone(),
+            offline,
             key: WorkId {
                 kind: Kind::Normal,
                 id: candidate.key,
@@ -277,7 +277,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .as_ref()
                 .map(|w| w.enqueue_order)
                 .unwrap_or(0),
-            state: if reason.is_some() && offline.is_none() {
+            state: if reason.is_some() {
                 "blocked"
             } else {
                 "waiting"
