@@ -62,6 +62,7 @@ pub(crate) struct Caller<'a> {
     pub iterations: &'a [(String, u64)],
     /// When this PR's state was last consumed, for `new_since_last_review`.
     pub last_consumed_at: Option<i64>,
+    pub ownership: Vec<crate::github::threads::Ownership>,
 }
 
 /// Build the packet and the run's tool set from state read right now.
@@ -84,6 +85,7 @@ where
         teammates,
         iterations,
         last_consumed_at,
+        ownership,
     } = caller;
     let mut observation = client
         .action_observation(repo, run.job.number)
@@ -119,6 +121,12 @@ where
     let agent = &run.selection.agent;
     let admission = run.job.work.as_ref().map(|w| &w.admission);
     let mut conversation = reads::conversation(&observation);
+    super::findings::stamp_ownership(
+        &mut conversation.threads,
+        &ownership,
+        &run.assignment_id,
+        &run.job.account_id,
+    );
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
@@ -218,6 +226,7 @@ where
         context,
         base,
         write_capability,
+        ownership,
     )?;
     Ok(Prepared {
         duck,
@@ -239,11 +248,13 @@ fn exit_gate<T>(
     context: &ReviewContext,
     base: GateInput,
     write_capability: bool,
+    ownership: Vec<crate::github::threads::Ownership>,
 ) -> Result<ExitGate, Failure>
 where
     T: Transport + QueryTransport + Send + Sync + 'static,
 {
     let number = run.job.number;
+    let pull_request_id = run.job.pull_request_id.clone();
     let (head, target) = (context.pull.head_sha.clone(), context.pull.base_sha.clone());
     let files = context.files.clone();
     Ok(Arc::new(move |call| {
@@ -282,6 +293,19 @@ where
                     "A reply or resolve names an unknown thread. Copy thread ids exactly from the Conversation section."
                         .into(),
                 ));
+            }
+            for id in resolve_own_threads {
+                let thread = client
+                    .review_thread(&repo.id, &pull_request_id, id)
+                    .map_err(|_| {
+                        Refusal::Denied("Thread ownership unreadable now. Try again.".into())
+                    })?
+                    .ok_or_else(|| Refusal::Denied("Thread unavailable now.".into()))?;
+                if !thread.owned_by_any(&ownership) {
+                    return Err(Refusal::Denied(
+                        "Only this assignment's verified own threads may be resolved.".into(),
+                    ));
+                }
             }
         }
         if let Some(reason) = out_of_diff(&files, call) {

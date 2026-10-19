@@ -128,6 +128,8 @@ struct ReadTools<T: Transport> {
     logs: Mutex<BTreeMap<String, Option<Arc<CheckLog>>>>,
     gate: Gate,
     source_failure: Mutex<Option<Failure>>,
+    served: Mutex<BTreeMap<(String, String), Span>>,
+    thread_reads: Mutex<BTreeMap<String, Span>>,
     limit_failure: Mutex<Option<Failure>>,
 }
 
@@ -293,6 +295,69 @@ pub(crate) fn chunk(
 }
 
 impl<T: Transport> ReadTools<T> {
+    fn record_served(
+        &self,
+        side: &str,
+        path: &str,
+        start: usize,
+        end: usize,
+        total: usize,
+    ) -> Result<(), Failure> {
+        self.served
+            .lock()
+            .map_err(|_| Failure::permanent("Review evidence tracking failed."))?
+            .entry((side.to_string(), path.to_string()))
+            .or_default()
+            .add(start, end, total);
+        Ok(())
+    }
+
+    fn served_evidence(&self, evidence: &super::duck::EvidenceRef) -> bool {
+        if evidence.side.as_deref().unwrap_or("head") != "head" || evidence.path.len() > 1024 {
+            return false;
+        }
+        let Some(line) = evidence.line.filter(|line| *line > 0) else {
+            return false;
+        };
+        let end_line = evidence.end_line.unwrap_or(line);
+        if end_line < line {
+            return false;
+        }
+        let key = ("head".to_string(), evidence.path.clone());
+        let Some(entry) = self.context.head.get(&evidence.path) else {
+            return false;
+        };
+        let Ok(blobs) = self.blobs.lock() else {
+            return false;
+        };
+        let Some(blob) = blobs.get(&(entry.sha.clone(), entry.mode.clone())) else {
+            return false;
+        };
+        let mut offset = 0;
+        let mut range = None;
+        for (index, text) in blob.text.split_inclusive('\n').enumerate() {
+            let number = index as u64 + 1;
+            if number == line {
+                range = Some((offset, offset));
+            }
+            offset += text.len();
+            if number == end_line {
+                if let Some((start, _)) = range {
+                    range = Some((start, offset));
+                }
+                break;
+            }
+        }
+        let Some((start, end)) = range.filter(|(start, end)| end > start) else {
+            return false;
+        };
+        self.served.lock().is_ok_and(|served| {
+            served
+                .get(&key)
+                .is_some_and(|span| span.ranges.iter().any(|(a, b)| *a <= start && *b >= end))
+        })
+    }
+
     fn new(
         diagnostics: Option<Arc<super::diagnostics::Trace>>,
         context: ReviewContext,
@@ -309,6 +374,8 @@ impl<T: Transport> ReadTools<T> {
             name,
             read: Mutex::new(BTreeSet::new()),
             spans: Mutex::new(BTreeMap::new()),
+            served: Mutex::new(BTreeMap::new()),
+            thread_reads: Mutex::new(BTreeMap::new()),
             blobs: Mutex::new(BTreeMap::new()),
             logs: Mutex::new(BTreeMap::new()),
             gate,
@@ -592,6 +659,9 @@ impl<T: Transport> ReadTools<T> {
                     .collect();
                 meta.insert("other_parts_unread".into(), json!(unread));
                 let (value, offset, end) = chunk(&content, &args, meta, rejected_by_limit)?;
+                if part == Part::After {
+                    self.record_served("head", path, offset, end, content.len())?;
+                }
                 spans
                     .entry((path.to_string(), part))
                     .or_default()
@@ -614,9 +684,27 @@ impl<T: Transport> ReadTools<T> {
                 let mut meta = blob.meta.as_object().cloned().unwrap_or_default();
                 meta.insert("side".into(), json!(side));
                 meta.insert("path".into(), json!(path));
-                chunk(&blob.text, &args, meta, rejected_by_limit).map(|(value, _, _)| value)
+                let (value, start, end) = chunk(&blob.text, &args, meta, rejected_by_limit)?;
+                self.record_served(side, path, start, end, blob.text.len())?;
+                Ok(value)
             }
-            "get_thread" => tools::get_thread(&self.facts, &args, rejected_by_limit),
+            "get_thread" => {
+                let result = tools::get_thread(&self.facts, &args, rejected_by_limit)?;
+                if let Some(id) = args["thread_id"].as_str() {
+                    self.thread_reads
+                        .lock()
+                        .map_err(|_| Failure::permanent("Thread read tracking failed."))?
+                        .entry(id.to_string())
+                        .or_default()
+                        .add(
+                            result["offset"].as_u64().unwrap_or(0) as usize,
+                            result["offset"].as_u64().unwrap_or(0) as usize
+                                + result["content"].as_str().map_or(0, str::len),
+                            result["total_bytes"].as_u64().unwrap_or(0) as usize,
+                        );
+                }
+                Ok(result)
+            }
             "get_checks" => tools::get_checks(&self.facts, &args, rejected_by_limit),
             "read_check_log" => {
                 let check = tools::log_check(&self.facts, &args)?;
@@ -992,6 +1080,24 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             .map(|f| f.path.clone())
             .collect();
         let prompt = request.task.prompt(&request.selection, &request.context);
+        let finding_contract = request
+            .selection
+            .configuration
+            .as_ref()
+            .filter(|c| c.authority.primary)
+            .map(|c| super::findings::Contract {
+                head: request.context.pull.head_sha.clone(),
+                base: request.context.pull.base_sha.clone(),
+                state_id: request
+                    .duck
+                    .as_ref()
+                    .map(|d| d.prep.base.state_id.clone())
+                    .unwrap_or_default(),
+                threads: request.exits.facts.conversation.threads.clone(),
+                duck_required: c.rubber_duck.is_some(),
+                corrections: request.exits.facts.corrections.clone(),
+            });
+        let duck_log = request.duck.as_ref().map(|d| d.log.clone());
         // The duck is part of this run's setup: no duck, no inference.
         let engine = match request.duck {
             Some(setup) => Some(
@@ -1008,11 +1114,6 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         let duck_repository = request.repository_name.clone();
         let exits = request.exits;
         let tool_names = exits.tool_set.clone();
-        let exit_tools = Arc::new(exit_tools::ExitTools::new(
-            exits.offered.clone(),
-            exits.gate.clone(),
-            diagnostics.clone(),
-        ));
         let tool_facts = exits.facts.clone();
         let tool_operation = operation.clone();
         let tool_gate = request.local_gate.clone();
@@ -1029,6 +1130,28 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             )
             .with_facts(tool_facts.clone()),
         );
+        let mut exit_tools = exit_tools::ExitTools::new(
+            exits.offered.clone(),
+            exits.gate.clone(),
+            diagnostics.clone(),
+        );
+        if let Some(contract) = finding_contract {
+            exit_tools.require_finding_identity = true;
+            let reads = tools.clone();
+            exit_tools.finding_gate = Some(Arc::new(move |call, assessments| {
+                let ducks = match &duck_log {
+                    Some(log) => log
+                        .lock()
+                        .map_err(|_| "Duck evidence unavailable.")?
+                        .clone(),
+                    None => Vec::new(),
+                };
+                contract.prepare(call, assessments, &ducks, |evidence| {
+                    reads.served_evidence(evidence)
+                })
+            }));
+        }
+        let exit_tools = Arc::new(exit_tools);
         let duck = engine.map(|engine| {
             let local = request.local_gate.clone();
             let duck_operation = operation.clone();
@@ -1147,6 +1270,12 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     }
                 })?;
             result.intelligence = Some(intelligence);
+            result.finding_dispositions = exit_tools
+                .state
+                .findings
+                .lock()
+                .map_err(|_| Failure::permanent("Finding evidence unavailable."))?
+                .clone();
             if let Some(duck) = &duck {
                 result.ducks = duck.calls();
             }

@@ -232,6 +232,8 @@ test("Retry on a repository poll failure retries the poll, never the published r
     window.__commands = [];
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
       window.__commands.push(command);
+      if (command === "retry_monitoring_operation")
+        return Promise.resolve(null);
       return original(command, args);
     };
   });
@@ -294,8 +296,13 @@ test("Retry on a repository poll failure retries the poll, never the published r
   await expect
     .poll(() => page.evaluate(() => window.__commands))
     .toContain("retry_monitoring_operation");
+  await page.evaluate(() => window.__settingsIdle());
   const commands = await page.evaluate(() => window.__commands);
+  expect(
+    commands.filter((c) => c === "retry_monitoring_operation"),
+  ).toHaveLength(1);
   expect(commands).not.toContain("start_review");
+  expect(commands).not.toContain("publish_review");
   await expect(page.locator("[data-panel-error]")).toBeHidden();
 });
 
@@ -308,6 +315,8 @@ test("Retry restarts the poll and each failed review, once per command", async (
     window.__commands = [];
     window.__TAURI_INTERNALS__.invoke = (command, args) => {
       window.__commands.push(command);
+      if (["retry_monitoring_operation", "start_review"].includes(command))
+        return Promise.resolve(null);
       return original(command, args);
     };
   });
@@ -380,13 +389,17 @@ test("Retry restarts the poll and each failed review, once per command", async (
   await expect
     .poll(() => page.evaluate(() => window.__commands))
     .toContain("start_review");
+  await page.evaluate(() => window.__settingsIdle());
   const commands = await page.evaluate(() => window.__commands);
   expect(
     commands.filter((c) => c === "retry_monitoring_operation"),
   ).toHaveLength(1);
+  expect(commands.filter((c) => c === "start_review")).toHaveLength(1);
+  expect(commands).not.toContain("publish_review");
   expect(commands.indexOf("retry_monitoring_operation")).toBeLessThan(
     commands.indexOf("start_review"),
   );
+  await expect(page.locator("[data-panel-error]")).toBeHidden();
 });
 
 test("action errors are terse, dismissible toasts that never cover the header", async ({

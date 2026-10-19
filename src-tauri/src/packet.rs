@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 6;
+pub const SCHEMA: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -74,6 +74,7 @@ pub struct ToolFacts {
     pub description: Option<String>,
     pub conversation: Conversation,
     pub checks: Vec<CheckFact>,
+    pub corrections: Vec<crate::review::findings::Correction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

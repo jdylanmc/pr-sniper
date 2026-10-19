@@ -1,5 +1,6 @@
 pub(crate) mod diagnostics;
 pub mod duck;
+pub mod findings;
 pub(crate) mod host;
 pub(crate) mod packet_run;
 pub(crate) mod runtime;
@@ -632,6 +633,8 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// Rubber duck calls of this attempt, in call order. Evidence only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ducks: Vec<duck::DuckCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_dispositions: Vec<findings::Assessment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -950,6 +953,7 @@ impl Events {
             byte_coverage: false,
             coverage: None,
             ducks: Vec::new(),
+            finding_dispositions: Vec::new(),
         })
     }
 }

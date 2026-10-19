@@ -406,6 +406,19 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             changed: u32::try_from(self.context.files.len()).unwrap_or(u32::MAX),
         });
         let (events, verdict) = result?;
+        if call.input.verify_fixed
+            && verdict.verdict == duck::VerdictKind::Confirmed
+            && (verdict.evidence.is_empty()
+                || !verdict.evidence.iter().all(|e| reads.served_evidence(e))
+                || !reads.thread_reads.lock().is_ok_and(|threads| {
+                    call.input
+                        .thread_id
+                        .as_ref()
+                        .is_some_and(|id| threads.get(id).is_some_and(super::Span::complete))
+                }))
+        {
+            return Err(DuckFailure::Failed);
+        }
         call.input_tokens = events.0;
         call.output_tokens = events.1;
         call.tool_calls = events.2;

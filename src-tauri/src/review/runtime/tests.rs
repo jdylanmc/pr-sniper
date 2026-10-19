@@ -834,6 +834,46 @@ fn tools_read_immutable_content_and_reject_arbitrary_paths_or_execution() {
     assert_eq!(config.enable_host_git_operations, Some(false));
 }
 
+#[test]
+fn fixed_evidence_must_reference_head_lines_actually_served_not_merely_cached() {
+    let request = request(true);
+    let tools = ReadTools::new(
+        None,
+        request.context,
+        request.client,
+        request.repository_name,
+        Arc::new(|| Ok(())),
+    );
+    let evidence = crate::review::duck::EvidenceRef {
+        path: "source.rs".into(),
+        side: Some("head".into()),
+        line: Some(1),
+        end_line: None,
+    };
+    assert!(!tools.served_evidence(&evidence));
+    tools
+        .execute("read_source", json!({"side":"base","path":"source.rs"}))
+        .unwrap();
+    assert!(!tools.served_evidence(&evidence));
+    tools
+        .execute(
+            "read_source",
+            json!({"side":"head","path":"source.rs","max_bytes":1}),
+        )
+        .unwrap();
+    assert!(!tools.served_evidence(&evidence));
+    tools
+        .execute("read_source", json!({"side":"head","path":"source.rs"}))
+        .unwrap();
+    assert!(tools.served_evidence(&evidence));
+    let mut invalid = evidence.clone();
+    invalid.end_line = Some(2);
+    assert!(!tools.served_evidence(&invalid));
+    invalid = evidence;
+    invalid.side = Some("base".into());
+    assert!(!tools.served_evidence(&invalid));
+}
+
 #[tokio::test]
 async fn synthetic_runtime_validates_identity_tools_output_and_reaps_process() {
     for (scenario, success) in [
@@ -1420,6 +1460,7 @@ mod exits {
     fn pull_tools_page_and_never_cut() {
         use crate::packet::{CheckFact, CommentFact, Conversation, ThreadFact};
         let facts = Arc::new(ToolFacts {
+            corrections: Vec::new(),
             description: Some("d".repeat(70_000)),
             conversation: Conversation {
                 threads: vec![ThreadFact {

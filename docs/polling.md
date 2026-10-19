@@ -50,6 +50,15 @@ Post-write consume (`exits::consume::settle_fresh`) compares the fresh read with
 
 Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `pr_state::consume`, `pr_state::toss`.
 
+### Merge-readiness transitions
+
+- Draft → ready and pending → green CI change the hash, even at the same head/base. A completed pass gets fresh work on the next successful poll.
+- Every teammate must report for that state before the primary runs; a failed teammate still blocks. No readiness-only bypass or report reuse across states.
+- Packet preparation and exit calls read current provider gates. Only the primary's chosen `approve_and_merge` exit authorizes merge; offering it never overrides `ready_for_human`.
+- Saved review evidence includes `packet.exits_denied` (exact blocker), `packet.exits_offered`, and `result.output.exit` (selected exit). The native action ledger retains intents and receipts.
+- Native execution re-reads gates before intent and again before transmission. Changed head/base, draft, red CI, unresolved threads, queues and insufficient permissions still block.
+- Fixture regression: `actions::tests::readiness` covers poll → teammate barrier → fresh packet → selected exit → approval → merge. No live provider writes or model inference.
+
 ## Lifecycle reads
 
 - Complete open listing, then explicit reads for admitted active PRs missing from it.

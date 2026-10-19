@@ -661,7 +661,7 @@ async fn execute_attempt(
                 .capabilities
                 .comment
                 == crate::github::provider::CommentCapability::Available;
-            let (teammates, iterations, last_consumed_at) = {
+            let (teammates, iterations, last_consumed_at, ownership, corrections) = {
                 let store = host
                     .store
                     .lock()
@@ -675,9 +675,23 @@ async fn execute_attempt(
                         .map_err(Failure::permanent)?
                         .get(&crate::retention::Binding::job(&preparation_run.job))
                         .and_then(|r| r.consumed_at),
+                    super::findings::proofs(
+                        &store,
+                        &preparation_run.job,
+                        &preparation_run.assignment_id,
+                    )
+                    .map_err(Failure::permanent)?,
+                    super::findings::corrections(
+                        &store
+                            .load_feedback()
+                            .map_err(Failure::permanent)?
+                            .exit_writes,
+                        &preparation_run.job,
+                        &preparation_run.assignment_id,
+                    ),
                 )
             };
-            super::packet_run::prepare(
+            let mut prepared = super::packet_run::prepare(
                 &client,
                 &repo,
                 &preparation_run,
@@ -689,8 +703,11 @@ async fn execute_attempt(
                     teammates,
                     iterations: &iterations,
                     last_consumed_at,
+                    ownership,
                 },
-            )?
+            )?;
+            Arc::make_mut(&mut prepared.setup.facts).corrections = corrections;
+            prepared
         };
         Ok::<_, Failure>((context, client, packet))
     });

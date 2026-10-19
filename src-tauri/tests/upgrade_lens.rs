@@ -192,6 +192,7 @@ fn follow_up(review: ReviewRun) -> FollowUp {
         byte_coverage: false,
         coverage: None,
         ducks: vec![],
+        finding_dispositions: vec![],
     });
     run
 }

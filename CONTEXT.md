@@ -69,11 +69,11 @@ Packet tool ids an assignment may use: investigation tools, `rubber_duck` (prima
 _Avoid_: Skills, plugins
 
 **Rubber Duck**:
-Optional Agent selected on the primary assignment (may be the primary's own Agent). Offered to the primary as host-owned tool `rubber_duck`: the primary chooses when to send one finding for checking. Each **Duck call** is a fresh, read-only session over the primary's PR state, ending on `submit_verdict`. Borrows the primary's **AI Capacity** slot; calls run one at a time, bounded by Saved Preferences (calls, timeout, primary window). Setup failure at job start is a job error (park path, `failed_duck`); a failed call is a typed tool error for the primary. Teammates have none. See [ADR 0023](docs/adr/0023-rubber-duck-verification.md).
+Optional Agent selected on the primary assignment (may be the primary's own Agent). Offered to the primary as host-owned tool `rubber_duck`: the primary chooses when to send a new finding for checking; a configured duck must independently confirm proposed `fixed` dispositions of existing findings. Each **Duck call** is a fresh, read-only session over the primary's PR state, ending on `submit_verdict`. Borrows the primary's **AI Capacity** slot; calls run one at a time, bounded by Saved Preferences (calls, timeout, primary window). Setup failure at job start is a job error (park path, `failed_duck`); a failed call is a typed tool error for the primary. Teammates have none. See [ADR 0023](docs/adr/0023-rubber-duck-verification.md) and the [finding reconciliation contract](docs/review-packet.md#finding-reconciliation).
 _Avoid_: Reviewer, gate, sub-agent
 
 **Verdict**:
-A duck call's structured answer: `confirmed`, `revise` (with `revised_body`), `rejected` or `unverifiable`, caveman rationale and evidence refs. Untrusted data for the primary, which decides. Never publishes, blocks or authorizes anything; never reused across attempts or PR states.
+A duck call's structured answer: `confirmed`, `revise` (with `revised_body`), `rejected` or `unverifiable`, caveman rationale and evidence refs. Untrusted data for the primary, which decides. Never publishes or grants authority; a configured duck's independent confirmation is required evidence for `fixed` dispositions. Never reused across attempts or PR states.
 _Avoid_: Approval, decision
 
 **Packet**:
@@ -186,6 +186,7 @@ _Avoid_: Approval review, second pass
 
 **Action Clearance**:
 Gate before any provider action. Every current assignment has its own completed pass for the tracked Iteration. Old evidence never covers an added or replaced assignment. Pending conversations, held findings, human-input decisions, incomplete admission and unknown mutations block.
+An own finding assessed `still_applies` or `unverifiable` blocks approval and merge even when its provider thread is resolved or an earlier correction was acknowledged; no-write human handoff remains available.
 _Avoid_: Auto-merge approval
 
 ### Failure and retry

@@ -169,6 +169,13 @@ pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
     if run.cancelled {
         return Err("Final review was cancelled.".into());
     }
+    crate::review::findings::action_clearance(
+        &run.execution
+            .result
+            .as_ref()
+            .ok_or("Final review result unavailable.")?
+            .finding_dispositions,
+    )?;
     let monitor = monitoring::Monitor::restore_readonly(store.load_monitoring_state()?);
     if !monitor
         .activation_status(&store.load_settings()?, &run.basis.job.configuration_id)

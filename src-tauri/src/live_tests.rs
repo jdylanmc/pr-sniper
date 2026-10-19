@@ -366,6 +366,8 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         &snapshot,
         packet_run::Caller {
             acting_login: &live.identity.login,
+            ownership: crate::review::findings::proofs(&live.store(), &run.job, &run.assignment_id)
+                .unwrap(),
             write_capability,
             teammates,
             iterations: &iterations,

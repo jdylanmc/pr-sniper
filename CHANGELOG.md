@@ -18,6 +18,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Repeated review findings and one-time correction acknowledgments stay on their
+  original threads; resolving findings requires current-code evidence and
+  configured independent verification.
 - Merge notifications now appear once per pull request across saved iterations,
   restarts and cleanup; upgrading no longer replays historical merges.
 - Repository saves completed from another destination now dismiss the retained

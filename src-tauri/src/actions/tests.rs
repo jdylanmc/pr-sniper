@@ -27,6 +27,7 @@ const NOW: i64 = 1_800_000_000;
 mod approve_exits;
 mod fixwave;
 mod legacy_compat;
+mod readiness;
 
 fn output() -> ReviewResult {
     serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),"output":{"synopsis":"Review completed.",
@@ -259,6 +260,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         &snapshot,
         packet_run::Caller {
             acting_login: "actor",
+            ownership: vec![],
             write_capability: true,
             teammates: vec![],
             iterations: &[],
@@ -339,6 +341,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &snapshot,
             packet_run::Caller {
                 acting_login: "actor",
+                ownership: vec![],
                 write_capability: true,
                 teammates: vec![],
                 iterations: &known,
@@ -455,6 +458,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &snapshot,
             packet_run::Caller {
                 acting_login: "actor",
+                ownership: vec![],
                 write_capability: true,
                 teammates: vec![],
                 iterations: &[],

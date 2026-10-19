@@ -127,6 +127,60 @@ fn an_approve_exit_creates_no_legacy_final_and_one_packet_record() {
 }
 
 #[test]
+fn finding_clearance_survives_restart_and_denies_previously_accepted_native_actions() {
+    for disposition in ["still_applies", "unverifiable"] {
+        for action in [Action::Approve, Action::Merge] {
+            let (root, store, item) = setup(true, true, approve_exit(true), false);
+            let mut current = observed();
+            current.threads.push(HumanThread {
+                id: "corrected-finding".into(),
+                resolved: true,
+                outdated: false,
+                resolved_by: Some("actor".into()),
+                comments: vec![],
+            });
+            current.reviews.push(ProviderReview {
+                id: "501".into(),
+                actor_id: "33".into(),
+                head: current.head.clone(),
+                state: "APPROVED".into(),
+                body: "Reviewed.".into(),
+                submitted_at: Some("2026-09-30T00:02:00Z".into()),
+            });
+            let run = adopted(&store, &item, current.clone());
+            let effect = prepare_effect(&store, &run.id, action, &current, NOW + 20).unwrap();
+            // Data accepted by an older host must not authorize a new provider effect.
+            let mut ledger = store.load_actions().unwrap();
+            ledger.finals[0]
+                .execution
+                .result
+                .as_mut()
+                .unwrap()
+                .finding_dispositions = vec![serde_json::from_value(json!({
+                "thread_id":"corrected-finding","disposition":disposition,
+                "head_sha":current.head,"base_sha":current.base,
+                "rationale":"The resolved finding is not cleared.","evidence":[]
+            }))
+            .unwrap()];
+            store.save_actions(&ledger).unwrap();
+            let restarted = Store::new(root.path().into());
+            restore(&restarted).unwrap();
+            let mut env = env(&restarted);
+            env.wire.0.lock().unwrap().observation = current.clone();
+            let result = host::execute_action(&mut env, &effect);
+            assert!(
+                env.wire.0.lock().unwrap().writes.is_empty(),
+                "{disposition} must deny {action:?} before transmission"
+            );
+            assert!(result.is_err());
+            let saved = restarted.load_actions().unwrap().finals.remove(0);
+            assert!(packet::ready(&restarted, &saved, &current, action).is_err());
+            assert!(prepare_effect(&restarted, &saved.id, action, &current, NOW + 30).is_err());
+        }
+    }
+}
+
+#[test]
 fn approve_sends_the_agents_comment_then_the_confirmed_write_consumes_the_state() {
     let (_root, store, item) = setup(true, false, approve_exit(false), false);
     adopted(&store, &item, observed());

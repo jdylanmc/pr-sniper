@@ -29,6 +29,9 @@ const exitScenarios = [
 const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
 const duckScenarios = {
   "duck-call": [duckArgs],
+  "duck-fixed": [{ kind: "thread", thread_id: "existing", verify_fixed: true,
+    claim: "Current head fixes the original defect.", proposed_body: "Fixed.",
+    evidence: [{ path: "source.rs", side: "head", line: 1 }] }],
   "duck-sequential": [duckArgs, { ...duckArgs, claim: "second claim" }],
   "duck-then-error": [duckArgs],
   "duck-flood": Array.from({ length: 100 }, () => duckArgs),
@@ -243,6 +246,12 @@ process.stdin.on("data", (chunk) => {
           exitEnded = false;
         }
         if (scenario === "verdict-slow") break;
+        if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
+          toolCall(scenario === "verdict-fixed-no-thread" ? "read_source" : "get_thread",
+            scenario === "verdict-fixed-no-thread" ? { side: "head", path: "source.rs" }
+              : { thread_id: "existing", ...(scenario === "verdict-fixed-partial-thread" ? { max_bytes: 1 } : {}) });
+          break;
+        }
         if (scenario === "verdict-none") {
           setTimeout(() => {
             event("assistant.usage", { inputTokens: 5, outputTokens: 2 });
@@ -329,6 +338,17 @@ process.stdin.on("data", (chunk) => {
         if (String(request.params.requestId).startsWith("exit-")) {
           const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
+          if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
+            if (exitCount === 1 && scenario !== "verdict-fixed-no-thread") {
+              toolCall("read_source", { side: "head", path: "source.rs" });
+            } else if (exitCount <= 2 && !(scenario === "verdict-fixed-no-thread" && exitCount === 2)) {
+              toolCall("submit_verdict", { verdict: "confirmed", nano: "Original defect fixed on head.",
+                evidence: [{ path: "source.rs", side: "head", line: 1 }] });
+            } else {
+              endTurn();
+            }
+            break;
+          }
           if (!failed) {
             endTurn();
           } else if (scenario === "exit-approve-denied-self") {

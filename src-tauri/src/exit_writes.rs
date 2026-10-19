@@ -58,6 +58,8 @@ pub struct Step {
     pub revision: Option<String>,
     pub state: StepState,
     pub receipt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_evidence: Option<crate::review::findings::Assessment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +94,8 @@ pub struct ExitWrite {
     pub error: Option<String>,
     /// The consume/baseline hook ran after the confirmed exit.
     pub consumed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_base_sha: Option<String>,
 }
 
 impl ExitWrite {
@@ -152,9 +156,16 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
             revision: None,
             state: StepState::Planned,
             receipt: None,
+            resolution_evidence: None,
         })
         .collect();
     let mut seen = std::collections::BTreeSet::new();
+    let result = review.result.as_ref()?;
+    let duck_required = review
+        .selection
+        .configuration
+        .as_ref()
+        .is_some_and(|c| c.rubber_duck.is_some());
     steps.extend(
         resolve_own_threads
             .iter()
@@ -167,6 +178,18 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
                 revision: None,
                 state: StepState::Planned,
                 receipt: None,
+                resolution_evidence: result
+                    .finding_dispositions
+                    .iter()
+                    .find(|a| {
+                        a.thread_id == *id
+                            && (!duck_required
+                                || review
+                                    .packet
+                                    .as_ref()
+                                    .is_some_and(|p| a.duck_confirms(&p.state_id, &result.ducks)))
+                    })
+                    .cloned(),
             }),
     );
     let mut operation = JobOperation::review(&review.job, now);
@@ -184,6 +207,7 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         uncertain: false,
         error: None,
         consumed: false,
+        reviewed_base_sha: review.result.as_ref()?.reviewed_base_sha.clone(),
     })
 }
 
@@ -398,7 +422,7 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
         ));
     }
     let proofs = if write.steps.iter().any(|s| s.kind == StepKind::Resolve) {
-        env.proofs(write)?
+        own_proofs(env, write)?
     } else {
         Vec::new()
     };
@@ -428,6 +452,7 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
                 step.revision = Some(revision);
             }
             StepKind::Resolve => {
+                resolution_proof(write, step)?;
                 if !thread.owned_by_any(&proofs) {
                     return Err(Failure::permanent(
                         "Only threads rooted in this agent's own comments can be resolved. The exit was discarded.",
@@ -440,6 +465,42 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
     }
     write.steps = verified;
     Ok(())
+}
+
+fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
+    let valid = step.resolution_evidence.as_ref().is_some_and(|a| {
+        a.thread_id == step.thread_id
+            && a.disposition == crate::review::findings::Disposition::Fixed
+            && a.head_sha == write.job.head_sha
+            && Some(a.base_sha.as_str()) == write.reviewed_base_sha.as_deref()
+            && !a.rationale.trim().is_empty()
+            && !a.evidence.is_empty()
+            && a.evidence.iter().all(|e| {
+                !e.path.trim().is_empty()
+                    && e.side.as_deref().unwrap_or("head") == "head"
+                    && e.line
+                        .is_some_and(|line| line > 0 && e.end_line.unwrap_or(line) >= line)
+            })
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence; outdated is not proof."))
+    }
+}
+
+fn own_proofs(env: &mut impl Environment, write: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
+    Ok(env
+        .proofs(write)?
+        .into_iter()
+        .filter(|p| {
+            p.assignment_id == write.assignment_id
+                && p.account_id == write.job.account_id
+                && p.repository_id == write.job.repository_id
+                && p.pull_request_id == write.job.pull_request_id
+                && p.number == write.job.number
+        })
+        .collect())
 }
 
 fn done(write: &mut ExitWrite, index: usize, receipt: String) {
@@ -462,6 +523,12 @@ fn found_reply(write: &ExitWrite, thread: &Thread, index: usize) -> Option<Strin
 
 fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> Result<(), Failure> {
     env.gate(write)?;
+    // Fence every effect, including resumed writes and steps after a published batch.
+    if env.head(write)? != write.job.head_sha {
+        return Err(Failure::permanent(
+            "PR state moved; nothing further was written.",
+        ));
+    }
     let step = write.steps[index].clone();
     let thread = env
         .thread(write, &step.thread_id)?
@@ -521,11 +588,21 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
             }
         }
         StepKind::Resolve => {
+            // Reconcile an already-landed effect before enforcing the new contract on
+            // pending legacy work. Never re-resolve an uncertain legacy request.
+            if !thread.resolved {
+                resolution_proof(write, &step)?;
+            }
             if thread.resolved {
-                done(write, index, "already".into());
+                let receipt = if step.state == StepState::Attempted {
+                    write.request_id(index)
+                } else {
+                    "already".into()
+                };
+                done(write, index, receipt);
                 return env.save(write);
             }
-            let proofs = env.proofs(write)?;
+            let proofs = own_proofs(env, write)?;
             if !thread.owned_by_any(&proofs) {
                 return Err(Failure::permanent(
                     "Thread ownership could not be verified; nothing was resolved.",
@@ -541,7 +618,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     env.save(write)
                 }
                 Err(error) => {
-                    write.uncertain = error.uncertain;
+                    write.uncertain = error.uncertain || step.state == StepState::Attempted;
                     if env
                         .thread(write, &step.thread_id)
                         .is_ok_and(|t| t.is_some_and(|t| t.resolved))
@@ -550,7 +627,11 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                         return env.save(write);
                     }
                     // Resolving twice is a no-op, so an unconfirmed attempt may be retried.
-                    write.steps[index].state = StepState::Planned;
+                    write.steps[index].state = if write.uncertain {
+                        StepState::Attempted
+                    } else {
+                        StepState::Planned
+                    };
                     env.save(write)?;
                     Err(error.failure)
                 }
