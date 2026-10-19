@@ -18,6 +18,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Reviews and repository checks suspend during verified service outages and resume automatically without spending retry budgets.
 - Stalled reviews expire after a saved inactivity timeout (default 15 minutes),
   without extending total review budgets.
+- Copied diagnostics include publication mismatches, typed provider failures, replacement attempts and nested Rubber Duck outcomes.
 
 ## 0.4.1 - 2026-10-18
 
