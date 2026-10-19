@@ -269,6 +269,10 @@ pub enum Event {
         abort: Outcome,
         disconnect: Outcome,
     },
+    DuckClientTeardown {
+        drain: Outcome,
+        shutdown: Outcome,
+    },
     Phase {
         phase: Phase,
     },

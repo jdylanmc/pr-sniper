@@ -119,6 +119,11 @@ for (const surface of ["panel", "standalone"]) {
         previous_operation_id: "previous-operation",
       },
       {
+        kind: "duck_client_teardown",
+        drain: "failed",
+        shutdown: "forced_stop_unverified",
+      },
+      {
         kind: "duck_event",
         ordinal: 1,
         model: "duck-model",
@@ -160,6 +165,9 @@ for (const surface of ["panel", "standalone"]) {
       "rate_limited_after",
       "previous-operation",
       "duck_teardown",
+      "duck_client_teardown",
+      '"drain": "failed"',
+      "forced_stop_unverified",
       '"disconnect": "failed"',
     ])
       expect(log).toContain(evidence);

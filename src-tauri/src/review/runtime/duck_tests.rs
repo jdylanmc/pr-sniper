@@ -279,6 +279,88 @@ async fn nested_diagnostics_export_outcome_errors_and_cleanup_without_duck_conte
     }
 }
 
+fn fail_duck_shutdown(setup: &mut DuckSetup) {
+    let DuckLaunch::Options { options, .. } = &mut setup.launch else {
+        panic!("synthetic Duck options expected");
+    };
+    options.env.push(("TEST_FAIL_SHUTDOWN".into(), "1".into()));
+}
+
+#[tokio::test]
+async fn duck_client_cleanup_failure_is_exported_apart_from_primary_and_session_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let mut duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    fail_duck_shutdown(&mut duck.setup);
+    let mut request = primary_request(duck.setup);
+    request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+    let result = execute(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &operation(600),
+        request,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result.ducks[0].outcome,
+        DuckOutcome::Verdict { .. }
+    ));
+    let records = diagnostic_records(root.path());
+    let primary = records
+        .iter()
+        .find(|r| r["event"]["kind"] == "teardown")
+        .unwrap();
+    let client = records
+        .iter()
+        .find(|r| r["event"]["kind"] == "duck_client_teardown")
+        .unwrap();
+    assert_eq!(primary["event"]["shutdown"], "success");
+    assert_eq!(client["event"]["drain"], "success");
+    assert_eq!(client["event"]["shutdown"], "forced_stop_unverified");
+    assert_eq!(client["attempt"]["id"], primary["attempt"]["id"]);
+    assert!(records
+        .iter()
+        .any(|r| r["event"]["kind"] == "duck_event"
+            && r["event"]["event"]["kind"] == "duck_teardown"));
+    let export = serde_json::to_string(&records).unwrap();
+    assert!(!export.contains("PRIVATE_DUCK_SHUTDOWN") && !export.contains("ghp_cleanup_secret"));
+    stopped(root.path());
+    stopped(&root.path().join("duck"));
+}
+
+#[tokio::test]
+async fn duck_client_cleanup_records_an_expired_drain_without_claiming_the_call_settled() {
+    let root = tempfile::tempdir().unwrap();
+    let mut duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    fail_duck_shutdown(&mut duck.setup);
+    let engine = duck_tool::DuckEngine::start(duck.setup, &operation(600))
+        .await
+        .unwrap();
+    let trace = diagnostic_trace(root.path().join("profile"));
+    let held = engine.serial.lock().await;
+    shutdown_duck(&engine, Some(trace.as_ref())).await;
+    drop(held);
+    let records = diagnostic_records(root.path());
+    let client = records
+        .iter()
+        .find(|r| r["event"]["kind"] == "duck_client_teardown")
+        .unwrap();
+    assert_eq!(client["event"]["drain"], "failed");
+    assert_eq!(client["event"]["shutdown"], "forced_stop_unverified");
+    assert_eq!(methods(&root.path().join("duck"), "runtime.shutdown"), 1);
+    stopped(&root.path().join("duck"));
+}
+
 #[tokio::test]
 async fn a_duck_call_returns_a_fenced_verdict_and_is_recorded_with_the_primary() {
     let (root, result, _) = review("duck-call", "verdict-ok", limits(8, 180), 600).await;

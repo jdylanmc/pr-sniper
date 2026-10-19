@@ -1375,9 +1375,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     };
     let shutdown = crate::copilot::runtime::shutdown(&client).await;
     if let Some(engine) = duck_engine {
-        // The in-flight call (told the attempt ended above) settles before the stop.
-        let _ = tokio::time::timeout(Duration::from_secs(5), engine.serial.lock()).await;
-        crate::copilot::runtime::shutdown(&engine.client).await;
+        shutdown_duck(&engine, diagnostics.as_deref()).await;
     }
     if let Some(trace) = &diagnostics {
         if result.as_ref().err().is_some_and(|error| error.cancelled) {
@@ -1390,6 +1388,21 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         );
     }
     result
+}
+
+async fn shutdown_duck(
+    engine: &duck_tool::DuckEngine,
+    diagnostics: Option<&super::diagnostics::Trace>,
+) {
+    // A bounded drain is an observation, not proof that a timed-out call settled.
+    let drain = match tokio::time::timeout(Duration::from_secs(5), engine.serial.lock()).await {
+        Ok(_) => Outcome::Success,
+        Err(_) => Outcome::Failed,
+    };
+    let shutdown = crate::copilot::runtime::shutdown(&engine.client).await;
+    if let Some(trace) = diagnostics {
+        trace.emit(DiagnosticEvent::DuckClientTeardown { drain, shutdown });
+    }
 }
 
 async fn monitor_attempt(

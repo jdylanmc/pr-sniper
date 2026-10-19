@@ -425,8 +425,18 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.destroy":
       case "session.detach":
-      case "runtime.shutdown":
         respond(request.id, {});
+        break;
+      case "runtime.shutdown":
+        if (process.env.TEST_FAIL_SHUTDOWN === "1") {
+          frame({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: { code: -32000, message: "PRIVATE_DUCK_SHUTDOWN ghp_cleanup_secret" },
+          });
+        } else {
+          respond(request.id, {});
+        }
         break;
       default:
         frame({
