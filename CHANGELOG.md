@@ -15,6 +15,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   Later PR changes remain eligible; history and provider-effect evidence stay
   intact. Entries with in-flight or uncertain work cannot be dismissed.
 - Queue reload failures retain paired screenshots, renderer/build context and bounded WebKit CI artifacts for diagnosis.
+- Reviews and repository checks suspend during verified service outages and resume automatically without spending retry budgets.
 
 ## 0.4.1 - 2026-10-18
 

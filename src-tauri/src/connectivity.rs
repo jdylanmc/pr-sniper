@@ -187,36 +187,13 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
     let now = crate::now_seconds()?;
     let scopes = {
         let host = app.state::<crate::Host>();
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state unavailable.")?
+            .monitoring_accounts();
         let store = host.store.lock().map_err(|_| "Storage unavailable.")?;
-        if store.load_automation()?.paused {
-            return Ok(());
-        }
-        let state = store.load_connectivity()?;
-        let settings = store.load_settings()?;
-        let mut scopes = std::collections::BTreeSet::new();
-        for repository in settings.repositories.iter().filter(|r| r.enabled) {
-            if let Some(account) = &repository.provider_account_id {
-                scopes.insert(Scope::github(account));
-            }
-        }
-        for run in store.load_reviews()?.iter().filter(|r| {
-            matches!(
-                r.operation.state,
-                OperationState::Queued | OperationState::Interrupted | OperationState::Running
-            ) || r.operation.resume_at.is_some()
-        }) {
-            scopes.extend(self::scopes(run));
-        }
-        scopes
-            .into_iter()
-            .filter(|scope| {
-                state
-                    .services
-                    .iter()
-                    .find(|s| &s.scope == scope)
-                    .is_none_or(|s| now >= s.next_check_at)
-            })
-            .collect::<Vec<_>>()
+        due_scopes(&store, &accounts, now)?
     };
     for origin in [Origin::Github, Origin::Copilot] {
         let selected: Vec<_> = scopes
@@ -243,6 +220,45 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub fn due_scopes(
+    store: &Store,
+    accounts: &std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
+    now: i64,
+) -> Result<Vec<Scope>, String> {
+    if store.load_automation()?.paused {
+        return Ok(Vec::new());
+    }
+    let state = store.load_connectivity()?;
+    let settings = store.load_settings()?;
+    let mut scopes = std::collections::BTreeSet::new();
+    for repository in settings.repositories.iter().filter(|r| r.enabled) {
+        if let Some(account) = &repository.provider_account_id {
+            scopes.insert(Scope::github(account));
+        }
+    }
+    for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts)? {
+        scopes.insert(Scope::github(&ticket.provider_account_id));
+    }
+    for run in store.load_reviews()?.iter().filter(|r| {
+        matches!(
+            r.operation.state,
+            OperationState::Queued | OperationState::Interrupted | OperationState::Running
+        ) || r.operation.resume_at.is_some()
+    }) {
+        scopes.extend(self::scopes(run));
+    }
+    Ok(scopes
+        .into_iter()
+        .filter(|scope| {
+            state
+                .services
+                .iter()
+                .find(|s| &s.scope == scope)
+                .is_none_or(|s| now >= s.next_check_at)
+        })
+        .collect())
 }
 
 #[cfg(test)]

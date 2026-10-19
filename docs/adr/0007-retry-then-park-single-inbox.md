@@ -26,6 +26,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 
 - Restart-safe. No silent retry loops.
 - Sleep/wake and network changes use the same bounded wall-clock checks: no catch-up burst and no OS network changes. Endpoint reachability is not a guarantee that every model route is healthy; a reachable endpoint leaves genuine request failures under the existing retry policy.
+- Disabled or unassigned repositories with eligible tracked PRs retain reachability checks for their connected, exact account/repository binding. Recovery restores terminal lifecycle observation only; it never enables monitoring or admits reviews. Removed, unbound, mismatched and disconnected bindings add no lifecycle probe scope.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
 - Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.
 - Repository polls (no queue item, no retry UI since 2026-10-14): a poll that was waiting or interrupted when its window ran out (quit, sleep, account rate limit) restarts with a fresh window, keeps its cause and never parks on the deadline alone. A parked poll is requeued at the next occurrence of its repository's schedule (one retry per occurrence; Credentials wait for reconnect) and by Check Now (any parked poll). A parked poll keeps its repository's schedule alive, except a credential-parked poll, which waits for reconnect ([ADR 0024](0024-repository-schedules.md)).

@@ -3960,6 +3960,17 @@ impl Monitor {
         if now < self.lifecycle_next {
             return Ok(Vec::new());
         }
+        let tickets = Self::lifecycle_candidates(store, accounts)?;
+        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
+        Ok(tickets)
+    }
+
+    /// The same binding/account eligibility for reachability and lifecycle reads,
+    /// without consuming the sweep timer or authorizing new admission.
+    pub(crate) fn lifecycle_candidates(
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+    ) -> Result<Vec<LifecycleTicket>, String> {
         let settings = store.load_settings()?;
         let queue = store.load_queue_state()?;
         let mut tickets = Vec::new();
@@ -4000,7 +4011,6 @@ impl Monitor {
                 tracked: tracked.into_iter().collect(),
             });
         }
-        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
         Ok(tickets)
     }
 

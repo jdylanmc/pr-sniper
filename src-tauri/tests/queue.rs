@@ -807,6 +807,127 @@ fn connected() -> std::collections::BTreeMap<String, AccountAvailability> {
 }
 
 #[test]
+fn offline_disabled_lifecycle_recovers_without_runnable_reviews_or_new_admission() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{due_scopes, record, Observation},
+    };
+    let (_root, store, run) = disabled_with_tracked_pr();
+    store.save_settings(&settings()).unwrap();
+    let account = Scope::github("22");
+    record(&store, account.clone(), Observation::Unreachable, 1_000).unwrap();
+    let mut disabled = settings();
+    disabled.repositories[0].enabled = false;
+    store.save_settings(&disabled).unwrap();
+    let reviews = store.load_reviews().unwrap();
+    assert!(reviews
+        .iter()
+        .all(|r| r.operation.state == OperationState::Completed));
+    let before = store.load_queue_state().unwrap();
+    let receipts = store.load_publications().unwrap();
+    let mut monitor = Monitor::default();
+    let blocked = monitor
+        .lifecycle_tickets(&store, &connected(), 1_001)
+        .unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert!(store
+        .load_connectivity()
+        .unwrap()
+        .offline(std::slice::from_ref(&account))
+        .is_some());
+    assert!(due_scopes(&store, &connected(), 1_029).unwrap().is_empty());
+    assert_eq!(
+        due_scopes(&store, &connected(), 1_030).unwrap(),
+        vec![account.clone()]
+    );
+    record(&store, account.clone(), Observation::Reachable, 1_030).unwrap();
+    assert!(store
+        .load_connectivity()
+        .unwrap()
+        .offline(&[account])
+        .is_none());
+    assert_eq!(store.load_queue_state().unwrap(), before);
+    // Scope discovery must not consume the lifecycle sweep or admit review work.
+    let tickets = monitor
+        .lifecycle_tickets(&store, &connected(), 1_601)
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    monitor
+        .apply_lifecycle(
+            &store,
+            &tickets[0],
+            Ok(vec![(run.job.pull_request_id.clone(), Lifecycle::Merged)]),
+            1_602,
+        )
+        .unwrap();
+    assert_eq!(state(&store), State::Merged);
+    assert!(due_scopes(&store, &connected(), 1_603).unwrap().is_empty());
+    assert_eq!(store.load_reviews().unwrap(), reviews);
+    assert_eq!(store.load_publications().unwrap(), receipts);
+    assert_eq!(
+        store.load_queue_state().unwrap().jobs.len(),
+        before.jobs.len()
+    );
+    assert!(!store.load_settings().unwrap().repositories[0].enabled);
+}
+
+#[test]
+fn offline_lifecycle_probe_scopes_exclude_removed_unbound_and_wrong_accounts() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{due_scopes, record, Observation},
+    };
+    for case in [
+        "removed",
+        "unbound",
+        "account_changed",
+        "repository_changed",
+        "account_removed",
+        "disconnected",
+    ] {
+        let (_root, store, _) = disabled_with_tracked_pr();
+        record(&store, Scope::github("22"), Observation::Unreachable, 1_000).unwrap();
+        let mut settings = store.load_settings().unwrap();
+        let mut accounts = connected();
+        match case {
+            "removed" => settings.repositories.clear(),
+            "unbound" => {
+                settings.repositories[0].provider_account_id = None;
+                settings.repositories[0].provider_repository_id = None;
+            }
+            "account_changed" => {
+                settings.repositories[0].provider_account_id = Some("44".into());
+                accounts.insert(
+                    "44".into(),
+                    AccountAvailability {
+                        login: "other".into(),
+                        connected: true,
+                    },
+                );
+            }
+            "repository_changed" => {
+                settings.repositories[0].provider_repository_id = Some("200".into())
+            }
+            "account_removed" => accounts.clear(),
+            "disconnected" => accounts.get_mut("22").unwrap().connected = false,
+            _ => unreachable!(),
+        }
+        store.save_settings(&settings).unwrap();
+        assert!(
+            due_scopes(&store, &accounts, 2_000).unwrap().is_empty(),
+            "{case}"
+        );
+        assert!(
+            Monitor::default()
+                .lifecycle_tickets(&store, &accounts, 2_000)
+                .unwrap()
+                .is_empty(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn disabled_repository_still_observes_a_merge_and_leaves_ready_for_merged() {
     let (_root, store, run) = disabled_with_tracked_pr();
     assert_eq!(state(&store), State::MachineSignedOff);
