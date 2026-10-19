@@ -220,7 +220,7 @@ async fn unread_files_are_recorded_as_coverage_and_never_fail_the_attempt() {
     }
 }
 
-fn diagnostic_trace(path: std::path::PathBuf) -> Arc<crate::review::diagnostics::Trace> {
+pub(super) fn diagnostic_trace(path: std::path::PathBuf) -> Arc<crate::review::diagnostics::Trace> {
     crate::review::diagnostics::Trace::new(
         crate::storage::diagnostics::Attempt {
             id: uuid::Uuid::new_v4().to_string(),
@@ -243,7 +243,7 @@ fn explicit_intelligence() -> crate::storage::AgentIntelligence {
     }
 }
 
-fn diagnostic_records(root: &Path) -> Vec<Value> {
+pub(super) fn diagnostic_records(root: &Path) -> Vec<Value> {
     crate::storage::Store::new(root.join("profile"))
         .diagnostics()
         .unwrap()

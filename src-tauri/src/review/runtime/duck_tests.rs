@@ -1,7 +1,10 @@
 //! Rubber duck calls over the synthetic Copilot runtime: one primary process, one duck
 //! process, both the fixture. Synthetic transport, not live Copilot acceptance.
 
-use super::tests::{context, operation, options, receipt, selection, stopped, Synthetic};
+use super::tests::{
+    context, diagnostic_records, diagnostic_trace, operation, options, receipt, selection, stopped,
+    Synthetic,
+};
 use super::*;
 use crate::{
     packet::{AuthorRelation, Directive, PacketInput, PrFacts, Role},
@@ -194,6 +197,82 @@ async fn only_meaningful_nested_progress_keeps_the_primary_attempt_alive() {
                 result.unwrap_err().kind,
                 crate::monitoring::OperationFailure::Timeout
             );
+        }
+        stopped(root.path());
+        stopped(&root.path().join("duck"));
+    }
+}
+
+#[tokio::test]
+async fn nested_diagnostics_export_outcome_errors_and_cleanup_without_duck_content() {
+    for (scenario, expected) in [
+        ("verdict-ok", "confirmed"),
+        ("verdict-429", "rate_limited"),
+        ("verdict-slow", "timed_out"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let duck = duck(
+            &root.path().join("duck"),
+            scenario,
+            limits(8, if scenario == "verdict-slow" { 3 } else { 180 }),
+            false,
+        );
+        let mut request = primary_request(duck.setup);
+        request.diagnostics = Some(diagnostic_trace(root.path().join("profile")));
+        execute(
+            options(root.path(), "duck-call"),
+            &identity(),
+            &operation(600),
+            request,
+        )
+        .await
+        .unwrap();
+        let records = diagnostic_records(root.path());
+        let summary = records
+            .iter()
+            .find(|record| record["event"]["kind"] == "duck")
+            .unwrap();
+        assert_eq!(summary["event"]["ordinal"], 1);
+        assert!(
+            summary["event"]["outcome"] == expected || summary["event"]["failure"] == expected,
+            "{summary}"
+        );
+        let nested: Vec<_> = records
+            .iter()
+            .filter(|record| record["event"]["kind"] == "duck_event")
+            .collect();
+        assert!(nested
+            .iter()
+            .all(|record| record["attempt"]["id"] == summary["attempt"]["id"]));
+        assert!(nested
+            .iter()
+            .any(|record| record["event"]["event"]["kind"] == "session_created"));
+        assert!(nested
+            .iter()
+            .any(|record| record["event"]["event"]["kind"] == "duck_teardown"
+                // The fixture returns {}, not the SDK's required {success:true}.
+                && record["event"]["event"]["disconnect"] == "failed"));
+        if scenario == "verdict-429" {
+            assert!(nested
+                .iter()
+                .any(|record| record["event"]["event"]["kind"] == "session"
+                    && record["event"]["event"]["status_code"] == 429));
+        }
+        if scenario == "verdict-ok" {
+            assert!(nested
+                .iter()
+                .any(|record| record["event"]["event"]["kind"] == "tool_finished"));
+        }
+        let export = serde_json::to_string(&records).unwrap();
+        for forbidden in [
+            "proposed_body",
+            "packet_text",
+            "revised_body",
+            "rationale",
+            "inputTokens",
+            "outputTokens",
+        ] {
+            assert!(!export.contains(forbidden), "{forbidden}");
         }
         stopped(root.path());
         stopped(&root.path().join("duck"));

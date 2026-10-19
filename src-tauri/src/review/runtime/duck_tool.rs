@@ -238,6 +238,21 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
     }
 
     fn record(&self, call: DuckCall) {
+        if let Some(trace) = &self.diagnostics {
+            trace.emit(DiagnosticEvent::Duck {
+                ordinal: call.ordinal,
+                outcome: match &call.outcome {
+                    DuckOutcome::Verdict { verdict } => Some(verdict.verdict),
+                    _ => None,
+                },
+                failure: match &call.outcome {
+                    DuckOutcome::Failure { failure } => Some(*failure),
+                    _ => None,
+                },
+                duration_ms: call.session_id.as_ref().map(|_| call.duration_ms),
+                session_id: call.session_id.clone(),
+            });
+        }
         if let Ok(mut calls) = self.engine.setup.log.lock() {
             duck::log_call(&mut calls, call);
         }
@@ -268,11 +283,15 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
     /// One call, start to finish. `Err` is the typed failure the primary sees.
     pub async fn consult(&self, args: &serde_json::Value) -> Result<String, String> {
         if self.primary_exit.taken() {
+            self.refused(DuckFailure::ExitTaken);
             return Err(DuckFailure::ExitTaken.message(None));
         }
         let setup = &self.engine.setup;
-        let input = DuckInput::parse(args, &setup.prep.changed, &setup.prep.threads)
-            .map_err(|reason| DuckFailure::InvalidInput.message(Some(&reason)))?;
+        let input =
+            DuckInput::parse(args, &setup.prep.changed, &setup.prep.threads).map_err(|reason| {
+                self.refused(DuckFailure::InvalidInput);
+                DuckFailure::InvalidInput.message(Some(&reason))
+            })?;
         let _serial = self.engine.serial.lock().await;
         let ordinal = self.started.load(Ordering::SeqCst) + 1;
         let refuse = |failure: DuckFailure, input: DuckInput| {
@@ -331,6 +350,18 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         result
     }
 
+    fn refused(&self, failure: DuckFailure) {
+        if let Some(trace) = &self.diagnostics {
+            trace.emit(DiagnosticEvent::Duck {
+                ordinal: self.started.load(Ordering::SeqCst) + 1,
+                outcome: None,
+                failure: Some(failure),
+                duration_ms: None,
+                session_id: None,
+            });
+        }
+    }
+
     /// Ends a call that outlives its window or its primary.
     async fn watch(&self, call_end: Instant) -> DuckFailure {
         loop {
@@ -363,10 +394,17 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         call: &mut DuckCall,
     ) -> Result<Verdict, DuckFailure> {
         let setup = &self.engine.setup;
+        let diagnostics = self
+            .diagnostics
+            .as_ref()
+            .map(|trace| trace.duck(call.ordinal, &setup.selection.agent.model));
+        if let Some(trace) = &diagnostics {
+            trace.runtime(self.engine.version.clone());
+        }
         let names = setup.prep.tools.clone();
         let reads = Arc::new(
             ReadTools::new(
-                None,
+                diagnostics.clone(),
                 self.context.clone(),
                 self.github.clone(),
                 self.repository_name.clone(),
@@ -378,7 +416,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         let exits = Arc::new(ExitTools::new(
             vec![Exit::SubmitVerdict],
             Arc::new(|_: &ExitCall| Ok(())),
-            None,
+            diagnostics.clone(),
         ));
         let create = self.engine.client.create_session(config_with(
             &setup.selection,
@@ -395,15 +433,39 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             failure = self.watch(call_end) => return Err(failure),
         };
         call.session_id = Some(session.id().to_string());
+        if let Some(trace) = &diagnostics {
+            trace.session(session.id().to_string());
+            trace.emit(DiagnosticEvent::EvidenceUnavailable {
+                runtime_truncation: true,
+                runtime_stop_reason: true,
+                inactivity_watchdog: true,
+                connectivity_transitions: true,
+            });
+        }
         let result = tokio::select! {
             biased;
-            result = self.converse(&session, packet_text, &names, &reads, &exits) => result,
+            result = self.converse(&session, packet_text, &names, &reads, &exits, diagnostics.as_ref()) => result,
             failure = self.watch(call_end) => Err(failure),
         };
-        if result.is_err() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), session.abort()).await;
+        let abort = if result.is_err() {
+            match tokio::time::timeout(Duration::from_secs(2), session.abort()).await {
+                Ok(Ok(_)) => crate::storage::diagnostics::Outcome::Success,
+                _ => crate::storage::diagnostics::Outcome::Failed,
+            }
+        } else {
+            crate::storage::diagnostics::Outcome::NotRequired
+        };
+        let shutdown =
+            match tokio::time::timeout(Duration::from_secs(2), session.disconnect()).await {
+                Ok(Ok(_)) => crate::storage::diagnostics::Outcome::Success,
+                _ => crate::storage::diagnostics::Outcome::Failed,
+            };
+        if let Some(trace) = &diagnostics {
+            trace.emit(DiagnosticEvent::DuckTeardown {
+                abort,
+                disconnect: shutdown,
+            });
         }
-        let _ = tokio::time::timeout(Duration::from_secs(2), session.disconnect()).await;
         let read = reads.read.lock().map(|r| r.len()).unwrap_or(0);
         call.coverage = Some(ReadCoverage {
             read: u32::try_from(read).unwrap_or(u32::MAX),
@@ -436,6 +498,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         names: &[String],
         reads: &ReadTools<T>,
         exits: &ExitTools,
+        diagnostics: Option<&Arc<crate::review::diagnostics::Trace>>,
     ) -> Result<((u64, u64, u64), Verdict), DuckFailure> {
         let setup = &self.engine.setup;
         verified_intelligence(session, &setup.selection)
@@ -451,7 +514,15 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             .map_err(|error| classify(&Failure::sdk(error)))?;
         let mut events = Events::default();
         loop {
-            let event = subscription.recv().await.map_err(|_| DuckFailure::Failed)?;
+            let event = subscription.recv().await.map_err(|_| {
+                if let Some(trace) = diagnostics {
+                    trace.emit(DiagnosticEvent::EventStreamLost { lost_events: None });
+                }
+                DuckFailure::Failed
+            })?;
+            if let Some(trace) = diagnostics {
+                trace.event(&event.event_type, &event.data);
+            }
             if let Some(progress) = &self.progress {
                 progress.event(&event.event_type, &event.data);
             }

@@ -79,10 +79,12 @@ impl<T: Transport> GithubClient<T> {
         self,
         guard: Arc<dyn Fn() -> Result<(), ConnectionError> + Send + Sync>,
     ) -> GithubClient<GuardedTransport<T>> {
-        GithubClient::new(GuardedTransport {
+        let mut client = GithubClient::new(GuardedTransport {
             transport: self.transport,
             guard,
-        })
+        });
+        client.publication_diagnostics = self.publication_diagnostics;
+        client
     }
 
     pub fn review_pull(

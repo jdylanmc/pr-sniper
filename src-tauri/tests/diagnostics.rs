@@ -69,7 +69,7 @@ fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
         .unwrap();
     fixture
         .store()
-        .record_attempt(attempt_record("replacement", Event::Started))
+        .record_attempt_start(attempt_record("replacement", Event::Started))
         .unwrap();
     let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
     assert_eq!(
@@ -81,6 +81,14 @@ fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
     assert_eq!(records[1]["attempt"]["event"]["failure"], "provider");
     assert_eq!(records[2]["attempt"]["attempt"]["id"], "replacement");
     assert_eq!(
+        records[3]["attempt"]["event"]["previous_attempt_id"],
+        "first"
+    );
+    assert_eq!(
+        records[3]["attempt"]["event"]["previous_operation_id"],
+        "same-operation"
+    );
+    assert_eq!(
         records[0]["attempt"]["attempt"]["operation_id"],
         records[2]["attempt"]["attempt"]["operation_id"]
     );
@@ -88,6 +96,83 @@ fn failures_replacements_and_host_retry_decisions_survive_fresh_readback() {
         records[0]["attempt"]["attempt"]["session_id"],
         records[2]["attempt"]["attempt"]["session_id"]
     );
+}
+
+#[test]
+fn replacement_links_cross_manual_operation_but_not_unrelated_work() {
+    let fixture = Fixture::new();
+    fixture
+        .store()
+        .record_attempt(failure_record("original"))
+        .unwrap();
+    let mut unrelated = failure_record("unrelated");
+    unrelated.attempt.work_id = "different-work".into();
+    fixture.store().record_attempt(unrelated).unwrap();
+    let mut next = attempt_record("manual", Event::Started);
+    next.attempt.operation_id = "new-operation".into();
+    fixture.store().record_attempt_start(next).unwrap();
+    let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
+    assert_eq!(
+        records[3]["attempt"]["event"]["previous_attempt_id"],
+        "original"
+    );
+    assert_eq!(
+        records[3]["attempt"]["event"]["previous_operation_id"],
+        "same-operation"
+    );
+    assert_eq!(
+        records[3]["attempt"]["attempt"]["operation_id"],
+        "new-operation"
+    );
+}
+
+#[test]
+fn nested_duck_evidence_is_bounded_redacted_and_cannot_nest_again() {
+    let fixture = Fixture::new();
+    let nested = |event| Event::DuckEvent {
+        ordinal: 1,
+        session_id: Some("ghp_secret".into()),
+        model: "duck-model".into(),
+        runtime_version: Some("fixture".into()),
+        event: Box::new(event),
+    };
+    fixture
+        .store()
+        .record_attempt(attempt_record(
+            "primary",
+            nested(Event::ToolStarted {
+                call: 1,
+                runtime_call_id: Some("Bearer secret".into()),
+                tool: ToolName::ReadChanges,
+                requested: Paths::new((0..1000).map(|i| format!("path-{i}"))),
+                unknown_paths: 0,
+                side: None,
+                query_bytes: None,
+            }),
+        ))
+        .unwrap();
+    fixture
+        .store()
+        .record_attempt(attempt_record("primary", nested(nested(Event::Started))))
+        .unwrap();
+    let records = serde_json::to_value(fixture.store().diagnostics().unwrap()).unwrap();
+    assert_eq!(
+        records[0]["attempt"]["event"]["event"]["requested"]["paths"]
+            .as_array()
+            .unwrap()
+            .len(),
+        128
+    );
+    assert_eq!(
+        records[0]["attempt"]["event"]["event"]["requested"]["omitted"],
+        872
+    );
+    assert_eq!(
+        records[1]["attempt"]["event"]["event"]["kind"],
+        "evidence_unavailable"
+    );
+    let export = records.to_string();
+    assert!(!export.contains("ghp_secret") && !export.contains("Bearer secret"));
 }
 
 #[test]
@@ -122,12 +207,16 @@ fn lifecycle_and_publication_seams_store_only_typed_decisions() {
             mismatch: Some(VerificationField::Body),
             ownership: Outcome::Success,
             failure: None,
+            duration_ms: None,
+            uncertain: None,
         },
         Event::Publication {
             stage: PublicationStage::Ownership,
             mismatch: Some(VerificationField::Author),
             ownership: Outcome::Failed,
             failure: Some(FailureKind::Provider),
+            duration_ms: None,
+            uncertain: None,
         },
     ] {
         fixture

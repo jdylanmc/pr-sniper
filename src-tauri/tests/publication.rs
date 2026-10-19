@@ -326,6 +326,7 @@ struct Fixture {
     fail_inspection: Option<usize>,
     pause_after_mutation: Option<Mutation>,
     prepare_failure: Option<Failure>,
+    diagnostics: bool,
 }
 
 impl Fixture {
@@ -350,10 +351,53 @@ impl Fixture {
             fail_inspection: None,
             pause_after_mutation: None,
             prepare_failure: None,
+            diagnostics: false,
         }
     }
     fn run(&mut self, run: &mut Publication) -> Result<(), Failure> {
+        if self.diagnostics && self.store.diagnostics().unwrap().is_empty() {
+            use pr_sniper_lib::storage::diagnostics::{Attempt, Event, Record};
+            self.store
+                .record_attempt(Record {
+                    attempt: Attempt {
+                        id: "fixture-review-attempt".into(),
+                        operation_id: run.review.operation.id.clone(),
+                        work_id: run.review.key.clone(),
+                        number: run.review.job.number,
+                        head: run.review.job.head_sha.clone(),
+                        model: run.review.selection.agent.model.clone(),
+                        started_at_ms: None,
+                        session_id: None,
+                        runtime_version: None,
+                    },
+                    sequence: None,
+                    elapsed_ms: None,
+                    event: Event::Started,
+                })
+                .unwrap();
+        }
         publication::execute(self, run)
+    }
+    fn client(&self, run: &Publication) -> GithubClient<Wire> {
+        if !self.diagnostics {
+            return GithubClient::new(self.wire.clone());
+        }
+        let root = self._root.path().to_path_buf();
+        let operation_id = run.review.operation.id.clone();
+        GithubClient::new(self.wire.clone()).with_publication_diagnostics(Arc::new(move |event| {
+            Store::new(root.clone())
+                .record_attempt_decision(&operation_id, event)
+                .unwrap();
+        }))
+    }
+    fn diagnostic_events(&self) -> Vec<Value> {
+        Store::new(self._root.path().into())
+            .diagnostics()
+            .unwrap()
+            .into_iter()
+            .filter_map(|record| record.attempt)
+            .map(|record| serde_json::to_value(record.event).unwrap())
+            .collect()
     }
     fn visible(&self) -> usize {
         self.wire
@@ -381,6 +425,13 @@ impl Fixture {
 }
 
 impl Environment for Fixture {
+    fn diagnostic(&self, run: &Publication, event: pr_sniper_lib::storage::diagnostics::Event) {
+        if self.diagnostics {
+            self.store
+                .record_attempt_decision(&run.review.operation.id, event)
+                .unwrap();
+        }
+    }
     fn paused(&self) -> Result<bool, Failure> {
         self.store
             .load_automation()
@@ -456,10 +507,10 @@ impl Environment for Fixture {
         Batch::prepare(run, &context(self.pull.clone()))
     }
     fn reconcile(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
-        GithubClient::new(self.wire.clone()).reconcile_publication(run)
+        self.client(run).reconcile_publication(run)
     }
     fn divergent(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
-        GithubClient::new(self.wire.clone()).divergent_publication(run)
+        self.client(run).divergent_publication(run)
     }
     fn mutate(&mut self, run: &Publication, mutation: Mutation) -> Result<Receipt, WriteFailure> {
         pr_sniper_lib::capacity::publication_gate(&self.store).map_err(|error| WriteFailure {
@@ -475,7 +526,7 @@ impl Environment for Fixture {
                 });
             }
         }
-        let result = GithubClient::new(self.wire.clone()).mutate_publication(run, mutation);
+        let result = self.client(run).mutate_publication(run, mutation);
         if self.pause_after_mutation == Some(mutation) {
             self.store
                 .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
@@ -495,6 +546,7 @@ impl Environment for Fixture {
 #[test]
 fn pausing_during_a_lost_submit_keeps_the_receipt_and_never_sends_a_replacement() {
     let mut fixture = Fixture::new();
+    fixture.diagnostics = true;
     fixture.pause_after_mutation = Some(Mutation::Submit);
     fixture.wire.0.lock().unwrap().fault = Some((Mutation::Submit, Fault::After));
     let mut run = publication();
@@ -503,6 +555,13 @@ fn pausing_during_a_lost_submit_keeps_the_receipt_and_never_sends_a_replacement(
     assert_eq!(fixture.visible(), 1);
     assert_eq!(fixture.writes(), 2);
     assert!(run.uncertain);
+    assert!(fixture
+        .diagnostic_events()
+        .iter()
+        .any(|event| event["stage"] == "submit"
+            && event["uncertain"] == true
+            && event["failure"] == "timeout"
+            && event["duration_ms"].is_u64()));
     let id = run.id.clone();
     fixture
         .store
@@ -518,6 +577,10 @@ fn pausing_during_a_lost_submit_keeps_the_receipt_and_never_sends_a_replacement(
     );
     assert_eq!(fixture.writes(), 2);
     assert_eq!(fixture.visible(), 1);
+    assert!(fixture
+        .diagnostic_events()
+        .iter()
+        .any(|event| event["stage"] == "verify_submitted" && event["ownership"] == "success"));
 }
 
 #[test]
@@ -1064,6 +1127,97 @@ fn remote_batch_tampering_or_foreign_pending_review_never_gets_submitted() {
         }
         assert_eq!(fixture.visible(), 0);
     }
+}
+
+#[test]
+fn publication_exports_verified_ownership_exact_mismatches_and_typed_recovery() {
+    for (tamper, field, ownership) in [
+        ("comment", "body", "success"),
+        ("position", "position", "success"),
+        ("body", "body", "failed"),
+        ("account", "author", "failed"),
+        ("commit", "commit", "failed"),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.diagnostics = true;
+        fixture.pause_after_mutation = Some(Mutation::Create);
+        let mut run = publication();
+        fixture.run(&mut run).unwrap();
+        {
+            let mut server = fixture.wire.0.lock().unwrap();
+            match tamper {
+                "comment" => {
+                    server.comments.get_mut(&1).unwrap()[0]["body"] =
+                        json!("PRIVATE_COMMENT ghp_secret")
+                }
+                "position" => server.comments.get_mut(&1).unwrap()[0]["position"] = json!(999),
+                "body" => server.reviews[0]["body"] = json!("PRIVATE_BODY"),
+                "account" => server.reviews[0]["user"]["id"] = json!(99),
+                "commit" => server.reviews[0]["commit_id"] = json!("c".repeat(40)),
+                _ => unreachable!(),
+            }
+        }
+        let _ = fixture.client(&run).reconcile_publication(&run);
+        let events = fixture.diagnostic_events();
+        assert!(events
+            .iter()
+            .any(|e| e["stage"] == "create" && e["ownership"] == "success"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e["mismatch"] == field && e["ownership"] == ownership),
+            "{events:?}"
+        );
+        let export = serde_json::to_string(&fixture.store.diagnostics().unwrap()).unwrap();
+        for private in [
+            "PRIVATE_COMMENT",
+            "PRIVATE_BODY",
+            "ghp_secret",
+            "A defect.",
+            "Review correctness.",
+        ] {
+            assert!(!export.contains(private));
+        }
+        assert_eq!(fixture.writes(), 1);
+    }
+}
+
+#[test]
+fn publication_provider_rate_limit_exports_typed_wait_then_confirmed_submit() {
+    let mut fixture = Fixture::new();
+    fixture.diagnostics = true;
+    fixture.wire.0.lock().unwrap().fault = Some((Mutation::Create, Fault::RateLimit));
+    let mut run = publication();
+    assert!(fixture.run(&mut run).unwrap_err().rate_limited());
+    let events = fixture.diagnostic_events();
+    assert!(events.iter().any(|event| event["stage"] == "create"
+        && event["uncertain"] == false
+        && event["failure"] == "rate_limited"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e["kind"] == "publication_provider_error"
+                && e["error"]["rate_limited_after"] == 17),
+        "{events:?}"
+    );
+    assert!(events.iter().any(|e| e["kind"] == "publication_retry"
+        && e["decision"] == "scheduled"
+        && e["failure"].is_null()
+        && e["attempt_count"] == 0
+        && e["next_attempt_at"] == 117));
+    run = fixture.resume();
+    fixture.run(&mut run).unwrap();
+    let events = fixture.diagnostic_events();
+    assert!(events
+        .iter()
+        .any(|e| e["stage"] == "verify_pending" && e["ownership"] == "success"));
+    assert!(events
+        .iter()
+        .any(|e| e["stage"] == "submit" && e["ownership"] == "success"));
+    assert_eq!(run.phase, Phase::Published);
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("private provider detail"));
 }
 
 #[test]

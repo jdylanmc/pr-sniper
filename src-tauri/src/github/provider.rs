@@ -98,11 +98,23 @@ pub enum CommentCapability {
 
 pub struct GithubClient<T: Transport> {
     pub(super) transport: T,
+    pub(super) publication_diagnostics: Option<PublicationDiagnostics>,
 }
+
+pub type PublicationDiagnostics =
+    std::sync::Arc<dyn Fn(crate::storage::diagnostics::Event) + Send + Sync>;
 
 impl<T: Transport> GithubClient<T> {
     pub fn new(transport: T) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            publication_diagnostics: None,
+        }
+    }
+
+    pub fn with_publication_diagnostics(mut self, sink: PublicationDiagnostics) -> Self {
+        self.publication_diagnostics = Some(sink);
+        self
     }
 
     pub fn resolve_person(&self, login: &str) -> Result<Identity, ConnectionError> {
@@ -433,7 +445,18 @@ impl<T: Transport> GithubClient<T> {
     }
 
     pub(super) fn read(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
-        parse_response(self.transport.get(path)?)
+        self.transport
+            .get(path)
+            .and_then(parse_response)
+            .inspect_err(|error| {
+                self.publication_provider_error(*error);
+            })
+    }
+
+    pub(super) fn publication_provider_error(&self, error: ConnectionError) {
+        if let Some(sink) = &self.publication_diagnostics {
+            sink(crate::storage::diagnostics::Event::PublicationProviderError { error });
+        }
     }
 
     fn read_repository(&self, path: &str) -> Result<(Value, Response), ConnectionError> {

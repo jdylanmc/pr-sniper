@@ -402,7 +402,11 @@ impl Native {
             return Err(Failure::permanent("The acting GitHub account changed."));
         }
         self.connection_gate(run)?;
-        Ok(client)
+        let app = self.app.clone();
+        let operation_id = run.review.operation.id.clone();
+        Ok(client.with_publication_diagnostics(Arc::new(move |event| {
+            record_diagnostic(&app, &operation_id, event);
+        })))
     }
 
     fn connection_gate(&self, run: &Publication) -> Result<(), Failure> {
@@ -491,7 +495,26 @@ impl Native {
     }
 }
 
+fn record_diagnostic(
+    app: &tauri::AppHandle,
+    operation_id: &str,
+    event: crate::storage::diagnostics::Event,
+) {
+    let result = app
+        .state::<Host>()
+        .store
+        .lock()
+        .map_err(|_| "Publication diagnostic storage unavailable.".to_string())
+        .and_then(|store| store.record_attempt_decision(operation_id, event));
+    if let Err(error) = result {
+        crate::report(app, error);
+    }
+}
+
 impl Environment for Native {
+    fn diagnostic(&self, run: &Publication, event: crate::storage::diagnostics::Event) {
+        record_diagnostic(&self.app, &run.review.operation.id, event);
+    }
     fn paused(&self) -> Result<bool, Failure> {
         self.app
             .state::<Host>()
@@ -505,6 +528,7 @@ impl Environment for Native {
             .map(|s| s.paused)
             .map_err(|error| self.failures.infrastructure_error(error))
     }
+
     fn now(&self) -> Result<i64, Failure> {
         now_seconds().map_err(|error| self.failures.infrastructure_error(error))
     }

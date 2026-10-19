@@ -100,6 +100,41 @@ for (const surface of ["panel", "standalone"]) {
       finished("attempt-153", null, true),
       finished("attempt-old", "incomplete_coverage", false),
     ];
+    for (const event of [
+      {
+        kind: "publication",
+        stage: "verify_pending",
+        ownership: "success",
+        mismatch: "body",
+        failure: "permanent",
+        duration_ms: 321,
+      },
+      {
+        kind: "publication_provider_error",
+        error: { rate_limited_after: 17 },
+      },
+      {
+        kind: "replacement",
+        previous_attempt_id: "attempt-old",
+        previous_operation_id: "previous-operation",
+      },
+      {
+        kind: "duck_event",
+        ordinal: 1,
+        model: "duck-model",
+        session_id: "ghp_private-session",
+        runtime_version: "fixture",
+        event: {
+          kind: "duck_teardown",
+          abort: "success",
+          disconnect: "failed",
+        },
+      },
+    ]) {
+      const record = finished("attempt-153", null, true);
+      record.attempt.event = event;
+      records.push(record);
+    }
     await writeFile(
       join(dataRoot, "state", "attempts.jsonl"),
       records.map((record) => JSON.stringify(record)).join("\n") + "\n",
@@ -119,6 +154,16 @@ for (const surface of ["panel", "standalone"]) {
     expect(log).toContain("not_exposed");
     expect(log).toContain("1234");
     expect(log).toContain(paths.paths[0]);
+    for (const evidence of [
+      "verify_pending",
+      '"mismatch": "body"',
+      "rate_limited_after",
+      "previous-operation",
+      "duck_teardown",
+      '"disconnect": "failed"',
+    ])
+      expect(log).toContain(evidence);
+    expect(log).not.toContain("ghp_private-session");
     expect(log).not.toContain("No events");
     await expect(page.locator("img[src=x]")).toHaveCount(0);
   });
