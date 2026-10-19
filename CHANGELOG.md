@@ -14,6 +14,7 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Stale Queue entries can be dismissed locally across refreshes and restarts.
   Later PR changes remain eligible; history and provider-effect evidence stay
   intact. Entries with in-flight or uncertain work cannot be dismissed.
+- Queue reload failures retain paired screenshots, renderer/build context and bounded WebKit CI artifacts for diagnosis.
 
 ## 0.4.1 - 2026-10-18
 
