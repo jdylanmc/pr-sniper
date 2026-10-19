@@ -1,5 +1,12 @@
 # Settings behavioral tests
 
+`queue-detail.spec.mjs` Retry routing fixtures simulate only their expected native
+recovery commands (`retry_monitoring_operation`, plus `start_review` when needed).
+All other commands use the isolated Store bridge. Assertions drain Store IPC with
+`__settingsIdle()` before checking settled errors and routing counts; these
+fixtures do not execute native recovery or provider writes. The adjacent error
+case deliberately rejects recovery and verifies the error toast.
+
 `repository-account-inference.spec.mjs` exercises the shared URL intake with
 zero, sole and multiple compatible Git Repository connections. Sole-account
 inference is compact; ambiguous selection uses a named native select with
