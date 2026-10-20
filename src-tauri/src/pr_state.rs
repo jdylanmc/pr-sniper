@@ -1,12 +1,78 @@
 //! Persisted PR state (`pr-state.json`): the heartbeat baseline per PR.
 //!
-//! The heartbeat only compares hashes. A different hash records a `pending`
+//! The heartbeat compares hashes, suppressing pending CI progress during an external wait.
+//! A different actionable state records a `pending`
 //! state and bumps `state_seq`; a successful exit consumes it into a new
 //! baseline. There is one record per PR, so a state that moves while queued
 //! changes nothing but `pending`.
 
 use crate::{github::state::NormalizedSnapshot, retention::Binding, storage::Store};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalWait {
+    pub reason: crate::exits::WaitReason,
+    pub state_seq: u64,
+    pub assignment_id: String,
+    pub agent_id: String,
+    pub snapshot: NormalizedSnapshot,
+}
+
+impl ExternalWait {
+    pub fn pending(&self, next: &NormalizedSnapshot) -> bool {
+        use crate::exits::WaitReason;
+        if next.lifecycle != "open" && next.lifecycle != "draft" {
+            return false;
+        }
+        let pending = match self.reason {
+            WaitReason::Ci => {
+                next.checks.iter().any(|(_, status, _)| status == "pending")
+                    && !next.checks.iter().any(|(_, _, conclusion)| {
+                        matches!(
+                            conclusion.as_str(),
+                            "failure"
+                                | "error"
+                                | "cancelled"
+                                | "timed_out"
+                                | "action_required"
+                                | "startup_failure"
+                        )
+                    })
+            }
+            WaitReason::Draft => next.lifecycle == "draft",
+            WaitReason::RequiredReviews => !matches!(
+                next.review_decision.as_deref(),
+                Some("APPROVED" | "CHANGES_REQUESTED")
+            ),
+        };
+        let mut before = self.snapshot.clone();
+        let mut after = next.clone();
+        if self.reason == WaitReason::Ci {
+            // Check progress and fan-out are observation, not another AI review.
+            before.checks.clear();
+            after.checks.clear();
+            before.check_total = 0;
+            after.check_total = 0;
+        }
+        pending && before == after
+    }
+
+    pub fn configured(&self, repository: &crate::storage::Repository) -> bool {
+        use crate::exits::WaitReason;
+        repository.assignments.iter().any(|a| {
+            let authority = repository.assignment_authority(a);
+            let tools = repository.assignment_tools(a);
+            a.id == self.assignment_id
+                && a.agent_id == self.agent_id
+                && authority.primary
+                && tools.iter().any(|t| t == "wait")
+                && ((authority.merge && tools.iter().any(|t| t == "approve_and_merge"))
+                    || (self.reason == WaitReason::Draft
+                        && authority.approve
+                        && tools.iter().any(|t| t == "approve_pull_request")))
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
@@ -44,6 +110,8 @@ pub struct PrStateRecord {
     pub local_summary: Option<String>,
     #[serde(default)]
     pub exit: Option<ConsumedExit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_wait: Option<ExternalWait>,
     /// When a state of this PR was last consumed (unix seconds); kept across heads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_at: Option<i64>,
@@ -105,6 +173,7 @@ impl PrStates {
                     error_count: 0,
                     local_summary: None,
                     exit: None,
+                    external_wait: None,
                     consumed_at: None,
                 });
                 self.records.len() - 1
@@ -137,6 +206,12 @@ impl PrStates {
         let Some(hash) = hash else {
             return Change::None;
         };
+        if let Some(wait) = &record.external_wait {
+            if observation.snapshot.is_some_and(|s| wait.pending(s)) {
+                return Change::None;
+            }
+            return Self::bump(record, Some(hash), observation.now);
+        }
         if record.baseline_hash.as_deref() == Some(&hash) {
             record.pending = None;
             return Change::None;
@@ -159,6 +234,9 @@ impl PrStates {
     }
 
     fn bump(record: &mut PrStateRecord, hash: Option<String>, now: i64) -> Change {
+        record.external_wait = None;
+        record.exit = None;
+        record.local_summary = None;
         record.state_seq += 1;
         record.pending = Some(Pending {
             seq: record.state_seq,
@@ -180,6 +258,7 @@ impl PrStates {
             return Consumed::Moved;
         }
         record.baseline_hash = Some(new_baseline.into());
+        record.external_wait = None;
         record.pending = None;
         record.error_count = 0;
         record.exit = Some(ConsumedExit {
@@ -187,6 +266,37 @@ impl PrStates {
             baseline_hash: new_baseline.into(),
         });
         Consumed::Consumed
+    }
+
+    pub fn wait(&mut self, binding: &Binding, baseline: &str, wait: ExternalWait) -> Consumed {
+        let Some(record) = self.records.iter_mut().find(|r| &r.binding == binding) else {
+            return Consumed::Moved;
+        };
+        if record.state_seq != wait.state_seq
+            || wait.snapshot.hash() != baseline
+            || !wait.pending(&wait.snapshot)
+        {
+            return Consumed::Moved;
+        }
+        record.baseline_hash = Some(baseline.into());
+        record.hash = Some(baseline.into());
+        record.snapshot = Some(wait.snapshot.clone());
+        record.pending = None;
+        record.error_count = 0;
+        record.local_summary = None;
+        record.exit = None; // Waiting never grants action clearance.
+        record.external_wait = Some(wait);
+        Consumed::Consumed
+    }
+
+    pub fn invalidate_wait(&mut self, binding: &Binding, now: i64) {
+        if let Some(record) = self.records.iter_mut().find(|r| &r.binding == binding) {
+            if record.external_wait.is_some() {
+                // No baseline equality shortcut may resurrect obsolete clearance.
+                record.baseline_hash = None;
+                Self::bump(record, record.hash.clone(), now);
+            }
+        }
     }
 
     /// The run result is discarded. Returns the new error count; the caller

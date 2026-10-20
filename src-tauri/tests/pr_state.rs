@@ -532,6 +532,7 @@ fn posted_exit(store: &Store, monitor: &mut Monitor) -> (QueueJob, ReviewRun) {
         exits_offered: vec![],
         exits_denied: vec![],
         state_hash: Some(snapshot("a").normalize().hash()),
+        wait_snapshot: None,
         state_marks: Some(pr_sniper_lib::github::state::StateMarks::of(
             &snapshot("a"),
             "acting-account",

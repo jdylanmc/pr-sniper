@@ -35,6 +35,7 @@ pub(super) fn exit_run(store: &Store, exit: ExitOutcome, include_self: bool) {
             exits_denied: vec![],
             state_hash: Some("hash-read".into()),
             state_marks: None,
+            wait_snapshot: None,
         });
         run.result.as_mut().unwrap().output = ReviewOutput::from_exit(exit.clone(), None);
     }

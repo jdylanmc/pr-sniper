@@ -94,11 +94,12 @@ const human = () =>
   );
 const reviewed = () =>
   state.reviews.filter(
-    (review) => !["queued", "running"].includes(review.state),
+    (review) => !["queued", "running", "waiting_on_ci"].includes(review.state),
   );
 const statusNames = {
   queued: "Queued",
   running: "Reviewing",
+  waiting_on_ci: "Waiting on CI",
   human: "Ready for you",
   question: "Needs your input",
   approved: "Approved (demo)",
@@ -548,17 +549,19 @@ function workRow(review, kind) {
     ? Demo.blockReason(state, review)
     : "";
   const display =
-    kind === "reviewed"
-      ? statusNames[review.state]
-      : review.state === "running"
-        ? "Running"
-        : review.state === "failed"
-          ? "Failed"
-          : review.state === "stale"
-            ? "Stale"
-            : blocked
-              ? "Blocked"
-              : "Queued";
+    review.state === "waiting_on_ci"
+      ? "Waiting on CI"
+      : kind === "reviewed"
+        ? statusNames[review.state]
+        : review.state === "running"
+          ? "Running"
+          : review.state === "failed"
+            ? "Failed"
+            : review.state === "stale"
+              ? "Stale"
+              : blocked
+                ? "Blocked"
+                : "Queued";
   const symbol =
     kind === "reviewed"
       ? "reviewed"
@@ -621,7 +624,11 @@ function queuePage() {
 }
 
 function runningPage() {
-  const rows = [...running(), ...queued()];
+  const rows = [
+    ...running(),
+    ...queued(),
+    ...state.reviews.filter((review) => review.state === "waiting_on_ci"),
+  ];
   return `<div class="page-scroll" data-scroll="running">${
     rows.length
       ? `<ol class="work-list" aria-label="Agent work queue">${rows.map((review) => workRow(review, "running")).join("")}</ol>`

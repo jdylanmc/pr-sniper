@@ -478,7 +478,16 @@
       },
       { who: "PR author", body: "I will update the retry state." },
     ];
-    state.reviews.push(...running, ...human, ...history);
+    const waiting = packet(
+      state,
+      "Merge after checks complete",
+      0,
+      405,
+      "waiting_on_ci",
+    );
+    waiting.run = runSnapshot(state, waiting);
+    waiting.attempt = 1;
+    state.reviews.push(...running, waiting, ...human, ...history);
     return state;
   }
 

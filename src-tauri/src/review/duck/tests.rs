@@ -180,6 +180,7 @@ fn logged(failure: Option<DuckFailure>) -> DuckCall {
             exits_denied: vec![],
             state_hash: None,
             state_marks: None,
+            wait_snapshot: None,
         }),
         session_id: None,
         input_tokens: 0,

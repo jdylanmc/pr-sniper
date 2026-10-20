@@ -397,7 +397,7 @@ pub struct Assignment {
 }
 
 /// Role default tool set: investigation tools, the granted exits, then `panic_exit`.
-/// Primary: `ready_for_human` always, `leave_comments`/`approve_*` per grant.
+/// Primary: `ready_for_human` and `wait`, `leave_comments`/`approve_*` per grant.
 /// Non-primary: `submit_report`. Mirrored by `defaultTools` in `src/settings.ts`.
 pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
     let mut tools: Vec<&str> = crate::review::tools::INVESTIGATION.to_vec();
@@ -406,6 +406,7 @@ pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
             tools.push("leave_comments");
         }
         tools.push("ready_for_human");
+        tools.push("wait");
         if authority.approve {
             tools.push("approve_pull_request");
         }
@@ -420,7 +421,7 @@ pub fn default_tools(authority: &AssignmentAuthority) -> Vec<String> {
 }
 
 /// Investigation tools, `rubber_duck`, then exits. Mirrored by `PACKET_TOOLS` in `src/policy.ts`.
-pub const PACKET_TOOLS: [&str; 14] = [
+pub const PACKET_TOOLS: [&str; 15] = [
     "read_changes",
     "read_source",
     "get_thread",
@@ -431,6 +432,7 @@ pub const PACKET_TOOLS: [&str; 14] = [
     crate::review::duck::TOOL,
     "leave_comments",
     "ready_for_human",
+    "wait",
     "approve_pull_request",
     "approve_and_merge",
     "panic_exit",
@@ -1122,7 +1124,11 @@ fn tool_issues(assignment: &Assignment, primary: bool, tools: &[String]) -> Vec<
             Some("is duplicated")
         } else if matches!(
             id,
-            "leave_comments" | "approve_pull_request" | "approve_and_merge" | "ready_for_human"
+            "leave_comments"
+                | "approve_pull_request"
+                | "approve_and_merge"
+                | "ready_for_human"
+                | "wait"
         ) && !primary
         {
             Some("is primary-only")

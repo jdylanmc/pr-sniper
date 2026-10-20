@@ -169,6 +169,7 @@ fn a_new_run_is_packet_mode_even_without_explicit_tools() {
             "list_tree",
             "search_code",
             "ready_for_human",
+            "wait",
             "approve_pull_request",
             "approve_and_merge",
             "panic_exit"
@@ -194,13 +195,14 @@ fn role_defaults_follow_grants_and_teammates_report() {
     let exits = |tools: Vec<String>| tools[crate::review::tools::INVESTIGATION.len()..].to_vec();
     assert_eq!(
         exits(default_tools(&authority(true, false, false, false))),
-        ["ready_for_human", "panic_exit"]
+        ["ready_for_human", "wait", "panic_exit"]
     );
     assert_eq!(
         exits(default_tools(&authority(true, true, true, false))),
         [
             "leave_comments",
             "ready_for_human",
+            "wait",
             "approve_pull_request",
             "panic_exit"
         ]

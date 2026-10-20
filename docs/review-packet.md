@@ -11,7 +11,7 @@ Unit of work = a **PR state**. Packet is built when the queue item is consumed. 
 3. **Consume.** Queue runs N agents at a time. When a PR's turn comes up, it refreshes itself with fresh state. No drop and re-queue for a state that moved while queued: at worst nothing changed; changes are picked up automatically. No review details sit in the queue.
 4. **Packet.** Host builds the packet from that latest state, records its `state_id`, then spawns a fresh agent with fresh context.
 5. **Exit.** Agent reviews the packet and calls exactly one exit. Host re-checks gates, writes, stamps comments with the revision.
-6. **Consumed.** A successful exit of the primary consumes the state. Post-exit state becomes the baseline. Consumed state is never reviewed again.
+6. **Consumed.** A successful exit of the primary consumes the state. Post-exit state becomes the baseline. `wait` instead persists an external prerequisite without action clearance; relevant changes queue fresh work.
 
 Merged or closed PR: move to Reviewed, no more action.
 
@@ -67,7 +67,7 @@ Rules, minimum:
 4. Comment only real defects, on the line. No comment on what you read, no praise, no summary.
 5. Threads are stable finding identities, including resolved/outdated threads. Classify every own finding, update its original thread, and resolve only with current-code evidence. A mistaken resolution needs one explicit correction reply, never a replacement root. Reuse confirmed corrections on later assessments; uncertain receipts never authorize replacement replies.
 6. CI red or merge conflicts: do not approve. `leave_comments` with the fix, unless an open thread already says it. With `read_check_log` granted: "CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it."
-7. Review clear, no pending findings: use `clean_review_exit` from Exits. Prefer the offered merge, then approval, then human handoff. A denied approval exit does not deny an offered merge exit.
+7. Review clear, no pending findings: use `clean_review_exit` from Exits. Prefer the offered merge, then external wait, then approval, then human handoff. A denied approval exit does not deny an offered merge exit.
 8. Unsure: `ready_for_human`. Broken: `panic_exit`.
 9. Merge conflicts or issues outside the diff: put them in `body`.
 
@@ -87,16 +87,19 @@ The agent has no shell, no `az`, no `gh`, no network, no checkout. Its hands are
 
 **Exits.** One per run. Grant-gated. Not offered when the gate already fails. Grants apply to the primary's exits only. A non-primary assignment's grants are ignored and not offered in settings.
 
-| Exit                   | Needs                                          | Does                                                                                                                                                                           |
-| ---------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `leave_comments`       | Publish Comment (new), Reply Comment (replies) | `new_comments[{path, line, side, body}]`, `body` (PR-level review body), `reply_comments[{thread, body}]`, own-thread resolutions. Posted as one batch, stamped with revision. |
-| `ready_for_human`      | none                                           | Move PR to the human's queue. No comment on the provider. Stores a local summary (ad hoc decision, owner review requested).                                                    |
-| `approve_pull_request` | Approve                                        | Approve the head with an approval comment. Idempotent.                                                                                                                         |
-| `approve_and_merge`    | & Merge                                        | Merge after review. Other author: approve first. Acting account's own PR with Include self: merge without an approval vote.                                                    |
-| `panic_exit`           | none                                           | Unrecoverable. Log it, park in Needs attention, auto-retry on the cooldown schedule.                                                                                           |
-| `submit_report`        | none (teammate only)                           | Teammate's report: array of findings `{file, line, nano, full, fix}`. `nano` <= 100 words, `full` and `fix` <= 4 KB each. Not a provider write. Stored locally. Ends the run.  |
+| Exit                   | Needs                                                 | Does                                                                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `leave_comments`       | Publish Comment (new), Reply Comment (replies)        | `new_comments[{path, line, side, body}]`, `body` (PR-level review body), `reply_comments[{thread, body}]`, own-thread resolutions. Posted as one batch, stamped with revision.                      |
+| `ready_for_human`      | none                                                  | Move PR to the human's queue. No comment on the provider. Stores a local summary (ad hoc decision, owner review requested).                                                                         |
+| `wait`                 | Primary; enabled action with an observed prerequisite | `{reason: "ci" \| "draft" \| "required_reviews"}`. Release AI capacity; persist the prerequisite; automatically requeue on the repository schedule when actionable. No provider write or clearance. |
+| `approve_pull_request` | Approve                                               | Approve the head with an approval comment. Idempotent.                                                                                                                                              |
+| `approve_and_merge`    | & Merge                                               | Merge after review. Other author: approve first. Acting account's own PR with Include self: merge without an approval vote.                                                                         |
+| `panic_exit`           | none                                                  | Unrecoverable. Log it, park in Needs attention, auto-retry on the cooldown schedule.                                                                                                                |
+| `submit_report`        | none (teammate only)                                  | Teammate's report: array of findings `{file, line, nano, full, fix}`. `nano` <= 100 words, `full` and `fix` <= 4 KB each. Not a provider write. Stored locally. Ends the run.                       |
 
-Primary only. After a clear review, `clean_review_exit` selects the first offered action: `approve_and_merge`, `approve_pull_request`, then `ready_for_human`. Uncertainty still permits human handoff; unmet gates never authorize a merge.
+Primary only. After a clear review, `clean_review_exit` selects the first offered exit: `approve_and_merge`, `wait`, `approve_pull_request`, then `ready_for_human`. Uncertainty still permits human handoff; unmet gates never authorize a merge.
+
+Schema 10: primary external wait and clean-review wait preference. Wait is in role defaults and selectable; existing explicit tool lists are never expanded. Approval-only assignments do not wait for CI or other reviews; comment-only assignments never wait for merge. Known defects, failed CI, tool/Rubber Duck failures, uncertainty and permission failures cannot become external waits. CI failure wakes fresh analysis, not approval.
 
 Agents may resolve their own threads. They cannot close others'. They may reply to disagree.
 

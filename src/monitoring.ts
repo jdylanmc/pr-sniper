@@ -135,6 +135,7 @@ export type ExitOutcome =
       resolve_own_threads: string[];
     }
   | { exit: "ready_for_human"; summary: string }
+  | { exit: "wait"; reason: "ci" | "draft" | "required_reviews" }
   | { exit: "approve"; comment: string }
   | { exit: "approve_and_merge"; comment: string }
   | { exit: "submit_report" };

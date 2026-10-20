@@ -29,6 +29,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
     let reviews = store.review_evidence()?;
+    let states = store.load_pr_states()?;
     let mut result = Vec::new();
     for job in &jobs {
         let Some(repository) = settings
@@ -74,7 +75,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 run,
                 key,
                 assignment_id: assignment.id.clone(),
-                blocked: selection.err(),
+                blocked: selection.err().or_else(|| {
+                    states
+                        .get(&crate::retention::Binding::job(job))
+                        .and_then(|r| r.external_wait.as_ref())
+                        .filter(|w| crate::exits::consume::state_seq(job) <= w.state_seq)
+                        .map(|_| "Waiting for external prerequisite".into())
+                }),
                 job: job.clone(),
             });
         }
@@ -383,7 +390,15 @@ pub(crate) fn complete(
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
                 current.operation.next_attempt_at = None;
-                current.phase = "Automated review complete; final human review required".into();
+                current.phase = if matches!(
+                    result.output.exit,
+                    Some(crate::exits::ExitOutcome::Wait { .. })
+                ) {
+                    "Waiting for external prerequisite"
+                } else {
+                    "Automated review complete; final human review required"
+                }
+                .into();
                 current.result = Some(result);
                 current.error = None;
             }
@@ -779,8 +794,13 @@ async fn execute_attempt(
         return Err(base_changed(Some(&expected_base)));
     }
     // A local-only exit writes nothing, so the state it read must still be the state.
-    if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
-        (read_hash, &result.output.exit)
+    if let (
+        Some(read_hash),
+        Some(
+            crate::exits::ExitOutcome::ReadyForHuman { .. }
+            | crate::exits::ExitOutcome::Wait { .. },
+        ),
+    ) = (read_hash, &result.output.exit)
     {
         let repo = RemoteRepository {
             id: run.job.repository_id.clone(),

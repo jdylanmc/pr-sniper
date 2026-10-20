@@ -149,6 +149,22 @@ fn primary_packet_matches_the_golden_file() {
 }
 
 #[test]
+fn primary_wait_packet_matches_the_golden_file() {
+    let mut input = input();
+    input.tools.push("wait".into());
+    input.exits.push((Exit::Wait, Offer::Offered));
+    input.pr.checks[0].status = "IN_PROGRESS".into();
+    input.pr.checks[0].conclusion.clear();
+    input.conversation.threads.clear();
+    input
+        .exits
+        .retain(|(exit, _)| *exit != Exit::ApprovePullRequest);
+    let packet = build(&input);
+    assert!(packet.text.contains("clean_review_exit: wait"));
+    golden("waiting.txt", &packet.text);
+}
+
+#[test]
 fn teammate_packet_matches_the_golden_file() {
     let mut teammate = input();
     teammate.role = Role::Teammate;

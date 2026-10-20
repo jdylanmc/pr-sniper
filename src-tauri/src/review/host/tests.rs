@@ -248,6 +248,7 @@ fn running_packet(store: &Store, template: &ReviewRun, now: i64) -> ReviewRun {
         exits_denied: vec![],
         state_hash: Some("hash-read".into()),
         state_marks: None,
+        wait_snapshot: None,
     });
     let saved = run.clone();
     store.save_reviews(&reviews).unwrap();

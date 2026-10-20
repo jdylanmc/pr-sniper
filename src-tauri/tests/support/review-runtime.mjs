@@ -20,6 +20,7 @@ const frame = (value) => {
 const respond = (id, result) => frame({ jsonrpc: "2.0", id, result });
 let sessionId;
 const exitScenarios = [
+  "exit-wait",
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
   "exit-approve", "exit-merge", "exit-approve-denied-self",
@@ -59,6 +60,7 @@ const okReport = {
 };
 const badReport = { findings: [{ ...okReport.findings[0], nano: longNano }] };
 const firstExit = {
+  "exit-wait": ["wait", { reason: "ci" }],
   "exit-ready": ["ready_for_human", { summary: "No findings." }],
   "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],

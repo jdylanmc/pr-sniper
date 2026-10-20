@@ -137,6 +137,44 @@ fn multiple_distinct_findings_on_same_head_are_not_fuzzy_dropped() {
     );
 }
 
+#[test]
+fn wait_cannot_hide_failed_or_unverifiable_duck_evidence() {
+    let c = contract(false, false);
+    let a = assessment(Disposition::Withdrawn);
+    let mut d = duck(&a);
+    for failed in [false, true] {
+        if failed {
+            d.outcome = DuckOutcome::Failure {
+                failure: super::super::duck::DuckFailure::TimedOut,
+            };
+        } else if let DuckOutcome::Verdict { verdict } = &mut d.outcome {
+            verdict.verdict = VerdictKind::Unverifiable;
+        }
+        let wait = ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        };
+        assert!(c
+            .validate(
+                &wait,
+                std::slice::from_ref(&a),
+                std::slice::from_ref(&d),
+                |_| true
+            )
+            .is_err());
+        let ready = ExitCall::ReadyForHuman {
+            summary: "Verification needs human input.".into(),
+        };
+        assert!(c
+            .validate(
+                &ready,
+                std::slice::from_ref(&a),
+                std::slice::from_ref(&d),
+                |_| true
+            )
+            .is_ok());
+    }
+}
+
 fn duck(a: &Assessment) -> DuckCall {
     serde_json::from_value(json!({
         "ordinal":1,"input":{"kind":"thread","thread_id":"existing","verify_fixed":true,
@@ -236,6 +274,12 @@ fn finding_clearance_denies_approval_of_applicable_or_unverifiable_corrected_fin
         let mut ready = ExitCall::ReadyForHuman {
             summary: "Existing concern needs human attention.".into(),
         };
+        let mut wait = ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        };
+        assert!(c
+            .prepare(&mut wait, std::slice::from_ref(&a), &[], |_| true)
+            .is_err());
         assert!(c.prepare(&mut ready, &[a], &[], |_| true).is_ok());
     }
     for disposition in [Disposition::Fixed, Disposition::Withdrawn] {

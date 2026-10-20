@@ -1,7 +1,7 @@
 //! Pure gate table: which exits the host offers for a PR state, and why not.
 //! Run at packet build (offered set + reasons in the packet) and again at exit time.
 
-use super::{Exit, ExitCall};
+use super::{Exit, ExitCall, WaitReason};
 use crate::github::actions::{Action, Observation};
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +39,9 @@ pub struct Facts {
     pub approve_blocker: Option<String>,
     /// Provider reason merge is unavailable beyond the table (queue, rules, method).
     pub merge_blocker: Option<String>,
+    /// Gates remaining after only observable external prerequisites are satisfied.
+    pub wait_approve_blocker: Option<String>,
+    pub wait_merge_blocker: Option<String>,
 }
 
 impl Default for Facts {
@@ -55,6 +58,8 @@ impl Default for Facts {
             already_approved: false,
             approve_blocker: None,
             merge_blocker: None,
+            wait_approve_blocker: None,
+            wait_merge_blocker: None,
         }
     }
 }
@@ -85,6 +90,13 @@ impl Offer {
 impl Facts {
     /// Normalize a provider observation. Unknown CI is never green.
     pub fn from_observation(o: &Observation) -> Self {
+        // Test only whether other gates forbid waiting. Action gates always use `o`.
+        let mut actionable = o.clone();
+        actionable.draft = false;
+        actionable.checks = Some("SUCCESS".into());
+        actionable.mergeable = "MERGEABLE".into();
+        actionable.merge_state = "CLEAN".into();
+        actionable.review_decision = Some("APPROVED".into());
         let mut latest = std::collections::BTreeMap::new();
         for review in &o.reviews {
             if matches!(
@@ -116,6 +128,8 @@ impl Facts {
                 .is_some_and(|r| r.state == "APPROVED" && r.head == o.head),
             approve_blocker: o.blocker(Action::Approve),
             merge_blocker: o.blocker(Action::Merge),
+            wait_approve_blocker: actionable.blocker(Action::Approve),
+            wait_merge_blocker: actionable.blocker(Action::Merge),
         }
     }
 }
@@ -172,10 +186,54 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     approve_denial(input).map_or(Offer::Offered, Offer::Denied)
                 }
                 Exit::ApproveAndMerge => merge_denial(input).map_or(Offer::Offered, Offer::Denied),
+                Exit::Wait => {
+                    if wait_reasons(input).is_empty() {
+                        Offer::Denied(
+                            "No observable external prerequisite to an enabled action.".into(),
+                        )
+                    } else {
+                        Offer::Offered
+                    }
+                }
             };
             (exit, offer)
         })
         .collect()
+}
+
+pub fn wait_reasons(input: &GateInput) -> Vec<WaitReason> {
+    let f = &input.facts;
+    if !input.primary
+        || !f.open
+        || f.conflicts
+        || f.ci == Ci::Red
+        || f.changes_requested
+        || f.unresolved_threads
+    {
+        return vec![];
+    }
+    let merge = input.grants.merge
+        && input.tools.iter().any(|t| t == Exit::ApproveAndMerge.id())
+        && (!f.author_is_acting || input.grants.include_self)
+        && f.wait_merge_blocker.is_none();
+    let approve = (input.grants.approve || input.grants.merge)
+        && input
+            .tools
+            .iter()
+            .any(|t| t == Exit::ApprovePullRequest.id())
+        && !f.author_is_acting
+        && f.wait_approve_blocker.is_none();
+    let mut reasons = Vec::new();
+    if merge && f.ci == Ci::Pending {
+        reasons.push(WaitReason::Ci);
+    }
+    if (approve || merge) && f.draft {
+        reasons.push(WaitReason::Draft);
+    }
+    if merge && f.required_reviews_unmet {
+        reasons.push(WaitReason::RequiredReviews);
+    }
+    reasons
 }
 
 fn approve_denial(input: &GateInput) -> Option<String> {
@@ -246,6 +304,14 @@ pub fn check_call(input: &GateInput, call: &ExitCall) -> Result<(), String> {
         None => return Err("Exit not available. Pick another.".into()),
         Some((_, Offer::Denied(reason))) => return Err(reason),
         Some((_, Offer::Offered)) => {}
+    }
+    if let ExitCall::Wait { reason } = call {
+        if !wait_reasons(input).contains(reason) {
+            return Err(
+                "That external prerequisite is not currently observed for an enabled action."
+                    .into(),
+            );
+        }
     }
     if let ExitCall::LeaveComments {
         reply_comments,

@@ -224,3 +224,86 @@ fn consuming_records_when_and_a_new_head_keeps_it() {
     );
     assert_eq!(states.get(&binding()).unwrap().consumed_at, Some(at));
 }
+
+#[test]
+fn external_wait_survives_missing_observations_and_legacy_records_have_none() {
+    let mut states = PrStates::default();
+    let mut state = snapshot();
+    state.checks[0].status = "QUEUED".into();
+    state.checks[0].conclusion.clear();
+    observe(&mut states, &state, false);
+    assert_eq!(
+        states.wait(
+            &binding(),
+            &state.normalize().hash(),
+            ExternalWait {
+                state_seq: 1,
+                reason: crate::exits::WaitReason::Ci,
+                assignment_id: "primary".into(),
+                agent_id: "agent".into(),
+                snapshot: state.normalize()
+            }
+        ),
+        Consumed::Consumed
+    );
+    let before = states.clone();
+    assert_eq!(
+        states.observe(
+            &binding(),
+            Observation {
+                iteration_id: "i1",
+                new_iteration: false,
+                snapshot: None,
+                already_reviewed: true,
+                now: 99,
+            }
+        ),
+        Change::None
+    );
+    assert_eq!(
+        states, before,
+        "a failed/interrupted read cannot wake or clear waiting"
+    );
+    let mut old = serde_json::to_value(&states).unwrap();
+    old["records"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("external_wait");
+    let loaded: PrStates = serde_json::from_value(old).unwrap();
+    assert!(loaded.get(&binding()).unwrap().external_wait.is_none());
+    assert!(loaded.get(&binding()).unwrap().exit.is_none());
+}
+
+#[test]
+fn external_wait_draft_and_required_reviews_wake_on_observed_changes() {
+    for reason in [
+        crate::exits::WaitReason::Draft,
+        crate::exits::WaitReason::RequiredReviews,
+    ] {
+        let mut states = PrStates::default();
+        let mut state = snapshot();
+        state.draft = reason == crate::exits::WaitReason::Draft;
+        state.review_decision = Some("REVIEW_REQUIRED".into());
+        observe(&mut states, &state, false);
+        assert_eq!(
+            states.wait(
+                &binding(),
+                &state.normalize().hash(),
+                ExternalWait {
+                    state_seq: 1,
+                    reason,
+                    assignment_id: "primary".into(),
+                    agent_id: "agent".into(),
+                    snapshot: state.normalize()
+                }
+            ),
+            Consumed::Consumed
+        );
+        assert_eq!(observe(&mut states, &state, true), Change::None);
+        state.draft = false;
+        state.review_decision = Some("APPROVED".into());
+        assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
+        assert_eq!(observe(&mut states, &state, true), Change::None);
+        assert!(states.get(&binding()).unwrap().exit.is_none());
+    }
+}

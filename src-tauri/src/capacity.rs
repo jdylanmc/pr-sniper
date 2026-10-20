@@ -148,6 +148,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let reviews = review::host::candidates(store)?;
     let repositories = store.load_settings()?.repositories;
     let tracked = store.load_queue_state()?.tracked;
+    let states = store.load_pr_states()?;
     let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
         .iter()
         .filter(|c| {
@@ -166,6 +167,13 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         })
         .collect();
     for candidate in reviews {
+        if states
+            .get(&crate::retention::Binding::job(&candidate.job))
+            .and_then(|r| r.external_wait.as_ref())
+            .is_some_and(|wait| crate::exits::consume::state_seq(&candidate.job) <= wait.state_seq)
+        {
+            continue;
+        }
         if candidate.run.as_ref().is_some_and(|r| {
             r.operation.state == OperationState::Completed || r.operation.ended_superseded()
         }) {

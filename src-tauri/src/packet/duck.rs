@@ -39,6 +39,7 @@ pub fn build(input: &DuckPacketInput<'_>) -> Packet {
             exits_denied: vec![],
             state_hash: None,
             state_marks: None,
+            wait_snapshot: None,
         },
     }
 }

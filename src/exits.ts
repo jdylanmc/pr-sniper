@@ -2,6 +2,7 @@
 export type ExitName =
   | "leave_comments"
   | "ready_for_human"
+  | "wait"
   | "approve_pull_request"
   | "approve_and_merge"
   | "panic_exit"
@@ -21,10 +22,22 @@ const paths = {
 export const exitPresentation: Record<ExitName, [string, string]> = {
   leave_comments: ["Comments", paths.comment],
   ready_for_human: ["Ready", paths.hand],
+  wait: ["Wait", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"],
   approve_pull_request: ["Approve", paths.approve],
   approve_and_merge: ["Approve + merge", paths.merge],
   panic_exit: ["Panic", paths.panic],
   submit_report: ["Report", paths.report],
+};
+
+export const waitLabels = {
+  ci: "Waiting on CI",
+  draft: "Waiting on draft",
+  required_reviews: "Waiting on reviews",
+};
+export const waitingStates: Record<string, string> = {
+  waiting_on_ci: waitLabels.ci,
+  waiting_on_draft: waitLabels.draft,
+  waiting_on_reviews: waitLabels.required_reviews,
 };
 
 export const progressPresentation: Record<Progress, [string, string]> = {

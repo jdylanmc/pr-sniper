@@ -52,6 +52,11 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 
 ### Merge-readiness transitions
 
+- Primary `wait` persists the prerequisite, reviewed snapshot, assignment and state sequence in `pr-state.json`, without clearance. No extra timer or AI session; the existing repository schedule reads the tracked PR and its checks.
+- The packet records its fresh normalized `wait_snapshot` when Wait is offered; it may be newer than the last poll. Missing legacy evidence never fabricates a wait or clearance.
+- While waiting on CI, check progress/fan-out alone does not queue reviews. Completion (success or failure), head/base, discussion or other non-CI change wakes one fresh state. Required-review and draft changes also wake; every normal permission, finding and action gate still applies.
+- Restart and missing/failed polls retain the wait. Closed/merged PRs retire it; removed tools/actions invalidate it on polling. Pause, disabled repositories and removed assignments cannot dispatch. No linked-PR dependency watching.
+
 - Draft → ready and pending → green CI change the hash, even at the same head/base. A completed pass gets fresh work on the next successful poll.
 - Every teammate must report for that state before the primary runs; a failed teammate still blocks. No readiness-only bypass or report reuse across states.
 - Packet preparation and exit calls read current provider gates. Only the primary's chosen `approve_and_merge` exit authorizes merge; offering it never overrides `ready_for_human`.
