@@ -536,6 +536,323 @@ fn wait_green_resume_can_approve_and_merge_only_through_existing_action_gates() 
     assert_eq!(server.writes.len(), 2);
 }
 
+struct SnapshotWire {
+    state: PrSnapshot,
+    required: Vec<String>,
+}
+
+impl Transport for SnapshotWire {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        panic!("Unexpected non-snapshot read {path}")
+    }
+}
+
+impl QueryTransport for SnapshotWire {
+    fn query(&self, query: &str, _: Value) -> Result<Response, ConnectionError> {
+        assert!(query.contains("fragment S"));
+        assert!(query.contains("requiredStatusCheckContexts"));
+        let s = &self.state;
+        let pull = json!({
+            "fullDatabaseId":s.pull_request_id,"number":s.number,"title":s.title,"body":s.body,
+            "state":s.state,"isDraft":s.draft,"mergeable":s.mergeable,"reviewDecision":s.review_decision,
+            "baseRefOid":s.base,"headRefOid":s.head,"headRefName":s.head_ref,
+            "baseRef":{"branchProtectionRule":{"requiresStatusChecks":!self.required.is_empty(),
+                "requiredStatusCheckContexts":self.required}},
+            "labels":{"nodes":s.labels.iter().map(|n|json!({"name":n})).collect::<Vec<_>>()},
+            "latestOpinionatedReviews":{"nodes":[]},
+            "comments":{"totalCount":s.comments.len(),"nodes":s.comments.iter().map(|c|
+                json!({"fullDatabaseId":c.id,"body":c.body})).collect::<Vec<_>>()},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+                "totalCount":s.checks.len(),"nodes":s.checks.iter().map(|c|json!({
+                    "__typename":"CheckRun","name":c.name,"status":c.status,"conclusion":c.conclusion
+                })).collect::<Vec<_>>()
+            }}}}]},
+            "reviewThreads":{"totalCount":0,"nodes":[]}
+        });
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&json!({"data":{"repository":{
+                "databaseId":100,(format!("p{}",s.number)):pull
+            }}}))
+            .unwrap(),
+        })
+    }
+}
+
+fn final_wait_read(
+    run: &ReviewRun,
+    state: PrSnapshot,
+    required: Vec<String>,
+) -> Result<crate::review::ReviewResult, crate::review::Failure> {
+    let client = GithubClient::new(SnapshotWire { state, required });
+    let mut result = output();
+    result.output = ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        None,
+    );
+    review_host::finalize_local_exit(
+        &client,
+        &RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        },
+        run.job.number,
+        run.packet.as_ref().unwrap(),
+        &mut result,
+    )?;
+    Ok(result)
+}
+
+#[test]
+fn review_fix_ci_progress_survives_the_production_final_read_and_an_intervening_poll() {
+    for concurrent_poll in [false, true] {
+        let (_root, store, _) = fixture(1, true, true);
+        store.save_reviews(&[]).unwrap();
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (run, _) = prepare(&store, &env, &state, true, NOW + 12);
+        let original_hash = run.packet.as_ref().unwrap().state_hash.clone();
+        let mut progressed = state;
+        progressed.checks[0].status = "COMPLETED".into();
+        progressed.checks[0].conclusion = "SUCCESS".into();
+        progressed.checks.push(SnapshotCheck {
+            name: "integration".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+        });
+        progressed.check_total = 2;
+        if concurrent_poll {
+            poll(&store, &progressed, NOW + 14);
+        }
+        let result = final_wait_read(&run, progressed.clone(), vec![])
+            .expect("pending-only progress during inference must not toss the Wait");
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 16).unwrap();
+        let saved = store.load_reviews().unwrap();
+        let saved = saved
+            .iter()
+            .find(|r| r.operation.id == run.operation.id)
+            .unwrap();
+        assert_eq!(saved.operation.state, OperationState::Completed);
+        assert_eq!(
+            saved.packet.as_ref().unwrap().state_hash,
+            original_hash,
+            "packet evidence is immutable"
+        );
+        let states = store.load_pr_states().unwrap();
+        let record = states.get(&Binding::job(&run.job)).unwrap();
+        assert_eq!(record.error_count, 0);
+        assert_eq!(
+            record.external_wait.as_ref().unwrap().snapshot,
+            progressed.normalize()
+        );
+        assert!(record.exit.is_none());
+        poll(&store, &progressed, NOW + 18);
+        assert!(crate::capacity::candidates(&store, NOW + 20)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn review_fix_missing_required_ci_waits_without_reported_pending_checks() {
+    for (no_reported_checks, conclusion) in [
+        (false, "SUCCESS"),
+        (false, "FAILURE"),
+        (true, "SUCCESS"),
+        (true, "FAILURE"),
+    ] {
+        let (_root, store, _) = fixture(1, true, true);
+        store.save_reviews(&[]).unwrap();
+        let mut state = snapshot(false, "SUCCESS");
+        if no_reported_checks {
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        let required = vec!["required-build".to_string()];
+        let client = GithubClient::new(SnapshotWire {
+            state,
+            required: required.clone(),
+        });
+        let state = client
+            .pr_snapshot(
+                &RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                1,
+            )
+            .unwrap();
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            if no_reported_checks {
+                server.observation.checks = None;
+            }
+            server.observation.protection = json!({
+                "requiresStatusChecks":true,"requiredStatusCheckContexts":required,
+                "requiresApprovingReviews":false,"requiredApprovingReviewCount":0,
+                "requiresCodeOwnerReviews":false,"requiresConversationResolution":false,
+                "requiresStrictStatusChecks":false
+            });
+        }
+        let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(prepared.setup.offered.contains(&Exit::Wait));
+        assert_eq!(
+            (prepared.setup.gate)(&ExitCall::Wait {
+                reason: crate::exits::WaitReason::Ci
+            }),
+            Ok(())
+        );
+        let result = final_wait_read(&run, state.clone(), required.clone()).unwrap();
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 14).unwrap();
+        assert_eq!(
+            store
+                .load_reviews()
+                .unwrap()
+                .last()
+                .unwrap()
+                .operation
+                .state,
+            OperationState::Completed,
+            "an offered missing-required-check Wait must not become a counted toss"
+        );
+        let restored = Store::new(_root.path().into()).load_pr_states().unwrap();
+        assert_eq!(
+            restored
+                .get(&Binding::job(&run.job))
+                .unwrap()
+                .external_wait
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .required_checks,
+            ["required-build"]
+        );
+        poll(&store, &state, NOW + 16);
+        assert!(crate::capacity::candidates(&store, NOW + 18)
+            .unwrap()
+            .is_empty());
+        let mut reported = state;
+        reported.checks.push(SnapshotCheck {
+            name: "required-build".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+        });
+        reported.check_total += 1;
+        poll(&store, &reported, NOW + 20);
+        assert!(crate::capacity::candidates(&store, NOW + 22)
+            .unwrap()
+            .is_empty());
+        let check = reported.checks.last_mut().unwrap();
+        check.status = "COMPLETED".into();
+        check.conclusion = conclusion.into();
+        poll(&store, &reported, NOW + 24);
+        poll(&store, &reported, NOW + 26);
+        assert_eq!(
+            crate::capacity::candidates(&store, NOW + 28).unwrap().len(),
+            1
+        );
+        assert!(store
+            .load_pr_states()
+            .unwrap()
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .exit
+            .is_none());
+    }
+}
+
+#[test]
+fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_checks() {
+    let (_root, store, _) = fixture(1, true, true);
+    store.save_reviews(&[]).unwrap();
+    let state = snapshot(false, "");
+    poll(&store, &state, NOW + 10);
+    let env = env(&store);
+    env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+    let (run, _) = prepare(&store, &env, &state, true, NOW + 12);
+    for change in [
+        "head",
+        "base",
+        "body",
+        "comment",
+        "label",
+        "failure",
+        "green",
+        "required_checks",
+    ] {
+        let mut fresh = state.clone();
+        let mut required = vec![];
+        match change {
+            "head" => fresh.head = "d".repeat(40),
+            "base" => fresh.base = "d".repeat(40),
+            "body" => fresh.body = "New review context".into(),
+            "comment" => fresh.comments.push(crate::github::state::SnapshotComment {
+                id: "new".into(),
+                body: "New concern".into(),
+                commit: None,
+            }),
+            "label" => fresh.labels.push("changed".into()),
+            "required_checks" => required.push("new-required-job".into()),
+            _ => {
+                fresh.checks[0].status = "COMPLETED".into();
+                fresh.checks[0].conclusion = if change == "failure" {
+                    "FAILURE"
+                } else {
+                    "SUCCESS"
+                }
+                .into();
+            }
+        }
+        assert_eq!(
+            final_wait_read(&run, fresh, required).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed,
+            "{change}"
+        );
+    }
+    let mut result = output();
+    result.output = ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        None,
+    );
+    result.finding_dispositions = serde_json::from_value(json!([{
+        "thread_id":"existing","disposition":"still_applies","head_sha":state.head,
+        "base_sha":state.base,"rationale":"Known concern remains.","evidence":[]
+    }]))
+    .unwrap();
+    let client = GithubClient::new(SnapshotWire {
+        state,
+        required: vec![],
+    });
+    assert!(review_host::finalize_local_exit(
+        &client,
+        &RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into()
+        },
+        1,
+        run.packet.as_ref().unwrap(),
+        &mut result
+    )
+    .is_err());
+    assert!(result.wait_snapshot.is_none());
+    assert!(store
+        .load_pr_states()
+        .unwrap()
+        .get(&Binding::job(&run.job))
+        .unwrap()
+        .external_wait
+        .is_none());
+}
+
 fn prepare(
     store: &Store,
     env: &Env<'_>,

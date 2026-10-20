@@ -15,6 +15,7 @@ fn binding() -> Binding {
 
 fn snapshot() -> PrSnapshot {
     PrSnapshot {
+        required_checks: vec![],
         number: 1,
         pull_request_id: "3".into(),
         title: "t".into(),

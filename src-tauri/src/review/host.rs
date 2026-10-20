@@ -765,7 +765,7 @@ async fn execute_attempt(
     });
     let duck = duck_setup(&app, &run, packet.duck, ducks)?;
     let integration = app.state::<Host>().copilot.clone();
-    let read_hash = packet.packet.record.state_hash.clone();
+    let final_packet = packet.packet.record.clone();
     let client_after = client.clone();
     let request = runtime::Request {
         exits: packet.setup,
@@ -793,35 +793,68 @@ async fn execute_attempt(
     if pull.base_sha != expected_base {
         return Err(base_changed(Some(&expected_base)));
     }
-    // A local-only exit writes nothing, so the state it read must still be the state.
-    if let (
-        Some(read_hash),
+    // Local exits require fresh state; Wait may absorb only still-pending CI progress.
+    if matches!(
+        &result.output.exit,
         Some(
             crate::exits::ExitOutcome::ReadyForHuman { .. }
-            | crate::exits::ExitOutcome::Wait { .. },
-        ),
-    ) = (read_hash, &result.output.exit)
-    {
+                | crate::exits::ExitOutcome::Wait { .. }
+        )
+    ) {
         let repo = RemoteRepository {
             id: run.job.repository_id.clone(),
             name: run.job.repository_name.clone(),
         };
         let number = run.job.number;
-        let fresh = tauri::async_runtime::spawn_blocking(move || {
-            crate::exits::consume::fresh_hash(&client_after, &repo, number)
+        result = tauri::async_runtime::spawn_blocking(move || {
+            finalize_local_exit(&client_after, &repo, number, &final_packet, &mut result)?;
+            Ok::<_, Failure>(result)
         })
         .await
-        .map_err(|_| Failure::permanent("State check could not finish."))?
-        .map_err(Failure::provider)?;
-        if fresh != read_hash {
-            return Err(Failure::tossed(
-                "PR state moved during the run. Result discarded.",
-            ));
-        }
+        .map_err(|_| Failure::permanent("State check could not finish."))??;
     }
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
     Ok((result, generation))
+}
+
+pub(crate) fn finalize_local_exit<T: crate::github::threads::QueryTransport>(
+    client: &crate::github::provider::GithubClient<T>,
+    repo: &RemoteRepository,
+    number: u64,
+    packet: &crate::packet::PacketRecord,
+    result: &mut super::ReviewResult,
+) -> Result<(), Failure> {
+    let read_hash = packet
+        .state_hash
+        .as_deref()
+        .ok_or_else(|| Failure::permanent("The packet record has no state hash."))?;
+    let fresh = client
+        .pr_snapshot(repo, number)
+        .map_err(Failure::from)?
+        .normalize();
+    let valid = if let Some(crate::exits::ExitOutcome::Wait { reason }) = &result.output.exit {
+        packet.wait_snapshot.as_ref().is_some_and(|read| {
+            read.hash() == read_hash
+                && crate::pr_state::ExternalWait::pending_snapshot(*reason, read, &fresh)
+        })
+    } else {
+        fresh.hash() == read_hash
+    };
+    if !valid {
+        return Err(Failure::tossed(
+            "PR state moved during the run. Result discarded.",
+        ));
+    }
+    if matches!(
+        result.output.exit,
+        Some(crate::exits::ExitOutcome::Wait { .. })
+    ) {
+        crate::review::findings::action_clearance(&result.finding_dispositions)
+            .map_err(Failure::permanent)?;
+        result.wait_snapshot = Some(fresh);
+    }
+    Ok(())
 }
 
 /// The primary's Rubber Duck for this attempt: the job-start snapshot, current limits and

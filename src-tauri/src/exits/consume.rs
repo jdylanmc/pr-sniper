@@ -285,25 +285,22 @@ pub fn honour_local(
             return Err("An unsettled provider effect prevents waiting.".into());
         }
         crate::review::findings::action_clearance(&result.finding_dispositions)?;
-        let baseline = run
-            .packet
-            .as_ref()
-            .and_then(|p| p.state_hash.as_deref())
-            .ok_or("The packet record has no state hash.")?;
+        let snapshot = result
+            .wait_snapshot
+            .clone()
+            .or_else(|| run.packet.as_ref().and_then(|p| p.wait_snapshot.clone()))
+            .ok_or("The packet has no external-wait snapshot.")?;
+        let baseline = snapshot.hash();
         let mut states = store.load_pr_states()?;
         let outcome = states.wait(
             &Binding::job(&run.job),
-            baseline,
+            &baseline,
             crate::pr_state::ExternalWait {
                 reason: *reason,
                 state_seq: state_seq(&run.job),
                 assignment_id: run.assignment_id.clone(),
                 agent_id: run.selection.agent.id.clone(),
-                snapshot: run
-                    .packet
-                    .as_ref()
-                    .and_then(|p| p.wait_snapshot.clone())
-                    .ok_or("The packet has no external-wait snapshot.")?,
+                snapshot,
             },
         );
         if outcome == Consumed::Consumed {

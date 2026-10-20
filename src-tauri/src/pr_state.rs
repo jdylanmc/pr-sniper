@@ -20,34 +20,29 @@ pub struct ExternalWait {
 
 impl ExternalWait {
     pub fn pending(&self, next: &NormalizedSnapshot) -> bool {
+        Self::pending_snapshot(self.reason, &self.snapshot, next)
+    }
+
+    pub fn pending_snapshot(
+        reason: crate::exits::WaitReason,
+        snapshot: &NormalizedSnapshot,
+        next: &NormalizedSnapshot,
+    ) -> bool {
         use crate::exits::WaitReason;
         if next.lifecycle != "open" && next.lifecycle != "draft" {
             return false;
         }
-        let pending = match self.reason {
-            WaitReason::Ci => {
-                next.checks.iter().any(|(_, status, _)| status == "pending")
-                    && !next.checks.iter().any(|(_, _, conclusion)| {
-                        matches!(
-                            conclusion.as_str(),
-                            "failure"
-                                | "error"
-                                | "cancelled"
-                                | "timed_out"
-                                | "action_required"
-                                | "startup_failure"
-                        )
-                    })
-            }
+        let pending = match reason {
+            WaitReason::Ci => next.ci_pending(),
             WaitReason::Draft => next.lifecycle == "draft",
             WaitReason::RequiredReviews => !matches!(
                 next.review_decision.as_deref(),
                 Some("APPROVED" | "CHANGES_REQUESTED")
             ),
         };
-        let mut before = self.snapshot.clone();
+        let mut before = snapshot.clone();
         let mut after = next.clone();
-        if self.reason == WaitReason::Ci {
+        if reason == WaitReason::Ci {
             // Check progress and fan-out are observation, not another AI review.
             before.checks.clear();
             after.checks.clear();
@@ -268,18 +263,28 @@ impl PrStates {
         Consumed::Consumed
     }
 
-    pub fn wait(&mut self, binding: &Binding, baseline: &str, wait: ExternalWait) -> Consumed {
+    pub fn wait(&mut self, binding: &Binding, baseline: &str, mut wait: ExternalWait) -> Consumed {
         let Some(record) = self.records.iter_mut().find(|r| &r.binding == binding) else {
             return Consumed::Moved;
         };
-        if record.state_seq != wait.state_seq
-            || wait.snapshot.hash() != baseline
-            || !wait.pending(&wait.snapshot)
-        {
+        if wait.snapshot.hash() != baseline || !wait.pending(&wait.snapshot) {
             return Consumed::Moved;
         }
-        record.baseline_hash = Some(baseline.into());
-        record.hash = Some(baseline.into());
+        if record.state_seq != wait.state_seq {
+            let Some(current) = record.snapshot.as_ref().filter(|current| {
+                wait.reason == crate::exits::WaitReason::Ci
+                    && record.state_seq > wait.state_seq
+                    && wait.pending(current)
+            }) else {
+                return Consumed::Moved;
+            };
+            // A poll may have seen only pending CI progress during inference.
+            wait.snapshot = current.clone();
+            wait.state_seq = record.state_seq;
+        }
+        let baseline = wait.snapshot.hash();
+        record.baseline_hash = Some(baseline.clone());
+        record.hash = Some(baseline);
         record.snapshot = Some(wait.snapshot.clone());
         record.pending = None;
         record.error_count = 0;

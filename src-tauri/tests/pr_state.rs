@@ -92,6 +92,7 @@ fn pull(state: Lifecycle, draft: bool) -> PullRequest {
 
 fn snapshot(body: &str) -> PrSnapshot {
     PrSnapshot {
+        required_checks: vec![],
         number: 101,
         pull_request_id: "9".into(),
         title: "Review".into(),
