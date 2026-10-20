@@ -395,6 +395,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
             continue;
         }
+        if recover_parked_feedback(review, &jobs, now) {
+            changed = true;
+            continue;
+        }
         if review.operation.state == OperationState::Running {
             if review.operation.interruption.is_some() {
                 review.operation.requeue_intentional(0);
@@ -486,6 +490,38 @@ fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob], now: i64)
     run.result = None;
     run.error = None;
     run.phase = "Waiting for current PR state".into();
+    true
+}
+
+/// Older packet runs stored this local freshness rejection as permanent.
+/// Only this historical signature is migrated; new failures carry typed Tossed.
+/// Keep spent attempts and deadlines, including the normal cooldown if expired.
+fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
+    if run.mode != RunMode::Packet
+        || run.operation.state != OperationState::Failed
+        || run.operation.failure != Some(OperationFailure::Permanent)
+        || run.operation.operation_type != "copilot_review"
+        || run.error.as_deref() != Some(crate::feedback::CONTEXT_CHANGED)
+        || run.feedback_context.is_none()
+        || run.result.is_some()
+        || run.operation.attempted_mutation.is_some()
+        || run.operation.confirmed_receipt.is_some()
+    {
+        return false;
+    }
+    if !jobs
+        .iter()
+        .find(|job| run.matches_job(job))
+        .is_some_and(monitoring::actionable)
+    {
+        end_quietly(run);
+        return true;
+    }
+    run.operation.fail(
+        &Failure::tossed(crate::feedback::CONTEXT_CHANGED).monitoring(),
+        now,
+    );
+    run.attempt_ducks.clear();
     true
 }
 

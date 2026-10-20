@@ -2,6 +2,9 @@ use super::*;
 use crate::storage::{Settings, Store};
 use serde_json::json;
 
+#[path = "owned_feedback_tests.rs"]
+mod owned_feedback_tests;
+
 fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
