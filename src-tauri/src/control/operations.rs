@@ -37,6 +37,11 @@ pub(super) enum Command {
         offset: usize,
         limit: Option<usize>,
     },
+    Health {
+        #[serde(default)]
+        offset: usize,
+        limit: Option<usize>,
+    },
     Detail {
         item_id: String,
         #[serde(default)]
@@ -170,6 +175,7 @@ impl Command {
                 | Self::Resources { .. }
                 | Self::Accounts { .. }
                 | Self::Queue { .. }
+                | Self::Health { .. }
                 | Self::Detail { .. }
                 | Self::Target { .. }
                 | Self::Models { .. }
@@ -515,8 +521,10 @@ async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Val
     match command {
         Command::Accounts { .. }
         | Command::Queue { .. }
+        | Command::Health { .. }
         | Command::Detail { .. }
         | Command::RetryReview { .. }
+        | Command::Retry { .. }
         | Command::Inspect
         | Command::Resources { .. }
         | Command::Target { .. }
@@ -622,12 +630,6 @@ async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Val
         }
         Command::CheckNow => {
             crate::check_now(app.clone()).await.map_err(operation)?;
-            Ok(json!({"state":"requested"}))
-        }
-        Command::Retry { operation_id } => {
-            crate::retry_monitoring_operation(app.clone(), operation_id)
-                .await
-                .map_err(operation)?;
             Ok(json!({"state":"requested"}))
         }
         Command::RetryState { item_id } => {

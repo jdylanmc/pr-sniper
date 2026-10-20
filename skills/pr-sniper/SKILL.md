@@ -18,6 +18,8 @@ chosen provider/Copilot identity and generation, and `resources` for actual
 configuration. Follow `next_offset` until null; keep one unchanged revision
 while assembling a resource view. `queue` lists operation/candidate identities;
 `detail` returns versioned JSON-text chunks for one item's full evidence.
+`health` lists repository polling state and exact retry operation IDs, including
+failed initial polls with no PR items. Follow its `next_offset` as for resources.
 Pass one JSON operation on stdin to `node <this-skill-directory>/scripts/pr-sniper.mjs`.
 Use the bundled [operation contract](references/control.md). Never edit app data,
 read endpoint tokens, use `gh` as a substitute, automate the UI, or run login.
@@ -65,6 +67,10 @@ Use Settings → Copilot CLI to install/update the compatible bundle.
 - On `conflict`, inspect again and reconcile with the human. Never blind retry.
 - Ordinary failed/cancelled AI work uses `retry_review` with its `candidate_key`
   from `queue`/`detail`, not the poll retry or packet-state retry operations.
+  Completed work returns `review_again_required`; do not retry it implicitly.
+  Only explicit human review-again intent may use `watch.review_again:true`.
+- Failed repository polls use `health` to find the exact retryable `operation_id`,
+  then `retry`. Never substitute a PR/AI operation ID or retry every repository.
 - A timeout or `outcome_unknown` is not failure or success. Reuse the exact
   request ID to query its receipt; never generate a fresh mutation automatically.
 - Ordinary watch/review-again rejection never clears an existing interrupted

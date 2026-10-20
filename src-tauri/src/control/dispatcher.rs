@@ -28,6 +28,7 @@ pub(super) trait Runtime {
         url: &str,
     ) -> Result<(crate::github::intake::ResolvedTarget, u64), Error>;
     fn launch(&self, batch: Batch);
+    fn start_checks(&self) -> Result<(), Error>;
     fn login_status(&self) -> Result<Value, Error>;
     fn quitting(&self) -> bool;
 }
@@ -77,6 +78,9 @@ impl Runtime for Native<'_> {
     fn launch(&self, batch: Batch) {
         crate::capacity::launch_batch(self.app, batch);
     }
+    fn start_checks(&self) -> Result<(), Error> {
+        crate::start_checks(self.app, false).map_err(operation)
+    }
     fn login_status(&self) -> Result<Value, Error> {
         value(self.host.registration.status().map_err(operation)?)
     }
@@ -92,10 +96,12 @@ pub(super) fn handles(command: &Command) -> bool {
             | Command::Resources { .. }
             | Command::Accounts { .. }
             | Command::Queue { .. }
+            | Command::Health { .. }
             | Command::Detail { .. }
             | Command::Target { .. }
             | Command::Watch { .. }
             | Command::RetryReview { .. }
+            | Command::Retry { .. }
     ) || matches!(command, Command::Save { edit, .. } if !matches!(edit, crate::storage::ResourceEdit::Agent {..}))
 }
 
@@ -144,6 +150,29 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             }
             let batch = {
                 let store = runtime.store().lock().map_err(|_| storage(()))?;
+                let candidates = crate::review::host::candidates(&store).map_err(storage)?;
+                let candidate = candidates
+                    .iter()
+                    .find(|candidate| candidate.key == candidate_key)
+                    .ok_or_else(|| Error::new("missing_destination", ()))?;
+                match candidate.run.as_ref().map(|run| &run.operation.state) {
+                    Some(crate::monitoring::OperationState::Completed) => {
+                        return Err(Error::new(
+                            "review_again_required",
+                            "Use explicit watch review_again for completed work.",
+                        ))
+                    }
+                    Some(
+                        crate::monitoring::OperationState::Failed
+                        | crate::monitoring::OperationState::ManualRetry,
+                    ) => {}
+                    _ => {
+                        return Err(Error::new(
+                            "review_not_retryable",
+                            "Only failed or cancelled AI work can be retried.",
+                        ))
+                    }
+                }
                 crate::review::host::request_batch(
                     &store,
                     runtime.ai(),
@@ -154,6 +183,23 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             };
             runtime.launch(batch);
             Ok(json!({"state":"requested","candidate_key":candidate_key}))
+        }
+        Command::Retry { operation_id } => {
+            {
+                let store = runtime.store().lock().map_err(|_| storage(()))?;
+                runtime
+                    .monitor()
+                    .lock()
+                    .map_err(|_| storage(()))?
+                    .manual_retry_operation(
+                        &store,
+                        &operation_id,
+                        crate::now_seconds().map_err(storage)?,
+                    )
+                    .map_err(operation)?;
+            }
+            runtime.start_checks()?;
+            Ok(json!({"state":"requested"}))
         }
         Command::Inspect => {
             let accounts = runtime
@@ -177,6 +223,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                     "voices":settings.voices.len(),"repositories":settings.repositories.len(),
                     "provider_accounts":accounts,"copilot_accounts":copilot,
                     "queue_jobs":store.load_queue().map_err(storage)?.len(),
+                    "repository_health":store.load_monitoring_state().map_err(storage)?.health.len(),
                     "pending_watch_configuration":work::holds(&store).map_err(storage)?.len()},
                 "automation":{"paused":store.load_automation().map_err(storage)?.paused,"capacity":settings.capacity},
                 "theme":settings.theme,"notifications":{"enabled":notifications.enabled,"muted":notifications.muted},
@@ -256,6 +303,41 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 "review_count":item.review_keys.len()
             })).collect();
             page(summaries, offset, limit)
+        }
+        Command::Health { offset, limit } => {
+            let _generations = runtime.generations().lock().map_err(|_| storage(()))?;
+            let accounts = runtime
+                .auth()
+                .lock()
+                .map_err(|_| storage(()))?
+                .monitoring_accounts();
+            let store = runtime.store().lock().map_err(|_| storage(()))?;
+            let mut monitor = runtime.monitor().lock().map_err(|_| storage(()))?;
+            monitor
+                .synchronize_configuration(
+                    &store,
+                    &accounts,
+                    crate::now_seconds().map_err(storage)?,
+                )
+                .map_err(storage)?;
+            let values = monitor.snapshot().into_iter().map(|health| {
+                let op = health.operation.as_ref();
+                json!({
+                    "configuration_id":health.repository_id,"repository_name":health.name,
+                    "provider_account_id":health.provider_account_id,"account_login":health.account_login,
+                    "provider_repository_id":health.provider_repository_id,"enabled":health.enabled,
+                    "schedule_available":health.schedule_available,"in_flight":health.in_flight,
+                    "operation_id":op.map(|o|&o.id),"state":op.map(|o|&o.state),
+                    "failure":op.and_then(|o|o.failure.as_ref()),
+                    "failure_class":op.and_then(|o|o.failure_class()),
+                    "retryable":op.is_some_and(|o|matches!(o.state,
+                        crate::monitoring::OperationState::Failed | crate::monitoring::OperationState::ManualRetry)),
+                    "last_failure":health.last_failure.map(|s|s.chars().take(256).collect::<String>()),
+                    "last_attempt":health.last_attempt,"last_success":health.last_success,
+                    "next_run":health.next_run,"next_attempt_at":op.and_then(|o|o.next_attempt_at)
+                })
+            }).collect();
+            page(values, offset, limit)
         }
         Command::Detail {
             item_id,

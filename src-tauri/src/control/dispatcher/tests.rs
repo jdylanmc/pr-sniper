@@ -22,6 +22,7 @@ struct Fixture {
     copilot: Mutex<GithubAuth>,
     generations: Mutex<BTreeMap<String, u64>>,
     launched: Mutex<Vec<String>>,
+    polls: Mutex<Vec<String>>,
     head: Mutex<String>,
 }
 impl Fixture {
@@ -62,6 +63,7 @@ impl Fixture {
             copilot: Mutex::new(GithubAuth::new()),
             generations: Mutex::new(BTreeMap::from([("101".into(), 7)])),
             launched: Mutex::new(vec![]),
+            polls: Mutex::new(vec![]),
             head: Mutex::new("a".repeat(40)),
         }
     }
@@ -230,6 +232,21 @@ impl Runtime for Fixture {
             .lock()
             .unwrap()
             .extend(batch.dispatched.iter().map(|d| d.key().id));
+    }
+    fn start_checks(&self) -> Result<(), Error> {
+        let accounts = self.auth.lock().unwrap().monitoring_accounts();
+        let store = self.store.lock().unwrap();
+        let tickets = self
+            .monitor
+            .lock()
+            .unwrap()
+            .prepare_checks_with_accounts(&store, &accounts, crate::now_seconds().unwrap(), false)
+            .map_err(storage)?;
+        self.polls
+            .lock()
+            .unwrap()
+            .extend(tickets.into_iter().map(|ticket| ticket.repository_id));
+        Ok(())
     }
     fn login_status(&self) -> Result<Value, Error> {
         Ok(Value::Null)
@@ -486,10 +503,201 @@ fn ordinary_ai_retry_cannot_replace_a_completed_published_pass() {
 }
 
 #[test]
+fn completed_unpublished_and_stale_failed_retries_require_a_fresh_explicit_pass() {
+    for previously_failed in [false, true] {
+        let fixture = Fixture::new();
+        assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+        if previously_failed {
+            let store = fixture.store.lock().unwrap();
+            let job = store.load_queue().unwrap().remove(0);
+            let mut failed = crate::review::host::request(
+                &store,
+                &job.work.as_ref().unwrap().id,
+                true,
+                crate::now_seconds().unwrap(),
+            )
+            .unwrap();
+            failed.operation.fail(
+                &crate::review::Failure::permanent("Synthetic failed attempt").monitoring(),
+                crate::now_seconds().unwrap(),
+            );
+            store.save_reviews(&[failed]).unwrap();
+        }
+        let observed = fixture.call(json!({"operation":"queue"}));
+        if previously_failed {
+            assert!(matches!(
+                observed["result"]["values"][0]["reviews"][0]["state"].as_str(),
+                Some("failed" | "manual_retry")
+            ));
+        }
+        let key = observed["result"]["values"][0]["reviews"][0]["candidate_key"].clone();
+        let completed = fixture.complete();
+        let before = {
+            let store = fixture.store.lock().unwrap();
+            (
+                store.load_reviews().unwrap(),
+                store.load_queue_state().unwrap(),
+                store.load_pr_states().unwrap(),
+                store.load_publications().unwrap(),
+            )
+        };
+        let rejected = fixture.call(json!({"operation":"retry_review","candidate_key":key}));
+        assert_eq!(rejected["error"]["code"], "review_again_required");
+        {
+            let store = fixture.store.lock().unwrap();
+            assert_eq!(
+                (
+                    store.load_reviews().unwrap(),
+                    store.load_queue_state().unwrap(),
+                    store.load_pr_states().unwrap(),
+                    store.load_publications().unwrap()
+                ),
+                before
+            );
+        }
+        assert!(fixture.launched.lock().unwrap().is_empty());
+
+        let mut rerun = fixture.watch(true);
+        rerun["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+        rerun["issued_at"] = json!(crate::now_seconds().unwrap());
+        assert_eq!(fixture.call(rerun.clone())["ok"], true);
+        assert_eq!(fixture.call(rerun)["result"]["replayed"], true);
+        let store = fixture.store.lock().unwrap();
+        let jobs = store.load_queue().unwrap();
+        assert_eq!(jobs.len(), before.1.jobs.len() + 1);
+        let fresh = jobs.last().unwrap().work.as_ref().unwrap();
+        let original = completed.job.work.as_ref().unwrap();
+        assert_ne!(fresh.id, original.id);
+        assert_eq!(fresh.state_seq, original.state_seq + 1);
+        assert_eq!(fresh.pass_ordinal, original.pass_ordinal + 1);
+        assert_eq!(store.load_reviews().unwrap(), before.0);
+    }
+}
+
+#[test]
+fn failed_initial_polls_are_discoverable_and_only_the_selected_poll_is_retried() {
+    let mut fixture = Fixture::new();
+    let (target_id, neighbor_id) = {
+        let store = fixture.store.lock().unwrap();
+        store.save_queue_state(&Default::default()).unwrap();
+        let mut settings = store.load_settings().unwrap();
+        let target_id = settings.repositories[0].id.clone();
+        let mut neighbor = settings.repositories[0].clone();
+        neighbor.id = uuid::Uuid::new_v4().to_string();
+        neighbor.name = "fixture/repo-2".into();
+        neighbor.provider_repository_id = Some("302".into());
+        neighbor.assignments[0].id = uuid::Uuid::new_v4().to_string();
+        let neighbor_id = neighbor.id.clone();
+        settings.repositories.push(neighbor.clone());
+        store.save_settings(&settings).unwrap();
+        store
+            .save_resource(crate::storage::ResourceEdit::Repository {
+                id: neighbor_id.clone(),
+                expected: Some(Box::new(neighbor.clone())),
+                value: Some(Box::new(neighbor)),
+            })
+            .unwrap();
+        store
+            .save_automation(&crate::capacity::Automation { paused: false })
+            .unwrap();
+        (target_id, neighbor_id)
+    };
+    fixture.restart();
+    {
+        let accounts = fixture.auth.lock().unwrap().monitoring_accounts();
+        let store = fixture.store.lock().unwrap();
+        let mut monitor = fixture.monitor.lock().unwrap();
+        let now = crate::now_seconds().unwrap() - 10;
+        let tickets = monitor
+            .prepare_checks_with_accounts(&store, &accounts, now, true)
+            .unwrap();
+        assert_eq!(tickets.len(), 2);
+        for ticket in tickets {
+            assert!(monitor
+                .finish_with_accounts(
+                    &store,
+                    &accounts,
+                    ticket,
+                    Err(crate::github::ConnectionError::MissingReadPermission),
+                    now + 1
+                )
+                .is_err());
+        }
+        assert!(store.load_queue().unwrap().is_empty());
+    }
+    fixture.restart();
+    let summary = fixture.call(json!({"operation":"inspect"}));
+    assert_eq!(summary["result"]["counts"]["queue_jobs"], 0);
+    assert_eq!(summary["result"]["counts"]["repository_health"], 2);
+    let first = fixture.call(json!({"operation":"health","limit":1}));
+    assert_eq!(first["ok"], true);
+    assert_eq!(first["result"]["next_offset"], 1);
+    let second = fixture.call(json!({"operation":"health","limit":1,"offset":1}));
+    assert_eq!(second["result"]["next_offset"], Value::Null);
+    let rows = [
+        &first["result"]["values"][0],
+        &second["result"]["values"][0],
+    ];
+    let target = rows
+        .iter()
+        .find(|row| row["configuration_id"] == target_id)
+        .unwrap();
+    assert_eq!(target["provider_account_id"], "101");
+    assert_eq!(target["provider_repository_id"], "301");
+    assert_eq!(target["repository_name"], "fixture/repo-1");
+    assert_eq!(target["failure_class"], "permission");
+    assert_eq!(target["retryable"], true);
+    let original_id = target["operation_id"].as_str().unwrap().to_owned();
+    let neighbor_before = fixture
+        .store
+        .lock()
+        .unwrap()
+        .load_monitoring_state()
+        .unwrap()
+        .health
+        .into_values()
+        .find(|health| health.repository_id == neighbor_id)
+        .unwrap()
+        .operation;
+    let request = json!({"operation":"retry","operation_id":original_id,
+        "request_id":uuid::Uuid::new_v4().to_string(),"issued_at":crate::now_seconds().unwrap()});
+    assert_eq!(fixture.call(request.clone())["ok"], true);
+    assert_eq!(fixture.call(request)["result"]["replayed"], true);
+    assert_eq!(
+        fixture.call(json!({"operation":"retry","operation_id":original_id}))["ok"],
+        false
+    );
+    assert_eq!(*fixture.polls.lock().unwrap(), vec![target_id.clone()]);
+    let store = fixture.store.lock().unwrap();
+    let state = store.load_monitoring_state().unwrap();
+    let retried = state
+        .health
+        .values()
+        .find(|health| health.repository_id == target_id)
+        .unwrap();
+    assert!(retried.in_flight);
+    assert_eq!(
+        retried.operation.as_ref().unwrap().state,
+        OperationState::Running
+    );
+    assert_ne!(retried.operation.as_ref().unwrap().id, original_id);
+    assert!(state.operations.contains_key(&original_id));
+    assert_eq!(
+        state
+            .health
+            .values()
+            .find(|health| health.repository_id == neighbor_id)
+            .unwrap()
+            .operation,
+        neighbor_before
+    );
+    assert!(store.load_queue().unwrap().is_empty());
+}
+
+#[test]
 fn large_profile_has_bounded_inspection_accounts_resources_details_and_native_edit() {
     let fixture = Fixture::new();
     fixture.call(fixture.watch(false));
-    let mut run = fixture.complete();
     {
         let store = fixture.store.lock().unwrap();
         let mut settings = store.load_settings().unwrap();
@@ -501,6 +709,19 @@ fn large_profile_has_bounded_inspection_accounts_resources_details_and_native_ed
             })
             .collect();
         store.save_settings(&settings).unwrap();
+        let job = store.load_queue().unwrap().remove(0);
+        let mut run = crate::review::host::request(
+            &store,
+            &job.work.as_ref().unwrap().id,
+            true,
+            crate::now_seconds().unwrap(),
+        )
+        .unwrap();
+        run.operation.fail(
+            &crate::review::Failure::permanent("Synthetic recoverable-by-human failure")
+                .monitoring(),
+            crate::now_seconds().unwrap(),
+        );
         run.selection.agent.prompt = "retained".repeat(160_000);
         store.save_reviews(&[run]).unwrap();
     }

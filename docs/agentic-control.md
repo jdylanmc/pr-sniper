@@ -50,7 +50,11 @@ PowerShell: `node "$HOME\.copilot\skills\pr-sniper\scripts\pr-sniper.mjs" inspec
 - `inspect` returns bounded counts and control state. `accounts` carries safe
   identities/generations; `resources` pages configuration; `queue` pages operation
   identities; `detail` streams one item's evidence as revision-checked JSON text.
+- `health` pages repository polling state, causes and exact retry IDs, even
+  before any PR is detected. Use its retryable operation ID with `retry`.
 - Ordinary failed/cancelled AI work uses `retry_review` with its candidate key.
+  Completed work is refused, including stale retries; only explicit
+  `watch.review_again` creates a fresh pass.
 - A pending watch-configuration hold survives restart. After inspection,
   explicitly watch again with the intended assignment override map. Empty
   overrides preserve the hold; null fields on an addressed assignment select

@@ -11,6 +11,7 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `inspect`                        | none; bounded counts, revision, pause/capacity, immediate control status                                                  |
 | `accounts`                       | `kind`: `repository` or `copilot`; `offset`, `limit`; safe identities and repository connection generations               |
 | `queue`                          | `offset`, `limit`; bounded PR summaries, candidate/operation IDs (first 25 reviews; remaining identities in detail)       |
+| `health`                         | `offset`, `limit`; bounded repository/account identities, polling state/cause, exact `operation_id`, and `retryable`      |
 | `detail`                         | `item_id`, character `offset`, `limit` (1–65536); JSON-text chunks with stable content revision                           |
 | `resources`                      | `kind`: `agents`, `doctrines`, `voices`, `repositories`, `preferences`; `offset` (default 0), `limit` (1–100, default 25) |
 | `target`                         | `url`; local parsing and matching saved repositories                                                                      |
@@ -22,8 +23,8 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `watch`                          | `expected` repository, `url`, `account_generation`, `review_again` (default false), `overrides` (default `{}`)            |
 | `pause`                          | `paused`                                                                                                                  |
 | `check_now`                      | none                                                                                                                      |
-| `retry`                          | `operation_id`                                                                                                            |
-| `retry_review`                   | `candidate_key`; same validated ordinary AI recovery as the UI                                                            |
+| `retry`                          | exact polling `operation_id` from `health`; native polling gates apply                                                    |
+| `retry_review`                   | `candidate_key`; only currently failed/cancelled AI work; completed work rejects with `review_again_required`             |
 | `retry_state`                    | `item_id`                                                                                                                 |
 | `cancel_review`                  | `operation_id`                                                                                                            |
 | `publish`                        | `review_operation_id`; existing publication gates and receipts apply                                                      |
@@ -53,11 +54,16 @@ the exact request ID and timestamp needed to retry a lost reply.
 ResourceEdit: `{kind,id,expected,value}` for `agent`, `doctrine`, `voice`,
 `repository`; preferences use `{kind:"preferences",expected,value}` without id.
 Use `resources.result.values` as the source of exact native resource shapes.
-Resources/accounts/queue pages return `next_offset` (null at the end). Resource
+Resources/accounts/queue/health pages return `next_offset` (null at the end). Resource
 pages are byte-bounded as well as count-bounded; follow the returned cursor,
 not the requested count. Reject mixed resource revisions while assembling views.
 For full evidence, concatenate `detail.text` chunks at the returned character
 offsets, require identical `detail.revision`, then parse the complete JSON.
+Polling health exists independently of PR items. An empty queue does not mean
+repository polling succeeded. Use `health` even for a first-poll failure.
+`retry_review` rechecks current eligibility under the Store lock: a stale client
+that saw failure cannot rerun work that has since completed. Explicit
+`watch.review_again` is the separate fresh-pass operation.
 New resources require UUID IDs, `expected:null`. `value:null` deletes.
 New repositories are disabled, bound to a `resolve` result, and have no
 assignments. Then save explicit assignments and enable the human-requested
