@@ -190,6 +190,9 @@ where
     let duck_input = input.clone();
     let mut packet = packet::build(&input);
     packet.record.state_hash = Some(state_hash);
+    packet.record.wait_snapshot = offered
+        .contains(&crate::exits::Exit::Wait)
+        .then(|| snapshot.normalize());
     packet.record.state_marks = Some(crate::github::state::StateMarks::of(snapshot, acting_login));
     let duck_tools = tools::duck_tools(&base.tools);
     let duck = config

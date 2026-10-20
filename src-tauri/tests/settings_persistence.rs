@@ -209,6 +209,7 @@ fn ordinary_configuration_contains_only_nonsecret_settings() {
             "voices": [],
             "voice_catalog_version": 1,
             "capacity": 4,
+            "review_inactivity_minutes": 15,
             "admission_migration_version": 1,
             "time_zone": "UTC",
             "defaults": {

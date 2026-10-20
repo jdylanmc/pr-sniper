@@ -94,11 +94,12 @@ const human = () =>
   );
 const reviewed = () =>
   state.reviews.filter(
-    (review) => !["queued", "running"].includes(review.state),
+    (review) => !["queued", "running", "waiting_on_ci"].includes(review.state),
   );
 const statusNames = {
   queued: "Queued",
   running: "Reviewing",
+  waiting_on_ci: "Waiting on CI",
   human: "Ready for you",
   question: "Needs your input",
   approved: "Approved (demo)",
@@ -548,17 +549,21 @@ function workRow(review, kind) {
     ? Demo.blockReason(state, review)
     : "";
   const display =
-    kind === "reviewed"
-      ? statusNames[review.state]
-      : review.state === "running"
-        ? "Running"
-        : review.state === "failed"
-          ? "Failed"
-          : review.state === "stale"
-            ? "Stale"
-            : blocked
-              ? "Blocked"
-              : "Queued";
+    review.state === "waiting_on_ci"
+      ? "Waiting on CI"
+      : kind === "reviewed"
+        ? statusNames[review.state]
+        : review.state === "running"
+          ? "Running"
+          : review.state === "failed"
+            ? "Failed"
+            : review.offline
+              ? "Offline"
+              : review.state === "stale"
+                ? "Stale"
+                : blocked
+                  ? "Blocked"
+                  : "Queued";
   const symbol =
     kind === "reviewed"
       ? "reviewed"
@@ -572,7 +577,10 @@ function workRow(review, kind) {
       ? '<span class="work-spin" aria-hidden="true"></span>'
       : `<span class="work-marker" aria-hidden="true">${icon(symbol)}</span>`;
   const agent = review.run?.name ?? agentFor(review)?.name ?? "Unassigned";
-  return `<li><button type="button" class="work-row review-open" data-action="review" data-review-id="${esc(review.id)}" data-display="${display.toLowerCase().replaceAll(" ", "-")}" title="${esc(`${review.title}; ${display}${blocked ? `. ${blocked}` : ""}`)}">${marker}<span class="work-copy"><span class="work-heading"><strong>${esc(kind === "reviewed" ? review.title : agent)}</strong><span class="work-state">${esc(display)}</span></span>${kind === "reviewed" ? "" : `<span class="work-subject">${esc(review.title)}</span>`}<span class="work-reference">${esc(review.repoName)} #${review.number}</span></span><span class="work-chevron" aria-hidden="true">${icon("chevron")}</span></button></li>`;
+  const label = review.offline?.last_success
+    ? `${display} · ${new Date(review.offline.last_success * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : display;
+  return `<li><button type="button" class="work-row review-open" data-action="review" data-review-id="${esc(review.id)}" data-display="${display.toLowerCase().replaceAll(" ", "-")}" title="${esc(`${review.title}; ${display}${blocked ? `. ${blocked}` : ""}`)}">${marker}<span class="work-copy"><span class="work-heading"><strong>${esc(kind === "reviewed" ? review.title : agent)}</strong><span class="work-state">${esc(label)}</span></span>${kind === "reviewed" ? "" : `<span class="work-subject">${esc(review.title)}</span>`}<span class="work-reference">${esc(review.repoName)} #${review.number}</span></span><span class="work-chevron" aria-hidden="true">${icon("chevron")}</span></button></li>`;
 }
 
 function quietEmpty(symbol, label) {
@@ -621,7 +629,11 @@ function queuePage() {
 }
 
 function runningPage() {
-  const rows = [...running(), ...queued()];
+  const rows = [
+    ...running(),
+    ...queued(),
+    ...state.reviews.filter((review) => review.state === "waiting_on_ci"),
+  ];
   return `<div class="page-scroll" data-scroll="running">${
     rows.length
       ? `<ol class="work-list" aria-label="Agent work queue">${rows.map((review) => workRow(review, "running")).join("")}</ol>`
@@ -1392,7 +1404,7 @@ function returnToAccounts() {
 function capacityPage() {
   const duck = state.duck ?? { calls: 8, timeout: 180, window: 15 };
   return `<div class="page-scroll" data-scroll="capacity"><div class="feature-summary"><span class="summary-icon">${icon("activity")}</span><div><strong>${state.limit}</strong><p>maximum simultaneous reviews</p></div></div>
-    <form data-form="capacity" class="editor-form"><p class="section-note">Save as many agents as you like. This controls how many review packets can run at once across all repositories.</p>${field("Concurrent reviews", `<input name="limit" type="number" min="1" step="1" value="${state.limit}" required />`)}
+    <form data-form="capacity" class="editor-form">${field("AI capacity", `<input name="limit" type="number" min="1" step="1" value="${state.limit}" required />`)}${field("Review inactivity (min)", `<input name="inactivity" type="number" min="1" max="4294967295" step="1" value="${state.inactivity ?? 15}" required />`)}
     <fieldset class="duck-limits"><legend>Rubber duck</legend>${field("Calls", `<input name="duckCalls" type="number" min="1" max="32" step="1" value="${duck.calls}" required />`)}${field("Timeout (s)", `<input name="duckTimeout" type="number" min="30" max="600" step="1" value="${duck.timeout}" required />`)}${field("Primary window (min)", `<input name="duckWindow" type="number" min="5" max="120" step="1" value="${duck.window}" required />`)}</fieldset>
     <p class="inline-warning">Lowering the limit stops surplus sample reviews, discards their partial work, and puts them back in the queue.</p><button class="primary-action wide" type="submit">Save review limit</button></form></div>`;
 }
@@ -1435,7 +1447,7 @@ function preferencesPage() {
       "A saved preference only. No operating-system login item is changed.",
     ],
   };
-  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}</div><div class="form-group"><label class="preference-row"><span><strong>Theme</strong></span><select data-theme-select aria-label="Theme">${Object.entries(
+  return `<div class="page-scroll" data-scroll="preferences"><div class="settings-list">${settingsRow("AI capacity", "A limit on running work, not saved agents", state.limit, "activity", "capacity")}${settingsRow("Review inactivity (min)", "", state.inactivity ?? 15, "activity", "capacity")}</div><div class="form-group"><label class="preference-row"><span><strong>Theme</strong></span><select data-theme-select aria-label="Theme">${Object.entries(
     themes,
   )
     .map(
@@ -1810,6 +1822,7 @@ function readForm(form) {
         "capacity",
         {
           limit: Number(value("limit")),
+          inactivity: Number(value("inactivity")),
           duck: {
             calls: Number(value("duckCalls")),
             timeout: Number(value("duckTimeout")),

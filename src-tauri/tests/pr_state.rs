@@ -92,6 +92,7 @@ fn pull(state: Lifecycle, draft: bool) -> PullRequest {
 
 fn snapshot(body: &str) -> PrSnapshot {
     PrSnapshot {
+        required_checks: vec![],
         number: 101,
         pull_request_id: "9".into(),
         title: "Review".into(),
@@ -532,6 +533,7 @@ fn posted_exit(store: &Store, monitor: &mut Monitor) -> (QueueJob, ReviewRun) {
         exits_offered: vec![],
         exits_denied: vec![],
         state_hash: Some(snapshot("a").normalize().hash()),
+        wait_snapshot: None,
         state_marks: Some(pr_sniper_lib::github::state::StateMarks::of(
             &snapshot("a"),
             "acting-account",

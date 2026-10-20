@@ -1,6 +1,6 @@
 [package]
 name = "pr-sniper"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -51,3 +51,6 @@ objc2-user-notifications = { version = "=0.3.2", default-features = false, featu
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

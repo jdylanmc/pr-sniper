@@ -315,6 +315,14 @@ impl Contract {
         ducks: &[DuckCall],
         served: impl Fn(&EvidenceRef) -> bool,
     ) -> Result<(), String> {
+        if call.exit() == Exit::Wait
+            && ducks.iter().any(|d| match &d.outcome {
+                DuckOutcome::Failure { .. } => true,
+                DuckOutcome::Verdict { verdict } => verdict.verdict == VerdictKind::Unverifiable,
+            })
+        {
+            return Err("Unsettled Rubber Duck evidence cannot become an external wait.".into());
+        }
         if matches!(
             call.exit(),
             Exit::PanicExit | Exit::SubmitReport | Exit::SubmitVerdict
@@ -411,7 +419,7 @@ impl Contract {
         }
         if matches!(
             call.exit(),
-            Exit::ApprovePullRequest | Exit::ApproveAndMerge
+            Exit::ApprovePullRequest | Exit::ApproveAndMerge | Exit::Wait
         ) {
             action_clearance(assessments)?;
         }

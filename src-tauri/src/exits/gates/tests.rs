@@ -40,6 +40,53 @@ fn is_offered(input: &GateInput, exit: Exit) -> bool {
 }
 
 #[test]
+fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
+    let mut input = base();
+    input.tools.push("wait".into());
+    input.facts.ci = Ci::Pending;
+    assert_eq!(wait_reasons(&input), [WaitReason::Ci]);
+    assert!(is_offered(&input, Exit::Wait));
+    type Edit = fn(&mut GateInput);
+    let denied: [Edit; 9] = [
+        |i| i.primary = false,
+        |i| i.grants.merge = false,
+        |i| i.tools.retain(|t| t != "approve_and_merge"),
+        |i| i.facts.ci = Ci::Red,
+        |i| i.facts.ci = Ci::Unknown,
+        |i| i.facts.unresolved_threads = true,
+        |i| i.facts.changes_requested = true,
+        |i| i.facts.wait_merge_blocker = Some("Permission unavailable".into()),
+        |i| i.facts.author_is_acting = true,
+    ];
+    for edit in denied {
+        let mut blocked = input.clone();
+        edit(&mut blocked);
+        assert!(!is_offered(&blocked, Exit::Wait), "{blocked:?}");
+    }
+    input.facts.ci = Ci::Green;
+    input.facts.required_reviews_unmet = true;
+    assert!(
+        !is_offered(&input, Exit::Wait),
+        "supply the permitted own vote before waiting"
+    );
+    assert!(is_offered(&input, Exit::ApprovePullRequest));
+    input.facts.already_approved = true;
+    assert_eq!(wait_reasons(&input), [WaitReason::RequiredReviews]);
+    input.grants.merge = false;
+    assert!(
+        !is_offered(&input, Exit::Wait),
+        "approve-only must not wait for reviews"
+    );
+    input.facts.draft = true;
+    assert_eq!(wait_reasons(&input), [WaitReason::Draft]);
+    input.grants.approve = false;
+    assert!(
+        !is_offered(&input, Exit::Wait),
+        "comment-only must not wait for merge"
+    );
+}
+
+#[test]
 fn the_decided_scenario_table() {
     use Exit::{
         ApproveAndMerge as Merge, ApprovePullRequest as Approve, LeaveComments as Comment,

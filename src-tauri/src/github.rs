@@ -20,14 +20,14 @@ pub mod state;
 pub mod threads;
 pub mod token_store;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub mod credentials;
 mod identity;
 pub use identity::Identity;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConnectionError {
     WrongIdentity,
     InvalidResponse,

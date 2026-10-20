@@ -67,6 +67,8 @@ pub struct PrSnapshot {
     pub review_decision: Option<String>,
     pub reviews: Vec<SnapshotReview>,
     pub checks: Vec<SnapshotCheck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_checks: Vec<String>,
     pub check_total: u64,
     pub threads: Vec<SnapshotThread>,
     pub thread_total: u64,
@@ -94,6 +96,8 @@ pub struct NormalizedSnapshot {
     pub approvals: Vec<(String, String)>,
     pub labels: Vec<String>,
     pub checks: Vec<(String, String, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_checks: Vec<String>,
     pub check_total: u64,
     pub comments: Vec<NormalizedComment>,
     pub thread_total: u64,
@@ -144,6 +148,9 @@ impl PrSnapshot {
             .collect();
         checks.sort();
         checks.dedup();
+        let mut required_checks = self.required_checks.clone();
+        required_checks.sort();
+        required_checks.dedup();
         let mut comments: Vec<_> = self
             .comments
             .iter()
@@ -178,6 +185,7 @@ impl PrSnapshot {
             approvals,
             labels,
             checks,
+            required_checks,
             check_total: self.check_total,
             comments,
             thread_total: self.thread_total,
@@ -195,6 +203,24 @@ fn check_status(status: &str) -> &'static str {
 }
 
 impl NormalizedSnapshot {
+    pub fn ci_pending(&self) -> bool {
+        !self.checks.iter().any(|(_, _, conclusion)| {
+            matches!(
+                conclusion.as_str(),
+                "failure"
+                    | "error"
+                    | "cancelled"
+                    | "timed_out"
+                    | "action_required"
+                    | "startup_failure"
+            )
+        }) && (self.checks.iter().any(|(_, status, _)| status == "pending")
+            || self
+                .required_checks
+                .iter()
+                .any(|required| !self.checks.iter().any(|(name, _, _)| name == required)))
+    }
+
     pub fn hash(&self) -> String {
         digest(&serde_json::to_string(self).expect("normalized snapshot serializes"))
     }
@@ -228,20 +254,24 @@ impl StateMarks {
     pub fn of(snapshot: &PrSnapshot, actor: &str) -> Self {
         let n = snapshot.normalize();
         let approvals: Vec<_> = n.approvals.iter().filter(|(a, _)| a != actor).collect();
-        let fields = digest(
-            &json!([
-                n.head,
-                n.base,
-                n.text_hash,
-                n.lifecycle,
-                n.mergeable,
-                n.labels,
-                n.checks,
-                n.check_total,
-                approvals
-            ])
-            .to_string(),
-        );
+        let mut fields = json!([
+            n.head,
+            n.base,
+            n.text_hash,
+            n.lifecycle,
+            n.mergeable,
+            n.labels,
+            n.checks,
+            n.check_total,
+            approvals
+        ]);
+        if !n.required_checks.is_empty() {
+            fields
+                .as_array_mut()
+                .unwrap()
+                .push(json!(n.required_checks));
+        }
+        let fields = digest(&fields.to_string());
         let comments = snapshot
             .comments
             .iter()
@@ -296,6 +326,7 @@ impl StateMarks {
 
 const FRAGMENT: &str = r#"fragment S on PullRequest {
   fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid headRefName
+  baseRef { branchProtectionRule { requiresStatusChecks requiredStatusCheckContexts } }
   labels(first:100) { nodes { name } }
   latestOpinionatedReviews(first:100) { nodes { state author { login } commit { oid } } }
   comments(last:100) { totalCount nodes { fullDatabaseId body } }
@@ -348,6 +379,28 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
         _ => return Err(ConnectionError::InvalidResponse),
     };
     let rollup = &pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"];
+    let protection = pull
+        .get("baseRef")
+        .and_then(|r| r.get("branchProtectionRule"))
+        .ok_or(ConnectionError::IncompleteRead)?;
+    let required_checks = if protection.is_null() {
+        Vec::new()
+    } else {
+        let required = protection["requiresStatusChecks"]
+            .as_bool()
+            .ok_or(ConnectionError::IncompleteRead)?;
+        let names = protection["requiredStatusCheckContexts"]
+            .as_array()
+            .ok_or(ConnectionError::IncompleteRead)?
+            .iter()
+            .map(string)
+            .collect::<Result<Vec<_>, _>>()?;
+        if required {
+            names
+        } else {
+            Vec::new()
+        }
+    };
     let mut checks = Vec::new();
     let mut check_total = 0;
     if !rollup.is_null() {
@@ -366,6 +419,9 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
                 },
                 _ => return Err(ConnectionError::InvalidResponse),
             });
+        }
+        if check_total != checks.len() as u64 {
+            return Err(ConnectionError::IncompleteRead);
         }
     }
     let mut threads = Vec::new();
@@ -414,6 +470,7 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
             })
             .collect::<Result<_, ConnectionError>>()?,
         checks,
+        required_checks,
         check_total,
         thread_total: count(&pull["reviewThreads"]["totalCount"])?,
         threads,
@@ -487,6 +544,7 @@ mod tests {
 
     fn base() -> PrSnapshot {
         PrSnapshot {
+            required_checks: vec![],
             number: 1,
             pull_request_id: "9".into(),
             title: "t".into(),
@@ -599,6 +657,7 @@ mod tests {
                 json!({"fullDatabaseId":"9","number":n,"title":"t","body":null,"state":"OPEN",
                 "isDraft":false,"mergeable":"UNKNOWN","reviewDecision":null,
                 "baseRefOid":"s","headRefOid":"h",
+                "baseRef":{"branchProtectionRule":null},
                 "labels":{"nodes":[{"name":"x"}]},
                 "latestOpinionatedReviews":{"nodes":[{"state":"APPROVED","author":{"login":"a"},"commit":{"oid":"h"}}]},
                 "comments":{"totalCount":1,"nodes":[{"fullDatabaseId":7,"body":"c"}]},

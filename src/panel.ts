@@ -20,6 +20,7 @@ import { terseError } from "./errors";
 import { inlineMarkdown } from "./markdown";
 import { drawNow, setText, whenReleased } from "./stable-dom";
 import { applyTheme } from "./theme";
+import { waitingStates } from "./exits";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -51,6 +52,7 @@ interface Row {
   reason?: string | null;
   failure?: FailureClass | null;
   delayed_until?: number | null;
+  offline?: { last_success: number | null; next_check_at: number } | null;
   teammate?: string | null;
   work?: WorkPresentation;
   subject?: string;
@@ -58,6 +60,8 @@ interface Row {
 }
 
 const stateIcons: Record<string, string> = {
+  Offline:
+    "m3 3 18 18M2 8a16 16 0 0 1 3-2m4-2a16 16 0 0 1 13 4M5 12a11 11 0 0 1 3-2m5-1a11 11 0 0 1 6 3m-11 4a6 6 0 0 1 6-1m-2 5h.01",
   Queued: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Waiting: "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
   Failed: "m9 9 6 6m0-6-6 6M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18",
@@ -266,7 +270,9 @@ export async function mountPanel(app: HTMLElement) {
     error.hidden = true;
   };
   const remember = (opener?: HTMLElement) => {
-    if (!opener && navigationOrigin === key(route)) return;
+    // Settings can navigate internally while a tab change is still pending.
+    if (!opener && navigationOrigin === key(route) && route.tab !== "settings")
+      return;
     const previous = positions.get(positionKey());
     const focus =
       opener ??
@@ -721,7 +727,8 @@ export async function mountPanel(app: HTMLElement) {
         );
       {
         const displayState =
-          tab === "reviewed"
+          waitingStates[row.state] ??
+          (tab === "reviewed"
             ? row.kind === "item"
               ? row.state[0].toUpperCase() + row.state.slice(1)
               : "Reviewed"
@@ -733,9 +740,11 @@ export async function mountPanel(app: HTMLElement) {
                   ? "Superseded"
                   : ["failed", "manual_retry"].includes(row.work?.state ?? "")
                     ? "Failed"
-                    : row.delayed_until
-                      ? "Waiting"
-                      : "Queued";
+                    : row.offline
+                      ? "Offline"
+                      : row.delayed_until
+                        ? "Waiting"
+                        : "Queued");
         button.className = "work-row";
         button.dataset.display = displayState.toLowerCase();
         button.setAttribute(
@@ -754,19 +763,28 @@ export async function mountPanel(app: HTMLElement) {
           marker.innerHTML = icon(
             tab === "reviewed"
               ? destinations.reviewed.icon
-              : (stateIcons[displayState] ?? destinations.running.icon),
+              : waitingStates[row.state]
+                ? stateIcons.Waiting
+                : (stateIcons[displayState] ?? destinations.running.icon),
           );
         const copy = document.createElement("span");
         copy.className = "work-copy";
         const state = document.createElement("span");
         state.className = "work-state";
         // Backpressure is a quiet wait: a clock and the local resume time.
-        state.textContent = row.delayed_until
-          ? new Date(row.delayed_until * 1000).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : displayState;
+        state.textContent = row.offline
+          ? `Offline${row.offline.last_success === null ? "" : ` · ${new Date(row.offline.last_success * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}`
+          : row.delayed_until
+            ? new Date(row.delayed_until * 1000).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : displayState;
+        if (row.offline?.last_success != null)
+          state.setAttribute(
+            "aria-label",
+            `Offline; last successful check ${new Date(row.offline.last_success * 1000).toLocaleString()}`,
+          );
         if (row.failure) {
           const subject = document.createElement("strong");
           subject.className = "work-subject";
@@ -874,6 +892,7 @@ export async function mountPanel(app: HTMLElement) {
             state: work.state,
             failure: work.failure,
             delayed_until: work.delayed_until,
+            offline: work.offline,
             teammate: work.blocked_by?.teammate.agent_name ?? null,
             reason:
               work.reason ??
@@ -893,6 +912,15 @@ export async function mountPanel(app: HTMLElement) {
             )),
       );
       rows.splice(0, rows.length, ...running);
+      for (const item of snapshot?.items ?? []) {
+        if (waitingStates[item.state])
+          rows.push({
+            id: item.id,
+            kind: "item",
+            title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
+            state: item.state,
+          });
+      }
       draw("running", rows, now);
     }
     if (!snapshot) {

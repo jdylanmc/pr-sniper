@@ -1,7 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { expect, test } from "./fixtures.mjs";
+import { expect, test as base } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { queueEvidenceFixture } from "./queue-reload-evidence.mjs";
+
+const test = base.extend({ queueEvidence: queueEvidenceFixture });
 
 test.use({ viewport: { width: 408, height: 744 } });
 // Rows share one rounded group container, so the radius belongs to the group.
@@ -45,12 +48,13 @@ async function scenario(store, name) {
   return fixture;
 }
 
-async function capture(page, testInfo, name) {
+async function capture(page, testInfo, name, evidence, stage) {
   await page.evaluate(() => window.__settingsIdle());
   await page.locator(".panel-header strong").click();
   const bytes = await page.screenshot({
     path: testInfo.outputPath(`${name}.png`),
   });
+  if (evidence) await evidence.capture(stage, bytes);
   await testInfo.attach(name, { body: bytes, contentType: "image/png" });
   if (/^queue-(empty|populated|attention)$/.test(name)) {
     const approved = await readFile(reference);
@@ -231,12 +235,22 @@ for (const name of ["empty", "populated", "attention"]) {
   test(`Queue ${name} preserves approved image hierarchy with actual human-only state`, async ({
     page,
     store,
+    queueEvidence,
   }, testInfo) => {
+    await queueEvidence.phase("initial-navigation");
     await scenario(store, name);
     await page.goto("/");
     if (name === "empty") await tab(page, "Queue").click();
     await expect(page.locator("[data-panel-heading]")).toHaveText("Your queue");
-    const image = await capture(page, testInfo, `queue-${name}`);
+    await queueEvidence.phase("before-capture");
+    const image = await capture(
+      page,
+      testInfo,
+      `queue-${name}`,
+      queueEvidence,
+      "before",
+    );
+    await queueEvidence.phase("hierarchy-assertions");
     const ready = name === "populated" ? 1 : 0;
     const attention = name === "populated" ? 2 : name === "attention" ? 1 : 0;
     await expect(page.locator("[data-queue-ready]")).toHaveText(String(ready));
@@ -318,15 +332,24 @@ for (const name of ["empty", "populated", "attention"]) {
         2,
       ),
     );
+    await queueEvidence.phase("reload-navigation");
     await page.reload();
     await page.evaluate(() => window.__settingsIdle());
     if (name === "empty") await tab(page, "Queue").click();
-    const reloaded = await capture(page, testInfo, `queue-${name}-reloaded`);
+    await queueEvidence.phase("reload-capture");
+    const reloaded = await capture(
+      page,
+      testInfo,
+      `queue-${name}-reloaded`,
+      queueEvidence,
+      "reload",
+    );
     // Same Store and renderer must retain the image, allowing only isolated
     // rasterization differences (0.1% of pixels, 16 levels per channel).
-    expect(await changedPixels(page, image, reloaded)).toBeLessThanOrEqual(
-      0.001,
-    );
+    await queueEvidence.phase("reload-comparison");
+    const ratio = await changedPixels(page, image, reloaded);
+    await queueEvidence.compare(ratio);
+    expect(ratio).toBeLessThanOrEqual(0.001);
   });
 }
 

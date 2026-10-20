@@ -52,7 +52,7 @@ async function saveRepository(editor) {
 const savedCron = async (store, index = 0) =>
   (await store("snapshot")).settings.repositories[index].cron;
 
-test("Preferences keeps only capacity and time zone", async ({
+test("Preferences keeps capacity, review inactivity and time zone without repository schedules", async ({
   page,
   store,
 }) => {
@@ -61,8 +61,13 @@ test("Preferences keeps only capacity and time zone", async ({
   await section(page, "Preferences");
   const card = page.getByRole("group", { name: "Capacity and time zone" });
   await expect(card.getByLabel("AI capacity", { exact: true })).toBeVisible();
+  const inactivity = card.getByLabel("Review inactivity (min)", {
+    exact: true,
+  });
+  await expect(inactivity).toBeVisible();
+  await expect(inactivity).toHaveValue("15");
   await expect(card.locator("#global-timezone")).toBeVisible();
-  await expect(card.locator("label")).toHaveCount(2);
+  await expect(card.locator("label")).toHaveCount(3);
   await expect(page.getByLabel("Cron expression")).toHaveCount(0);
   await expect(page.getByLabel("Schedule helper")).toHaveCount(0);
 });

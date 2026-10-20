@@ -2,6 +2,7 @@ pub mod actions;
 pub mod admission;
 pub mod backpressure;
 pub mod capacity;
+pub mod connectivity;
 mod copilot;
 pub mod exit_writes;
 pub mod exits;
@@ -1540,7 +1541,14 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
             .monitor
             .lock()
             .map_err(|_| "Monitoring is unavailable.")?;
-        monitor.lifecycle_tickets(&store, &accounts, now_seconds()?)
+        let connectivity = store.load_connectivity()?;
+        let mut tickets = monitor.lifecycle_tickets(&store, &accounts, now_seconds()?)?;
+        tickets.retain(|ticket| {
+            connectivity
+                .offline(&[backpressure::Scope::github(&ticket.provider_account_id)])
+                .is_none()
+        });
+        Ok(tickets)
     })()
     .unwrap_or_default();
     for ticket in tickets {
@@ -1642,6 +1650,22 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             })();
             let connection_failure = result.as_ref().err().copied();
             let host = app.state::<Host>();
+            if matches!(
+                connection_failure,
+                Some(ConnectionError::Network | ConnectionError::Timeout)
+            ) {
+                let observation = connectivity::probe(backpressure::Origin::Github);
+                if let (Ok(store), Ok(now)) = (host.store.lock(), now_seconds()) {
+                    if let Err(error) = connectivity::record(
+                        &store,
+                        backpressure::Scope::github(&account_id),
+                        observation,
+                        now,
+                    ) {
+                        report(&app, error);
+                    }
+                }
+            }
             if let Some(error) = connection_failure {
                 apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error));
             }
@@ -4467,6 +4491,9 @@ pub fn run() {
                     let host = scheduler_app.state::<Host>();
                     if host.quitting.load(Ordering::SeqCst) {
                         break;
+                    }
+                    if let Err(error) = connectivity::refresh(&scheduler_app).await {
+                        report(&scheduler_app, error);
                     }
                     if let Err(error) = start_checks(&scheduler_app, false) {
                         report(&scheduler_app, error);

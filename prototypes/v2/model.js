@@ -337,6 +337,7 @@
       onboarded: true,
       monitoring: true,
       limit: 4,
+      inactivity: 15,
       nextNumber: 500,
       preferences: {
         automaticStart: true,
@@ -478,7 +479,16 @@
       },
       { who: "PR author", body: "I will update the retry state." },
     ];
-    state.reviews.push(...running, ...human, ...history);
+    const waiting = packet(
+      state,
+      "Merge after checks complete",
+      0,
+      405,
+      "waiting_on_ci",
+    );
+    waiting.run = runSnapshot(state, waiting);
+    waiting.attempt = 1;
+    state.reviews.push(...running, waiting, ...human, ...history);
     return state;
   }
 
@@ -878,6 +888,7 @@
         [
           "queued",
           "running",
+          "waiting_on_ci",
           "human",
           "question",
           "approved",
@@ -996,9 +1007,22 @@
           integer(payload.limit),
           "Enter a positive whole number of concurrent reviews.",
         );
+        if (
+          payload.inactivity !== undefined &&
+          (!Number.isInteger(payload.inactivity) ||
+            payload.inactivity < 1 ||
+            payload.inactivity > 4294967295)
+        ) {
+          throw new Error("Review inactivity must be positive whole minutes.");
+        }
         state.limit = payload.limit;
+        state.inactivity = payload.inactivity ?? state.inactivity ?? 15;
         if (payload.duck) {
-          const ranges = { calls: [1, 32], timeout: [30, 600], window: [5, 120] };
+          const ranges = {
+            calls: [1, 32],
+            timeout: [30, 600],
+            window: [5, 120],
+          };
           requireValue(
             Object.entries(ranges).every(
               ([key, [min, max]]) =>

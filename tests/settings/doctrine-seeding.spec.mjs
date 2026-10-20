@@ -826,6 +826,7 @@ for (const [name, doctrines] of [
     });
     await writeFile(join(config, "settings.json"), original);
     await page.goto("/?view=settings");
+    await page.evaluate(() => window.__settingsIdle());
     await section(page, "Agents");
     await section(page, "Doctrines");
     expect(await library(page)).toEqual(content(doctrines ?? []));
@@ -839,6 +840,7 @@ for (const [name, doctrines] of [
       { title: "additional", body: "An explicitly added principle." },
     ];
     await page.reload();
+    await page.evaluate(() => window.__settingsIdle());
     await section(page, "Doctrines");
     expect(await library(page)).toEqual(expected);
     const saved = (await store("snapshot")).settings.doctrines;

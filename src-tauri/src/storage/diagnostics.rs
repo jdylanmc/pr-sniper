@@ -95,6 +95,7 @@ impl ToolName {
             "rubber_duck" => Self::RubberDuck,
             "leave_comments"
             | "ready_for_human"
+            | "wait"
             | "approve_pull_request"
             | "approve_and_merge"
             | "panic_exit"
@@ -122,6 +123,9 @@ pub enum FailureKind {
     Network,
     RateLimited,
     Provider,
+    Credentials,
+    Permission,
+    Permanent,
     EligibilityOrConfiguration,
     Superseded,
     Panic,
@@ -218,6 +222,7 @@ pub enum PublicationStage {
     VerifyPending,
     Submit,
     VerifySubmitted,
+    Discard,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -234,12 +239,41 @@ pub enum VerificationField {
     Side,
     Line,
     State,
+    Repository,
+    Batch,
+    Diff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
     Started,
+    Replacement {
+        previous_attempt_id: String,
+        previous_operation_id: String,
+    },
+    Duck {
+        ordinal: u32,
+        outcome: Option<crate::review::duck::VerdictKind>,
+        failure: Option<crate::review::duck::DuckFailure>,
+        duration_ms: Option<u64>,
+        session_id: Option<String>,
+    },
+    DuckEvent {
+        ordinal: u32,
+        session_id: Option<String>,
+        runtime_version: Option<String>,
+        model: String,
+        event: Box<Event>,
+    },
+    DuckTeardown {
+        abort: Outcome,
+        disconnect: Outcome,
+    },
+    DuckClientTeardown {
+        drain: Outcome,
+        shutdown: Outcome,
+    },
     Phase {
         phase: Phase,
     },
@@ -324,6 +358,25 @@ pub enum Event {
         mismatch: Option<VerificationField>,
         ownership: Outcome,
         failure: Option<FailureKind>,
+        #[serde(default)]
+        duration_ms: Option<u64>,
+        #[serde(default)]
+        uncertain: Option<bool>,
+    },
+    PublicationAttempt {
+        publication_id: String,
+        operation_id: String,
+        attempt_count: u64,
+    },
+    PublicationProviderError {
+        error: crate::github::ConnectionError,
+    },
+    PublicationRetry {
+        operation_id: String,
+        decision: RetryDecision,
+        failure: Option<FailureKind>,
+        next_attempt_at: Option<i64>,
+        attempt_count: u64,
     },
     EvidenceUnavailable {
         runtime_truncation: bool,
@@ -430,12 +483,85 @@ impl Record {
                 runtime_call_id: Some(id),
                 ..
             } => *id = safe_text(id),
+            Event::Replacement {
+                previous_attempt_id,
+                previous_operation_id,
+            } => {
+                *previous_attempt_id = safe_text(previous_attempt_id);
+                *previous_operation_id = safe_text(previous_operation_id);
+            }
+            Event::PublicationAttempt {
+                publication_id,
+                operation_id,
+                ..
+            } => {
+                *publication_id = safe_text(publication_id);
+                *operation_id = safe_text(operation_id);
+            }
+            Event::PublicationRetry { operation_id, .. } => *operation_id = safe_text(operation_id),
+            Event::Duck {
+                session_id: Some(id),
+                ..
+            } => *id = safe_text(id),
+            Event::DuckEvent {
+                event,
+                session_id,
+                runtime_version,
+                model,
+                ..
+            } => {
+                for text in [session_id, runtime_version].into_iter().flatten() {
+                    *text = safe_text(text);
+                }
+                *model = safe_text(model);
+                // Only one nesting level is valid: a Duck cannot call another Duck.
+                if matches!(event.as_ref(), Event::DuckEvent { .. }) {
+                    **event = Event::EvidenceUnavailable {
+                        runtime_truncation: true,
+                        runtime_stop_reason: true,
+                        inactivity_watchdog: true,
+                        connectivity_transitions: true,
+                    };
+                }
+                let mut nested = Record {
+                    attempt: self.attempt.clone(),
+                    sequence: None,
+                    elapsed_ms: None,
+                    event: *event.clone(),
+                };
+                nested.sanitize();
+                **event = nested.event;
+            }
             _ => {}
         }
     }
 }
 
 impl Store {
+    pub fn record_attempt_start(&self, record: Record) -> Result<(), String> {
+        let previous = self
+            .attempt_diagnostics()?
+            .into_iter()
+            .rev()
+            .filter_map(|entry| entry.attempt)
+            .find(|entry| {
+                entry.attempt.work_id == record.attempt.work_id
+                    && entry.attempt.id != record.attempt.id
+            });
+        self.record_attempt(record.clone())?;
+        if let Some(previous) = previous {
+            self.record_attempt(Record {
+                event: Event::Replacement {
+                    previous_attempt_id: previous.attempt.id,
+                    previous_operation_id: previous.attempt.operation_id,
+                },
+                sequence: None,
+                ..record
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn record_attempt_decision(&self, operation_id: &str, event: Event) -> Result<(), String> {
         let Some(latest) = self
             .attempt_diagnostics()?

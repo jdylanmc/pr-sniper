@@ -259,11 +259,11 @@ async function check(engine, name) {
     current = await state();
     assert.equal(current.accounts.length, 3);
     assert.equal(current.agents.length, 6);
-    assert.equal(current.reviews.length, 28);
+    assert.equal(current.reviews.length, 29);
     assert.equal(await page.locator("#ready-count").textContent(), "2");
     assert.equal(await page.locator("#attention-count").textContent(), "1");
     assert.equal(await page.locator("#running-nav-count").textContent(), "4");
-    await click("#human-list .review-open:first-child");
+    await click('#human-list [data-review-id="review-248"]');
     assert.equal(
       await page.locator(".platform-link").getAttribute("href"),
       "https://github.com/orbit/console/pull/248",

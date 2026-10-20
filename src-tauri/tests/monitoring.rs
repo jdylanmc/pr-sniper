@@ -1678,8 +1678,113 @@ fn fail_poll(
     id
 }
 
+#[test]
+fn offline_check_now_waits_and_runs_on_recovery_without_waiting_for_the_cron() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{record, Observation},
+    };
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_001;
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Unreachable,
+        now,
+    )
+    .unwrap();
+    assert!(monitor
+        .prepare_checks(&store, now, true)
+        .unwrap()
+        .is_empty());
+    assert!(monitor.snapshot()[0].scan_pending);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Reachable,
+        now + 5,
+    )
+    .unwrap();
+    assert_eq!(
+        monitor
+            .prepare_checks(&store, now + 5, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 fn poll_operation(monitor: &Monitor) -> pr_sniper_lib::monitoring::JobOperation {
     monitor.snapshot()[0].operation.clone().unwrap()
+}
+
+#[test]
+fn offline_poll_preserves_prior_failure_budget_through_outage_restart_and_recovery() {
+    use pr_sniper_lib::{
+        backpressure::Scope,
+        connectivity::{record, Observation},
+    };
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::ProviderFailure,
+    );
+    let failed = poll_operation(&monitor);
+    let retry = failed.next_attempt_at.unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, retry, false)
+        .unwrap()
+        .remove(0);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Unreachable,
+        retry + 1,
+    )
+    .unwrap();
+    let _ = monitor.finish(&store, ticket, Err(ConnectionError::Network), retry + 1);
+    let frozen = poll_operation(&monitor);
+    assert_eq!(frozen.attempt_count, 1);
+    assert_eq!(frozen.failure, Some(OperationFailure::Provider));
+    assert_eq!(frozen.retry_deadline, failed.retry_deadline);
+    let wake = retry + 10 * 86_400;
+    monitor = Monitor::restore(&store).unwrap();
+    assert!(monitor
+        .prepare_checks(&store, wake, true)
+        .unwrap()
+        .is_empty());
+    assert_eq!(poll_operation(&monitor), frozen);
+    record(
+        &store,
+        Scope::github(ACCOUNT_ID),
+        Observation::Reachable,
+        wake,
+    )
+    .unwrap();
+    let tickets = monitor.prepare_checks(&store, wake, false).unwrap();
+    assert_eq!(tickets.len(), 1);
+    let resumed = poll_operation(&monitor);
+    assert_eq!(resumed.id, frozen.id);
+    assert_eq!(resumed.attempt_count, 2);
+    assert_eq!(
+        resumed.retry_deadline,
+        failed.retry_deadline + wake - retry - 1
+    );
+    monitor
+        .finish(
+            &store,
+            tickets[0].clone(),
+            Ok(poll_result(vec![], "actor")),
+            wake + 1,
+        )
+        .unwrap();
+    assert_eq!(poll_operation(&monitor).state, OperationState::Completed);
 }
 
 #[test]
@@ -1850,6 +1955,90 @@ fn exhausted_cooldown_poll_requeues_on_the_next_scheduled_scan() {
         1
     );
     assert_eq!(poll_operation(&monitor).state, OperationState::Running);
+}
+
+#[test]
+fn reconnected_parked_poll_keeps_its_schedule_without_erasing_the_real_failure() {
+    for control in ["connected", "disconnected", "unauthorized"] {
+        let (_root, store) = store();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let mut now = 1_800_000_000;
+        for attempt in 1..=3 {
+            fail_poll(
+                &mut monitor,
+                &store,
+                now,
+                attempt == 1,
+                ConnectionError::Network,
+            );
+            if attempt < 3 {
+                now = poll_operation(&monitor).next_attempt_at.unwrap();
+            }
+        }
+        let mut state = store.load_monitoring_state().unwrap();
+        let health = state.health.get_mut(REPOSITORY_KEY).unwrap();
+        health.last_failure = Some("account_disconnected".into());
+        health.next_run = 0;
+        health.scheduled_run = 0;
+        health.schedule_available = false;
+        let operation = health.operation.as_mut().unwrap();
+        operation.resume_cycle = 5;
+        operation.resume_at = None;
+        let parked = operation.clone();
+        store.save_monitoring_state(&state).unwrap();
+        if control == "unauthorized" {
+            let mut settings = store.load_settings().unwrap();
+            settings
+                .repository_authorizations
+                .insert(REPOSITORY_KEY.into(), None);
+            store.save_settings(&settings).unwrap();
+        }
+        let accounts = if control == "disconnected" {
+            BTreeMap::new()
+        } else {
+            available_accounts(&[(ACCOUNT_ID, "current-login")])
+        };
+        let mut monitor = Monitor::restore(&store).unwrap();
+        assert!(monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_100, false)
+            .unwrap()
+            .is_empty());
+        if control != "connected" {
+            assert!(monitor
+                .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+                .unwrap()
+                .is_empty());
+            continue;
+        }
+        let restored = store.load_monitoring_state().unwrap();
+        let health = &restored.health[REPOSITORY_KEY];
+        assert_eq!(health.scheduled_run, 1_800_000_900);
+        assert!(health.last_failure.is_none());
+        assert_eq!(health.operation.as_ref().unwrap(), &parked);
+        let mut restarted = Monitor::restore(&store).unwrap();
+        assert!(restarted
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_200, false)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            restarted
+                .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(restarted
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+            .unwrap()
+            .is_empty());
+        let resumed = poll_operation(&restarted);
+        assert_ne!(resumed.id, parked.id);
+        assert_eq!(resumed.attempt_count, 1);
+        assert_eq!(
+            store.load_monitoring_state().unwrap().operations[&parked.id],
+            parked
+        );
+    }
 }
 
 #[test]

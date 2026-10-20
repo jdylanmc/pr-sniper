@@ -64,6 +64,9 @@ Reconciled with the shipped panel UI: icon-first, minimal prose.
   collapsed _Repository_ disclosure of plain action rows.
 - **Theme:** Preferences > Theme (Light, Dark, OS) applies at once to the
   popover only; `?theme=dark` previews Dark.
+- **Review inactivity:** beside AI capacity; positive whole minutes, default 15.
+  Both rows open the same saved capacity editor. Prototype persists the value;
+  native review timing is tested separately.
 
 ## Visual evidence
 

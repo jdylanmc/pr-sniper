@@ -173,6 +173,7 @@ fn follow_up(review: ReviewRun) -> FollowUp {
     };
     let mut run = FollowUp::new(&origin, thread).unwrap();
     run.result = Some(ReviewResult {
+        wait_snapshot: None,
         reviewed_base_sha: Some("b".repeat(40)),
         output: ReplyOutput {
             feedback_assessments: Vec::new(),

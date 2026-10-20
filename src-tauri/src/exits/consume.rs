@@ -280,6 +280,34 @@ pub fn honour_local(
     if run.mode != RunMode::Packet {
         return Ok(Consumed::Consumed);
     }
+    if let Some(ExitOutcome::Wait { reason }) = &result.output.exit {
+        if writing(store)?.contains(&Binding::job(&run.job)) {
+            return Err("An unsettled provider effect prevents waiting.".into());
+        }
+        crate::review::findings::action_clearance(&result.finding_dispositions)?;
+        let snapshot = result
+            .wait_snapshot
+            .clone()
+            .or_else(|| run.packet.as_ref().and_then(|p| p.wait_snapshot.clone()))
+            .ok_or("The packet has no external-wait snapshot.")?;
+        let baseline = snapshot.hash();
+        let mut states = store.load_pr_states()?;
+        let outcome = states.wait(
+            &Binding::job(&run.job),
+            &baseline,
+            crate::pr_state::ExternalWait {
+                reason: *reason,
+                state_seq: state_seq(&run.job),
+                assignment_id: run.assignment_id.clone(),
+                agent_id: run.selection.agent.id.clone(),
+                snapshot,
+            },
+        );
+        if outcome == Consumed::Consumed {
+            store.save_pr_states(&states)?;
+        }
+        return Ok(outcome);
+    }
     let Some(ExitOutcome::ReadyForHuman { summary }) = &result.output.exit else {
         return Ok(Consumed::Consumed);
     };

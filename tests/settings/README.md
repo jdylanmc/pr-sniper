@@ -49,6 +49,49 @@ reduced motion, tiny viewports, 1x/2x device scale and doubled actual text sizes
 These browser/accessibility-tree checks do not establish native outer corners,
 desktop tray behavior or a live screen-reader session.
 
+Queue reload forensics (`queue-reload/` inside each test's output):
+
+- `before.png`, `reload.png`: original bytes persisted before decoding, renderer
+  inspection or comparison assertions. Missing captures stay explicitly `null`;
+  an aborted reload cannot manufacture its missing image.
+- `manifest.json`: atomically checkpointed phase/status; both PNG dimensions,
+  SHA-256 hashes and byte lengths; viewport, scale, media, fonts, selected filter,
+  row counts, focus tag, geometry, scroll and computed styles; browser/Node/OS,
+  source commit/dirty flag, version, lock and built-asset hashes, CI run/attempt
+  and pull-request head identity.
+- Error context: failed phase, test status, count and bounded error fingerprints.
+  No raw messages/stacks, console/network logs, environment dump, DOM content,
+  account/store data or credentials. The original assertion stays in test output.
+- Independent `pngjs` decoding records dimension agreement and changed-pixel
+  ratio before the unchanged browser-canvas comparison: ratio **<= 0.001**,
+  RGB channel difference **> 16** counts as changed. Neither oracle is loosened;
+  the independent result is diagnostic, not a replacement assertion.
+- Fixture teardown finalizes failed assertions, aborted steps and timeouts.
+  Checkpoints survive worker termination with `in-progress` plus the last phase;
+  runner loss or hard job termination can still prevent CI upload.
+- macOS WebKit uploads only these PNG/JSON paths after the suite, even on failure
+  or cancellation when the runner remains available: 5-minute upload budget,
+  14-day retention. Passing runs retain deterministic failure-proof artifacts too.
+
+`queue-evidence.spec.mjs` runs a child fixture with a deterministic white/black
+PNG mismatch, a thrown step and a timeout. It requires the child runner to exit
+with failure, independently reads/decodes retained files, verifies hashes,
+dimensions, error context and honest absent-reload state, and itself passes.
+Ordinary CI is not intentionally left red. No sleeps, retry, baseline replacement,
+native app or provider activity. Focused proof (after `npm run build`):
+
+```sh
+SETTINGS_TEST_PORT=43198 npm exec playwright -- test \
+  --config tests/settings/playwright.config.mjs --browser=webkit \
+  queue-evidence.spec.mjs queue-visual.spec.mjs \
+  --output src-tauri/target/queue-evidence-check
+```
+
+Historical run `39185134665`'s ratio-1 cause remains **unknown**. These synthetic
+failures prove preservation, not reproduction or repair of that renderer event.
+On recurrence inspect retained PNGs with the independent decoder and manifest
+before changing rendering or comparison logic; passing repeats prove no cause.
+
 Queue's heading, summary and error banner share its retained content scroller,
 including exact saved evidence and utility routes.
 Only the brand header, navigation and utilities stay pinned; other destinations

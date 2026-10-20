@@ -29,6 +29,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
     let reviews = store.review_evidence()?;
+    let states = store.load_pr_states()?;
     let mut result = Vec::new();
     for job in &jobs {
         let Some(repository) = settings
@@ -74,7 +75,13 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 run,
                 key,
                 assignment_id: assignment.id.clone(),
-                blocked: selection.err(),
+                blocked: selection.err().or_else(|| {
+                    states
+                        .get(&crate::retention::Binding::job(job))
+                        .and_then(|r| r.external_wait.as_ref())
+                        .filter(|w| crate::exits::consume::state_seq(job) <= w.state_seq)
+                        .map(|_| "Waiting for external prerequisite".into())
+                }),
                 job: job.clone(),
             });
         }
@@ -318,7 +325,46 @@ pub(crate) fn complete(
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
-    if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
+    let connectivity = store.load_connectivity()?;
+    let offline = connectivity
+        .offline(&crate::connectivity::scopes(current))
+        .is_some();
+    let suspended = current.operation.offline_since.is_some()
+        || current.operation.interruption == Some(crate::capacity::Interruption::Offline);
+    let suspend = (offline || suspended)
+        && outcome.as_ref().err().is_none_or(|e| {
+            e.cancelled
+                || (connectivity
+                    .offline(&[crate::backpressure::Scope::of(
+                        e.origin,
+                        &current.job.account_id,
+                        current
+                            .selection
+                            .agent
+                            .ai_account
+                            .as_ref()
+                            .map(|a| a.account_id.as_str()),
+                    )])
+                    .is_some()
+                    && matches!(
+                        e.kind,
+                        monitoring::OperationFailure::Network
+                            | monitoring::OperationFailure::Timeout
+                    ))
+        });
+    if suspend {
+        let since = connectivity
+            .offline(&crate::connectivity::scopes(current))
+            .and_then(|s| s.offline_since)
+            .or(current.operation.offline_since)
+            .unwrap_or(now);
+        crate::connectivity::sync_operation(store, &mut current.operation, Some(since), now);
+        current.operation.suspend_offline(now);
+        current.result = None;
+        current.attempt_ducks.clear();
+        current.phase = "Offline".into();
+        current.error = None;
+    } else if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
@@ -383,7 +429,15 @@ pub(crate) fn complete(
                 current.operation.state = OperationState::Completed;
                 current.operation.failure = None;
                 current.operation.next_attempt_at = None;
-                current.phase = "Automated review complete; final human review required".into();
+                current.phase = if matches!(
+                    result.output.exit,
+                    Some(crate::exits::ExitOutcome::Wait { .. })
+                ) {
+                    "Waiting for external prerequisite"
+                } else {
+                    "Automated review complete; final human review required"
+                }
+                .into();
                 current.result = Some(result);
                 current.error = None;
             }
@@ -536,7 +590,19 @@ pub(crate) async fn execute(
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::PreparingContext,
     });
-    let result = execute_attempt(app, run, cancelled, diagnostics.clone(), ducks).await;
+    let result = execute_attempt(
+        app.clone(),
+        run.clone(),
+        cancelled,
+        diagnostics.clone(),
+        ducks,
+    )
+    .await;
+    if let Err(error) = &result {
+        if let Err(error) = crate::connectivity::confirm_failure(&app, &run, error).await {
+            crate::report(&app, error);
+        }
+    }
     diagnostics.finish(
         crate::storage::diagnostics::CompletionStage::Attempt,
         result.as_ref().err(),
@@ -750,9 +816,19 @@ async fn execute_attempt(
     });
     let duck = duck_setup(&app, &run, packet.duck, ducks)?;
     let integration = app.state::<Host>().copilot.clone();
-    let read_hash = packet.packet.record.state_hash.clone();
+    let final_packet = packet.packet.record.clone();
     let client_after = client.clone();
     let request = runtime::Request {
+        inactivity: crate::storage::review_inactivity_duration(
+            app.state::<Host>()
+                .store
+                .lock()
+                .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                .load_settings()
+                .map_err(Failure::permanent)?
+                .review_inactivity_minutes,
+        )
+        .map_err(Failure::permanent)?,
         exits: packet.setup,
         diagnostics: Some(diagnostics.clone()),
         task: runtime::ExitReview {
@@ -778,30 +854,68 @@ async fn execute_attempt(
     if pull.base_sha != expected_base {
         return Err(base_changed(Some(&expected_base)));
     }
-    // A local-only exit writes nothing, so the state it read must still be the state.
-    if let (Some(read_hash), Some(crate::exits::ExitOutcome::ReadyForHuman { .. })) =
-        (read_hash, &result.output.exit)
-    {
+    // Local exits require fresh state; Wait may absorb only still-pending CI progress.
+    if matches!(
+        &result.output.exit,
+        Some(
+            crate::exits::ExitOutcome::ReadyForHuman { .. }
+                | crate::exits::ExitOutcome::Wait { .. }
+        )
+    ) {
         let repo = RemoteRepository {
             id: run.job.repository_id.clone(),
             name: run.job.repository_name.clone(),
         };
         let number = run.job.number;
-        let fresh = tauri::async_runtime::spawn_blocking(move || {
-            crate::exits::consume::fresh_hash(&client_after, &repo, number)
+        result = tauri::async_runtime::spawn_blocking(move || {
+            finalize_local_exit(&client_after, &repo, number, &final_packet, &mut result)?;
+            Ok::<_, Failure>(result)
         })
         .await
-        .map_err(|_| Failure::permanent("State check could not finish."))?
-        .map_err(Failure::provider)?;
-        if fresh != read_hash {
-            return Err(Failure::tossed(
-                "PR state moved during the run. Result discarded.",
-            ));
-        }
+        .map_err(|_| Failure::permanent("State check could not finish."))??;
     }
     gate()?;
     result.reviewed_base_sha = Some(expected_base);
     Ok((result, generation))
+}
+
+pub(crate) fn finalize_local_exit<T: crate::github::threads::QueryTransport>(
+    client: &crate::github::provider::GithubClient<T>,
+    repo: &RemoteRepository,
+    number: u64,
+    packet: &crate::packet::PacketRecord,
+    result: &mut super::ReviewResult,
+) -> Result<(), Failure> {
+    let read_hash = packet
+        .state_hash
+        .as_deref()
+        .ok_or_else(|| Failure::permanent("The packet record has no state hash."))?;
+    let fresh = client
+        .pr_snapshot(repo, number)
+        .map_err(Failure::from)?
+        .normalize();
+    let valid = if let Some(crate::exits::ExitOutcome::Wait { reason }) = &result.output.exit {
+        packet.wait_snapshot.as_ref().is_some_and(|read| {
+            read.hash() == read_hash
+                && crate::pr_state::ExternalWait::pending_snapshot(*reason, read, &fresh)
+        })
+    } else {
+        fresh.hash() == read_hash
+    };
+    if !valid {
+        return Err(Failure::tossed(
+            "PR state moved during the run. Result discarded.",
+        ));
+    }
+    if matches!(
+        result.output.exit,
+        Some(crate::exits::ExitOutcome::Wait { .. })
+    ) {
+        crate::review::findings::action_clearance(&result.finding_dispositions)
+            .map_err(Failure::permanent)?;
+        result.wait_snapshot = Some(fresh);
+    }
+    Ok(())
 }
 
 /// The primary's Rubber Duck for this attempt: the job-start snapshot, current limits and

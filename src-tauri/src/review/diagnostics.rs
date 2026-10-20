@@ -32,6 +32,32 @@ pub(crate) struct Trace {
 }
 
 impl Trace {
+    pub(crate) fn duck(self: &Arc<Self>, ordinal: u32, model: &str) -> Arc<Self> {
+        let parent = self.clone();
+        let mut attempt = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .attempt
+            .clone();
+        attempt.session_id = None;
+        attempt.runtime_version = None;
+        attempt.model = model.into();
+        Self::new(
+            attempt,
+            Arc::new(move |record| {
+                parent.emit(Event::DuckEvent {
+                    ordinal,
+                    session_id: record.attempt.session_id,
+                    runtime_version: record.attempt.runtime_version,
+                    model: record.attempt.model,
+                    event: Box::new(record.event),
+                });
+                Ok(())
+            }),
+        )
+    }
+
     pub(crate) fn new(attempt: Attempt, sink: Sink) -> Arc<Self> {
         let trace = Arc::new(Self {
             state: Mutex::new(State {
@@ -232,9 +258,9 @@ fn operation_failure(failure: &OperationFailure) -> FailureKind {
         OperationFailure::Provider => FailureKind::Provider,
         OperationFailure::Panic => FailureKind::Panic,
         OperationFailure::Superseded | OperationFailure::Tossed => FailureKind::Superseded,
-        OperationFailure::Permanent
-        | OperationFailure::Credentials
-        | OperationFailure::Permission => FailureKind::EligibilityOrConfiguration,
+        OperationFailure::Permanent => FailureKind::Permanent,
+        OperationFailure::Credentials => FailureKind::Credentials,
+        OperationFailure::Permission => FailureKind::Permission,
     }
 }
 
@@ -273,7 +299,13 @@ pub(crate) fn native(
                 .store
                 .lock()
                 .map_err(|_| "Attempt diagnostic storage unavailable.".to_string())
-                .and_then(|store| store.record_attempt(record));
+                .and_then(|store| {
+                    if matches!(record.event, Event::Started) {
+                        store.record_attempt_start(record)
+                    } else {
+                        store.record_attempt(record)
+                    }
+                });
             if let Err(error) = &result {
                 crate::report(&app, error.clone());
             }

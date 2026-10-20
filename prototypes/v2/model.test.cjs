@@ -16,6 +16,22 @@ const first = (state, status = "running") =>
   state.reviews.find((review) => review.state === status);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test("external CI wait survives reload without occupying capacity or becoming dismissible", () => {
+  const restored = M.validate(plain(M.seed()));
+  const wait = first(restored, "waiting_on_ci");
+  assert.ok(wait);
+  assert.equal(count(restored, "running"), restored.limit);
+  const reduced = M.update(restored, "capacity", { limit: 1 });
+  assert.equal(count(reduced, "running"), 1);
+  const waiting = reduced.reviews.find((review) => review.id === wait.id);
+  assert.equal(waiting.state, "waiting_on_ci");
+  assert.equal(waiting.attempt, wait.attempt);
+  assert.throws(
+    () => M.update(reduced, "dismiss-stale", { reviewId: wait.id }),
+    /Only stale reviews/,
+  );
+});
+
 test("stale dismissal keeps evidence and a later stale state can reappear", () => {
   const initial = M.seed();
   const review = first(initial, "human");
@@ -166,6 +182,17 @@ test("global stop discards active attempts; resume restarts without duplicates",
       ),
       human,
     );
+  }
+});
+
+test("review inactivity defaults to fifteen and saves beside capacity", () => {
+  const original = M.seed();
+  assert.equal(original.inactivity, 15);
+  const saved = M.update(original, "capacity", { limit: 4, inactivity: 7 });
+  assert.equal(saved.inactivity, 7);
+  for (const inactivity of [0, -1, 1.5, Infinity, NaN, 4294967296]) {
+    assert.throws(() => M.update(saved, "capacity", { limit: 4, inactivity }));
+    assert.equal(saved.inactivity, 7);
   }
 });
 
@@ -766,7 +793,7 @@ test("fresh install has no configured accounts, agents, repositories, reviews, o
     () => M.update(state, "finish-onboarding", { confirmed: true }),
     /Connect both account roles/,
   );
-  assert.equal(M.seed().reviews.length, 28);
+  assert.equal(M.seed().reviews.length, 29);
 });
 
 test("Genie progress comes from shared setup; completion requires a separate confirmation", () => {

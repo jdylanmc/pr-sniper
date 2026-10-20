@@ -212,6 +212,7 @@ for (const width of [408, 320]) {
     for (const [selector, label] of [
       ["#global-timezone", "time zone"],
       ["#global-capacity", "AI capacity"],
+      ["#review-inactivity", "review inactivity"],
     ])
       expectUnclipped(await ring(page.locator(selector)), label);
   });

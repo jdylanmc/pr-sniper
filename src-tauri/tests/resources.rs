@@ -12,6 +12,61 @@ const AGENT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const ASSIGNMENT: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
+#[test]
+fn review_inactivity_migrates_validates_and_compare_saves_across_restart() {
+    use pr_sniper_lib::storage::Store;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let original = settings();
+    assert_eq!(original.review_inactivity_minutes, 15);
+    store.save_settings(&original).unwrap();
+    let expected = original.global_preferences();
+    let mut value = expected.clone();
+    value.review_inactivity_minutes = 7;
+    store
+        .save_resource(ResourceEdit::Preferences {
+            expected: expected.clone(),
+            value: value.clone(),
+        })
+        .unwrap();
+    let reopened = Store::new(fixture.path().to_path_buf());
+    assert_eq!(
+        reopened.load_settings().unwrap().review_inactivity_minutes,
+        7
+    );
+    assert!(reopened
+        .save_resource(ResourceEdit::Preferences {
+            expected,
+            value: value.clone(),
+        })
+        .unwrap_err()
+        .starts_with("Resource changed in another window"));
+    let mut invalid = value.clone();
+    invalid.review_inactivity_minutes = 0;
+    assert!(reopened
+        .save_resource(ResourceEdit::Preferences {
+            expected: value,
+            value: invalid,
+        })
+        .unwrap_err()
+        .contains("positive whole minutes"));
+    assert_eq!(
+        reopened.load_settings().unwrap().review_inactivity_minutes,
+        7
+    );
+    for invalid in [json!(-1), json!(1.5), json!(4294967296u64), json!(null)] {
+        let mut raw = serde_json::to_value(&original).unwrap();
+        raw["review_inactivity_minutes"] = invalid;
+        assert!(serde_json::from_value::<Settings>(raw).is_err());
+    }
+    let mut raw = serde_json::to_value(&original).unwrap();
+    raw.as_object_mut()
+        .unwrap()
+        .remove("review_inactivity_minutes");
+    let migrated: Settings = serde_json::from_value(raw).unwrap();
+    assert_eq!(migrated.review_inactivity_minutes, 15);
+}
+
 fn settings() -> Settings {
     let mut settings: Settings = serde_json::from_value(json!({
         "launch_at_login": false,

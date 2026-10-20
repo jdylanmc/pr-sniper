@@ -20,6 +20,7 @@ const frame = (value) => {
 const respond = (id, result) => frame({ jsonrpc: "2.0", id, result });
 let sessionId;
 const exitScenarios = [
+  "exit-wait",
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
   "exit-approve", "exit-merge", "exit-approve-denied-self",
@@ -59,6 +60,7 @@ const okReport = {
 };
 const badReport = { findings: [{ ...okReport.findings[0], nano: longNano }] };
 const firstExit = {
+  "exit-wait": ["wait", { reason: "ci" }],
   "exit-ready": ["ready_for_human", { summary: "No findings." }],
   "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
@@ -246,6 +248,18 @@ process.stdin.on("data", (chunk) => {
           exitEnded = false;
         }
         if (scenario === "verdict-slow") break;
+        if (scenario === "verdict-progress") {
+          const progress = setInterval(() => event("assistant.reasoning_delta", { deltaContent: "Checking the finding." }), 200);
+          setTimeout(() => {
+            clearInterval(progress);
+            toolCall(...firstExit["verdict-ok"]);
+          }, 2500);
+          break;
+        }
+        if (scenario === "verdict-heartbeat") {
+          setInterval(() => event("session.heartbeat", {}), 50);
+          break;
+        }
         if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
           toolCall(scenario === "verdict-fixed-no-thread" ? "read_source" : "get_thread",
             scenario === "verdict-fixed-no-thread" ? { side: "head", path: "source.rs" }
@@ -292,6 +306,10 @@ process.stdin.on("data", (chunk) => {
               ? { path: "source.rs", side: "head" }
               : { path: scenario === "tool-invalid-path" ? "missing.rs" : "source.rs", part: "before" },
           });
+          break;
+        }
+        if (scenario === "heartbeat-only") {
+          setInterval(() => event("session.heartbeat", {}), 50);
           break;
         }
         if (scenario === "waiting") break;
@@ -409,8 +427,18 @@ process.stdin.on("data", (chunk) => {
         break;
       case "session.destroy":
       case "session.detach":
-      case "runtime.shutdown":
         respond(request.id, {});
+        break;
+      case "runtime.shutdown":
+        if (process.env.TEST_FAIL_SHUTDOWN === "1") {
+          frame({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: { code: -32000, message: "PRIVATE_DUCK_SHUTDOWN ghp_cleanup_secret" },
+          });
+        } else {
+          respond(request.id, {});
+        }
         break;
       default:
         frame({

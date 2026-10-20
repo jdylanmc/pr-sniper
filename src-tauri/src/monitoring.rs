@@ -110,6 +110,8 @@ fn is_zero(value: &u8) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct JobOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_since: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_attempt: Option<AttemptBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interruption: Option<crate::capacity::Interruption>,
@@ -1235,6 +1237,17 @@ impl Monitor {
         };
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
+        let connectivity = store.load_connectivity()?;
+        for health in self.state.health.values_mut() {
+            let offline = health.provider_account_id.as_ref().and_then(|account| {
+                connectivity
+                    .offline(&[crate::backpressure::Scope::github(account)])
+                    .and_then(|s| s.offline_since)
+            });
+            if let Some(operation) = health.operation.as_mut() {
+                crate::connectivity::sync_operation(store, operation, offline, now);
+            }
+        }
         self.synchronize_health_with(&configured, accounts, now, parked);
         if let Err(error) = self.synchronize_jobs(store, &configured, accounts) {
             self.state = previous;
@@ -1244,7 +1257,7 @@ impl Monitor {
         let mut queue = store.load_queue_state()?;
         queue.recover_evidence(store)?;
         let gates = store.load_backpressure()?;
-        let tickets = self.begin(&configured, &queue, &gates, now, check_now);
+        let tickets = self.begin(&configured, &queue, &gates, &connectivity, now, check_now);
         if self.state != previous {
             if let Err(error) = store.save_monitoring_state(&self.state) {
                 self.state = previous;
@@ -1829,17 +1842,19 @@ impl Monitor {
                 self.state.cursors.remove(&configuration.health_key);
                 continue;
             }
-            if !health.in_flight
-                && configuration_failure(health.last_failure.as_deref())
-                && health
+            if !health.in_flight && configuration_failure(health.last_failure.as_deref()) {
+                health.last_failure = None;
+                health.last_error = None;
+                if health
                     .operation
                     .as_ref()
                     .is_some_and(|o| o.state == OperationState::Failed)
-            {
-                if let Some(operation) = health.operation.take() {
-                    self.state
-                        .operations
-                        .insert(operation.id.clone(), operation);
+                {
+                    if let Some(operation) = health.operation.take() {
+                        self.state
+                            .operations
+                            .insert(operation.id.clone(), operation);
+                    }
                 }
             }
             // A parked repository poll retries once per occurrence of its own
@@ -1848,7 +1863,8 @@ impl Monitor {
                 !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
             let restart = !health.in_flight
                 && health.operation.as_ref().is_some_and(|operation| {
-                    operation.parked()
+                    operation.offline_since.is_none()
+                        && operation.parked()
                         && match parked {
                             ParkedPolls::Keep => false,
                             ParkedPolls::ScheduledRun => {
@@ -1885,7 +1901,8 @@ impl Monitor {
                 matches!(
                     operation.state,
                     OperationState::Queued | OperationState::Interrupted
-                ) && now >= operation.retry_deadline
+                ) && operation.offline_since.is_none()
+                    && now >= operation.retry_deadline
             }) {
                 operation.restart_window(now);
             }
@@ -2016,6 +2033,7 @@ impl Monitor {
         configured: &[ConfiguredSchedule],
         queue: &QueueState,
         gates: &crate::backpressure::Backpressure,
+        connectivity: &crate::connectivity::Connectivity,
         now: i64,
         check_now: bool,
     ) -> Vec<PollTicket> {
@@ -2083,6 +2101,12 @@ impl Monitor {
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
+            if connectivity
+                .offline(&[crate::backpressure::Scope::github(account_id)])
+                .is_some()
+            {
+                continue;
+            }
             let account_gate = gates.until(&crate::backpressure::Scope::github(account_id), now);
             // A rate-limited account is a wait for every poll on it, not a
             // failure: the retry window stays open past the wait.
@@ -2270,6 +2294,11 @@ impl Monitor {
         };
         self.leases.remove(&ticket.provider_repository_id);
         let github = crate::backpressure::Scope::github(&ticket.provider_account_id);
+        let offline = store
+            .load_connectivity()
+            .map_err(MonitoringError::Storage)?
+            .offline(std::slice::from_ref(&github))
+            .is_some();
         let mut paced_until = None;
         match &outcome {
             Ok(PollCompletion::Observed(_)) => {
@@ -2337,9 +2366,25 @@ impl Monitor {
                         health.schedule_available = true;
                     }
                     Err(error) => {
-                        health.last_failure = Some(error.health_failure().into());
-                        health.last_error = Some(error.message().into());
-                        finish_failed_operation(health, error, now);
+                        if offline
+                            && matches!(
+                                error,
+                                MonitoringError::Recoverable {
+                                    failure: OperationFailure::Network | OperationFailure::Timeout,
+                                    ..
+                                }
+                            )
+                        {
+                            if let Some(operation) = health.operation.as_mut() {
+                                operation.suspend_offline(now);
+                            }
+                            health.next_run = now;
+                            health.schedule_available = true;
+                        } else {
+                            health.last_failure = Some(error.health_failure().into());
+                            health.last_error = Some(error.message().into());
+                            finish_failed_operation(health, error, now);
+                        }
                     }
                 }
             }
@@ -2497,6 +2542,7 @@ impl Monitor {
             .map(|p| p.review.key)
             .collect();
         let mut pr_states = store.load_pr_states().map_err(MonitoringError::Storage)?;
+        let settings = store.load_settings().map_err(MonitoringError::Storage)?;
         let previous_pr_states = pr_states.clone();
         let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
@@ -2656,10 +2702,27 @@ impl Monitor {
                     job.waiting = WAITING_INELIGIBLE.into();
                 }
             }
+            let binding = crate::retention::Binding::tracked(&tracked);
+            if pull.state != Lifecycle::Open {
+                if let Some(record) = pr_states.records.iter_mut().find(|r| r.binding == binding) {
+                    record.external_wait = None;
+                }
+            }
             if pull.state != Lifecycle::Open || skip_draft {
                 continue;
             }
-            let binding = crate::retention::Binding::tracked(&tracked);
+            if pr_states
+                .get(&binding)
+                .and_then(|r| r.external_wait.as_ref())
+                .is_some_and(|w| {
+                    !settings
+                        .repositories
+                        .iter()
+                        .any(|r| r.id == ticket.repository_id && w.configured(r))
+                })
+            {
+                pr_states.invalidate_wait(&binding, now);
+            }
             let already_reviewed = reviews.iter().any(|r| {
                 r.operation.state == OperationState::Completed
                     && r.job.head_sha == pull.head_sha
@@ -3173,6 +3236,7 @@ fn start_poll_operation(
         }
     }
     health.operation = Some(JobOperation {
+        offline_since: None,
         ai_attempt: None,
         interruption: None,
         resume_cycle: 0,
@@ -3219,6 +3283,34 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
 }
 
 impl JobOperation {
+    pub fn freeze_offline(&mut self, now: i64) {
+        if self.state != OperationState::Completed && !self.ended_superseded() {
+            self.offline_since.get_or_insert(now);
+        }
+    }
+
+    pub fn resume_online(&mut self, now: i64) {
+        if let Some(since) = self.offline_since.take() {
+            let elapsed = now.saturating_sub(since).max(0);
+            self.retry_deadline = self.retry_deadline.saturating_add(elapsed);
+            self.next_attempt_at = self.next_attempt_at.map(|at| at.saturating_add(elapsed));
+            self.resume_at = self.resume_at.map(|at| at.saturating_add(elapsed));
+        }
+    }
+
+    pub fn suspend_offline(&mut self, now: i64) {
+        self.freeze_offline(now);
+        let since = self.offline_since.unwrap_or(now);
+        if self.ai_attempt.is_some() {
+            self.restore_budget();
+        } else if self.state == OperationState::Running {
+            self.attempt_count = self.attempt_count.saturating_sub(1);
+        }
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(since);
+        self.interruption = None;
+    }
+
     pub fn begin_ai_attempt(&mut self, now: i64) -> Result<(), String> {
         let budget = AttemptBudget {
             attempt_count: self.attempt_count,
@@ -3314,6 +3406,7 @@ impl JobOperation {
 
     /// Fresh attempt window with no failure history carried over.
     pub(crate) fn requeue_fresh(&mut self, now: i64) {
+        self.offline_since = None;
         self.state = OperationState::Queued;
         self.attempt_count = 0;
         self.initial_attempt_at = now;
@@ -3341,7 +3434,7 @@ impl JobOperation {
     /// cooldown (spending a cycle) or, for credentials, once the account is
     /// connected again. Returns whether the operation was requeued.
     pub fn auto_resume(&mut self, reconnected: bool, now: i64) -> bool {
-        if !self.parked() {
+        if self.offline_since.is_some() || !self.parked() {
             return false;
         }
         let cooled = self.resume_at.is_some_and(|at| now >= at);
@@ -3366,6 +3459,7 @@ impl JobOperation {
     }
 
     fn fail_attempt(&mut self, error: &MonitoringError, now: i64) {
+        self.offline_since = None;
         self.backpressure_until = None;
         self.ai_attempt = None;
         self.interruption = None;
@@ -3399,6 +3493,7 @@ impl JobOperation {
     /// Ends unstarted or waiting work quietly: superseded, not failed. The
     /// attempt is handed back and nothing resumes it.
     pub fn end_superseded(&mut self) {
+        self.offline_since = None;
         if self.ai_attempt.is_some() {
             self.restore_budget();
         } else if self.state == OperationState::Running {
@@ -3434,6 +3529,9 @@ impl JobOperation {
     }
 
     pub fn begin_attempt(&mut self, now: i64) -> Result<(), String> {
+        if self.offline_since.is_some() {
+            return Err("Offline".into());
+        }
         // Waiting for the first execution is not part of an AI retry window.
         if self.attempt_count == 0
             && self.failure.is_none()
@@ -3472,6 +3570,7 @@ impl JobOperation {
 
     pub fn review(job: &QueueJob, now: i64) -> Self {
         Self {
+            offline_since: None,
             ai_attempt: None,
             interruption: None,
             resume_cycle: 0,
@@ -3881,6 +3980,17 @@ impl Monitor {
         if now < self.lifecycle_next {
             return Ok(Vec::new());
         }
+        let tickets = Self::lifecycle_candidates(store, accounts)?;
+        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
+        Ok(tickets)
+    }
+
+    /// The same binding/account eligibility for reachability and lifecycle reads,
+    /// without consuming the sweep timer or authorizing new admission.
+    pub(crate) fn lifecycle_candidates(
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+    ) -> Result<Vec<LifecycleTicket>, String> {
         let settings = store.load_settings()?;
         let queue = store.load_queue_state()?;
         let mut tickets = Vec::new();
@@ -3921,7 +4031,6 @@ impl Monitor {
                 tracked: tracked.into_iter().collect(),
             });
         }
-        self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
         Ok(tickets)
     }
 
@@ -4006,8 +4115,15 @@ impl Monitor {
         let mut resumed = 0;
         let mut reviews = store.load_reviews()?;
         let mut changed = false;
+        let connectivity = store.load_connectivity()?;
         let jobs = store.load_queue()?;
         for run in &mut reviews {
+            let offline = connectivity
+                .offline(&crate::connectivity::scopes(run))
+                .and_then(|s| s.offline_since);
+            let before = run.operation.offline_since;
+            crate::connectivity::sync_operation(store, &mut run.operation, offline, now);
+            changed |= before != run.operation.offline_since;
             let finished = |waiting: &str| {
                 matches!(
                     waiting,

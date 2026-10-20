@@ -60,6 +60,310 @@ fn output() -> ReviewResult {
     })).unwrap()
 }
 
+#[test]
+fn offline_long_outage_preserves_real_failures_and_resumes_once_after_teardown() {
+    use crate::connectivity::{record, Observation};
+    let (_root, store) = fixture(1, 1, true);
+    let coordinator = Coordinator::default();
+    let first = dispatch(&coordinator, &store, 100).remove(0);
+    assert!(finish(
+        &coordinator,
+        &store,
+        first,
+        Some(Failure::provider("real failure")),
+        101
+    )
+    .is_empty());
+    let failed = store.load_reviews().unwrap().remove(0);
+    let retry = failed.operation.next_attempt_at.unwrap();
+    let active = dispatch(&coordinator, &store, retry).remove(0);
+    let Dispatch::Review(run, cancelled) = &active;
+    let operation_id = run.operation.id.clone();
+    record(&store, Scope::github("101"), Observation::Reachable, retry).unwrap();
+    record(
+        &store,
+        Scope::github("101"),
+        Observation::Unreachable,
+        retry + 1,
+    )
+    .unwrap();
+    assert!(dispatch(&coordinator, &store, retry + 1).is_empty());
+    assert!(cancelled.load(Ordering::SeqCst));
+    let stopping = coordinator.snapshot(&store, retry + 1).unwrap();
+    assert_eq!((stopping.active, stopping.stopping), (1, 1));
+    assert!(finish(
+        &coordinator,
+        &store,
+        active,
+        Some(Failure::cancelled()),
+        retry + 2
+    )
+    .is_empty());
+    let frozen = store.load_reviews().unwrap().remove(0);
+    assert_eq!(frozen.operation.attempt_count, 1);
+    assert_eq!(frozen.operation.failure, Some(OperationFailure::Provider));
+    assert_eq!(
+        frozen.operation.retry_deadline,
+        failed.operation.retry_deadline
+    );
+    let wake = retry + 10 * 86_400;
+    for now in [
+        retry + 5000,
+        retry + 10_000,
+        retry + 20_000,
+        retry + 40_000,
+        wake,
+    ] {
+        record(&store, Scope::github("101"), Observation::Unreachable, now).unwrap();
+        assert!(dispatch(&coordinator, &store, now).is_empty());
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert_eq!(saved.operation, frozen.operation);
+    }
+    assert!(coordinator.finished());
+    let waiting = coordinator.snapshot(&store, wake).unwrap();
+    assert!(waiting.work[0].failure.is_none());
+    assert_eq!(
+        waiting.work[0].offline.as_ref().unwrap().last_success,
+        Some(retry)
+    );
+    record(&store, Scope::github("101"), Observation::Reachable, wake).unwrap();
+    let replacement = dispatch(&coordinator, &store, wake);
+    assert_eq!(replacement.len(), 1);
+    assert!(dispatch(&coordinator, &store, wake).is_empty());
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.id, operation_id);
+    assert_eq!(resumed.operation.attempt_count, 2);
+    assert_eq!(
+        resumed.operation.retry_deadline,
+        failed.operation.retry_deadline + wake - retry - 1
+    );
+    assert!(resumed.result.is_none());
+    // A late completion from the stopped attempt is not delivered by the owner:
+    // replacement cannot reserve until the prior worker is joined and released.
+}
+
+#[test]
+fn offline_superseded_work_keeps_planned_primary_and_duck_scopes_probeable() {
+    use crate::connectivity::{due_scopes, record, Observation};
+    for offline_scope in [Scope::copilot("201"), Scope::copilot("299")] {
+        let (_root, store) = fixture(1, 1, true);
+        let mut settings = store.load_settings().unwrap();
+        let mut duck = settings.agents[0].clone();
+        duck.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+        duck.name = "Duck".into();
+        duck.ai_account.as_mut().unwrap().account_id = "299".into();
+        settings.repositories[0].assignments[0].rubber_duck = Some(duck.id.clone());
+        settings.agents.push(duck);
+        store.save_settings(&settings).unwrap();
+        let accounts = BTreeMap::from([(
+            "101".into(),
+            crate::monitoring::AccountAvailability {
+                login: "actor".into(),
+                connected: true,
+            },
+        )]);
+        let coordinator = Coordinator::default();
+        let active = dispatch(&coordinator, &store, 100).remove(0);
+        record(&store, offline_scope.clone(), Observation::Unreachable, 101).unwrap();
+        assert!(dispatch(&coordinator, &store, 102).is_empty());
+        assert!(finish(
+            &coordinator,
+            &store,
+            active,
+            Some(Failure::cancelled()),
+            103
+        )
+        .is_empty());
+        let old = store.load_reviews().unwrap().remove(0);
+        assert_eq!(old.operation.attempt_count, 0);
+
+        let mut jobs = store.load_queue().unwrap();
+        let mut replacement = jobs[0].clone();
+        jobs[0].waiting = crate::monitoring::WAITING_SUPERSEDED.into();
+        replacement.head_sha = "c".repeat(40);
+        let work = replacement.work.as_mut().unwrap();
+        work.id = "replacement".into();
+        work.iteration_id = "replacement-iteration".into();
+        work.iteration += 1;
+        jobs.push(replacement);
+        store.save_queue(&jobs).unwrap();
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        let retired = store.load_reviews().unwrap().remove(0);
+        assert!(retired.operation.ended_superseded());
+        assert!(retired.operation.resume_at.is_none());
+        assert!(due_scopes(&store, &accounts, 200)
+            .unwrap()
+            .contains(&offline_scope));
+
+        store.save_automation(&Automation { paused: true }).unwrap();
+        assert!(due_scopes(&store, &accounts, 200).unwrap().is_empty());
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        store
+            .save_automation(&Automation { paused: false })
+            .unwrap();
+        settings.repositories[0].enabled = false;
+        store.save_settings(&settings).unwrap();
+        assert!(!due_scopes(&store, &accounts, 200)
+            .unwrap()
+            .contains(&offline_scope));
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        settings.repositories[0].enabled = true;
+        store.save_settings(&settings).unwrap();
+
+        record(&store, offline_scope, Observation::Reachable, 201).unwrap();
+        let replacement = dispatch(&coordinator, &store, 201);
+        assert_eq!(replacement.len(), 1);
+        let Dispatch::Review(run, _) = &replacement[0];
+        assert_eq!(run.job.head_sha, "c".repeat(40));
+        assert_eq!(run.operation.attempt_count, 1);
+        assert!(run.operation.failure.is_none());
+        assert!(dispatch(&coordinator, &store, 201).is_empty());
+    }
+}
+
+#[test]
+fn offline_account_isolation_pause_and_cancel_do_not_resurrect_work() {
+    use crate::connectivity::{record, Observation};
+    let (_root, store) = fixture(2, 2, true);
+    let coordinator = Coordinator::default();
+    let mut workers = dispatch(&coordinator, &store, 100);
+    record(&store, Scope::copilot("201"), Observation::Unreachable, 110).unwrap();
+    dispatch(&coordinator, &store, 110);
+    let Dispatch::Review(_, cancelled) = &workers[0];
+    assert!(cancelled.load(Ordering::SeqCst));
+    let Dispatch::Review(_, other) = &workers[1];
+    assert!(!other.load(Ordering::SeqCst));
+    finish(
+        &coordinator,
+        &store,
+        workers.remove(0),
+        Some(Failure::cancelled()),
+        111,
+    );
+    store.save_automation(&Automation { paused: true }).unwrap();
+    record(
+        &store,
+        Scope::copilot("201"),
+        Observation::Reachable,
+        10_000,
+    )
+    .unwrap();
+    assert!(dispatch(&coordinator, &store, 10_000).is_empty());
+    let mut reviews = store.load_reviews().unwrap();
+    let cancelled = reviews
+        .iter_mut()
+        .find(|r| r.job.account_id == "101")
+        .unwrap();
+    cancelled
+        .operation
+        .fail(&Failure::permanent("User cancelled").monitoring(), 10_001);
+    store.save_reviews(&reviews).unwrap();
+    store
+        .save_automation(&Automation { paused: false })
+        .unwrap();
+    assert!(dispatch(&coordinator, &store, 10_002).is_empty());
+    let cancelled = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.job.account_id == "101")
+        .unwrap();
+    assert_eq!(cancelled.operation.state, OperationState::Failed);
+    assert!(cancelled.result.is_none());
+}
+
+#[test]
+fn offline_does_not_hide_credentials_permissions_or_invalid_results() {
+    use crate::connectivity::{record, Observation};
+    for kind in [
+        OperationFailure::Credentials,
+        OperationFailure::Permission,
+        OperationFailure::Permanent,
+    ] {
+        let (_root, store) = fixture(1, 1, true);
+        let coordinator = Coordinator::default();
+        let active = dispatch(&coordinator, &store, 100).remove(0);
+        record(&store, Scope::github("101"), Observation::Unreachable, 110).unwrap();
+        dispatch(&coordinator, &store, 110);
+        let error = Failure {
+            kind: kind.clone(),
+            ..Failure::permanent("typed rejection")
+        };
+        assert!(finish(&coordinator, &store, active, Some(error), 111).is_empty());
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert_eq!(saved.operation.state, OperationState::Failed);
+        assert_eq!(saved.operation.failure, Some(kind));
+        assert_eq!(saved.operation.attempt_count, 1);
+        let snapshot = coordinator.snapshot(&store, 111).unwrap();
+        assert_eq!((snapshot.waiting, snapshot.blocked), (0, 1));
+    }
+}
+
+#[test]
+fn offline_discards_late_success_and_restart_keeps_suspension() {
+    use crate::connectivity::{record, Observation};
+    let (_root, store) = fixture(1, 1, true);
+    let coordinator = Coordinator::default();
+    let active = dispatch(&coordinator, &store, 100).remove(0);
+    let id = match &active {
+        Dispatch::Review(run, _) => run.operation.id.clone(),
+    };
+    record(&store, Scope::github("101"), Observation::Unreachable, 110).unwrap();
+    dispatch(&coordinator, &store, 110);
+    assert!(finish(&coordinator, &store, active, None, 112).is_empty());
+    let frozen = store.load_reviews().unwrap().remove(0);
+    assert_eq!(frozen.operation.attempt_count, 0);
+    assert!(frozen.result.is_none());
+    assert!(store.load_publications().unwrap().is_empty());
+    review::host::complete(&store, &id, Ok(output()), 120).unwrap();
+    assert_eq!(store.load_reviews().unwrap()[0].operation, frozen.operation);
+    let reopened = Store::new(_root.path().to_path_buf());
+    let replacement_owner = Coordinator::default();
+    assert!(dispatch(&replacement_owner, &reopened, 86_400).is_empty());
+    record(
+        &reopened,
+        Scope::github("101"),
+        Observation::Reachable,
+        86_401,
+    )
+    .unwrap();
+    assert_eq!(dispatch(&replacement_owner, &reopened, 86_401).len(), 1);
+}
+
+#[test]
+fn offline_freezes_remaining_retry_backoff_without_granting_a_fresh_budget() {
+    use crate::connectivity::{record, Observation};
+    let (_root, store) = fixture(1, 1, true);
+    let coordinator = Coordinator::default();
+    let first = dispatch(&coordinator, &store, 100).remove(0);
+    finish(
+        &coordinator,
+        &store,
+        first,
+        Some(Failure::provider("real failure")),
+        101,
+    );
+    let failed = store.load_reviews().unwrap().remove(0).operation;
+    record(&store, Scope::github("101"), Observation::Unreachable, 102).unwrap();
+    dispatch(&coordinator, &store, 102);
+    record(&store, Scope::github("101"), Observation::Reachable, 86_400).unwrap();
+    assert!(dispatch(&coordinator, &store, 86_400).is_empty());
+    let resumed = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(resumed.attempt_count, failed.attempt_count);
+    assert_eq!(resumed.failure, failed.failure);
+    assert_eq!(resumed.resume_cycle, failed.resume_cycle);
+    assert_eq!(resumed.initial_attempt_at, failed.initial_attempt_at);
+    assert_eq!(resumed.retry_deadline, failed.retry_deadline + 86_400 - 102);
+    assert_eq!(
+        resumed.next_attempt_at,
+        failed.next_attempt_at.map(|at| at + 86_400 - 102)
+    );
+    assert_eq!(
+        dispatch(&coordinator, &store, resumed.next_attempt_at.unwrap()).len(),
+        1
+    );
+}
+
 fn dispatch(coordinator: &Coordinator, store: &Store, now: i64) -> Vec<Dispatch> {
     let batch = coordinator.dispatch(store, now).unwrap();
     assert!(batch.errors.is_empty(), "{:?}", batch.errors);

@@ -1,8 +1,8 @@
 # PR Sniper review packet
 
 ## Meta
-packet_id: 6683bfb8d9f52b8a
-schema: 9
+packet_id: 18460cc2b577cb54
+schema: 10
 state_id: head1:base1
 revision: 2
 created_at: 2026-10-12T00:00:00Z

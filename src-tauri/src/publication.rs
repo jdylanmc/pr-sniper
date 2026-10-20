@@ -427,6 +427,7 @@ pub struct WriteFailure {
 
 // The host owns credentials and live gates; the state machine owns effect ordering.
 pub trait Environment {
+    fn diagnostic(&self, _: &Publication, _: crate::storage::diagnostics::Event) {}
     fn paused(&self) -> Result<bool, Failure> {
         Ok(false)
     }
@@ -468,6 +469,14 @@ pub fn execute(
         environment.save(publication)?;
         return Err(Failure::permanent(error));
     }
+    environment.diagnostic(
+        publication,
+        crate::storage::diagnostics::Event::PublicationAttempt {
+            publication_id: publication.id.clone(),
+            operation_id: publication.operation.id.clone(),
+            attempt_count: publication.operation.attempt_count as u64,
+        },
+    );
     let outcome = (|| {
         publication.error = None;
         environment.save(publication)?;
@@ -481,6 +490,7 @@ pub fn execute(
             publication.operation.failure = Some(OperationFailure::Tossed);
             publication.operation.next_attempt_at = None;
             environment.save(publication)?;
+            environment.diagnostic(publication, publication_retry_event(&publication.operation));
             return environment.tossed(publication);
         }
         publication
@@ -493,9 +503,32 @@ pub fn execute(
             publication.phase = Phase::Unresolved;
         }
         environment.save(publication)?;
+        environment.diagnostic(publication, publication_retry_event(&publication.operation));
         return Err(error);
     }
-    environment.save(publication)
+    environment.save(publication)?;
+    environment.diagnostic(publication, publication_retry_event(&publication.operation));
+    Ok(())
+}
+
+fn publication_retry_event(operation: &JobOperation) -> crate::storage::diagnostics::Event {
+    use crate::storage::diagnostics::Event;
+    let Event::Retry {
+        decision,
+        failure,
+        next_attempt_at,
+        attempt_count,
+    } = crate::review::diagnostics::retry_event(operation)
+    else {
+        unreachable!()
+    };
+    Event::PublicationRetry {
+        operation_id: operation.id.clone(),
+        decision,
+        failure,
+        next_attempt_at,
+        attempt_count,
+    }
 }
 
 fn drive(env: &mut impl Environment, run: &mut Publication) -> Result<(), Failure> {

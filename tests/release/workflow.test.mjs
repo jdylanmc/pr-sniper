@@ -719,9 +719,13 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
   assert.equal(job.permissions, undefined);
   assert.equal(job.needs, undefined);
   assert.equal(job.strategy, undefined);
+  const suite = job.steps.find((step) => step.id === "browser-tests");
+  const upload = job.steps.find((step) =>
+    step.uses?.startsWith("actions/upload-artifact@"),
+  );
   for (const scope of [webkit, job, ...job.steps]) {
-    assert.equal(scope.env, undefined);
-    assert.equal(scope.if, undefined);
+    if (scope !== suite) assert.equal(scope.env, undefined);
+    if (scope !== upload) assert.equal(scope.if, undefined);
     assert.equal(scope["continue-on-error"], undefined);
     assert.equal(scope.defaults, undefined);
   }
@@ -732,6 +736,7 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
     [
       "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
       "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ],
   );
   for (const action of actions) {
@@ -745,7 +750,24 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
     "node-version-file": ".node-version",
     cache: "npm",
   });
-  assert.equal(job.steps.length, 7);
+  assert.deepEqual(suite.env, {
+    QUEUE_EVIDENCE_HEAD_SHA:
+      "${{ github.event.pull_request.head.sha || github.sha }}",
+  });
+  assert.equal(
+    upload.if,
+    "${{ always() && steps.browser-tests.outcome != 'skipped' }}",
+  );
+  assert.equal(job.steps.indexOf(upload), job.steps.indexOf(suite) + 1);
+  assert.equal(upload["timeout-minutes"], 5);
+  assert.deepEqual(upload.with, {
+    name: "queue-reload-${{ github.run_id }}-${{ github.run_attempt }}",
+    path: "src-tauri/target/settings-browser/**/queue-reload/*.png\nsrc-tauri/target/settings-browser/**/queue-reload/manifest.json\n",
+    "if-no-files-found": "warn",
+    "retention-days": 14,
+    "include-hidden-files": false,
+  });
+  assert.equal(job.steps.length, 8);
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
     [

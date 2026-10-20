@@ -413,7 +413,10 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
   await expect.poll(() => state.ai).toBe(true);
   expect(state.code).toBe(false);
   await back(page);
-  await page.locator("[data-genie-next]").click();
+  await page
+    .locator("[data-genie-next]")
+    .filter({ hasText: /^Connect source control$/ })
+    .click();
   const code = page.locator(".github-auth");
   await code
     .getByRole("button", { name: "Add GitHub account", exact: true })
@@ -426,7 +429,10 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
     .catch(() => {});
   await expect.poll(() => state.code).toBe(true);
   await back(page);
-  await page.locator("[data-genie-next]").click();
+  await page
+    .locator("[data-genie-next]")
+    .filter({ hasText: /^Create your reviewer$/ })
+    .click();
   await page.getByRole("button", { name: "New agent", exact: true }).click();
   const agent = modal(page, "New agent");
   await expect(agent.getByLabel("AI account", { exact: true })).toHaveValue("");
@@ -439,7 +445,10 @@ test("fresh Genie uses shared account choices and authorizes at repository Save,
     .selectOption("fixture-model");
   await agent.getByRole("button", { name: "Save agent", exact: true }).click();
   await back(page);
-  await page.locator("[data-genie-next]").click();
+  await page
+    .locator("[data-genie-next]")
+    .filter({ hasText: /^Choose what to watch$/ })
+    .click();
   await page
     .getByRole("button", { name: "Add repository by URL", exact: true })
     .click();
