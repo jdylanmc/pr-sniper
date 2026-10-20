@@ -203,6 +203,52 @@ fn discard(directory: &Path, expected: &Proof, label: &str) -> Result<(), Error>
     private_fs::sync_directory(directory.parent().unwrap()).map_err(io_error)
 }
 
+fn bootstrap_ambiguity(directory: &Path, expected: &Proof) -> Result<bool, Error> {
+    if !present(directory)? {
+        return Ok(false);
+    }
+    let mut files = file_hashes(directory)?;
+    let mut ambiguous = false;
+    for prefix in ["", "references", "scripts"] {
+        let path = directory.join(prefix);
+        if !present(&path)? {
+            continue;
+        }
+        for group in private_fs::bootstrap_artifacts(&path).map_err(io_error)? {
+            let target = if prefix.is_empty() {
+                group.target.clone()
+            } else {
+                format!("{prefix}/{}", group.target)
+            };
+            if target != MANIFEST && !expected.manifest.files.contains_key(&target) {
+                return Err(conflict());
+            }
+            for name in group.files {
+                let relative = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                files.remove(&relative);
+            }
+            ambiguous = true;
+        }
+    }
+    if ambiguous {
+        for (name, hash) in files {
+            let wanted = if name == MANIFEST {
+                Some(&expected.revision)
+            } else {
+                expected.manifest.files.get(&name)
+            };
+            if wanted != Some(&hash) {
+                return Err(conflict());
+            }
+        }
+    }
+    Ok(ambiguous)
+}
+
 fn finish(journal: &mut Journal) -> Result<(), Error> {
     let target = &journal.target;
     let stage = journal.stage();
@@ -211,11 +257,18 @@ fn finish(journal: &mut Journal) -> Result<(), Error> {
         if !matches(target, journal.before.as_ref())? || present(&backup)? {
             return Err(conflict());
         }
-        discard(
-            &stage,
-            journal.after.as_ref().ok_or_else(conflict)?,
-            "stage-cleanup-file",
-        )?;
+        let planned = journal.after.as_ref().ok_or_else(conflict)?;
+        if bootstrap_ambiguity(&stage, planned)? {
+            // The package journal owns the enclosing staging directory, not
+            // incomplete per-file claims. Preserve it whole, outside discovery.
+            move_directory(&stage, &journal.sibling(".preserved"))?;
+            checkpoint("bootstrap-preserved")?;
+        } else {
+            discard(&stage, planned, "stage-cleanup-file")?;
+        }
+        if !matches(target, journal.before.as_ref())? {
+            return Err(conflict());
+        }
         return journal.clear();
     }
     if journal.phase == Phase::Ready {
@@ -389,7 +442,12 @@ pub(super) fn install(
     if journal.before.as_ref().map(|p| p.revision.as_str()) != expected {
         return Err(Error::new("conflict", ()));
     }
-    for path in [journal.path(), journal.stage(), journal.backup()] {
+    for path in [
+        journal.path(),
+        journal.stage(),
+        journal.backup(),
+        journal.sibling(".preserved"),
+    ] {
         if present(&path)? {
             return Err(conflict());
         }
@@ -437,7 +495,12 @@ pub(super) fn remove(directory: &Path, expected: &str) -> Result<(), Error> {
     if journal.before.as_ref().map(|p| p.revision.as_str()) != Some(expected) {
         return Err(Error::new("conflict", ()));
     }
-    for path in [journal.path(), journal.stage(), journal.backup()] {
+    for path in [
+        journal.path(),
+        journal.stage(),
+        journal.backup(),
+        journal.sibling(".preserved"),
+    ] {
         if present(&path)? {
             return Err(conflict());
         }

@@ -30,6 +30,10 @@
   conflict. Unclaimed pre-journal artifacts are preserved, never guessed to be
   owned. Linked installation/profile ancestry is intentionally unsupported;
   fixture-only canonicalization is not redirected-profile support.
+- Incomplete per-file bootstrap claims inside an owned staging package are
+  preserved together in a `.preserved` quarantine, never individually deleted
+  on filename evidence. Rollback completes only while the prior live package
+  remains verified unchanged; later install/update/removal can then proceed.
 - Transaction storage and the skill destination must permit same-filesystem
   directory renames. Windows process-interruption recovery is tested separately
   from power-loss durability; no portable directory-flush guarantee is claimed.

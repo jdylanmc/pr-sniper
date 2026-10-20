@@ -68,6 +68,10 @@
   customization and links are never adopted or removed. Unclaimed artifacts
   before journal publication stay untouched. Expected revision is checked after
   recovery, so callers must reload after an uncertain outcome.
+- Nested incomplete per-file ownership claims do not authorize deletion.
+  When the prior live package is unchanged and all other staged content still
+  matches the package proof, recovery quarantines the entire staging directory
+  and completes rollback. Quarantine is preserved outside skill discovery.
 - Installer records the exact app executable; source-distributed skills also
   recognize standard per-user/system install locations.
 - Node 22+ runs the small CLI. `/skills reload` discovers installation changes.

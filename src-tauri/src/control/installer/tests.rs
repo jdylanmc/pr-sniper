@@ -278,7 +278,7 @@ fn customized_live_or_transaction_content_is_never_deleted() {
 
 #[test]
 fn foreign_staging_backup_and_journal_occupants_are_preserved() {
-    for suffix in [".new", ".old", ".json"] {
+    for suffix in [".new", ".old", ".json", ".preserved"] {
         let root = root();
         let root = root.path().canonicalize().unwrap();
         let target = root.join("skills/pr-sniper");
@@ -438,9 +438,26 @@ fn crash_child() {
     );
     let target = root.join("skills/pr-sniper");
     let before = installation_at(&target).unwrap();
-    FAILURE.with(|value| {
-        *value.borrow_mut() = Some((std::env::var("PR_SNIPER_INSTALL_TEST_POINT").unwrap(), true))
-    });
+    if let Ok(filename) = std::env::var("PR_SNIPER_INSTALL_TEST_FILE") {
+        assert!(["scripts/pr-sniper.mjs", ".pr-sniper-install.json"].contains(&filename.as_str()));
+        let nonce =
+            uuid::Uuid::parse_str(&std::env::var("PR_SNIPER_INSTALL_TEST_NONCE").unwrap()).unwrap();
+        NONCE.with(|value| *value.borrow_mut() = Some(nonce));
+        let file = transaction::workspace(&target)
+            .unwrap()
+            .join(format!(".pr-sniper-package-{nonce}.new"))
+            .join(filename);
+        crate::storage::private_fs::crash_test::arm(
+            file,
+            std::env::var("PR_SNIPER_INSTALL_TEST_POINT").unwrap(),
+            1,
+        );
+    } else {
+        FAILURE.with(|value| {
+            *value.borrow_mut() =
+                Some((std::env::var("PR_SNIPER_INSTALL_TEST_POINT").unwrap(), true))
+        });
+    }
     if std::env::var("PR_SNIPER_INSTALL_TEST_ACTION").unwrap() == "remove" {
         remove_at(&target, before.revision.as_deref().unwrap()).unwrap();
     } else {
@@ -453,31 +470,44 @@ fn crash_child() {
 fn actual_partial_file_write_and_activation_journal_failures_recover() {
     for update in [false, true] {
         for filename in ["scripts/pr-sniper.mjs", ".pr-sniper-install.json"] {
-            let root = root();
-            let root = root.path().canonicalize().unwrap();
-            let target = root.join("skills/pr-sniper");
-            let before = update.then(|| install_at(&target, &root.join("old"), None).unwrap());
-            let nonce = uuid::Uuid::new_v4();
-            NONCE.with(|value| *value.borrow_mut() = Some(nonce));
-            crate::storage::private_fs::recovery_fault::arm(
-                transaction::workspace(&target)
-                    .unwrap()
-                    .join(format!(".pr-sniper-package-{nonce}.new"))
-                    .join(filename),
-                "payload",
-            );
-            assert!(install_at(
-                &target,
-                &root.join("new"),
-                before.as_ref().and_then(|r| r.revision.as_deref())
-            )
-            .is_err());
-            let recovered = installation_at(&target).unwrap();
-            if update {
-                assert_eq!(recovered.revision, before.unwrap().revision);
-                assert_package(&target, &root.join("old"));
-            } else {
-                assert_eq!(recovered.state, "absent");
+            for failure in ["claim", "payload"] {
+                let root = root();
+                let root = root.path().canonicalize().unwrap();
+                let target = root.join("skills/pr-sniper");
+                let before = update.then(|| install_at(&target, &root.join("old"), None).unwrap());
+                let nonce = uuid::Uuid::new_v4();
+                NONCE.with(|value| *value.borrow_mut() = Some(nonce));
+                crate::storage::private_fs::recovery_fault::arm(
+                    transaction::workspace(&target)
+                        .unwrap()
+                        .join(format!(".pr-sniper-package-{nonce}.new"))
+                        .join(filename),
+                    failure,
+                );
+                assert!(install_at(
+                    &target,
+                    &root.join("new"),
+                    before.as_ref().and_then(|r| r.revision.as_deref())
+                )
+                .is_err());
+                let recovered = installation_at(&target).unwrap();
+                if update {
+                    assert_eq!(recovered.revision, before.unwrap().revision);
+                    assert_package(&target, &root.join("old"));
+                } else {
+                    assert_eq!(recovered.state, "absent");
+                }
+                let installed =
+                    install_at(&target, &root.join("new"), recovered.revision.as_deref()).unwrap();
+                let updated =
+                    install_at(&target, &root.join("newer"), installed.revision.as_deref())
+                        .unwrap();
+                assert_eq!(
+                    remove_at(&target, updated.revision.as_deref().unwrap())
+                        .unwrap()
+                        .state,
+                    "absent"
+                );
             }
         }
     }
@@ -532,5 +562,207 @@ fn links_inserted_after_interruption_are_preserved_and_never_activated() {
         fs::remove_file(link).unwrap();
         #[cfg(windows)]
         fs::remove_dir(link).unwrap();
+    }
+}
+
+#[test]
+fn nested_bootstrap_process_interruptions_preserve_artifacts_and_allow_future_operations() {
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    for update in [false, true] {
+        for filename in ["scripts/pr-sniper.mjs", ".pr-sniper-install.json"] {
+            for boundary in ["bootstrap-stage", "owner-created", "owner-partial"] {
+                let owner = root();
+                let root = owner.path().canonicalize().unwrap();
+                let target = root.join("skills/pr-sniper");
+                let before =
+                    update.then(|| install_at(&target, &root.join("old-app"), None).unwrap());
+                let nonce = uuid::Uuid::new_v4();
+                let staging = transaction::workspace(&target)
+                    .unwrap()
+                    .join(format!(".pr-sniper-package-{nonce}.new"));
+                let file = staging.join(filename);
+                let ready = file
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("crash-ready.json");
+                let token = uuid::Uuid::new_v4().to_string();
+                fs::write(root.join("test-owner"), &token).unwrap();
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "control::installer::tests::crash_child",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env("PR_SNIPER_INSTALL_TEST_ROOT", &root)
+                    .env("PR_SNIPER_INSTALL_TEST_OWNER", token)
+                    .env("PR_SNIPER_INSTALL_TEST_ACTION", "update")
+                    .env("PR_SNIPER_INSTALL_TEST_POINT", boundary)
+                    .env("PR_SNIPER_INSTALL_TEST_FILE", filename)
+                    .env("PR_SNIPER_INSTALL_TEST_NONCE", nonce.to_string())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let child_pid = child.id();
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !ready.exists()
+                    && child.try_wait().unwrap().is_none()
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let reached = ready.exists();
+                if child.try_wait().unwrap().is_none() {
+                    child.kill().unwrap();
+                }
+                let outcome = child.wait_with_output().unwrap();
+                assert!(
+                    reached,
+                    "{filename} {boundary}: {}",
+                    String::from_utf8_lossy(&outcome.stderr)
+                );
+                let observed: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&ready).unwrap()).unwrap();
+                assert_eq!(observed["point"], boundary);
+                assert_eq!(observed["pid"], child_pid);
+                let payload = std::path::PathBuf::from(observed["stage"].as_str().unwrap());
+                assert!(payload.starts_with(&staging));
+                // Remove only the crash harness's own readiness signal, not any
+                // per-file bootstrap payload or ownership artifact.
+                fs::remove_file(&ready).unwrap();
+                let mut preserved = vec![(
+                    payload.strip_prefix(&staging).unwrap().to_path_buf(),
+                    fs::read(&payload).unwrap(),
+                )];
+                let claim = payload.with_extension("owner");
+                if claim.exists() {
+                    preserved.push((
+                        claim.strip_prefix(&staging).unwrap().to_path_buf(),
+                        fs::read(&claim).unwrap(),
+                    ));
+                }
+                assert!(transaction::workspace(&target)
+                    .unwrap()
+                    .join(format!(".pr-sniper-package-{nonce}.json"))
+                    .exists());
+                let recovered = installation_at(&target).unwrap();
+                assert_eq!(
+                    recovered.revision,
+                    before.as_ref().and_then(|value| value.revision.clone())
+                );
+                let quarantine = transaction::workspace(&target)
+                    .unwrap()
+                    .join(format!(".pr-sniper-package-{nonce}.preserved"));
+                assert!(!staging.exists());
+                for (relative, bytes) in &preserved {
+                    assert_eq!(&fs::read(quarantine.join(relative)).unwrap(), bytes);
+                }
+                let installed = install_at(
+                    &target,
+                    &root.join("new-app"),
+                    recovered.revision.as_deref(),
+                )
+                .unwrap();
+                assert_package(&target, &root.join("new-app"));
+                let updated = install_at(
+                    &target,
+                    &root.join("newer-app"),
+                    installed.revision.as_deref(),
+                )
+                .unwrap();
+                assert_package(&target, &root.join("newer-app"));
+                assert_eq!(
+                    remove_at(&target, updated.revision.as_deref().unwrap())
+                        .unwrap()
+                        .state,
+                    "absent"
+                );
+                for (relative, bytes) in &preserved {
+                    assert_eq!(&fs::read(quarantine.join(relative)).unwrap(), bytes);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn interrupted_bootstrap_quarantine_reopens_without_deleting_preserved_content() {
+    let owner = root();
+    let root = owner.path().canonicalize().unwrap();
+    let target = root.join("skills/pr-sniper");
+    let nonce = uuid::Uuid::new_v4();
+    NONCE.with(|value| *value.borrow_mut() = Some(nonce));
+    crate::storage::private_fs::recovery_fault::arm(
+        transaction::workspace(&target).unwrap().join(format!(
+            ".pr-sniper-package-{nonce}.new/scripts/pr-sniper.mjs"
+        )),
+        "claim",
+    );
+    assert!(install_at(&target, &root.join("app"), None).is_err());
+    fail("bootstrap-preserved");
+    assert!(installation_at(&target).is_err());
+    let quarantine = transaction::workspace(&target)
+        .unwrap()
+        .join(format!(".pr-sniper-package-{nonce}.preserved"));
+    assert!(quarantine.exists());
+    assert_eq!(installation_at(&target).unwrap().state, "absent");
+    assert!(quarantine.exists());
+    install_at(&target, &root.join("app"), None).unwrap();
+    assert!(quarantine.exists());
+}
+
+#[test]
+fn bootstrap_ambiguity_does_not_hide_custom_or_linked_content() {
+    for change in ["custom", "foreign", "linked"] {
+        let owner = root();
+        let root = owner.path().canonicalize().unwrap();
+        let target = root.join("skills/pr-sniper");
+        let installed = install_at(&target, &root.join("old"), None).unwrap();
+        let nonce = uuid::Uuid::new_v4();
+        NONCE.with(|value| *value.borrow_mut() = Some(nonce));
+        let staging = transaction::workspace(&target)
+            .unwrap()
+            .join(format!(".pr-sniper-package-{nonce}.new"));
+        crate::storage::private_fs::recovery_fault::arm(
+            staging.join("scripts/pr-sniper.mjs"),
+            "claim",
+        );
+        assert!(install_at(&target, &root.join("new"), installed.revision.as_deref()).is_err());
+        let protected = match change {
+            "custom" => {
+                fs::write(staging.join("SKILL.md"), "human text").unwrap();
+                staging.join("SKILL.md")
+            }
+            "foreign" => {
+                fs::write(staging.join("notes.txt"), "human text").unwrap();
+                staging.join("notes.txt")
+            }
+            _ => {
+                let external = root.join("external");
+                fs::rename(staging.join("references"), &external).unwrap();
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&external, staging.join("references")).unwrap();
+                #[cfg(windows)]
+                crate::windows_permissions::junction(&external, &staging.join("references"));
+                external.join("control.md")
+            }
+        };
+        let bytes = fs::read(&protected).unwrap();
+        assert!(installation_at(&target).is_err());
+        assert!(staging.exists());
+        assert_eq!(fs::read(protected).unwrap(), bytes);
+        assert_package(&target, &root.join("old"));
+        if change == "linked" {
+            #[cfg(unix)]
+            fs::remove_file(staging.join("references")).unwrap();
+            #[cfg(windows)]
+            fs::remove_dir(staging.join("references")).unwrap();
+        }
     }
 }

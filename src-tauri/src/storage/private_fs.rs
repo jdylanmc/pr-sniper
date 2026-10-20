@@ -307,6 +307,60 @@ pub(super) fn sync_entries(directory: &Path) -> io::Result<()> {
     sync_directory(directory)
 }
 
+/// Recognize preserved bootstrap ambiguity, not ownership. These files must
+/// never be deleted on this evidence; a package owner may quarantine its
+/// enclosing transaction while preserving every byte.
+pub(crate) struct BootstrapArtifacts {
+    pub target: String,
+    pub files: Vec<String>,
+}
+
+pub(crate) fn bootstrap_artifacts(directory: &Path) -> io::Result<Vec<BootstrapArtifacts>> {
+    existing_directory(directory)?;
+    let mut result = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some((target, nonce)) = name
+            .strip_suffix(".stage")
+            .and_then(|name| name.rsplit_once(WRITE_MARKER))
+        else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(nonce).is_err() {
+            continue;
+        }
+        owned_file(&entry.path())?;
+        if entry.metadata()?.len() != 0 {
+            continue;
+        }
+        let owner_name = format!("{target}{WRITE_MARKER}{nonce}.owner");
+        let owner_path = directory.join(&owner_name);
+        let mut files = vec![name.to_string()];
+        match owned_file(&owner_path) {
+            Ok(()) => {
+                let expected = ownership(target, nonce);
+                let mut actual = Vec::new();
+                File::open(&owner_path)?
+                    .take(expected.len() as u64 + 1)
+                    .read_to_end(&mut actual)?;
+                if actual == expected.as_bytes() || !expected.as_bytes().starts_with(&actual) {
+                    continue;
+                }
+                files.push(owner_name);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        result.push(BootstrapArtifacts {
+            target: target.into(),
+            files,
+        });
+    }
+    Ok(result)
+}
+
 pub(crate) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     let name = path
         .file_name()
