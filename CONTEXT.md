@@ -92,10 +92,10 @@ _Avoid_: Secondary agent, peer
 Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
 **Include self** (Approve & Merge):
-Approve & Merge option, default off: the user's own PRs count. Inert until approve exits land.
+Repository-assignment option, default off: the acting account's own PRs may merge. The packet carries this choice explicitly. After a clear review, use an offered merge exit; the host merges an own PR without an approval vote. Other merge gates still apply. A denied approval exit does not deny an offered merge exit.
 
 **Assignment Capability**:
-An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment gates exit replies and resolutions. Merge includes approval and follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
+An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment gates exit replies and resolutions. For another author's PR, merge follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. For the acting account's own PR, Include self permits merge without posting an approval vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
 _Avoid_: Automation override, reusable Agent permission, merge-only grant
 
 **Authorization Boundary**:

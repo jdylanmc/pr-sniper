@@ -21,7 +21,10 @@ for (const failUtility of [false, true]) {
     ipc,
   }) => {
     const fixture = await queueFixture(store);
-    await page.clock.install();
+    // Runner delays must not add polling ticks between explicit advances.
+    const start = new Date("2026-10-14T12:00:00Z");
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(start);
     await page.addInitScript((failUtility) => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__monitorReads = 0;

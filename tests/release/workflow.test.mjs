@@ -206,6 +206,37 @@ test("Windows cancels superseded PR runs without cancelling main release evidenc
   }
 });
 
+test("every PR workflow cancels superseded runs without cancelling non-PR runs", () => {
+  const names = new Set();
+  const groups = new Set([
+    "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
+    "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+  ]);
+  for (const file of readdirSync(".github/workflows").filter((file) =>
+    /\.ya?ml$/.test(file),
+  )) {
+    const current = parse(
+      readFileSync(join(".github/workflows", file), "utf8"),
+    );
+    const events = current.on;
+    const handlesPR =
+      events === "pull_request" ||
+      (Array.isArray(events)
+        ? events.includes("pull_request")
+        : events && Object.hasOwn(events, "pull_request"));
+    if (!handlesPR) continue;
+    assert.ok(current.name && !names.has(current.name), file);
+    names.add(current.name);
+    assert.ok(groups.has(current.concurrency?.group), file);
+    assert.equal(
+      current.concurrency["cancel-in-progress"],
+      "${{ github.event_name == 'pull_request' }}",
+      file,
+    );
+  }
+  assert.ok(names.size > 0, "No PR-triggered workflows inspected");
+});
+
 test("Windows full browser suite has bounded headroom without widening job or installer limits", () => {
   const job = windows.jobs.windows;
   const suite = job.steps.filter(

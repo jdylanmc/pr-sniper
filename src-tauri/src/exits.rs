@@ -77,7 +77,7 @@ impl Exit {
             Exit::LeaveComments => "Terminal exit: post new inline comments on diff lines, a PR-level review body (body), reply to threads, resolve your own threads. Ends the run. Call once.",
             Exit::ReadyForHuman => "Terminal exit: nothing to post; hand the PR to the human with a short local summary. Ends the run.",
             Exit::ApprovePullRequest => "Terminal exit: approve the PR head with an approval comment. Ends the run.",
-            Exit::ApproveAndMerge => "Terminal exit: approve with an approval comment, then merge. Ends the run.",
+            Exit::ApproveAndMerge => "Terminal exit: merge the reviewed PR when offered. For another author's PR, the host approves first. For the acting account's own PR with Include self enabled, the host merges without an approval vote. Ends the run.",
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
             Exit::SubmitVerdict => crate::review::duck::VERDICT_DESCRIPTION,

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 8;
+pub const SCHEMA: u32 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -136,6 +136,7 @@ pub struct PacketInput {
     pub created_at: String,
     pub admitted_by: Option<String>,
     pub acting_login: String,
+    pub include_self: bool,
     pub role: Role,
     pub tools: Vec<String>,
     pub exits: Vec<(Exit, Offer)>,

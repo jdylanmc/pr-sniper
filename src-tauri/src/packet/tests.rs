@@ -8,6 +8,7 @@ fn input() -> PacketInput {
         created_at: "2026-10-12T00:00:00Z".into(),
         admitted_by: Some("watched_author".into()),
         acting_login: "pr-sniper-bot".into(),
+        include_self: false,
         role: Role::Primary,
         tools: [
             "read_changes",
@@ -163,6 +164,48 @@ fn teammate_packet_matches_the_golden_file() {
 }
 
 #[test]
+fn clean_review_prefers_only_offered_actions_and_keeps_human_uncertainty() {
+    let mut input = input();
+    input.include_self = true;
+    input.pr.author_relation = AuthorRelation::Owner;
+    input.exits.push((Exit::ApproveAndMerge, Offer::Offered));
+    let allowed = build(&input);
+    assert!(allowed
+        .text
+        .contains("clean_review_exit: approve_and_merge"));
+    assert!(allowed
+        .text
+        .contains("host merges without an approval vote"));
+    assert!(allowed.text.contains("Unsure: ready_for_human."));
+    assert!(allowed
+        .record
+        .exits_offered
+        .contains(&Exit::ApproveAndMerge));
+    for blocker in [
+        "CI is pending.",
+        "PR is draft.",
+        "Unresolved threads remain.",
+    ] {
+        input.exits.last_mut().unwrap().1 = Offer::Denied(blocker.into());
+        let blocked = build(&input);
+        assert!(blocked.text.contains("clean_review_exit: ready_for_human"));
+        assert!(!blocked
+            .record
+            .exits_offered
+            .contains(&Exit::ApproveAndMerge));
+        assert!(blocked.text.contains(blocker));
+    }
+    input.exits[1].1 = Offer::Offered;
+    assert!(build(&input)
+        .text
+        .contains("clean_review_exit: approve_pull_request"));
+    input.role = Role::Teammate;
+    let teammate = build(&input);
+    assert!(!teammate.text.contains("clean_review_exit:"));
+    assert!(!teammate.text.contains("include_self:"));
+}
+
+#[test]
 fn ci_red_rule_points_at_logs_only_when_the_run_can_read_them() {
     let with = build(&input()).text;
     assert!(with.contains("6. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it.\n"));
@@ -195,6 +238,7 @@ fn same_state_same_text_and_hash_and_time_is_outside_the_hash() {
         |i: &mut PacketInput| i.conversation.comments[0].body.push('x'),
         |i: &mut PacketInput| i.teammates[0].report.findings[0].nano.push('x'),
         |i: &mut PacketInput| i.directive.preset = None,
+        |i: &mut PacketInput| i.include_self = true,
         |i: &mut PacketInput| i.exits[1].1 = Offer::Offered,
     ] {
         let mut changed = input();

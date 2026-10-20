@@ -156,6 +156,7 @@ where
             .to_string()
         }),
         acting_login: acting_login.to_string(),
+        include_self: base.grants.include_self,
         role: if base.primary {
             Role::Primary
         } else {

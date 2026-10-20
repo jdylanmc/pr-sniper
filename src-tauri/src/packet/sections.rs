@@ -2,7 +2,7 @@
 //! Teammate reports, Directive, Voice, Exits. Data is fenced; nothing is cut without a marker.
 
 use super::{rules, AuthorRelation, CommentFact, PacketInput, Role, ThreadFact, SCHEMA};
-use crate::exits::gates::Offer;
+use crate::exits::{gates::Offer, Exit};
 use std::fmt::Write;
 
 /// Inline cap per comment; longer text is marked and pulled with `get_thread`.
@@ -116,6 +116,9 @@ fn meta(out: &mut String, input: &PacketInput, packet_id: &str, with_time: bool)
         let _ = writeln!(out, "admitted_by: {}", rule.replace('\n', " "));
     }
     let _ = writeln!(out, "acting_identity: {}", input.acting_login);
+    if input.role == Role::Primary {
+        let _ = writeln!(out, "include_self: {}", input.include_self);
+    }
     let _ = writeln!(
         out,
         "role: {}",
@@ -391,6 +394,25 @@ fn voice(out: &mut String, input: &PacketInput) {
 fn exits(out: &mut String, input: &PacketInput) {
     out.push_str("\n## Exits\n");
     out.push_str("Call exactly one. Host re-checks gates when you call it.\n");
+    if input.role == Role::Primary {
+        if let Some(preferred) = [
+            Exit::ApproveAndMerge,
+            Exit::ApprovePullRequest,
+            Exit::ReadyForHuman,
+        ]
+        .into_iter()
+        .find(|exit| {
+            input
+                .exits
+                .iter()
+                .any(|(candidate, offer)| candidate == exit && offer.is_offered())
+        }) {
+            let _ = writeln!(out, "clean_review_exit: {}", preferred.id());
+        }
+        if input.include_self && input.pr.author_relation == AuthorRelation::Owner {
+            out.push_str("Include self is enabled for this repository assignment. If approve_and_merge is offered and review is clear, use it: the host merges without an approval vote. Do not hand off solely because approve_pull_request is unavailable. If merge is not offered, state its actual gate reason.\n");
+        }
+    }
     for (exit, offer) in &input.exits {
         match offer {
             Offer::Offered => {

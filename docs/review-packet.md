@@ -50,7 +50,7 @@ Balanced push and pull. Packet carries the top-level facts. Details are fetched 
 
 Sections, fixed order. Rules first, data fenced, exits last.
 
-1. **Meta.** `packet_id`, `schema`, `state_id`, `revision`, `created_at`. Why admitted (rule matched). Acting identity. Intro, 2 sentences: _"PR Sniper finds pull requests and hands each one to you as this packet. You review it. The human keeps the last word."_ Tool list. Exits offered.
+1. **Meta.** `packet_id`, `schema`, `state_id`, `revision`, `created_at`. Why admitted (rule matched). Acting identity and the primary assignment's `include_self` choice. Intro: _"PR Sniper finds pull requests and hands each one to you as this packet. You review it. The operator chose your tools and automation permissions."_ Tool list. Exits offered.
 2. **Rules.** Caveman, fixed text, versioned with `schema`.
 3. **Pull request.** Title, description, author (relation: owner, bot, other), state, draft, base and head ref and sha, revision, labels, size, CI check array, mergeable, review decision, existing approvals.
 4. **Conversation.** Comments and threads with location (`path:line`, root comment), `new_since_last_review` (a comment written after the PR's last consumed state; never consumed: all new) and `targeted_revision`. This agent's open feedback.
@@ -67,13 +67,13 @@ Rules, minimum:
 4. Comment only real defects, on the line. No comment on what you read, no praise, no summary.
 5. Threads are stable finding identities, including resolved/outdated threads. Classify every own finding, update its original thread, and resolve only with current-code evidence. A mistaken resolution needs one explicit correction reply, never a replacement root. Reuse confirmed corrections on later assessments; uncertain receipts never authorize replacement replies.
 6. CI red or merge conflicts: do not approve. `leave_comments` with the fix, unless an open thread already says it. With `read_check_log` granted: "CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it."
-7. Nothing new to say and no defect: `ready_for_human`, or approve if offered.
+7. Review clear, no pending findings: use `clean_review_exit` from Exits. Prefer the offered merge, then approval, then human handoff. A denied approval exit does not deny an offered merge exit.
 8. Unsure: `ready_for_human`. Broken: `panic_exit`.
 9. Merge conflicts or issues outside the diff: put them in `body`.
 
 Teammates: same read and `<untrusted>` rules; real defects only; existing points reference their original thread id, including resolved/outdated findings; one `submit_report`.
 
-Schema 2 (live run: agents re-posted points beside their own open threads, posted "what I read" comments, and chose `ready_for_human` on CI red). Schema 3: rule 9 (live: a comment on a line outside the diff, a pre-existing conflict marker, parked the publication). Schema 4: `read_check_log` (rule 6 variant, check log ids). Schema 5: Voice section. Schema 6: `rubber_duck` rule and the duck packet. Schema 7: stable finding identities, structured reconciliation, evidence-gated resolution and independent fixed verification. Schema 8: reuse confirmed correction receipts across later assessments; no replacement replies for uncertain outcomes.
+Schema 2 (live run: agents re-posted points beside their own open threads, posted "what I read" comments, and chose `ready_for_human` on CI red). Schema 3: rule 9 (live: a comment on a line outside the diff, a pre-existing conflict marker, parked the publication). Schema 4: `read_check_log` (rule 6 variant, check log ids). Schema 5: Voice section. Schema 6: `rubber_duck` rule and the duck packet. Schema 7: stable finding identities, structured reconciliation, evidence-gated resolution and independent fixed verification. Schema 8: reuse confirmed correction receipts across later assessments; no replacement replies for uncertain outcomes. Schema 9: explicit Include self and clean-review exit preference; own-PR merge does not require an approval vote.
 
 Stored with the run: sections, manifest, teammate reports, `packet_hash`, `state_hash`, `state_marks` (compact packet-time state: field digest, comment ids and body digests, resolved threads; tells own writes from external change at consume). File content not duplicated. UI shows exactly what the agent saw. No tokens or credentials.
 
@@ -92,11 +92,11 @@ The agent has no shell, no `az`, no `gh`, no network, no checkout. Its hands are
 | `leave_comments`       | Publish Comment (new), Reply Comment (replies) | `new_comments[{path, line, side, body}]`, `body` (PR-level review body), `reply_comments[{thread, body}]`, own-thread resolutions. Posted as one batch, stamped with revision. |
 | `ready_for_human`      | none                                           | Move PR to the human's queue. No comment on the provider. Stores a local summary (ad hoc decision, owner review requested).                                                    |
 | `approve_pull_request` | Approve                                        | Approve the head with an approval comment. Idempotent.                                                                                                                         |
-| `approve_and_merge`    | & Merge                                        | Approve with comment, then merge.                                                                                                                                              |
+| `approve_and_merge`    | & Merge                                        | Merge after review. Other author: approve first. Acting account's own PR with Include self: merge without an approval vote.                                                    |
 | `panic_exit`           | none                                           | Unrecoverable. Log it, park in Needs attention, auto-retry on the cooldown schedule.                                                                                           |
 | `submit_report`        | none (teammate only)                           | Teammate's report: array of findings `{file, line, nano, full, fix}`. `nano` <= 100 words, `full` and `fix` <= 4 KB each. Not a provider write. Stored locally. Ends the run.  |
 
-Primary only. Usual choice among the last three: `ready_for_human`, `approve_pull_request` or `approve_and_merge`.
+Primary only. After a clear review, `clean_review_exit` selects the first offered action: `approve_and_merge`, `approve_pull_request`, then `ready_for_human`. Uncertainty still permits human handoff; unmet gates never authorize a merge.
 
 Agents may resolve their own threads. They cannot close others'. They may reply to disagree.
 
