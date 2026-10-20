@@ -54,6 +54,17 @@
 - Settings installs only Copilot CLI at `~/.copilot/skills/pr-sniper`.
 - Install receipts verify every managed file. Existing unowned, changed,
   linked or additional content produces a conflict, not overwrite/removal.
+- Package staging, prior-package backups and a durable activation journal live
+  outside Copilot skill discovery in `.copilot/.pr-sniper-installer`. A per-parent
+  OS file lock serializes inspection/recovery, installation and removal.
+  Staging failure leaves the live package unchanged; ready activation and
+  verified partial cleanup recover on reopen. A missing new package can restore
+  the verified old backup. The two directory renames are not a single atomic
+  operation; ownership and content proofs make interruption recoverable.
+- Only exact known, hash-matching remnants are cleaned. Foreign staging,
+  customization and links are never adopted or removed. Unclaimed artifacts
+  before journal publication stay untouched. Expected revision is checked after
+  recovery, so callers must reload after an uncertain outcome.
 - Installer records the exact app executable; source-distributed skills also
   recognize standard per-user/system install locations.
 - Node 22+ runs the small CLI. `/skills reload` discovers installation changes.

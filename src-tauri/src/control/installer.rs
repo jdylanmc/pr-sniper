@@ -2,6 +2,17 @@ use super::{revision, transport::private_directory, Error, PROTOCOL};
 use crate::storage::private_fs;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
+#[cfg(test)]
+mod tests;
+mod transaction;
+
+fn checkpoint(point: &str) -> Result<(), Error> {
+    #[cfg(test)]
+    tests::fault(point)?;
+    #[cfg(not(test))]
+    let _ = point;
+    Ok(())
+}
 
 const ASSETS: &[(&str, &str)] = &[
     (
@@ -18,7 +29,7 @@ const ASSETS: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     protocol: u32,
@@ -54,6 +65,13 @@ fn verify_parents(directory: &Path) -> Result<(), Error> {
 }
 
 pub fn installation_at(directory: &Path) -> Result<Installation, Error> {
+    transaction::locked(directory, false, || {
+        transaction::recover(directory)?;
+        inspect_at(directory)
+    })
+}
+
+fn inspect_at(directory: &Path) -> Result<Installation, Error> {
     verify_parents(directory)?;
     if !directory.exists() {
         return Ok(Installation {
@@ -65,6 +83,12 @@ pub fn installation_at(directory: &Path) -> Result<Installation, Error> {
     let manifest_path = directory.join(".pr-sniper-install.json");
     private_fs::existing_file(&manifest_path)
         .map_err(|_| Error::new("installation_conflict", "Unowned skill directory."))?;
+    if fs::metadata(&manifest_path).map_err(io_error)?.len() > super::MAX_FRAME as u64 {
+        return Err(Error::new(
+            "installation_conflict",
+            "Invalid installation receipt.",
+        ));
+    }
     let bytes = fs::read(&manifest_path).map_err(io_error)?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .map_err(|_| Error::new("installation_conflict", "Invalid installation receipt."))?;
@@ -85,6 +109,23 @@ pub fn installation_at(directory: &Path) -> Result<Installation, Error> {
             "Unexpected installation members.",
         ));
     }
+    let mut found = file_hashes(directory)?;
+    found.remove(".pr-sniper-install.json");
+    if found != manifest.files || manifest.protocol != PROTOCOL {
+        return Err(Error::new(
+            "installation_conflict",
+            "Customized or incompatible skill; preserve it before replacement.",
+        ));
+    }
+    Ok(Installation {
+        state: "installed",
+        revision: Some(revision(&bytes)),
+        version: Some(manifest.version),
+    })
+}
+
+fn file_hashes(directory: &Path) -> Result<BTreeMap<String, String>, Error> {
+    private_fs::existing_directory(directory).map_err(io_error)?;
     let mut found = BTreeMap::new();
     fn walk(
         root: &Path,
@@ -94,14 +135,11 @@ pub fn installation_at(directory: &Path) -> Result<Installation, Error> {
         private_fs::recover(directory, None).map_err(io_error)?;
         for entry in fs::read_dir(directory).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
-            let name = path
-                .strip_prefix(root)
-                .map_err(io_error)?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if name == ".pr-sniper-install.json" {
-                continue;
-            }
+            let relative = path.strip_prefix(root).map_err(io_error)?.to_string_lossy();
+            #[cfg(windows)]
+            let name = relative.replace('\\', "/");
+            #[cfg(not(windows))]
+            let name = relative.into_owned();
             let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
             if metadata.is_dir() {
                 private_fs::existing_directory(&path).map_err(io_error)?;
@@ -123,17 +161,7 @@ pub fn installation_at(directory: &Path) -> Result<Installation, Error> {
         Ok(())
     }
     walk(directory, directory, &mut found)?;
-    if found != manifest.files || manifest.protocol != PROTOCOL {
-        return Err(Error::new(
-            "installation_conflict",
-            "Customized or incompatible skill; preserve it before replacement.",
-        ));
-    }
-    Ok(Installation {
-        state: "installed",
-        revision: Some(revision(&bytes)),
-        version: Some(manifest.version),
-    })
+    Ok(found)
 }
 
 pub fn install_at(
@@ -141,56 +169,51 @@ pub fn install_at(
     executable: &Path,
     expected: Option<&str>,
 ) -> Result<Installation, Error> {
-    let current = installation_at(directory)?;
-    if current.revision.as_deref() != expected {
-        return Err(Error::new("conflict", ()));
-    }
-    if !executable.is_absolute() {
-        return Err(Error::new("invalid_executable", ()));
-    }
-    private_directory(directory).map_err(io_error)?;
-    let launcher = serde_json::to_string(&serde_json::json!({
-        "protocol": PROTOCOL, "executable": executable
-    }))
-    .map_err(io_error)?;
-    let mut files = BTreeMap::new();
-    for (name, content) in ASSETS
-        .iter()
-        .copied()
-        .chain(std::iter::once(("launcher.json", launcher.as_str())))
-    {
-        let file = directory.join(name);
-        private_fs::directory(file.parent().unwrap()).map_err(io_error)?;
-        private_fs::replace(&file, content.as_bytes(), "skill asset").map_err(io_error)?;
-        files.insert(name.to_string(), revision(&content.as_bytes()));
-    }
-    let manifest = Manifest {
-        protocol: PROTOCOL,
-        version: env!("CARGO_PKG_VERSION").into(),
-        files,
-    };
-    private_fs::replace(
-        &directory.join(".pr-sniper-install.json"),
-        &serde_json::to_vec(&manifest).map_err(io_error)?,
-        "skill receipt",
-    )
-    .map_err(io_error)?;
-    installation_at(directory)
+    transaction::locked(directory, true, || {
+        transaction::recover(directory)?;
+        let current = inspect_at(directory)?;
+        if current.revision.as_deref() != expected {
+            return Err(Error::new("conflict", ()));
+        }
+        if !executable.is_absolute() {
+            return Err(Error::new("invalid_executable", ()));
+        }
+        if current.state == "installed" {
+            private_directory(directory).map_err(io_error)?;
+        }
+        let launcher = serde_json::to_string(&serde_json::json!({
+            "protocol": PROTOCOL, "executable": executable
+        }))
+        .map_err(io_error)?;
+        let contents: Vec<_> = ASSETS
+            .iter()
+            .copied()
+            .chain(std::iter::once(("launcher.json", launcher.as_str())))
+            .map(|(name, content)| (name.to_owned(), content.to_owned()))
+            .collect();
+        transaction::install(directory, &contents, expected)?;
+        inspect_at(directory)
+    })
 }
 
 pub fn remove_at(directory: &Path, expected: &str) -> Result<Installation, Error> {
-    let current = installation_at(directory)?;
-    if current.revision.as_deref() != Some(expected) {
-        return Err(Error::new("conflict", ()));
-    }
-    // Only the exact verified, unmodified package is removed.
-    fs::remove_dir_all(directory).map_err(io_error)?;
-    installation_at(directory)
+    transaction::locked(directory, false, || {
+        transaction::recover(directory)?;
+        let current = inspect_at(directory)?;
+        if current.revision.as_deref() != Some(expected) {
+            return Err(Error::new("conflict", ()));
+        }
+        transaction::remove(directory, expected)?;
+        inspect_at(directory)
+    })
 }
 
 #[tauri::command]
 pub(crate) fn control_installation(app: tauri::AppHandle) -> Result<Installation, Error> {
     use tauri::Manager;
+    if app.state::<crate::Host>().isolated {
+        return Err(Error::new("isolated_installation", ()));
+    }
     installation_at(
         &app.path()
             .home_dir()

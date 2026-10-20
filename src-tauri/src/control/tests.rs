@@ -267,6 +267,150 @@ fn preset_is_additive_and_preserves_customized_components() {
     assert_eq!(store.load_settings().unwrap(), saved);
 }
 
+fn readonly_assignment_fixture() -> (
+    tempfile::TempDir,
+    Store,
+    crate::storage::Settings,
+    crate::storage::Repository,
+) {
+    let (root, store) = capacity::tests::fixture(1, 1, true);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments.clear();
+    settings.repositories[0].primary_assignment_id = None;
+    settings.repositories[0].enabled = false;
+    store.save_settings(&settings).unwrap();
+    let mut repository = settings.repositories[0].clone();
+    repository.enabled = true;
+    repository.assignments.push(crate::storage::Assignment {
+        id: uuid::Uuid::new_v4().to_string(),
+        agent_id: settings.agents[0].id.clone(),
+        schedule: None,
+        comment: false,
+        approve: false,
+        actions: None,
+        tools: None,
+        rubber_duck: None,
+    });
+    (root, store, settings, repository)
+}
+
+#[test]
+fn new_readonly_assignment_tools_need_no_effect_grant_and_native_catalog_filters_effects() {
+    use crate::exits::gates::{offered, Facts, GateInput, Grants};
+    for requested in [
+        vec![
+            "read_changes",
+            "read_source",
+            "get_thread",
+            "get_checks",
+            "read_check_log",
+            "list_tree",
+            "search_code",
+            "ready_for_human",
+            "wait",
+            "panic_exit",
+        ],
+        vec!["read_source", "ready_for_human", "panic_exit"],
+        vec![
+            "read_source",
+            "ready_for_human",
+            "panic_exit",
+            "leave_comments",
+            "approve_pull_request",
+            "approve_and_merge",
+            "submit_report",
+            "rubber_duck",
+        ],
+    ] {
+        let (_root, store, settings, mut repository) = readonly_assignment_fixture();
+        repository.assignments[0].tools = Some(requested.iter().map(|s| s.to_string()).collect());
+        let saved = operations::save_checked(
+            &store,
+            &revision(&settings),
+            ResourceEdit::Repository {
+                id: repository.id.clone(),
+                expected: Some(Box::new(settings.repositories[0].clone())),
+                value: Some(Box::new(repository)),
+            },
+            false,
+        )
+        .unwrap();
+        let repo = &saved.repositories[0];
+        let assignment = &repo.assignments[0];
+        let authority = repo.assignment_authority(assignment);
+        assert!(!authority.comment && !authority.reply && !authority.approve && !authority.merge);
+        let tools = repo.assignment_tools(assignment);
+        let input = GateInput {
+            tools: tools.clone(),
+            primary: authority.primary,
+            grants: Grants::default(),
+            review_drafts: false,
+            facts: Facts::default(),
+        };
+        let exits: Vec<_> = offered(&input)
+            .into_iter()
+            .filter_map(|(exit, offer)| offer.is_offered().then_some(exit))
+            .collect();
+        let available = crate::review::tools::tool_set(
+            &tools,
+            repo.assignment_duck(assignment).is_some(),
+            &exits,
+        );
+        assert!(available.iter().any(|t| t == "read_source"));
+        for effect in [
+            "leave_comments",
+            "approve_pull_request",
+            "approve_and_merge",
+            "submit_report",
+            "rubber_duck",
+        ] {
+            assert!(
+                !available.iter().any(|t| t == effect),
+                "{effect}: {available:?}"
+            );
+        }
+        if requested.len() == 3 {
+            assert_eq!(available, ["read_source", "ready_for_human", "panic_exit"]);
+        }
+    }
+}
+
+#[test]
+fn new_assignment_effect_flags_still_require_explicit_grant_changes() {
+    for flag in ["comment", "reply", "approve", "merge", "include_self"] {
+        let (_root, store, settings, mut repository) = readonly_assignment_fixture();
+        let assignment = &mut repository.assignments[0];
+        assignment.tools = Some(vec![
+            "read_source".into(),
+            "ready_for_human".into(),
+            "panic_exit".into(),
+        ]);
+        if flag == "comment" {
+            assignment.comment = true;
+        } else {
+            assignment.actions = Some(crate::storage::ActionPermissions {
+                reply: flag == "reply",
+                approve: matches!(flag, "approve" | "merge" | "include_self"),
+                merge: matches!(flag, "merge" | "include_self"),
+                include_self: flag == "include_self",
+            });
+        }
+        let error = operations::save_checked(
+            &store,
+            &revision(&settings),
+            ResourceEdit::Repository {
+                id: repository.id.clone(),
+                expected: Some(Box::new(settings.repositories[0].clone())),
+                value: Some(Box::new(repository)),
+            },
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "explicit_grant_required", "{flag}");
+        assert_eq!(store.load_settings().unwrap(), settings);
+    }
+}
+
 #[test]
 fn prioritization_persists_without_interrupting_or_bypassing_capacity() {
     let (root, store) = capacity::tests::fixture(3, 1, true);

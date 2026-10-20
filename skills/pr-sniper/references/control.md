@@ -92,3 +92,13 @@ Applications or Windows per-user PR Sniper install paths. No PATH shell lookup.
 `PR_SNIPER_DATA_DIR` selects isolated data; background launch then also requires
 an explicit `PR_SNIPER_KEYCHAIN_SERVICE` test scope. Neither variable is needed
 for the installed app. Protocol mismatches never fall back to file mutation.
+
+Installer status can recover a previously authorized package transaction.
+Whole-package staging and backups live outside skill discovery in
+`~/.copilot/.pr-sniper-installer`; they require same-filesystem directory moves.
+Before-ready failures roll back staging; ready activation and owned cleanup
+resume on reopen. Replacement is recoverable, not a zero-gap atomic swap.
+After interruption, read `installation` and use its current revision; stale
+expected revisions still fail. Customized, foreign and linked content is never
+force-replaced or deleted. Linked profile/installation ancestry is unsupported.
+Native isolated profiles cannot recover or mutate the real user-wide install.

@@ -17,6 +17,24 @@
   Install only this skill for Copilot CLI; no other host is required or configured.
 - Human login remains in Settings → Accounts. The skill binds existing GitHub
   and Copilot accounts; it neither reads tokens nor performs authentication.
+- Installer updates stage and verify a complete package outside skill discovery,
+  under `~/.copilot/.pr-sniper-installer`. A locked journal records ownership
+  before activation. Status/install/remove recover interrupted work: unfinished
+  staging rolls back; a verified ready package finishes activation; interrupted
+  cleanup resumes only for matching owned files.
+- Directory replacement is recoverable, not a zero-gap atomic swap. The previous
+  package stays in an owned backup until the new package and activation record
+  are verified. Read current installation status/revision after an interruption;
+  an old expected revision is never silently accepted.
+- Unexpected, customized or linked content remains untouched and causes a
+  conflict. Unclaimed pre-journal artifacts are preserved, never guessed to be
+  owned. Linked installation/profile ancestry is intentionally unsupported;
+  fixture-only canonicalization is not redirected-profile support.
+- Transaction storage and the skill destination must permit same-filesystem
+  directory renames. Windows process-interruption recovery is tested separately
+  from power-loss durability; no portable directory-flush guarantee is claimed.
+- Native isolated profiles cannot read/recover or install/remove the real
+  user-wide skill. Synthetic tests use explicitly owned fixture destinations.
 - Existing installations without protocol 1 produce an unavailable/not-ready
   error; update the app rather than editing settings files.
 

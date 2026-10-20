@@ -50,19 +50,30 @@ pub(crate) fn directory(path: &Path) -> io::Result<()> {
             if !parent.exists() {
                 directory(parent)?;
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                fs::DirBuilder::new().mode(0o700).create(path)?;
-            }
-            #[cfg(windows)]
-            windows::create_directory(path)?;
+            create_directory(path)?;
         }
         Err(error) => return Err(error),
     }
     #[cfg(windows)]
     windows::protect(path, true)?;
     Ok(())
+}
+
+pub(crate) fn create_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(windows)]
+    windows::create_directory(path)
+}
+
+pub(crate) fn create_file(path: &Path) -> io::Result<File> {
+    let file = create_stage(path)?;
+    #[cfg(windows)]
+    windows::protect(path, false)?;
+    Ok(file)
 }
 
 pub(crate) fn existing_file(path: &Path) -> io::Result<()> {
@@ -142,7 +153,7 @@ impl Drop for ClaimGuard {
     }
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
     // File sync and rename cover process interruption on Windows. Do not claim
@@ -162,7 +173,7 @@ fn ownership(target: &str, nonce: &str) -> String {
     format!("pr-sniper-replace-v1\n{target}\n{nonce}\n")
 }
 
-fn owned_file(path: &Path) -> io::Result<()> {
+pub(crate) fn owned_file(path: &Path) -> io::Result<()> {
     existing_file(path)?;
     #[cfg(unix)]
     {
