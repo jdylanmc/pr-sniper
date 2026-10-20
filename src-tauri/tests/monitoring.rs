@@ -1958,6 +1958,90 @@ fn exhausted_cooldown_poll_requeues_on_the_next_scheduled_scan() {
 }
 
 #[test]
+fn reconnected_parked_poll_keeps_its_schedule_without_erasing_the_real_failure() {
+    for control in ["connected", "disconnected", "unauthorized"] {
+        let (_root, store) = store();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let mut now = 1_800_000_000;
+        for attempt in 1..=3 {
+            fail_poll(
+                &mut monitor,
+                &store,
+                now,
+                attempt == 1,
+                ConnectionError::Network,
+            );
+            if attempt < 3 {
+                now = poll_operation(&monitor).next_attempt_at.unwrap();
+            }
+        }
+        let mut state = store.load_monitoring_state().unwrap();
+        let health = state.health.get_mut(REPOSITORY_KEY).unwrap();
+        health.last_failure = Some("account_disconnected".into());
+        health.next_run = 0;
+        health.scheduled_run = 0;
+        health.schedule_available = false;
+        let operation = health.operation.as_mut().unwrap();
+        operation.resume_cycle = 5;
+        operation.resume_at = None;
+        let parked = operation.clone();
+        store.save_monitoring_state(&state).unwrap();
+        if control == "unauthorized" {
+            let mut settings = store.load_settings().unwrap();
+            settings
+                .repository_authorizations
+                .insert(REPOSITORY_KEY.into(), None);
+            store.save_settings(&settings).unwrap();
+        }
+        let accounts = if control == "disconnected" {
+            BTreeMap::new()
+        } else {
+            available_accounts(&[(ACCOUNT_ID, "current-login")])
+        };
+        let mut monitor = Monitor::restore(&store).unwrap();
+        assert!(monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_100, false)
+            .unwrap()
+            .is_empty());
+        if control != "connected" {
+            assert!(monitor
+                .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+                .unwrap()
+                .is_empty());
+            continue;
+        }
+        let restored = store.load_monitoring_state().unwrap();
+        let health = &restored.health[REPOSITORY_KEY];
+        assert_eq!(health.scheduled_run, 1_800_000_900);
+        assert!(health.last_failure.is_none());
+        assert_eq!(health.operation.as_ref().unwrap(), &parked);
+        let mut restarted = Monitor::restore(&store).unwrap();
+        assert!(restarted
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_200, false)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            restarted
+                .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(restarted
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_900, false)
+            .unwrap()
+            .is_empty());
+        let resumed = poll_operation(&restarted);
+        assert_ne!(resumed.id, parked.id);
+        assert_eq!(resumed.attempt_count, 1);
+        assert_eq!(
+            store.load_monitoring_state().unwrap().operations[&parked.id],
+            parked
+        );
+    }
+}
+
+#[test]
 fn check_now_retries_any_parked_repository_poll() {
     for error in [
         ConnectionError::ProviderRejectedStatus(422),

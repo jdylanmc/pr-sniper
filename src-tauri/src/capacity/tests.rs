@@ -143,6 +143,85 @@ fn offline_long_outage_preserves_real_failures_and_resumes_once_after_teardown()
 }
 
 #[test]
+fn offline_superseded_work_keeps_planned_primary_and_duck_scopes_probeable() {
+    use crate::connectivity::{due_scopes, record, Observation};
+    for offline_scope in [Scope::copilot("201"), Scope::copilot("299")] {
+        let (_root, store) = fixture(1, 1, true);
+        let mut settings = store.load_settings().unwrap();
+        let mut duck = settings.agents[0].clone();
+        duck.id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+        duck.name = "Duck".into();
+        duck.ai_account.as_mut().unwrap().account_id = "299".into();
+        settings.repositories[0].assignments[0].rubber_duck = Some(duck.id.clone());
+        settings.agents.push(duck);
+        store.save_settings(&settings).unwrap();
+        let accounts = BTreeMap::from([(
+            "101".into(),
+            crate::monitoring::AccountAvailability {
+                login: "actor".into(),
+                connected: true,
+            },
+        )]);
+        let coordinator = Coordinator::default();
+        let active = dispatch(&coordinator, &store, 100).remove(0);
+        record(&store, offline_scope.clone(), Observation::Unreachable, 101).unwrap();
+        assert!(dispatch(&coordinator, &store, 102).is_empty());
+        assert!(finish(
+            &coordinator,
+            &store,
+            active,
+            Some(Failure::cancelled()),
+            103
+        )
+        .is_empty());
+        let old = store.load_reviews().unwrap().remove(0);
+        assert_eq!(old.operation.attempt_count, 0);
+
+        let mut jobs = store.load_queue().unwrap();
+        let mut replacement = jobs[0].clone();
+        jobs[0].waiting = crate::monitoring::WAITING_SUPERSEDED.into();
+        replacement.head_sha = "c".repeat(40);
+        let work = replacement.work.as_mut().unwrap();
+        work.id = "replacement".into();
+        work.iteration_id = "replacement-iteration".into();
+        work.iteration += 1;
+        jobs.push(replacement);
+        store.save_queue(&jobs).unwrap();
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        let retired = store.load_reviews().unwrap().remove(0);
+        assert!(retired.operation.ended_superseded());
+        assert!(retired.operation.resume_at.is_none());
+        assert!(due_scopes(&store, &accounts, 200)
+            .unwrap()
+            .contains(&offline_scope));
+
+        store.save_automation(&Automation { paused: true }).unwrap();
+        assert!(due_scopes(&store, &accounts, 200).unwrap().is_empty());
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        store
+            .save_automation(&Automation { paused: false })
+            .unwrap();
+        settings.repositories[0].enabled = false;
+        store.save_settings(&settings).unwrap();
+        assert!(!due_scopes(&store, &accounts, 200)
+            .unwrap()
+            .contains(&offline_scope));
+        assert!(dispatch(&coordinator, &store, 200).is_empty());
+        settings.repositories[0].enabled = true;
+        store.save_settings(&settings).unwrap();
+
+        record(&store, offline_scope, Observation::Reachable, 201).unwrap();
+        let replacement = dispatch(&coordinator, &store, 201);
+        assert_eq!(replacement.len(), 1);
+        let Dispatch::Review(run, _) = &replacement[0];
+        assert_eq!(run.job.head_sha, "c".repeat(40));
+        assert_eq!(run.operation.attempt_count, 1);
+        assert!(run.operation.failure.is_none());
+        assert!(dispatch(&coordinator, &store, 201).is_empty());
+    }
+}
+
+#[test]
 fn offline_account_isolation_pause_and_cancel_do_not_resurrect_work() {
     use crate::connectivity::{record, Observation};
     let (_root, store) = fixture(2, 2, true);

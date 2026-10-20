@@ -1842,17 +1842,19 @@ impl Monitor {
                 self.state.cursors.remove(&configuration.health_key);
                 continue;
             }
-            if !health.in_flight
-                && configuration_failure(health.last_failure.as_deref())
-                && health
+            if !health.in_flight && configuration_failure(health.last_failure.as_deref()) {
+                health.last_failure = None;
+                health.last_error = None;
+                if health
                     .operation
                     .as_ref()
                     .is_some_and(|o| o.state == OperationState::Failed)
-            {
-                if let Some(operation) = health.operation.take() {
-                    self.state
-                        .operations
-                        .insert(operation.id.clone(), operation);
+                {
+                    if let Some(operation) = health.operation.take() {
+                        self.state
+                            .operations
+                            .insert(operation.id.clone(), operation);
+                    }
                 }
             }
             // A parked repository poll retries once per occurrence of its own

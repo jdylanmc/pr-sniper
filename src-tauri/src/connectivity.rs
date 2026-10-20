@@ -241,6 +241,24 @@ pub fn due_scopes(
     for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts)? {
         scopes.insert(Scope::github(&ticket.provider_account_id));
     }
+    // Planned work must clear the offline gate before its first run can exist.
+    for candidate in crate::review::host::candidates(store)?
+        .into_iter()
+        .filter(|c| {
+            c.run.is_none()
+                && c.blocked.is_none()
+                && !crate::monitoring::retired(&c.job)
+                && settings
+                    .repositories
+                    .iter()
+                    .any(|r| r.id == c.job.configuration_id && r.enabled)
+        })
+    {
+        scopes.extend(selection_scopes(
+            &candidate.job.account_id,
+            candidate.planned_selection.as_ref(),
+        ));
+    }
     for run in store.load_reviews()?.iter().filter(|r| {
         matches!(
             r.operation.state,
