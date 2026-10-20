@@ -887,6 +887,7 @@
         [
           "queued",
           "running",
+          "waiting_on_ci",
           "human",
           "question",
           "approved",

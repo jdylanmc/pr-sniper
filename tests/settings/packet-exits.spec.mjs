@@ -246,6 +246,18 @@ test("external CI wait is visible without a human handoff or occupied AI slot", 
   expect(snapshot.items[0]).toMatchObject({
     state: "waiting_on_ci",
     exit: "wait",
+    dismiss_token: null,
+    dismissed: false,
+  });
+  await expect(
+    store("dismiss_stale_review", {
+      itemId: snapshot.items[0].id,
+      expectedToken: "earlier-stale-state",
+    }),
+  ).rejects.toContain("changed");
+  expect((await store("monitoring_snapshot")).items[0]).toMatchObject({
+    state: "waiting_on_ci",
+    dismissed: false,
   });
   await page.goto("/");
   await expect(
