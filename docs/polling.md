@@ -54,6 +54,7 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 
 - Primary `wait` persists the prerequisite, reviewed snapshot, assignment and state sequence in `pr-state.json`, without clearance. No extra timer or AI session; the existing repository schedule reads the tracked PR and its checks.
 - The packet records its fresh normalized `wait_snapshot` when Wait is offered; it may be newer than the last poll. Missing legacy evidence never fabricates a wait or clearance.
+- A required-review wait never substitutes for a missing approval this assignment can post itself; the offered approval remains the next clean-review exit.
 - While waiting on CI, check progress/fan-out alone does not queue reviews. Completion (success or failure), head/base, discussion or other non-CI change wakes one fresh state. Required-review and draft changes also wake; every normal permission, finding and action gate still applies.
 - Restart and missing/failed polls retain the wait. Closed/merged PRs retire it; removed tools/actions invalidate it on polling. Pause, disabled repositories and removed assignments cannot dispatch. No linked-PR dependency watching.
 

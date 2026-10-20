@@ -65,6 +65,12 @@ fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
     }
     input.facts.ci = Ci::Green;
     input.facts.required_reviews_unmet = true;
+    assert!(
+        !is_offered(&input, Exit::Wait),
+        "supply the permitted own vote before waiting"
+    );
+    assert!(is_offered(&input, Exit::ApprovePullRequest));
+    input.facts.already_approved = true;
     assert_eq!(wait_reasons(&input), [WaitReason::RequiredReviews]);
     input.grants.merge = false;
     assert!(

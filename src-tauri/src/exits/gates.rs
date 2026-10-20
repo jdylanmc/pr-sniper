@@ -230,7 +230,8 @@ pub fn wait_reasons(input: &GateInput) -> Vec<WaitReason> {
     if (approve || merge) && f.draft {
         reasons.push(WaitReason::Draft);
     }
-    if merge && f.required_reviews_unmet {
+    // Do not wait for a vote this assignment can supply itself.
+    if merge && f.required_reviews_unmet && (f.already_approved || !approve) {
         reasons.push(WaitReason::RequiredReviews);
     }
     reasons
