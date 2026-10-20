@@ -89,6 +89,7 @@ const human = () =>
   state.reviews.filter(
     (review) =>
       ["human", "question"].includes(review.state) ||
+      (review.state === "stale" && review.dismissedHead !== review.head) ||
       (review.state === "queued" && !review.trusted),
   );
 const reviewed = () =>
@@ -612,7 +613,7 @@ function queuePage() {
       ? `<div class="queue-group" data-queue-group="${view}" id="human-list">${items
           .map(
             (review) =>
-              `<button type="button" class="queue-row review-open" data-action="review" data-review-id="${esc(review.id)}"><span class="queue-row-copy">${pill(review)}<strong class="review-title">${esc(review.title)}</strong>${reference(review)}</span>${icon("chevron")}</button>`,
+              `<div class="queue-entry"><button type="button" class="queue-row review-open" data-action="review" data-review-id="${esc(review.id)}"><span class="queue-row-copy">${pill(review)}<strong class="review-title">${esc(review.title)}</strong>${reference(review)}</span>${icon("chevron")}</button>${review.state === "stale" ? `<button type="button" class="queue-dismiss" data-action="dismiss-stale" data-id="${esc(review.id)}" aria-label="Dismiss stale review" title="Dismiss stale review"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m6 6 12 12M6 18 18 6"/></svg></button>` : ""}</div>`,
           )
           .join("")}</div>`
       : quietEmpty("inbox", "Nothing here")

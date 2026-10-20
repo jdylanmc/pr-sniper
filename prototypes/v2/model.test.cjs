@@ -16,6 +16,22 @@ const first = (state, status = "running") =>
   state.reviews.find((review) => review.state === status);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test("stale dismissal keeps evidence and a later stale state can reappear", () => {
+  const initial = M.seed();
+  const review = first(initial, "human");
+  const stale = M.update(initial, "stale", { reviewId: review.id });
+  const dismissed = M.update(stale, "dismiss-stale", { reviewId: review.id });
+  const saved = dismissed.reviews.find((item) => item.id === review.id);
+  assert.equal(saved.dismissedHead, saved.head);
+  assert.equal(saved.state, "stale");
+  assert.deepEqual(plain(saved.findings), plain(review.findings));
+  const changed = M.update(dismissed, "stale", { reviewId: review.id });
+  assert.equal(
+    changed.reviews.find((item) => item.id === review.id).dismissedHead,
+    undefined,
+  );
+});
+
 test("repository browsing is scoped to a personal or organization owner", () => {
   const account = M.seed().accounts[0];
   assert.deepEqual(plain(M.repositoryOwners(account)), [

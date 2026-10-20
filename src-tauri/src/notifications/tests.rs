@@ -379,6 +379,8 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                 });
                 let id = queue::item_id(&job);
                 queue::Item {
+                    dismiss_token: None,
+                    dismissed: false,
                     action_status: Some(crate::actions::Status {
                         item_id: id.clone(),
                         final_valid: false,
@@ -689,6 +691,8 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             exit_writes: vec![],
             pr_states: Default::default(),
             items: vec![queue::Item {
+                dismiss_token: None,
+                dismissed: false,
                 action_status: None,
                 exit: None,
                 exit_run_id: None,

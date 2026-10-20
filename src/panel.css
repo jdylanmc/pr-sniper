@@ -1561,7 +1561,8 @@ body:has(.panel-shell) {
 .panel-shell .queue-item {
   position: relative;
 }
-.panel-shell .queue-retry {
+.panel-shell .queue-retry,
+.panel-shell .queue-dismiss {
   position: absolute;
   top: 50%;
   right: 34px;
@@ -1578,11 +1579,12 @@ body:has(.panel-shell) {
   color: var(--panel-ink);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
-.panel-shell .queue-retry .panel-icon {
+.panel-shell .queue-retry .panel-icon,
+.panel-shell .queue-dismiss .panel-icon {
   width: 16px;
   height: 16px;
 }
-.queue-group > .queue-item:has(.queue-retry) {
+.queue-group > .queue-item:has(.queue-retry, .queue-dismiss) {
   padding-right: 76px;
 }
 .queue-group > .work-retry-all {

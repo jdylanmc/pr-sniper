@@ -1245,12 +1245,20 @@
         review.published = true;
         review.state = "author";
         break;
+      case "dismiss-stale":
+        requireValue(
+          review.state === "stale",
+          "Only stale reviews can be dismissed.",
+        );
+        review.dismissedHead = review.head;
+        break;
       case "stale":
         requireValue(
           !["queued", "running"].includes(review.state),
           "Select a completed review to simulate a changed revision.",
         );
         review.state = "stale";
+        delete review.dismissedHead;
         review.failure =
           "The PR changed after this review. Saved evidence belongs to the earlier head.";
         break;
