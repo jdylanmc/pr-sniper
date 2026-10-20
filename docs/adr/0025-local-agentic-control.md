@@ -23,6 +23,8 @@
   protocol mismatches fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.
   Configuration revision plus resource expected-value protects stale saves.
+- Inspect returns bounded counts/control state; accounts/resources/queue are
+  paged. Full per-item evidence uses revision-checked JSON-text chunks.
 - Mutation UUID and timestamp reserve a durable receipt before execution.
   Repeated requests replay their original result; interrupted ones remain
   outcome-unknown. Five-minute acceptance window, maximum 256 active receipts.
@@ -60,6 +62,11 @@
 
 - Native tests exercise real Store, queue, preset, installer and framed CLI
   boundaries using synthetic profiles; browser tests use the native Store bridge.
-- These checks do not establish a live provider review, native closed-app
-  launch, OS notification permission, Copilot conversational compliance or
-  Windows runtime acceptance. Those require the platform delivery checks.
+- `tests/control/native-acceptance.mjs` runs the real bundled CLI and app in
+  both native CI lanes: closed-app launch, save/conflict, pause, rejected
+  operations and close/relaunch persistence. macOS uses a separately compiled
+  test identifier; Windows requires a fresh hosted VM. Compilation or workflow
+  wiring alone is not runtime acceptance.
+- These checks do not establish live provider review, OS notification
+  permission or Copilot conversational compliance. Each platform's runtime
+  receipt must actually pass before claiming that platform's acceptance.

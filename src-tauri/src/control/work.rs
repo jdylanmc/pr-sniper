@@ -162,10 +162,27 @@ pub fn request_again(
     }
     if crate::exits::consume::writing(store)?.contains(&binding)
         || store.load_publications()?.iter().any(|p| {
-            crate::retention::Binding::job(&p.review.job) == binding && p.reserves_revision()
+            crate::retention::Binding::job(&p.review.job) == binding && unsettled_publication(p)
         })
     {
         return Err("Reconcile provider writes before reviewing again.".into());
+    }
+
+    fn unsettled_publication(p: &crate::publication::Publication) -> bool {
+        use crate::publication::RemoteState;
+        p.uncertain
+            || p.receipts
+                .last()
+                .is_some_and(|r| r.state == RemoteState::Pending)
+            || (p.operation.pending_review_id.is_some()
+                && p.receipts.last().is_none_or(|r| {
+                    !matches!(r.state, RemoteState::Commented | RemoteState::Deleted)
+                }))
+            || (!p.cancelled
+                && matches!(
+                    p.operation.state,
+                    OperationState::Queued | OperationState::Running | OperationState::Interrupted
+                ))
     }
     let mut states = store.load_pr_states()?;
     let seq = states.review_again(&binding, now)?;

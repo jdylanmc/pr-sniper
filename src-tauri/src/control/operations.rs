@@ -1,4 +1,4 @@
-use super::{check_revision, installer, preset, revision, work, Error, RequestOverride, PROTOCOL};
+use super::{check_revision, installer, preset, revision, Error, RequestOverride, PROTOCOL};
 use crate::{
     storage::{ResourceEdit, Store},
     Host,
@@ -15,13 +15,30 @@ struct Request {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-enum Command {
+pub(super) enum Command {
     Describe,
     Inspect,
     Resources {
         kind: ResourceKind,
+        #[serde(default)]
+        offset: usize,
+        limit: Option<usize>,
+    },
+    Accounts {
+        kind: AccountKind,
+        #[serde(default)]
+        offset: usize,
+        limit: Option<usize>,
+    },
+    Queue {
+        #[serde(default)]
+        offset: usize,
+        limit: Option<usize>,
+    },
+    Detail {
+        item_id: String,
         #[serde(default)]
         offset: usize,
         limit: Option<usize>,
@@ -66,6 +83,9 @@ enum Command {
     CheckNow,
     Retry {
         operation_id: String,
+    },
+    RetryReview {
+        candidate_key: String,
     },
     RetryState {
         item_id: String,
@@ -125,14 +145,20 @@ enum Command {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ResourceKind {
+pub(super) enum ResourceKind {
     Agents,
     Doctrines,
     Voices,
     Repositories,
     Preferences,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AccountKind {
+    Repository,
+    Copilot,
 }
 
 impl Command {
@@ -142,6 +168,9 @@ impl Command {
             Self::Describe
                 | Self::Inspect
                 | Self::Resources { .. }
+                | Self::Accounts { .. }
+                | Self::Queue { .. }
+                | Self::Detail { .. }
                 | Self::Target { .. }
                 | Self::Models { .. }
                 | Self::Resolve { .. }
@@ -159,13 +188,13 @@ struct Receipt {
     response: Option<Result<Value, Error>>,
 }
 
-fn storage(error: impl Serialize) -> Error {
+pub(super) fn storage(error: impl Serialize) -> Error {
     Error::new("storage", error)
 }
-fn operation(error: impl Serialize) -> Error {
+pub(super) fn operation(error: impl Serialize) -> Error {
     Error::new("operation_failed", error)
 }
-fn value(value: impl Serialize) -> Result<Value, Error> {
+pub(super) fn value(value: impl Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(|_| Error::new("encoding", ()))
 }
 
@@ -234,6 +263,19 @@ pub(crate) fn finish_request(
 }
 
 pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Value, Error> {
+    let host = app.state::<Host>();
+    execute_request(&host.store, input, |command| execute_command(app, command)).await
+}
+
+pub(super) async fn execute_request<F, Fut>(
+    store: &std::sync::Mutex<Store>,
+    input: Value,
+    dispatch: F,
+) -> Result<Value, Error>
+where
+    F: FnOnce(Command) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, Error>>,
+{
     // Parse the envelope separately: serde's flatten + deny_unknown_fields
     // combination cannot validate an internally tagged flattened enum.
     let mut fields = input
@@ -248,8 +290,18 @@ pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Valu
         .remove("issued_at")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| Error::new("invalid_request", "issued_at required"))?;
-    let command = serde_json::from_value(Value::Object(fields))
+    let supplied_fields: Vec<_> = fields.keys().cloned().collect();
+    let command: Command = serde_json::from_value(Value::Object(fields))
         .map_err(|_| Error::new("invalid_request", ()))?;
+    // Serde's internally tagged unit variants otherwise ignore extra fields.
+    let supported_fields =
+        serde_json::to_value(&command).map_err(|_| Error::new("encoding", ()))?;
+    if supplied_fields
+        .iter()
+        .any(|field| supported_fields.get(field).is_none())
+    {
+        return Err(Error::new("invalid_request", ()));
+    }
     let request = Request {
         request_id,
         issued_at,
@@ -261,8 +313,7 @@ pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Valu
     let hash = request_hash(input);
     if mutating {
         let now = crate::now_seconds().map_err(storage)?;
-        let host = app.state::<Host>();
-        let store = host.store.lock().map_err(|_| storage(()))?;
+        let store = store.lock().map_err(|_| storage(()))?;
         if let Some(previous) =
             begin_request(&store, &request.request_id, request.issued_at, &hash, now)?
         {
@@ -271,7 +322,7 @@ pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Valu
     }
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(90),
-        execute_command(app, request.command),
+        dispatch(request.command),
     )
     .await
     .unwrap_or_else(|_| {
@@ -286,9 +337,7 @@ pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Valu
         response
     };
     if mutating {
-        let host = app.state::<Host>();
-        let store = host
-            .store
+        let store = store
             .lock()
             .map_err(|_| Error::new("outcome_unknown", ()))?;
         finish_request(&store, &request.request_id, response.clone())?;
@@ -443,71 +492,40 @@ async fn validate_model(
 }
 
 async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Value, Error> {
+    if matches!(command, Command::Inspect | Command::Accounts { .. }) {
+        crate::copilot::copilot_auth_state(app.clone())
+            .await
+            .map_err(operation)?;
+    }
+    if super::dispatcher::handles(&command) {
+        let app = app.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            let host = app.state::<Host>();
+            super::dispatcher::dispatch(
+                &super::dispatcher::Native {
+                    app: &app,
+                    host: &host,
+                },
+                command,
+            )
+        })
+        .await
+        .map_err(|_| Error::new("outcome_unknown", ()))?;
+    }
     match command {
+        Command::Accounts { .. }
+        | Command::Queue { .. }
+        | Command::Detail { .. }
+        | Command::RetryReview { .. }
+        | Command::Inspect
+        | Command::Resources { .. }
+        | Command::Target { .. }
+        | Command::Watch { .. } => unreachable!("shared dispatcher"),
         Command::Describe => Ok(json!({
             "protocol": PROTOCOL, "app_version":env!("CARGO_PKG_VERSION"),
             "host":"copilot_cli", "contract":include_str!("../../../skills/pr-sniper/references/control.md"),
             "tools":crate::storage::PACKET_TOOLS
         })),
-        Command::Resources {
-            kind,
-            offset,
-            limit,
-        } => {
-            let host = app.state::<Host>();
-            let store = host.store.lock().map_err(|_| storage(()))?;
-            let settings = store.load_settings().map_err(storage)?;
-            let values = match kind {
-                ResourceKind::Agents => value(&settings.agents)?,
-                ResourceKind::Doctrines => value(&settings.doctrines)?,
-                ResourceKind::Voices => value(&settings.voices)?,
-                ResourceKind::Repositories => value(&settings.repositories)?,
-                ResourceKind::Preferences => json!([settings.global_preferences()]),
-            };
-            let values = values.as_array().unwrap();
-            let limit = limit.unwrap_or(25);
-            if !(1..=100).contains(&limit) {
-                return Err(Error::new("invalid_limit", ()));
-            }
-            Ok(
-                json!({"revision":revision(&settings), "total": values.len(),
-                "values": values.iter().skip(offset).take(limit).collect::<Vec<_>>()}),
-            )
-        }
-        Command::Inspect => {
-            let host = app.state::<Host>();
-            let copilot = crate::copilot::copilot_auth_state(app.clone())
-                .await
-                .map_err(operation)?;
-            let generations = host.github_generations.lock().map_err(|_| storage(()))?;
-            let accounts = host
-                .github_auth
-                .lock()
-                .map_err(|_| storage(()))?
-                .repository_view(&generations)
-                .accounts;
-            let store = host.store.lock().map_err(|_| storage(()))?;
-            let saved = store.saved_resources().map_err(storage)?;
-            let notifications = store.load_notifications().map_err(storage)?;
-            Ok(json!({
-                "revision": revision(&saved.settings), "settings": saved.settings,
-                "readiness": saved.readiness, "provider_accounts":accounts, "copilot_accounts":copilot.accounts,
-                "automation":host.ai.snapshot(&store, crate::now_seconds().map_err(storage)?).map_err(storage)?,
-                "queue": crate::queue::snapshot(&store, vec![]).map_err(storage)?,
-                "notifications": {"enabled": notifications.enabled, "muted": notifications.muted},
-                "pending_watch_configuration": work::holds(&store).map_err(storage)?,
-                "login_registration":host.registration.status().map_err(operation)?
-            }))
-        }
-        Command::Target { url } => {
-            let target = crate::github::intake::repository_target(&url).map_err(operation)?;
-            let host = app.state::<Host>();
-            let store = host.store.lock().map_err(|_| storage(()))?;
-            let settings = store.load_settings().map_err(storage)?;
-            Ok(
-                json!({"target": target, "repositories":settings.repositories.iter().filter(|r| r.name == target.name).collect::<Vec<_>>()}),
-            )
-        }
         Command::Models { account_id } => value(
             crate::copilot::list_copilot_models(
                 app.clone(),
@@ -597,23 +615,6 @@ async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Val
             let host = app.state::<Host>();
             let store = host.store.lock().map_err(|_| storage(()))?;
             preset::apply(&store, &revision, &account_id, &model)
-        }
-        Command::Watch {
-            expected,
-            url,
-            account_generation,
-            review_again,
-            overrides,
-        } => {
-            watch(
-                app,
-                expected,
-                url,
-                account_generation,
-                review_again,
-                overrides,
-            )
-            .await
         }
         Command::Pause { paused } => {
             crate::capacity::set_automation_paused(app.clone(), paused).map_err(operation)?;
@@ -721,106 +722,4 @@ async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Val
             value(installer::control_uninstall(app.clone(), host, expected)?)
         }
     }
-}
-
-async fn watch(
-    app: &tauri::AppHandle,
-    expected: crate::storage::Repository,
-    url: String,
-    account_generation: u64,
-    review_again: bool,
-    overrides: BTreeMap<String, RequestOverride>,
-) -> Result<Value, Error> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let target = crate::github::intake::repository_target(&url).map_err(operation)?;
-        let number = target
-            .pull_request_number
-            .ok_or_else(|| Error::new("pr_url_required", ()))?;
-        if expected.name != target.name {
-            return Err(Error::new("target_mismatch", ()));
-        }
-        if !expected.enabled {
-            return Err(Error::new("repository_disabled", ()));
-        }
-        let host = app.state::<Host>();
-        let account_id = expected
-            .provider_account_id
-            .as_deref()
-            .ok_or_else(|| Error::new("account_required", ()))?;
-        let read_at = crate::now_seconds().map_err(storage)?;
-        let (resolved, observed) = crate::repository_read(
-            &host.github_generations,
-            &host.github_auth,
-            account_id,
-            || crate::acquire_github_session(&host, account_id),
-            |identity, client, generation| {
-                Ok((
-                    client.resolve_repository_target(&url, &identity.id)?,
-                    generation,
-                ))
-            },
-        )
-        .map_err(operation)?;
-        let generations = host.github_generations.lock().map_err(|_| storage(()))?;
-        let auth = host.github_auth.lock().map_err(|_| storage(()))?;
-        crate::validate_explicit_intake_generation(
-            &auth,
-            &generations,
-            account_id,
-            account_generation,
-            observed,
-        )
-        .map_err(operation)?;
-        let store = host.store.lock().map_err(|_| storage(()))?;
-        let now = crate::now_seconds().map_err(storage)?;
-        if !store
-            .load_settings()
-            .map_err(storage)?
-            .repositories
-            .iter()
-            .any(|r| r == &expected)
-        {
-            return Err(Error::new("conflict", "Repository configuration changed."));
-        }
-        // A crash or partial storage failure must not execute a requested
-        // override with shared defaults. Only a successful explicit watch
-        // configuration releases this persisted admission hold.
-        work::hold(&store, &expected.id, number, true).map_err(storage)?;
-        host.monitor
-            .lock()
-            .map_err(|_| storage(()))?
-            .admit_explicit_pull_request(
-                &store,
-                &auth.monitoring_accounts(),
-                &expected,
-                resolved,
-                read_at,
-                now,
-            )
-            .map_err(|e| Error::new("intake_failed", e))?;
-        let configure = || -> Result<_, String> {
-            if review_again {
-                work::request_again(&store, &expected.id, number, now)?;
-            }
-            work::apply_overrides(&store, &expected.id, number, &overrides)?;
-            work::hold(&store, &expected.id, number, false)?;
-            work::prioritize(&store, &expected.id, number, now)
-        };
-        let prioritized = configure()
-            .map_err(|e| Error::new("watch_configuration", json!({"admitted":true,"reason":e})))?;
-        let batch = host
-            .ai
-            .dispatch(&store, now)
-            .map_err(|e| Error::new("dispatch_failed", json!({"admitted":true,"reason":e})))?;
-        let result =
-            value(work::result(&store, &expected.id, number, prioritized).map_err(storage)?);
-        drop(store);
-        drop(auth);
-        drop(generations);
-        crate::capacity::launch_batch(&app, batch);
-        result
-    })
-    .await
-    .map_err(|_| Error::new("outcome_unknown", ()))?
 }

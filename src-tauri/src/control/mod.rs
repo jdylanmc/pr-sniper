@@ -1,4 +1,5 @@
 //! Versioned local control plane. The native host remains the only writer.
+mod dispatcher;
 pub(crate) mod installer;
 mod operations;
 mod preset;

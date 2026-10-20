@@ -47,9 +47,13 @@ PowerShell: `node "$HOME\.copilot\skills\pr-sniper\scripts\pr-sniper.mjs" inspec
 - [Operation and error contract](../skills/pr-sniper/references/control.md).
 - [Transport decision and trust boundary](adr/0025-local-agentic-control.md).
 - `saved`, `queued`, `waiting`, `running`, `completed` are distinct outcomes.
-- For large libraries, `resources` pages the selected configuration kind.
+- `inspect` returns bounded counts and control state. `accounts` carries safe
+  identities/generations; `resources` pages configuration; `queue` pages operation
+  identities; `detail` streams one item's evidence as revision-checked JSON text.
+- Ordinary failed/cancelled AI work uses `retry_review` with its candidate key.
 - A pending watch-configuration hold survives restart. After inspection,
-  explicitly watch again with the intended override. Empty overrides reuse
-  existing work; null fields on an addressed assignment select shared configuration.
+  explicitly watch again with the intended assignment override map. Empty
+  overrides preserve the hold; null fields on an addressed assignment select
+  shared configuration and finish that explicit repair.
 - The skill's human-invocation rule and host tool permissions remain necessary;
   the local protocol authenticates the OS user, not the author of a conversation.

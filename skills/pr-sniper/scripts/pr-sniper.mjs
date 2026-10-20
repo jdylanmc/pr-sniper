@@ -21,20 +21,27 @@ export function dataRoot(
   platform = process.platform,
   home = os.homedir(),
 ) {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const absolute = (value) =>
+    paths.isAbsolute(value) &&
+    (platform !== "win32" ||
+      /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(value));
   if (env.PR_SNIPER_DATA_DIR) {
-    if (!path.isAbsolute(env.PR_SNIPER_DATA_DIR))
+    if (!absolute(env.PR_SNIPER_DATA_DIR))
       throw failure("invalid_data_directory");
     return env.PR_SNIPER_DATA_DIR;
   }
   if (platform === "darwin")
-    return path.join(
+    return paths.join(
       home,
       "Library",
       "Application Support",
       "com.jdylanmc.pr-sniper",
     );
-  if (platform === "win32" && env.LOCALAPPDATA)
-    return path.join(env.LOCALAPPDATA, "com.jdylanmc.pr-sniper");
+  if (platform === "win32" && env.LOCALAPPDATA) {
+    if (!absolute(env.LOCALAPPDATA)) throw failure("invalid_data_directory");
+    return paths.join(env.LOCALAPPDATA, "com.jdylanmc.pr-sniper");
+  }
   throw failure("unsupported_platform");
 }
 

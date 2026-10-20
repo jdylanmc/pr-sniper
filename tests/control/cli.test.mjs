@@ -93,8 +93,27 @@ test("relative isolated profiles fail rather than selecting production data", ()
   assert.throws(() => dataRoot({ PR_SNIPER_DATA_DIR: "relative" }), {
     code: "invalid_data_directory",
   });
+
   assert.equal(
     dataRoot({}, "darwin", "/fixture"),
     "/fixture/Library/Application Support/com.jdylanmc.pr-sniper",
   );
+});
+
+test("target-platform paths preserve Windows drives and reject drive-relative profiles", () => {
+  assert.equal(
+    dataRoot({ LOCALAPPDATA: "C:\\Users\\fixture\\AppData\\Local" }, "win32"),
+    "C:\\Users\\fixture\\AppData\\Local\\com.jdylanmc.pr-sniper",
+  );
+  for (const root of ["C:\\data", "D:/data", "\\\\server\\share\\data"]) {
+    assert.equal(dataRoot({ PR_SNIPER_DATA_DIR: root }, "win32"), root);
+  }
+  for (const root of ["C:data", "\\data", "/data", "relative"]) {
+    assert.throws(() => dataRoot({ PR_SNIPER_DATA_DIR: root }, "win32"), {
+      code: "invalid_data_directory",
+    });
+  }
+  assert.throws(() => dataRoot({ LOCALAPPDATA: "relative" }, "win32"), {
+    code: "invalid_data_directory",
+  });
 });

@@ -8,7 +8,10 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `operation`                      | Additional fields                                                                                                         |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `describe`                       | none                                                                                                                      |
-| `inspect`                        | none; configuration, revision, safe account identities, queue, controls                                                   |
+| `inspect`                        | none; bounded counts, revision, pause/capacity, immediate control status                                                  |
+| `accounts`                       | `kind`: `repository` or `copilot`; `offset`, `limit`; safe identities and repository connection generations               |
+| `queue`                          | `offset`, `limit`; bounded PR summaries, candidate/operation IDs (first 25 reviews; remaining identities in detail)       |
+| `detail`                         | `item_id`, character `offset`, `limit` (1–65536); JSON-text chunks with stable content revision                           |
 | `resources`                      | `kind`: `agents`, `doctrines`, `voices`, `repositories`, `preferences`; `offset` (default 0), `limit` (1–100, default 25) |
 | `target`                         | `url`; local parsing and matching saved repositories                                                                      |
 | `models`                         | `account_id`; already connected Copilot account                                                                           |
@@ -20,6 +23,7 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `pause`                          | `paused`                                                                                                                  |
 | `check_now`                      | none                                                                                                                      |
 | `retry`                          | `operation_id`                                                                                                            |
+| `retry_review`                   | `candidate_key`; same validated ordinary AI recovery as the UI                                                            |
 | `retry_state`                    | `item_id`                                                                                                                 |
 | `cancel_review`                  | `operation_id`                                                                                                            |
 | `publish`                        | `review_operation_id`; existing publication gates and receipts apply                                                      |
@@ -43,12 +47,17 @@ seconds). The CLI supplies these once if absent. Keep them when retrying a lost
 reply. Receipts last five minutes; older requests fail `expired_request`.
 An interrupted request remains `outcome_unknown`, never re-executed.
 Mutation success includes `replayed`; a replay is the original observation,
-not live status. Inspect again for current queue state. CLI responses include
+not live status. Read `queue` again for current queue state. CLI responses include
 the exact request ID and timestamp needed to retry a lost reply.
 
 ResourceEdit: `{kind,id,expected,value}` for `agent`, `doctrine`, `voice`,
 `repository`; preferences use `{kind:"preferences",expected,value}` without id.
-Use `inspect.result.settings` as the source of exact native resource shapes.
+Use `resources.result.values` as the source of exact native resource shapes.
+Resources/accounts/queue pages return `next_offset` (null at the end). Resource
+pages are byte-bounded as well as count-bounded; follow the returned cursor,
+not the requested count. Reject mixed resource revisions while assembling views.
+For full evidence, concatenate `detail.text` chunks at the returned character
+offsets, require identical `detail.revision`, then parse the complete JSON.
 New resources require UUID IDs, `expected:null`. `value:null` deletes.
 New repositories are disabled, bound to a `resolve` result, and have no
 assignments. Then save explicit assignments and enable the human-requested
@@ -67,9 +76,10 @@ configuration unless explicitly overridden again. Running work is unchanged.
 can include `admitted:true`; inspect before acting again.
 An interrupted watch keeps a persistent pending-configuration hold: never-started
 jobs do not run with unintended defaults. After inspecting, a new explicit
-`watch` with the desired overrides (`{}` reuses existing work configuration;
-null Agent/doctrine fields on an addressed assignment select shared configuration)
-finishes configuration and releases it. Active jobs are not interrupted.
+`watch` with the desired nonempty assignment override map finishes configuration
+and releases it (null Agent/doctrine fields select shared configuration).
+Ordinary `{}` watch requests and rejected reruns preserve pre-existing holds.
+Active jobs are not interrupted.
 
 Default executable discovery: installed `launcher.json`, then standard macOS
 Applications or Windows per-user PR Sniper install paths. No PATH shell lookup.

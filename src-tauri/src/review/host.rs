@@ -1225,17 +1225,28 @@ pub(crate) async fn start_review(
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());
         }
-        {
+        let batch = {
             let store = host
                 .store
                 .lock()
                 .map_err(|_| "Review storage unavailable.")?;
-            request(&store, &candidate_key, true, now_seconds()?)?;
-        }
-        crate::capacity::Coordinator::pump(&app)
+            request_batch(&store, &host.ai, &candidate_key, now_seconds()?)?
+        };
+        crate::capacity::launch_batch(&app, batch);
+        Ok(())
     })
     .await
     .map_err(|_| "Review start could not finish.".to_string())?
+}
+
+pub(crate) fn request_batch(
+    store: &crate::storage::Store,
+    ai: &crate::capacity::Coordinator,
+    candidate_key: &str,
+    now: i64,
+) -> Result<crate::capacity::Batch, String> {
+    request(store, candidate_key, true, now)?;
+    ai.dispatch(store, now)
 }
 
 #[tauri::command]

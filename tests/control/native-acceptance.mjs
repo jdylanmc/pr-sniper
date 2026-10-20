@@ -1,0 +1,321 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+
+const repository = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const identifier = "com.jdylanmc.pr-sniper.tests.control-ci";
+const options = parseArgs({
+  options: { executable: { type: "string" } },
+  strict: true,
+}).values;
+assert(options.executable, "--executable must identify a test-built app");
+assert(
+  ["darwin", "win32"].includes(process.platform),
+  "Native acceptance requires macOS or Windows",
+);
+if (process.platform === "win32") {
+  assert(
+    process.env.GITHUB_ACTIONS === "true" &&
+      process.env.RUNNER_ENVIRONMENT === "github-hosted",
+    "The production-identifier Windows executable runs only on a fresh hosted runner",
+  );
+}
+const target = await fs.realpath(path.join(repository, "src-tauri", "target"));
+const source = await fs.realpath(path.resolve(repository, options.executable));
+const sourceRelative = path.relative(target, source);
+assert(
+  !path.isAbsolute(sourceRelative) && !sourceRelative.startsWith(".."),
+  "Executable must be a build artifact under this checkout's target",
+);
+const output = path.join(target, "control-native-acceptance");
+await fs.mkdir(output, { recursive: true });
+const root = await fs.mkdtemp(path.join(output, "run-"));
+const checkout = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: repository,
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(
+  checkout.status,
+  0,
+  "Native acceptance requires source provenance",
+);
+const sourceState = spawnSync("git", ["status", "--porcelain"], {
+  cwd: repository,
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(sourceState.status, 0, "Native acceptance requires source state");
+const receipt = {
+  status: "RUNNING",
+  platform: process.platform,
+  source,
+  source_sha256: createHash("sha256")
+    .update(await fs.readFile(source))
+    .digest("hex"),
+  commit: checkout.stdout.trim(),
+  source_dirty: sourceState.stdout.length !== 0,
+  checks: [],
+  operations: [],
+  owned_processes: [],
+};
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const run = (file, args, options = {}) => {
+  const result = spawnSync(file, args, {
+    encoding: "utf8",
+    timeout: 15_000,
+    ...options,
+  });
+  if (result.error) throw result.error;
+  assert.equal(
+    result.status,
+    0,
+    `${path.basename(file)} failed (${result.status}): ${result.stderr}`,
+  );
+  return result.stdout;
+};
+let executable;
+let cli;
+let env;
+const owned = new Map();
+
+function observedProcesses() {
+  if (!executable) return [];
+  if (process.platform === "win32") {
+    const script =
+      "$ErrorActionPreference='Stop'; @(" +
+      "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:PR_SNIPER_ACCEPTANCE_EXECUTABLE } " +
+      "| ForEach-Object { [pscustomobject]@{ pid=[int]$_.ProcessId; born=$_.CreationDate.ToUniversalTime().ToString('o') } }) | ConvertTo-Json -Compress";
+    const json = run(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { env: { ...process.env, PR_SNIPER_ACCEPTANCE_EXECUTABLE: executable } },
+    ).trim();
+    const result = json ? JSON.parse(json) : [];
+    return Array.isArray(result) ? result : [result];
+  }
+  return run("ps", ["-axo", "pid=,lstart=,command="], {
+    env: { ...process.env, LC_ALL: "C" },
+  })
+    .split("\n")
+    .map((line) => line.match(/^\s*(\d+)\s+(.{24})\s+(.+)$/))
+    .filter((match) => match && match[3] === `${executable} --background`)
+    .map((match) => ({ pid: Number(match[1]), born: match[2] }));
+}
+
+function claimProcesses() {
+  // This exact copied executable exists only inside this run's freshly-created
+  // directory. Never claim another installed app or a process by name.
+  for (const process of observedProcesses()) {
+    const existing = owned.get(process.pid);
+    assert(
+      !existing || existing.born === process.born,
+      "Owned PID identity changed",
+    );
+    if (!existing) {
+      owned.set(process.pid, process);
+      receipt.owned_processes.push(process);
+    }
+  }
+}
+
+async function stopOwned() {
+  claimProcesses();
+  for (const process of observedProcesses()) {
+    assert.equal(
+      owned.get(process.pid)?.born,
+      process.born,
+      "Refusing to stop an unowned process",
+    );
+    globalThis.process.kill(process.pid, "SIGTERM");
+  }
+  const deadline = Date.now() + 15_000;
+  while (observedProcesses().length && Date.now() < deadline) await pause(200);
+  assert.equal(
+    observedProcesses().length,
+    0,
+    "Owned native app failed to terminate",
+  );
+}
+
+function call(input) {
+  const started = Date.now();
+  const result = spawnSync(process.execPath, [cli], {
+    cwd: root,
+    env,
+    input: typeof input === "string" ? input : JSON.stringify(input),
+    encoding: "utf8",
+    timeout: 140_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  claimProcesses();
+  if (result.error) throw result.error;
+  const response = JSON.parse(result.stdout);
+  receipt.operations.push({
+    operation: typeof input === "string" ? "malformed_json" : input.operation,
+    exit_code: result.status,
+    ok: response.ok,
+    code: response.error?.code ?? null,
+    elapsed_ms: Date.now() - started,
+  });
+  assert.equal(
+    result.status,
+    response.ok ? 0 : typeof input === "string" ? 2 : 1,
+  );
+  return response;
+}
+
+function okay(input) {
+  const response = call(input);
+  assert.equal(
+    response.ok,
+    true,
+    `Native operation ${input.operation} failed: ${response.error?.code}`,
+  );
+  return response.result;
+}
+
+try {
+  if (process.platform === "darwin") {
+    const bundle = path.resolve(source, "../../..");
+    assert.equal(path.extname(bundle), ".app");
+    const actual = run("plutil", [
+      "-extract",
+      "CFBundleIdentifier",
+      "raw",
+      "-o",
+      "-",
+      path.join(bundle, "Contents/Info.plist"),
+    ]).trim();
+    assert.equal(
+      actual,
+      identifier,
+      "Build with tests/control/tauri.acceptance.conf.json; never launch the installed identifier locally",
+    );
+    run("codesign", ["--verify", "--strict", bundle]);
+    const copied = path.join(root, "PR Sniper Control Acceptance.app");
+    await fs.cp(bundle, copied, { recursive: true });
+    executable = path.join(copied, "Contents", "MacOS", path.basename(source));
+  } else {
+    executable = path.join(root, "pr-sniper.exe");
+    await fs.copyFile(source, executable);
+  }
+  const skill = path.join(root, "skill");
+  await fs.cp(path.join(repository, "skills", "pr-sniper"), skill, {
+    recursive: true,
+  });
+  await fs.writeFile(
+    path.join(skill, "launcher.json"),
+    JSON.stringify({ protocol: 1, executable }),
+  );
+  cli = path.join(skill, "scripts", "pr-sniper.mjs");
+  env = {
+    ...process.env,
+    PR_SNIPER_DATA_DIR: path.join(root, "data"),
+    PR_SNIPER_KEYCHAIN_SERVICE: `com.jdylanmc.pr-sniper.tests.control-${randomUUID()}`,
+    PR_SNIPER_LIVE: "0",
+  };
+  assert.deepEqual(observedProcesses(), []);
+  const initial = okay({ operation: "inspect" });
+  assert.equal(
+    observedProcesses().length,
+    1,
+    "CLI must launch exactly one native app",
+  );
+  assert.equal(initial.counts.repositories, 0);
+  assert.equal(initial.counts.provider_accounts, 0);
+  assert.equal(initial.counts.copilot_accounts, 0);
+  assert.equal(initial.automation.paused, false);
+  receipt.checks.push(
+    "bundled CLI launched real app into fresh synthetic profile",
+  );
+  const id = randomUUID();
+  const edit = {
+    kind: "doctrine",
+    id,
+    expected: null,
+    value: {
+      id,
+      title: "Native control acceptance",
+      body: "Synthetic local-only fixture.",
+    },
+  };
+  assert.equal(
+    okay({ operation: "save", revision: initial.revision, edit }).state,
+    "saved",
+  );
+  const stale = call({ operation: "save", revision: initial.revision, edit });
+  assert.equal(stale.error?.code, "conflict");
+  receipt.checks.push("native resource save and stale-save rejection");
+  assert.equal(okay({ operation: "pause", paused: true }).paused, true);
+  for (const forbidden of [
+    { operation: "login" },
+    { operation: "inspect", unexpected: true },
+    "{",
+  ]) {
+    assert.equal(call(forbidden).error?.code, "invalid_request");
+  }
+  receipt.checks.push(
+    "native pause and rejection of login/unknown fields/malformed JSON",
+  );
+  const before = observedProcesses()[0];
+  await stopOwned();
+  const restored = okay({ operation: "inspect" });
+  assert.equal(observedProcesses().length, 1);
+  assert.notDeepEqual(
+    observedProcesses()[0],
+    before,
+    "CLI must actually relaunch the closed app",
+  );
+  assert.equal(restored.automation.paused, true);
+  let found = false;
+  let offset = 0;
+  do {
+    const page = okay({ operation: "resources", kind: "doctrines", offset });
+    found ||= page.values.some(
+      (entry) => entry.id === id && entry.body === edit.value.body,
+    );
+    offset = page.next_offset;
+  } while (offset !== null);
+  assert(found, "Native saved doctrine must survive process restart");
+  receipt.checks.push(
+    "real close/relaunch preserves pause and committed resource",
+  );
+  receipt.status = "PASS";
+} catch (error) {
+  receipt.status = "FAIL";
+  receipt.error = String(error.message ?? error);
+  process.exitCode = 1;
+} finally {
+  try {
+    await stopOwned();
+    receipt.cleanup =
+      "All exact run-owned native processes stopped; no global installation, login, provider effects or inference.";
+    // Preserve only content-free receipts in CI, not the private endpoint token
+    // or synthetic profile. The test executable is also owned by this run.
+    for (const name of [
+      "data",
+      "skill",
+      "PR Sniper Control Acceptance.app",
+      "pr-sniper.exe",
+    ]) {
+      await fs.rm(path.join(root, name), { recursive: true, force: true });
+    }
+  } catch (error) {
+    receipt.cleanup = `FAILED: ${error.message}`;
+    receipt.status = "FAIL";
+    process.exitCode = 1;
+  }
+  await fs.writeFile(
+    path.join(root, "receipt.json"),
+    JSON.stringify(receipt, null, 2),
+  );
+  console.log(JSON.stringify(receipt, null, 2));
+}

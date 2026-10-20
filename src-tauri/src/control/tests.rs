@@ -392,8 +392,9 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
 #[test]
 fn installer_detects_edits_and_removes_only_its_unchanged_package() {
     let root = tempfile::tempdir().unwrap();
-    let directory = root.path().join("skills/pr-sniper");
-    let executable = root.path().join("app");
+    let physical_root = root.path().canonicalize().unwrap();
+    let directory = physical_root.join("skills/pr-sniper");
+    let executable = physical_root.join("app");
     let installed = install_at(&directory, &executable, None).unwrap();
     assert_eq!(installed.state, "installed");
     assert!(install_at(&directory, &executable, None).is_err());
@@ -403,7 +404,7 @@ fn installer_detects_edits_and_removes_only_its_unchanged_package() {
         std::fs::read_to_string(directory.join("SKILL.md")).unwrap(),
         "customized"
     );
-    let other = root.path().join("other/pr-sniper");
+    let other = physical_root.join("other/pr-sniper");
     let installed = install_at(&other, &executable, None).unwrap();
     let updated = install_at(&other, &executable, installed.revision.as_deref()).unwrap();
     assert_eq!(
@@ -412,6 +413,22 @@ fn installer_detects_edits_and_removes_only_its_unchanged_package() {
             .state,
         "absent"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_refuses_deliberate_linked_ancestry() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let actual = root_path.join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    let link = root_path.join("linked");
+    std::os::unix::fs::symlink(&actual, &link).unwrap();
+    assert!(
+        matches!(install_at(&link.join("pr-sniper"), &root_path.join("app"), None),
+        Err(Error { code, .. }) if code == "installation_conflict")
+    );
+    assert_eq!(std::fs::read_dir(&actual).unwrap().count(), 0);
 }
 
 #[test]
