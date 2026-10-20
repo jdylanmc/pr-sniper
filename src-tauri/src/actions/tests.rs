@@ -868,6 +868,9 @@ impl QueryTransport for Wire {
         pull["baseRefName"] = json!(o.base_name);
         pull["commits"] = json!({"nodes":[{"commit":{"oid":o.head,"statusCheckRollup":{"state":o.checks,"contexts":{
                     "totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"CheckRun","name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]});
+        if o.checks.is_none() {
+            pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = Value::Null;
+        }
         pull["reviewThreads"] = json!({"totalCount":o.threads.len(),"pageInfo":{"hasNextPage":false},"nodes":o.threads.iter().map(|t|json!({
                     "id":t.id,"isResolved":t.resolved,"isOutdated":t.outdated,"resolvedBy":t.resolved_by.as_ref().map(|login|json!({"login":login})),
                     "comments":{"totalCount":t.comments.len(),"pageInfo":{"hasNextPage":false},"nodes":t.comments}

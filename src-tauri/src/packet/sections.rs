@@ -397,6 +397,7 @@ fn exits(out: &mut String, input: &PacketInput) {
     if input.role == Role::Primary {
         if let Some(preferred) = [
             Exit::ApproveAndMerge,
+            Exit::Wait,
             Exit::ApprovePullRequest,
             Exit::ReadyForHuman,
         ]

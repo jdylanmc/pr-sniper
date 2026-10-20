@@ -5,26 +5,28 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 ## States
 
 - Handoff states: **Ready for your final review**, **Waiting for PR author**, **Needs your input**.
+- External prerequisites: **Waiting on CI**, **Waiting on draft**, **Waiting on reviews** appear in Running as PR rows, outside AI occupancy and human handoff counts. Activity records **Wait** and the concrete prerequisite; no ready/failure notification.
 - Distinct, never merged: queued/reviewing, pending publication, failed, stale. No user-facing Blocked state ([ADR-0007](adr/0007-retry-then-park-single-inbox.md)).
 - Packet runs read the PR fresh when their turn comes. Head moved or PR closed since queueing: superseded, free (no attempt spent), retried shortly. A state that moves during the run: Toss, counted, retried through the budget, parks at 3.
 - Machine sign-off is not approval. Ready for you = signed off and not approved by PR Sniper. A confirmed approval of the current head (`State::Approved`) leaves the Queue for Reviewed (**Approved**); a new head voids it. Unsettled or failed approval stays in Needs attention.
 - Retry: transient failures retry with backoff, 3 failed attempts, then **park** (`MAX_FAILED_ATTEMPTS`, `RETRY_WINDOW_SECONDS` = 15 min in `src-tauri/src/monitoring.rs`). Credential, permission and permanent failures park immediately.
 - Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Publication operations resume the same way (reconcile the original). Permanent failures never resume. Superseded, closed and merged work is never resumed.
-- Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → Accounts) or **Retry**, **Retry all** pill. A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued only.
+- Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → Accounts) or **Retry**, **Retry all** pill. A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued jobs and external-wait PR rows without AI slots.
 - Teammates: teammate fail = PR-state fail. One Needs attention row per PR, chip = agent name + typed cause (`failed_teammate`; icons, no prose); detail adds Teammate row. Primary waits (`blocked_by`, Running chip = agent name + clock) until all teammates have report for same state. Good reports reused on retry. State move re-runs all. See [ADR-0021](adr/0021-review-packet.md).
 - Packet exits (`Item.exit`, `Item.progress`, typed `failure_cause`):
 
-  | Exit / host phase                                                             | Queue                                 | Chip                        |
-  | ----------------------------------------------------------------------------- | ------------------------------------- | --------------------------- |
-  | `ready_for_human`                                                             | Ready for you                         | —                           |
-  | `approve_pull_request`, `approve_and_merge`                                   | Ready for you                         | **Approving** → **Merging** |
-  | approval confirmed / merged                                                   | Reviewed (Approved / Merged)          | —                           |
-  | `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`) | **Publishing**              |
-  | writes confirmed + consumed                                                   | out of Queue (`waiting_for_author`)   | —                           |
-  | write Tossed, budget left                                                     | re-queued (`queued`)                  | —                           |
-  | toss budget spent (`error_count` ≥ 3)                                         | Needs attention                       | **Tossed**, Retry           |
-  | write Failed after an effect                                                  | Needs attention                       | **Write failed**, Retry     |
-  | `panic_exit`                                                                  | Needs attention                       | **Panic** + cooldown clock  |
+  | Exit / host phase                                                             | Queue                                          | Chip                                                              |
+  | ----------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+  | `ready_for_human`                                                             | Ready for you                                  | —                                                                 |
+  | `wait`                                                                        | out of human Queue; Running PR row, no AI slot | **Waiting on CI** / **Waiting on draft** / **Waiting on reviews** |
+  | `approve_pull_request`, `approve_and_merge`                                   | Ready for you                                  | **Approving** → **Merging**                                       |
+  | approval confirmed / merged                                                   | Reviewed (Approved / Merged)                   | —                                                                 |
+  | `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`)          | **Publishing**                                                    |
+  | writes confirmed + consumed                                                   | out of Queue (`waiting_for_author`)            | —                                                                 |
+  | write Tossed, budget left                                                     | re-queued (`queued`)                           | —                                                                 |
+  | toss budget spent (`error_count` ≥ 3)                                         | Needs attention                                | **Tossed**, Retry                                                 |
+  | write Failed after an effect                                                  | Needs attention                                | **Write failed**, Retry                                           |
+  | `panic_exit`                                                                  | Needs attention                                | **Panic** + cooldown clock                                        |
 
   Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
 

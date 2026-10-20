@@ -20,6 +20,7 @@ import { terseError } from "./errors";
 import { inlineMarkdown } from "./markdown";
 import { drawNow, setText, whenReleased } from "./stable-dom";
 import { applyTheme } from "./theme";
+import { waitingStates } from "./exits";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -724,7 +725,8 @@ export async function mountPanel(app: HTMLElement) {
         );
       {
         const displayState =
-          tab === "reviewed"
+          waitingStates[row.state] ??
+          (tab === "reviewed"
             ? row.kind === "item"
               ? row.state[0].toUpperCase() + row.state.slice(1)
               : "Reviewed"
@@ -740,7 +742,7 @@ export async function mountPanel(app: HTMLElement) {
                       ? "Offline"
                       : row.delayed_until
                         ? "Waiting"
-                        : "Queued";
+                        : "Queued");
         button.className = "work-row";
         button.dataset.display = displayState.toLowerCase();
         button.setAttribute(
@@ -759,7 +761,9 @@ export async function mountPanel(app: HTMLElement) {
           marker.innerHTML = icon(
             tab === "reviewed"
               ? destinations.reviewed.icon
-              : (stateIcons[displayState] ?? destinations.running.icon),
+              : waitingStates[row.state]
+                ? stateIcons.Waiting
+                : (stateIcons[displayState] ?? destinations.running.icon),
           );
         const copy = document.createElement("span");
         copy.className = "work-copy";
@@ -906,6 +910,15 @@ export async function mountPanel(app: HTMLElement) {
             )),
       );
       rows.splice(0, rows.length, ...running);
+      for (const item of snapshot?.items ?? []) {
+        if (waitingStates[item.state])
+          rows.push({
+            id: item.id,
+            kind: "item",
+            title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
+            state: item.state,
+          });
+      }
       draw("running", rows, now);
     }
     if (!snapshot) {

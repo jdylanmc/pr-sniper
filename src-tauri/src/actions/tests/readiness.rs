@@ -47,7 +47,11 @@ fn context(state: &PrSnapshot) -> ReviewContext {
             }),
             requested_reviewers: vec![],
             requested_teams: vec![],
-            state: Lifecycle::Open,
+            state: match state.state.as_str() {
+                "CLOSED" => Lifecycle::Closed,
+                "MERGED" => Lifecycle::Merged,
+                _ => Lifecycle::Open,
+            },
             draft: state.draft,
             head_sha: state.head.clone(),
             base_sha: state.base.clone(),
@@ -71,6 +75,16 @@ fn context(state: &PrSnapshot) -> ReviewContext {
 fn poll(store: &Store, state: &PrSnapshot, now: i64) {
     let mut monitor = Monitor::restore(store).unwrap();
     let ticket = monitor.prepare_checks(store, now, true).unwrap().remove(0);
+    finish_poll(&mut monitor, store, ticket, state, now);
+}
+
+fn finish_poll(
+    monitor: &mut Monitor,
+    store: &Store,
+    ticket: crate::monitoring::PollTicket,
+    state: &PrSnapshot,
+    now: i64,
+) {
     monitor
         .finish(
             store,
@@ -96,6 +110,747 @@ fn poll(store: &Store, state: &PrSnapshot, now: i64) {
             now + 1,
         )
         .unwrap();
+}
+
+fn waiting_ci() -> (tempfile::TempDir, Store, String, ReviewRun, PrSnapshot) {
+    let (root, store, item) = fixture(1, true, true);
+    store.save_reviews(&[]).unwrap();
+    let state = snapshot(false, "");
+    poll(&store, &state, NOW + 10);
+    let env = env(&store);
+    env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+    let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+    assert!(prepared.setup.offered.contains(&Exit::Wait));
+    assert!(prepared.packet.text.contains("clean_review_exit: wait"));
+    complete(
+        &store,
+        &run,
+        &prepared,
+        ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        NOW + 13,
+    );
+    (root, store, item, run, state)
+}
+
+#[test]
+fn wait_yields_persists_and_scheduled_ci_completion_wakes_exactly_once() {
+    for conclusion in ["SUCCESS", "FAILURE"] {
+        let (root, store, item, run, mut state) = waiting_ci();
+        let binding = Binding::job(&run.job);
+        let record = store
+            .load_pr_states()
+            .unwrap()
+            .get(&binding)
+            .unwrap()
+            .clone();
+        assert!(record.external_wait.is_some());
+        assert!(record.exit.is_none() && record.local_summary.is_none());
+        let coordinator = crate::capacity::Coordinator::default();
+        let capacity = coordinator.snapshot(&store, NOW + 14).unwrap();
+        assert_eq!(capacity.active, 0);
+        assert!(capacity.work.is_empty());
+        let projected = crate::queue::snapshot(&store, vec![]).unwrap();
+        assert_eq!(projected.items[0].state, crate::queue::State::WaitingOnCi);
+        assert!(crate::notifications::frames(&projected)
+            .iter()
+            .all(|f| f.event.is_none()));
+        assert!(host::prepare_next_effect(&store, &item, NOW + 14)
+            .unwrap()
+            .is_none());
+
+        // Real Store reload; no new schedule, no held runtime, no repeated reviews.
+        let store = Store::new(root.path().into());
+        state.checks[0].status = "QUEUED".into();
+        poll(&store, &state, NOW + 15);
+        state.checks[0].status = "IN_PROGRESS".into();
+        state.checks.push(SnapshotCheck {
+            name: "lint".into(),
+            status: "COMPLETED".into(),
+            conclusion: "SUCCESS".into(),
+        });
+        state.check_total = 2;
+        poll(&store, &state, NOW + 20);
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            record.state_seq
+        );
+        assert!(crate::capacity::candidates(&store, NOW + 22)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.load_reviews().unwrap().len(), 1);
+
+        let due = store
+            .load_monitoring_state()
+            .unwrap()
+            .health
+            .values()
+            .next()
+            .unwrap()
+            .scheduled_run;
+        assert!(due > NOW + 22);
+        let mut monitor = Monitor::restore(&store).unwrap();
+        assert!(monitor
+            .prepare_checks(&store, due - 1, false)
+            .unwrap()
+            .is_empty());
+        let ticket = monitor
+            .prepare_checks(&store, due, false)
+            .unwrap()
+            .remove(0);
+        assert!(ticket.tracked.iter().any(|(_, n)| *n == state.number));
+        state.checks[0].status = "COMPLETED".into();
+        state.checks[0].conclusion = conclusion.into();
+        finish_poll(&mut monitor, &store, ticket, &state, due);
+        poll(&store, &state, due + 2);
+        let states = store.load_pr_states().unwrap();
+        assert_eq!(states.state_seq(&binding), record.state_seq + 1);
+        assert!(states.get(&binding).unwrap().external_wait.is_none());
+        assert!(states.get(&binding).unwrap().exit.is_none());
+        assert_eq!(
+            crate::capacity::candidates(&store, due + 4).unwrap().len(),
+            1
+        );
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some(conclusion.into());
+        let (_, prepared) = prepare(&store, &env, &state, true, due + 4);
+        assert_eq!(
+            prepared.setup.offered.contains(&Exit::ApproveAndMerge),
+            conclusion == "SUCCESS"
+        );
+        assert_eq!(
+            prepared.setup.offered.contains(&Exit::ApprovePullRequest),
+            conclusion == "SUCCESS"
+        );
+        assert!(!prepared.setup.offered.contains(&Exit::Wait));
+        assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[test]
+fn wait_invalidates_on_new_head_base_or_discussion_without_clearance() {
+    for change in ["head", "base", "body"] {
+        let (_root, store, _, run, mut state) = waiting_ci();
+        match change {
+            "head" => state.head = "c".repeat(40),
+            "base" => state.base = "c".repeat(40),
+            _ => state.body = "New review context".into(),
+        }
+        poll(&store, &state, NOW + 20);
+        let states = store.load_pr_states().unwrap();
+        let record = states.get(&Binding::job(&run.job)).unwrap();
+        assert!(
+            record.external_wait.is_none() && record.exit.is_none(),
+            "{change}"
+        );
+        let work = crate::capacity::candidates(&store, NOW + 22).unwrap();
+        assert_eq!(work.len(), 1, "{change}");
+        assert!(work[0].reason.is_none(), "{change}: {:?}", work[0].reason);
+    }
+}
+
+#[test]
+fn wait_pause_disable_and_removed_assignment_never_admit_work() {
+    for gate in ["paused", "disabled", "unassigned"] {
+        let (_root, store, _, _, mut state) = waiting_ci();
+        let mut settings = store.load_settings().unwrap();
+        match gate {
+            "paused" => {
+                let mut automation = store.load_automation().unwrap();
+                automation.paused = true;
+                store.save_automation(&automation).unwrap();
+            }
+            "disabled" => {
+                settings.repositories[0].enabled = false;
+                store.save_settings(&settings).unwrap();
+            }
+            _ => {
+                settings.repositories[0].assignments.clear();
+                settings.repositories[0].primary_assignment_id = None;
+                store.save_settings(&settings).unwrap();
+            }
+        }
+        state.checks[0].conclusion = "SUCCESS".into();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let tickets = monitor.prepare_checks(&store, NOW + 30, false).unwrap();
+        assert!(tickets.is_empty(), "{gate}");
+        let batch = crate::capacity::Coordinator::default()
+            .dispatch(&store, NOW + 30)
+            .unwrap();
+        assert!(batch.dispatched.is_empty(), "{gate}");
+    }
+}
+
+#[test]
+fn wait_exit_rechecks_ci_and_disabled_tool_never_grants_wait() {
+    for custom in [false, true] {
+        let (_root, store, _) = fixture(1, true, true);
+        store.save_reviews(&[]).unwrap();
+        if custom {
+            let mut settings = store.load_settings().unwrap();
+            settings.repositories[0].assignments[0].tools = Some(vec![
+                "read_changes".into(),
+                "approve_and_merge".into(),
+                "ready_for_human".into(),
+                "panic_exit".into(),
+            ]);
+            store.save_settings(&settings).unwrap();
+        }
+
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (_, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert_eq!(prepared.setup.offered.contains(&Exit::Wait), !custom);
+        let call = ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        };
+        if custom {
+            assert!(matches!(
+                (prepared.setup.gate)(&call),
+                Err(Refusal::Denied(_))
+            ));
+            assert!(
+                !store.load_settings().unwrap().repositories[0].assignments[0]
+                    .tools
+                    .as_ref()
+                    .unwrap()
+                    .contains(&"wait".into())
+            );
+        } else {
+            for rollup in ["SUCCESS", "FAILURE"] {
+                env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
+                assert!(matches!(
+                    (prepared.setup.gate)(&call),
+                    Err(Refusal::Denied(_))
+                ));
+            }
+        }
+        assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[test]
+fn wait_persistence_before_result_save_does_not_restart_ai_or_fabricate_clearance() {
+    let (root, store, _, run, mut state) = waiting_ci();
+    // Model a restart after the wait write committed but before the result write.
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.state = OperationState::Interrupted;
+    reviews[0].result = None;
+    store.save_reviews(&reviews).unwrap();
+    let store = Store::new(root.path().into());
+    assert!(crate::capacity::candidates(&store, NOW + 20)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        crate::queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        crate::queue::State::WaitingOnCi
+    );
+    assert!(store.load_reviews().unwrap()[0].result.is_none());
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    poll(&store, &state, NOW + 30);
+    poll(&store, &state, NOW + 35);
+    assert_eq!(
+        crate::capacity::candidates(&store, NOW + 37).unwrap().len(),
+        1
+    );
+    assert!(store
+        .load_pr_states()
+        .unwrap()
+        .get(&Binding::job(&run.job))
+        .unwrap()
+        .exit
+        .is_none());
+}
+
+#[test]
+fn wait_inflight_completion_while_paused_only_dispatches_after_resume() {
+    let (_root, store, _, run, mut state) = waiting_ci();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let ticket = monitor
+        .prepare_checks(&store, NOW + 20, true)
+        .unwrap()
+        .remove(0);
+    let mut automation = store.load_automation().unwrap();
+    automation.paused = true;
+    store.save_automation(&automation).unwrap();
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    let result = monitor.finish(
+        &store,
+        ticket,
+        Ok(PollResult {
+            connection: Connection {
+                identity: Identity {
+                    id: "22".into(),
+                    login: "actor".into(),
+                },
+                repository: RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                capabilities: Capabilities {
+                    read: true,
+                    comment: CommentCapability::Available,
+                },
+            },
+            pull_requests: vec![context(&state).pull],
+            states: BTreeMap::from([("9".into(), state.clone())]),
+        }),
+        NOW + 21,
+    );
+    result.unwrap();
+    let states = store.load_pr_states().unwrap();
+    let record = states.get(&Binding::job(&run.job)).unwrap();
+    assert!(record.external_wait.is_none() && record.exit.is_none());
+    assert_eq!(record.state_seq, 2);
+    assert!(crate::capacity::Coordinator::default()
+        .dispatch(&store, NOW + 22)
+        .unwrap()
+        .dispatched
+        .is_empty());
+    automation.paused = false;
+    store.save_automation(&automation).unwrap();
+    poll(&store, &state, NOW + 30);
+    assert_eq!(
+        store
+            .load_pr_states()
+            .unwrap()
+            .state_seq(&Binding::job(&run.job)),
+        2
+    );
+    assert_eq!(
+        crate::capacity::candidates(&store, NOW + 32).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn wait_uses_the_fresh_packet_state_not_the_older_poll_snapshot() {
+    let (_root, store, _) = fixture(1, true, true);
+    store.save_reviews(&[]).unwrap();
+    let mut state = snapshot(false, "");
+    poll(&store, &state, NOW + 10);
+    state.body = "Changed before dispatch; reviewed in the fresh packet.".into();
+    let env = env(&store);
+    env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+    let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+    complete(
+        &store,
+        &run,
+        &prepared,
+        ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        NOW + 13,
+    );
+    poll(&store, &state, NOW + 20);
+    let states = store.load_pr_states().unwrap();
+    let record = states.get(&Binding::job(&run.job)).unwrap();
+    assert_eq!(
+        record.external_wait.as_ref().unwrap().snapshot,
+        state.normalize()
+    );
+    assert_eq!(record.state_seq, 1);
+    assert!(record.exit.is_none());
+    assert!(crate::capacity::candidates(&store, NOW + 22)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn wait_terminal_observation_retires_without_new_work() {
+    for (lifecycle, expected) in [
+        ("CLOSED", crate::queue::State::Closed),
+        ("MERGED", crate::queue::State::Merged),
+    ] {
+        let (_root, store, _, run, mut state) = waiting_ci();
+        state.state = lifecycle.into();
+        poll(&store, &state, NOW + 20);
+        let states = store.load_pr_states().unwrap();
+        assert!(states
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .external_wait
+            .is_none());
+        assert!(crate::capacity::candidates(&store, NOW + 22)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::queue::snapshot(&store, vec![]).unwrap().items[0].state,
+            expected
+        );
+    }
+}
+
+#[test]
+fn wait_green_resume_can_approve_and_merge_only_through_existing_action_gates() {
+    let (_root, store, item, _, state) = waiting_ci();
+    let mut green = state;
+    green.checks[0].status = "COMPLETED".into();
+    green.checks[0].conclusion = "SUCCESS".into();
+    poll(&store, &green, NOW + 20);
+    let mut env = env(&store);
+    let (run, prepared) = prepare(&store, &env, &green, true, NOW + 22);
+    complete(
+        &store,
+        &run,
+        &prepared,
+        ExitCall::ApproveAndMerge {
+            comment: "Fresh head and base reviewed after CI completion.".into(),
+        },
+        NOW + 23,
+    );
+    synchronize(
+        &store,
+        &item,
+        Ok(env.wire.0.lock().unwrap().observation.clone()),
+        NOW + 24,
+    )
+    .unwrap();
+    packet::adopt(&store, &item).unwrap();
+    let approval = host::prepare_next_effect(&store, &item, NOW + 25)
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.action, Action::Approve);
+    env.now = NOW + 25;
+    host::execute_action(&mut env, &approval).unwrap();
+    synchronize(
+        &store,
+        &item,
+        Ok(env.wire.0.lock().unwrap().observation.clone()),
+        NOW + 26,
+    )
+    .unwrap();
+    let merge = host::prepare_next_effect(&store, &item, NOW + 27)
+        .unwrap()
+        .unwrap();
+    assert_eq!(merge.action, Action::Merge);
+    env.now = NOW + 27;
+    host::execute_action(&mut env, &merge).unwrap();
+    let server = env.wire.0.lock().unwrap();
+    assert_eq!(server.observation.state, "MERGED");
+    assert_eq!(server.writes.len(), 2);
+}
+
+struct SnapshotWire {
+    state: PrSnapshot,
+    required: Vec<String>,
+}
+
+impl Transport for SnapshotWire {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        panic!("Unexpected non-snapshot read {path}")
+    }
+}
+
+impl QueryTransport for SnapshotWire {
+    fn query(&self, query: &str, _: Value) -> Result<Response, ConnectionError> {
+        assert!(query.contains("fragment S"));
+        assert!(query.contains("requiredStatusCheckContexts"));
+        let s = &self.state;
+        let pull = json!({
+            "fullDatabaseId":s.pull_request_id,"number":s.number,"title":s.title,"body":s.body,
+            "state":s.state,"isDraft":s.draft,"mergeable":s.mergeable,"reviewDecision":s.review_decision,
+            "baseRefOid":s.base,"headRefOid":s.head,"headRefName":s.head_ref,
+            "baseRef":{"branchProtectionRule":{"requiresStatusChecks":!self.required.is_empty(),
+                "requiredStatusCheckContexts":self.required}},
+            "labels":{"nodes":s.labels.iter().map(|n|json!({"name":n})).collect::<Vec<_>>()},
+            "latestOpinionatedReviews":{"nodes":[]},
+            "comments":{"totalCount":s.comments.len(),"nodes":s.comments.iter().map(|c|
+                json!({"fullDatabaseId":c.id,"body":c.body})).collect::<Vec<_>>()},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+                "totalCount":s.checks.len(),"nodes":s.checks.iter().map(|c|json!({
+                    "__typename":"CheckRun","name":c.name,"status":c.status,"conclusion":c.conclusion
+                })).collect::<Vec<_>>()
+            }}}}]},
+            "reviewThreads":{"totalCount":0,"nodes":[]}
+        });
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&json!({"data":{"repository":{
+                "databaseId":100,(format!("p{}",s.number)):pull
+            }}}))
+            .unwrap(),
+        })
+    }
+}
+
+fn final_wait_read(
+    run: &ReviewRun,
+    state: PrSnapshot,
+    required: Vec<String>,
+) -> Result<crate::review::ReviewResult, crate::review::Failure> {
+    let client = GithubClient::new(SnapshotWire { state, required });
+    let mut result = output();
+    result.output = ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        None,
+    );
+    review_host::finalize_local_exit(
+        &client,
+        &RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        },
+        run.job.number,
+        run.packet.as_ref().unwrap(),
+        &mut result,
+    )?;
+    Ok(result)
+}
+
+#[test]
+fn review_fix_ci_progress_survives_the_production_final_read_and_an_intervening_poll() {
+    for concurrent_poll in [false, true] {
+        let (_root, store, _) = fixture(1, true, true);
+        store.save_reviews(&[]).unwrap();
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (run, _) = prepare(&store, &env, &state, true, NOW + 12);
+        let original_hash = run.packet.as_ref().unwrap().state_hash.clone();
+        let mut progressed = state;
+        progressed.checks[0].status = "COMPLETED".into();
+        progressed.checks[0].conclusion = "SUCCESS".into();
+        progressed.checks.push(SnapshotCheck {
+            name: "integration".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+        });
+        progressed.check_total = 2;
+        if concurrent_poll {
+            poll(&store, &progressed, NOW + 14);
+        }
+        let result = final_wait_read(&run, progressed.clone(), vec![])
+            .expect("pending-only progress during inference must not toss the Wait");
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 16).unwrap();
+        let saved = store.load_reviews().unwrap();
+        let saved = saved
+            .iter()
+            .find(|r| r.operation.id == run.operation.id)
+            .unwrap();
+        assert_eq!(saved.operation.state, OperationState::Completed);
+        assert_eq!(
+            saved.packet.as_ref().unwrap().state_hash,
+            original_hash,
+            "packet evidence is immutable"
+        );
+        let states = store.load_pr_states().unwrap();
+        let record = states.get(&Binding::job(&run.job)).unwrap();
+        assert_eq!(record.error_count, 0);
+        assert_eq!(
+            record.external_wait.as_ref().unwrap().snapshot,
+            progressed.normalize()
+        );
+        assert!(record.exit.is_none());
+        poll(&store, &progressed, NOW + 18);
+        assert!(crate::capacity::candidates(&store, NOW + 20)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn review_fix_missing_required_ci_waits_without_reported_pending_checks() {
+    for (no_reported_checks, conclusion) in [
+        (false, "SUCCESS"),
+        (false, "FAILURE"),
+        (true, "SUCCESS"),
+        (true, "FAILURE"),
+    ] {
+        let (_root, store, _) = fixture(1, true, true);
+        store.save_reviews(&[]).unwrap();
+        let mut state = snapshot(false, "SUCCESS");
+        if no_reported_checks {
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        let required = vec!["required-build".to_string()];
+        let client = GithubClient::new(SnapshotWire {
+            state,
+            required: required.clone(),
+        });
+        let state = client
+            .pr_snapshot(
+                &RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                1,
+            )
+            .unwrap();
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            if no_reported_checks {
+                server.observation.checks = None;
+            }
+            server.observation.protection = json!({
+                "requiresStatusChecks":true,"requiredStatusCheckContexts":required,
+                "requiresApprovingReviews":false,"requiredApprovingReviewCount":0,
+                "requiresCodeOwnerReviews":false,"requiresConversationResolution":false,
+                "requiresStrictStatusChecks":false
+            });
+        }
+        let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(prepared.setup.offered.contains(&Exit::Wait));
+        assert_eq!(
+            (prepared.setup.gate)(&ExitCall::Wait {
+                reason: crate::exits::WaitReason::Ci
+            }),
+            Ok(())
+        );
+        let result = final_wait_read(&run, state.clone(), required.clone()).unwrap();
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 14).unwrap();
+        assert_eq!(
+            store
+                .load_reviews()
+                .unwrap()
+                .last()
+                .unwrap()
+                .operation
+                .state,
+            OperationState::Completed,
+            "an offered missing-required-check Wait must not become a counted toss"
+        );
+        let restored = Store::new(_root.path().into()).load_pr_states().unwrap();
+        assert_eq!(
+            restored
+                .get(&Binding::job(&run.job))
+                .unwrap()
+                .external_wait
+                .as_ref()
+                .unwrap()
+                .snapshot
+                .required_checks,
+            ["required-build"]
+        );
+        poll(&store, &state, NOW + 16);
+        assert!(crate::capacity::candidates(&store, NOW + 18)
+            .unwrap()
+            .is_empty());
+        let mut reported = state;
+        reported.checks.push(SnapshotCheck {
+            name: "required-build".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+        });
+        reported.check_total += 1;
+        poll(&store, &reported, NOW + 20);
+        assert!(crate::capacity::candidates(&store, NOW + 22)
+            .unwrap()
+            .is_empty());
+        let check = reported.checks.last_mut().unwrap();
+        check.status = "COMPLETED".into();
+        check.conclusion = conclusion.into();
+        poll(&store, &reported, NOW + 24);
+        poll(&store, &reported, NOW + 26);
+        assert_eq!(
+            crate::capacity::candidates(&store, NOW + 28).unwrap().len(),
+            1
+        );
+        assert!(store
+            .load_pr_states()
+            .unwrap()
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .exit
+            .is_none());
+    }
+}
+
+#[test]
+fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_checks() {
+    let (_root, store, _) = fixture(1, true, true);
+    store.save_reviews(&[]).unwrap();
+    let state = snapshot(false, "");
+    poll(&store, &state, NOW + 10);
+    let env = env(&store);
+    env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+    let (run, _) = prepare(&store, &env, &state, true, NOW + 12);
+    for change in [
+        "head",
+        "base",
+        "body",
+        "comment",
+        "label",
+        "failure",
+        "green",
+        "required_checks",
+    ] {
+        let mut fresh = state.clone();
+        let mut required = vec![];
+        match change {
+            "head" => fresh.head = "d".repeat(40),
+            "base" => fresh.base = "d".repeat(40),
+            "body" => fresh.body = "New review context".into(),
+            "comment" => fresh.comments.push(crate::github::state::SnapshotComment {
+                id: "new".into(),
+                body: "New concern".into(),
+                commit: None,
+            }),
+            "label" => fresh.labels.push("changed".into()),
+            "required_checks" => required.push("new-required-job".into()),
+            _ => {
+                fresh.checks[0].status = "COMPLETED".into();
+                fresh.checks[0].conclusion = if change == "failure" {
+                    "FAILURE"
+                } else {
+                    "SUCCESS"
+                }
+                .into();
+            }
+        }
+        assert_eq!(
+            final_wait_read(&run, fresh, required).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed,
+            "{change}"
+        );
+    }
+    let mut result = output();
+    result.output = ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+        None,
+    );
+    result.finding_dispositions = serde_json::from_value(json!([{
+        "thread_id":"existing","disposition":"still_applies","head_sha":state.head,
+        "base_sha":state.base,"rationale":"Known concern remains.","evidence":[]
+    }]))
+    .unwrap();
+    let client = GithubClient::new(SnapshotWire {
+        state,
+        required: vec![],
+    });
+    assert!(review_host::finalize_local_exit(
+        &client,
+        &RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into()
+        },
+        1,
+        run.packet.as_ref().unwrap(),
+        &mut result
+    )
+    .is_err());
+    assert!(result.wait_snapshot.is_none());
+    assert!(store
+        .load_pr_states()
+        .unwrap()
+        .get(&Binding::job(&run.job))
+        .unwrap()
+        .external_wait
+        .is_none());
 }
 
 fn prepare(

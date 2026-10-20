@@ -182,6 +182,99 @@ async function expand(row) {
 }
 const fact = (facts, label) => facts.locator(`dt:text-is("${label}") + dd`);
 
+test("external CI wait is visible without a human handoff or occupied AI slot", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const run = packetRun(fixture, 27, { exit: "wait", reason: "ci" });
+  run.job.work = {
+    id: run.key,
+    item_id: "waiting-ci",
+    iteration_id: "waiting-ci",
+    iteration: 1,
+    agent_id: run.selection.agent.id,
+    enqueue_order: 1,
+    pass_ordinal: 1,
+    trigger: "admission",
+    state_seq: 1,
+    admission: {
+      watched_author: true,
+      all_authors: false,
+      requested_reviewer: false,
+    },
+  };
+  const state = {
+    head: run.job.head_sha,
+    base: run.job.observed_base_sha,
+    text_hash: "text",
+    lifecycle: "open",
+    mergeable: "ok",
+    review_decision: null,
+    approvals: [],
+    labels: [],
+    checks: [["CI", "pending", ""]],
+    check_total: 1,
+    comments: [],
+    thread_total: 0,
+    comment_total: 0,
+  };
+  await store("seed_queue_state", {
+    jobs: [run.job],
+    reviews: [run],
+    publications: [],
+    follow_ups: [],
+    pr_states: {
+      records: [
+        {
+          binding: binding(run.job),
+          iteration_id: "waiting-ci",
+          snapshot: state,
+          state_seq: 1,
+          external_wait: {
+            reason: "ci",
+            state_seq: 1,
+            assignment_id: run.assignment_id,
+            agent_id: run.selection.agent.id,
+            snapshot: state,
+          },
+        },
+      ],
+    },
+  });
+  const snapshot = await store("monitoring_snapshot");
+  expect(snapshot.items[0]).toMatchObject({
+    state: "waiting_on_ci",
+    exit: "wait",
+    dismiss_token: null,
+    dismissed: false,
+  });
+  await expect(
+    store("dismiss_stale_review", {
+      itemId: snapshot.items[0].id,
+      expectedToken: "earlier-stale-state",
+    }),
+  ).rejects.toContain("changed");
+  expect((await store("monitoring_snapshot")).items[0]).toMatchObject({
+    state: "waiting_on_ci",
+    dismissed: false,
+  });
+  await page.goto("/");
+  await expect(
+    page.locator('[data-panel-view="queue"] .queue-item'),
+  ).toHaveCount(0);
+  await tab(page, "Running").click();
+  const waiting = page.locator('[data-work-state="waiting_on_ci"]');
+  await expect(waiting).toContainText("Waiting on CI");
+  await expect(page.locator('[data-work-state="active"]')).toHaveCount(0);
+  await waiting.getByRole("button", { name: "Open PR evidence" }).click();
+  await expect(page.locator("[data-queue-status]")).toContainText(
+    "Waiting on CI",
+  );
+  await expect(activity(page, "exit")).toContainText("Wait");
+  await expect(activity(page, "exit")).toContainText("CI");
+});
+
 test("packet exits map to typed queue states", async ({ store }) => {
   const items = await seedPackets(store);
   expect(items[21]).toMatchObject({

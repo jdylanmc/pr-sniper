@@ -2540,6 +2540,7 @@ impl Monitor {
             .map(|p| p.review.key)
             .collect();
         let mut pr_states = store.load_pr_states().map_err(MonitoringError::Storage)?;
+        let settings = store.load_settings().map_err(MonitoringError::Storage)?;
         let previous_pr_states = pr_states.clone();
         let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
@@ -2699,10 +2700,27 @@ impl Monitor {
                     job.waiting = WAITING_INELIGIBLE.into();
                 }
             }
+            let binding = crate::retention::Binding::tracked(&tracked);
+            if pull.state != Lifecycle::Open {
+                if let Some(record) = pr_states.records.iter_mut().find(|r| r.binding == binding) {
+                    record.external_wait = None;
+                }
+            }
             if pull.state != Lifecycle::Open || skip_draft {
                 continue;
             }
-            let binding = crate::retention::Binding::tracked(&tracked);
+            if pr_states
+                .get(&binding)
+                .and_then(|r| r.external_wait.as_ref())
+                .is_some_and(|w| {
+                    !settings
+                        .repositories
+                        .iter()
+                        .any(|r| r.id == ticket.repository_id && w.configured(r))
+                })
+            {
+                pr_states.invalidate_wait(&binding, now);
+            }
             let already_reviewed = reviews.iter().any(|r| {
                 r.operation.state == OperationState::Completed
                     && r.job.head_sha == pull.head_sha

@@ -787,9 +787,9 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
   });
   await openTools(assignment);
   await expect(toolSwitch(assignment, "Report")).toBeHidden();
-  for (const name of ["Comment", "Ready", "Approve", "Merge", "Panic"])
+  for (const name of ["Comment", "Ready", "Wait", "Approve", "Merge", "Panic"])
     await expect(toolSwitch(assignment, name)).toBeChecked();
-  await expect(assignment.locator("[data-tool-summary]")).toHaveText("12");
+  await expect(assignment.locator("[data-tool-summary]")).toHaveText("13");
   for (const name of [
     "Source",
     "Thread",
@@ -798,6 +798,7 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
     "Tree",
     "Search",
     "Ready",
+    "Wait",
     "Approve",
     "Panic",
   ])
@@ -839,6 +840,7 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
   await expect(toolSwitch(reopened, "Report")).toBeVisible();
   await expect(toolSwitch(reopened, "Comment")).toBeHidden();
   await expect(toolSwitch(reopened, "Merge")).toBeHidden();
+  await expect(toolSwitch(reopened, "Wait")).toBeHidden();
   await toolSwitch(reopened, "Report").check();
   await page.screenshot({ path: testInfo.outputPath("tools-secondary.png") });
   await assignmentBack(page, reopened);

@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Primary **Wait** exit yields for pending CI, drafts or required reviews without
+  holding AI capacity or handing work to you. Repository polling resumes fresh
+  review automatically when actionable; explicit tool selections stay unchanged.
+
 ### Fixed
 
 - Review packets honor the configured Include self choice and distinguish

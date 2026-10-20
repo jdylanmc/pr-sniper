@@ -65,6 +65,9 @@ export interface QueueItem {
     | "machine_signed_off"
     | "waiting_for_human"
     | "waiting_for_author"
+    | "waiting_on_ci"
+    | "waiting_on_draft"
+    | "waiting_on_reviews"
     | "confirmation_required"
     | "awaiting_publication"
     | "queued"
@@ -109,6 +112,9 @@ const labels: Record<QueueItem["state"], string> = {
   machine_signed_off: "Ready for your final review",
   waiting_for_human: "Needs your input",
   waiting_for_author: "Waiting for PR author",
+  waiting_on_ci: "Waiting on CI",
+  waiting_on_draft: "Waiting on draft",
+  waiting_on_reviews: "Waiting on reviews",
   confirmation_required: "Needs your confirmation",
   awaiting_publication: "Awaiting comment publication",
   queued: "Queued",
@@ -249,6 +255,9 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
           "reviewing",
           "awaiting_publication",
           "waiting_for_author",
+          "waiting_on_ci",
+          "waiting_on_draft",
+          "waiting_on_reviews",
           "approved",
           "closed",
           "merged",

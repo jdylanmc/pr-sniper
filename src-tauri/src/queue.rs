@@ -25,6 +25,9 @@ pub enum State {
     Queued,
     AwaitingPublication,
     WaitingForAuthor,
+    WaitingOnCi,
+    WaitingOnDraft,
+    WaitingOnReviews,
     MachineSignedOff,
     Approved,
     Closed,
@@ -38,7 +41,10 @@ impl State {
             Self::Failed | Self::ConfirmationRequired => 1,
             Self::StaleAfterPublication => 2,
             Self::Reviewing | Self::Queued | Self::AwaitingPublication => 3,
-            Self::WaitingForAuthor => 4,
+            Self::WaitingForAuthor
+            | Self::WaitingOnCi
+            | Self::WaitingOnDraft
+            | Self::WaitingOnReviews => 4,
             Self::Stale => 5,
             Self::Approved | Self::Closed | Self::Merged => 6,
         }
@@ -46,6 +52,9 @@ impl State {
 
     pub(crate) fn summary(self) -> &'static str {
         match self {
+            Self::WaitingOnCi => "Waiting on CI",
+            Self::WaitingOnDraft => "Waiting on draft",
+            Self::WaitingOnReviews => "Waiting on reviews",
             Self::MachineSignedOff => "Automated review completed. Ready for your final review and merge decision on GitHub; this is not human approval or a merge.",
             Self::Approved => "PR Sniper approved the current revision on GitHub. Nothing is waiting on you in the Queue.",
             Self::WaitingForAuthor => "Findings or questions were published. The PR author needs to respond or update the change; it is not machine-cleared.",
@@ -321,6 +330,18 @@ fn review_state(
         .run
         .as_ref()
         .is_some_and(|r| r.operation.state == OperationState::Completed && r.result.is_some());
+    if let Some(wait) = context
+        .pr_states
+        .get(&crate::retention::Binding::job(&candidate.job))
+        .and_then(|r| r.external_wait.as_ref())
+        .filter(|w| crate::exits::consume::state_seq(&candidate.job) == w.state_seq)
+    {
+        return match wait.reason {
+            crate::exits::WaitReason::Ci => State::WaitingOnCi,
+            crate::exits::WaitReason::Draft => State::WaitingOnDraft,
+            crate::exits::WaitReason::RequiredReviews => State::WaitingOnReviews,
+        };
+    }
     // Finished work stays finished when its assignment or repository goes away.
     if candidate.blocked.is_some() && !finished {
         return State::Queued;
@@ -362,6 +383,7 @@ fn review_state(
         use crate::exit_writes::Phase;
         use crate::exits::ExitOutcome;
         match exit {
+            ExitOutcome::Wait { .. } => return State::Queued,
             // Approve exits are signed off; actions show Approving/Merging, then Approved/Merged.
             ExitOutcome::ReadyForHuman { .. }
             | ExitOutcome::SubmitReport
@@ -996,6 +1018,7 @@ fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
     Some(match run.result.as_ref()?.output.exit.as_ref()? {
         ExitOutcome::Comments { .. } => Exit::LeaveComments,
         ExitOutcome::ReadyForHuman { .. } => Exit::ReadyForHuman,
+        ExitOutcome::Wait { .. } => Exit::Wait,
         ExitOutcome::Approve { .. } => Exit::ApprovePullRequest,
         ExitOutcome::ApproveAndMerge { .. } => Exit::ApproveAndMerge,
         ExitOutcome::SubmitReport => Exit::SubmitReport,

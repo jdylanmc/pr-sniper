@@ -94,6 +94,7 @@ export const PACKET_TOOLS = [
   "rubber_duck",
   "leave_comments",
   "ready_for_human",
+  "wait",
   "approve_pull_request",
   "approve_and_merge",
   "panic_exit",
@@ -114,6 +115,7 @@ export function defaultTools(
   if (primary) {
     if (grants.comment) tools.push("leave_comments");
     tools.push("ready_for_human");
+    tools.push("wait");
     if (grants.approve) tools.push("approve_pull_request");
     if (grants.merge) tools.push("approve_and_merge");
   } else tools.push("submit_report");

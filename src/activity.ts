@@ -95,6 +95,7 @@ interface Row {
 }
 
 const exitIds: Record<ExitOutcome["exit"], ExitName> = {
+  wait: "wait",
   comments: "leave_comments",
   ready_for_human: "ready_for_human",
   approve: "approve_pull_request",
@@ -140,6 +141,9 @@ function exitRow(
   } else if (exit.exit === "ready_for_human") {
     value = "Local";
     facts.push(["Summary", exit.summary]);
+  } else if (exit.exit === "wait") {
+    value = exit.reason === "ci" ? "CI" : state(exit.reason);
+    facts.push(["Prerequisite", value]);
   } else if (exit.exit === "approve" || exit.exit === "approve_and_merge") {
     const merge = exit.exit === "approve_and_merge";
     value = merge ? "Approve 1 \u00b7 Merge 1" : "Approve 1";

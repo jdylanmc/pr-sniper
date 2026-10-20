@@ -65,7 +65,7 @@ The repository assignment responsible for eligible conversation assessments and 
 _Avoid_: Global primary, thread owner as responder
 
 **Tools** (assignment):
-Packet tool ids an assignment may use: investigation tools, `rubber_duck` (primary with a **Rubber Duck**) plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, `rubber_duck` when a Rubber Duck is set, granted exits, `ready_for_human`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list. Effect exits primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
+Packet tool ids an assignment may use: investigation tools, `rubber_duck` (primary with a **Rubber Duck**) plus exits. Every run is packet mode. Absent = role default: primary gets investigation tools, `rubber_duck` when a Rubber Duck is set, granted exits, `ready_for_human`, `wait`, `panic_exit`; teammate gets investigation tools, `submit_report`, `panic_exit`. Set = validated explicit list, never automatically expanded. Effect exits and `wait` primary only; `submit_report` teammate only; exits need their grant. Set by switches in the assignment's Tools list.
 _Avoid_: Skills, plugins
 
 **Rubber Duck**:
@@ -81,7 +81,7 @@ The one text an agent is given per run, built by the host from fresh PR state: M
 _Avoid_: Prompt
 
 **Exit**:
-The one terminal tool call that ends an agent run: `leave_comments`, `ready_for_human`, `approve_pull_request`, `approve_and_merge`, `panic_exit`, or a teammate's `submit_report`. Offered or denied by the gates at packet build, re-checked at exit. The host is the only writer; the agent never writes.
+The one terminal tool call that ends an agent run: `leave_comments`, `ready_for_human`, `wait`, `approve_pull_request`, `approve_and_merge`, `panic_exit`, or a teammate's `submit_report`. Offered or denied by the gates at packet build, re-checked at exit. The host is the only writer; the agent never writes.
 _Avoid_: Decision, verdict
 
 **Teammate**:
@@ -224,7 +224,7 @@ One Review Queue entry bound to account, repository, PR, revision and trigger po
 _Avoid_: Row, list position
 
 **Ready for you**:
-Queue group of PRs where the Agents reviewed the latest head, have nothing to add (no findings, held findings or open concerns) and did **not** approve, because they lack Approve permission: the human decides. A PR the acting account approved (confirmed receipt for the current head) is not Ready: it leaves the Queue and shows **Approved** in Reviewed (**Merged** once merged). A new head voids that approval. No Agent lane. Active and waiting jobs belong in Running (active plus queued only). Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base.
+Queue group of PRs where the Agents reviewed the latest head, have nothing to add (no findings, held findings or open concerns) and did **not** approve, because they lack Approve permission: the human decides. A PR the acting account approved (confirmed receipt for the current head) is not Ready: it leaves the Queue and shows **Approved** in Reviewed (**Merged** once merged). A new head voids that approval. No Agent lane. Active and queued jobs belong in Running; external waits appear as PR rows without AI slots. Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base.
 _Avoid_: Agent lane
 
 **Handoff**:
@@ -238,6 +238,9 @@ _Avoid_: Approved, reviewed by human
 **Ready for your final review**:
 Queue state. All current assigned reviews signed off and enabled comment publication has a confirmed receipt. Operator still inspects the PR and decides on GitHub.
 _Avoid_: Approved, mergeable
+
+**External wait**:
+Primary `wait` exit for pending CI, draft status or required reviews blocking an enabled action. Persistent host-owned state; no AI slot or human handoff. Running shows **Waiting on CI**, **Waiting on draft** or **Waiting on reviews**. Existing Repository Schedule observes it. Pending CI progress alone does not review again; completion (including failure), new head/base or other meaningful state queues fresh review once. Waiting never grants clearance. Known defects, uncertain evidence, failed tools and permission failures keep their existing routes. Wait is selectable and in primary defaults; explicit tool lists stay unchanged.
 
 **Waiting for PR author**:
 Queue state. Findings or questions were successfully published; author must respond or update. Sign-off summary alone never creates it.

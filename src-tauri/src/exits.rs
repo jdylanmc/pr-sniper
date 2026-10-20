@@ -29,6 +29,7 @@ pub const MAX_REJECTED_CALLS: u32 = 3;
 pub enum Exit {
     LeaveComments,
     ReadyForHuman,
+    Wait,
     ApprovePullRequest,
     ApproveAndMerge,
     PanicExit,
@@ -38,9 +39,10 @@ pub enum Exit {
 }
 
 impl Exit {
-    pub const ALL: [Exit; 7] = [
+    pub const ALL: [Exit; 8] = [
         Exit::LeaveComments,
         Exit::ReadyForHuman,
+        Exit::Wait,
         Exit::ApprovePullRequest,
         Exit::ApproveAndMerge,
         Exit::PanicExit,
@@ -52,6 +54,7 @@ impl Exit {
         match self {
             Exit::LeaveComments => "leave_comments",
             Exit::ReadyForHuman => "ready_for_human",
+            Exit::Wait => "wait",
             Exit::ApprovePullRequest => "approve_pull_request",
             Exit::ApproveAndMerge => "approve_and_merge",
             Exit::PanicExit => "panic_exit",
@@ -76,6 +79,7 @@ impl Exit {
         match self {
             Exit::LeaveComments => "Terminal exit: post new inline comments on diff lines, a PR-level review body (body), reply to threads, resolve your own threads. Ends the run. Call once.",
             Exit::ReadyForHuman => "Terminal exit: nothing to post; hand the PR to the human with a short local summary. Ends the run.",
+            Exit::Wait => "Terminal exit: yield for a host-observed external prerequisite to a permitted action. The host polls on the repository schedule and queues a fresh review when it changes. Not for defects, uncertainty or tool failures.",
             Exit::ApprovePullRequest => "Terminal exit: approve the PR head with an approval comment. Ends the run.",
             Exit::ApproveAndMerge => "Terminal exit: merge the reviewed PR when offered. For another author's PR, the host approves first. For the acting account's own PR with Include self enabled, the host merges without an approval vote. Ends the run.",
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
@@ -108,6 +112,10 @@ impl Exit {
                 json!([]),
             ),
             Exit::ReadyForHuman => (json!({"summary":{"type":"string"}}), json!(["summary"])),
+            Exit::Wait => (
+                json!({"reason":{"type":"string","enum":["ci","draft","required_reviews"]}}),
+                json!(["reason"]),
+            ),
             Exit::ApprovePullRequest | Exit::ApproveAndMerge => {
                 (json!({"comment":{"type":"string"}}), json!(["comment"]))
             }
@@ -125,6 +133,7 @@ impl Exit {
             self,
             Exit::LeaveComments
                 | Exit::ReadyForHuman
+                | Exit::Wait
                 | Exit::ApprovePullRequest
                 | Exit::ApproveAndMerge
         ) {
@@ -171,6 +180,9 @@ pub struct TeammateReport {
 /// A validated exit call as the agent made it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExitCall {
+    Wait {
+        reason: WaitReason,
+    },
     LeaveComments {
         new_comments: Vec<NewComment>,
         /// PR-level review body, posted with the same review as `new_comments`.
@@ -203,6 +215,9 @@ pub enum ExitCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "exit", rename_all = "snake_case")]
 pub enum ExitOutcome {
+    Wait {
+        reason: WaitReason,
+    },
     Comments {
         new_comments: Vec<NewComment>,
         /// PR-level review body. Absent in records written before it existed.
@@ -223,9 +238,18 @@ pub enum ExitOutcome {
     SubmitReport,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitReason {
+    Ci,
+    Draft,
+    RequiredReviews,
+}
+
 impl ExitCall {
     pub fn exit(&self) -> Exit {
         match self {
+            Self::Wait { .. } => Exit::Wait,
             Self::LeaveComments { .. } => Exit::LeaveComments,
             Self::ReadyForHuman { .. } => Exit::ReadyForHuman,
             Self::ApprovePullRequest { .. } => Exit::ApprovePullRequest,
@@ -239,6 +263,7 @@ impl ExitCall {
     /// Outcome and (for teammates) report to store on a completed run.
     pub fn outcome(&self) -> Option<(ExitOutcome, Option<TeammateReport>)> {
         Some(match self {
+            Self::Wait { reason } => (ExitOutcome::Wait { reason: *reason }, None),
             Self::LeaveComments {
                 new_comments,
                 body,
@@ -280,6 +305,15 @@ impl ExitCall {
         let exit = Exit::parse(name).ok_or("Unknown exit.")?;
         let bad = |_| format!("Malformed {name} arguments; match the schema exactly.");
         match exit {
+            Exit::Wait => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    reason: WaitReason,
+                }
+                let a: Args = serde_json::from_value(args.clone()).map_err(bad)?;
+                Ok(Self::Wait { reason: a.reason })
+            }
             Exit::LeaveComments => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]

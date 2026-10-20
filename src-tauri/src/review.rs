@@ -635,6 +635,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub ducks: Vec<duck::DuckCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finding_dispositions: Vec<findings::Assessment>,
+    /// Host-validated final observation for Wait; packet evidence stays immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -954,6 +957,7 @@ impl Events {
             coverage: None,
             ducks: Vec::new(),
             finding_dispositions: Vec::new(),
+            wait_snapshot: None,
         })
     }
 }

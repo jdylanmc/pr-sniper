@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 9;
+pub const SCHEMA: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -171,6 +171,9 @@ pub struct PacketRecord {
     /// Compact packet-time state; tells own writes from external change at consume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_marks: Option<crate::github::state::StateMarks>,
+    /// Fresh normalized state for an offered Wait; may be newer than the last poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +214,7 @@ pub fn build(input: &PacketInput) -> Packet {
             .collect(),
         state_hash: None,
         state_marks: None,
+        wait_snapshot: None,
     };
     Packet { text, hash, record }
 }

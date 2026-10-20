@@ -1394,7 +1394,8 @@ mod exits {
     use crate::packet::ToolFacts;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    const ALL_EXITS: [Exit; 6] = [
+    const ALL_EXITS: [Exit; 7] = [
+        Exit::Wait,
         Exit::LeaveComments,
         Exit::ReadyForHuman,
         Exit::ApprovePullRequest,
@@ -1474,6 +1475,24 @@ mod exits {
         assert!(result.output.files.is_empty() && result.output.findings.is_empty());
         assert_eq!(result.input_tokens, 20);
         assert_eq!(failures(root.path()), vec![false]);
+    }
+
+    #[tokio::test]
+    async fn wait_ends_the_turn_and_stops_the_runtime_without_human_handoff() {
+        let (result, root) = run_exit("exit-wait", open_gate()).await;
+        let result = result.unwrap();
+        assert_eq!(
+            result.output.exit,
+            Some(ExitOutcome::Wait {
+                reason: crate::exits::WaitReason::Ci
+            })
+        );
+        assert_eq!(
+            result.output.decision,
+            crate::review::Decision::HumanInputRequired
+        );
+        assert_eq!(failures(root.path()), vec![false]);
+        stopped(root.path());
     }
 
     #[tokio::test]
@@ -1622,6 +1641,7 @@ mod exits {
             [
                 "read_changes",
                 "get_thread",
+                "wait",
                 "leave_comments",
                 "ready_for_human",
                 "approve_pull_request",
@@ -1637,7 +1657,7 @@ mod exits {
             .filter(|t| t["isTerminal"] == true)
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(terminal.len(), 6, "{terminal:?}");
+        assert_eq!(terminal.len(), 7, "{terminal:?}");
         assert!(!terminal.contains(&"read_changes".to_string()));
     }
 

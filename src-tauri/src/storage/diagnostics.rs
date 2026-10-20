@@ -95,6 +95,7 @@ impl ToolName {
             "rubber_duck" => Self::RubberDuck,
             "leave_comments"
             | "ready_for_human"
+            | "wait"
             | "approve_pull_request"
             | "approve_and_merge"
             | "panic_exit"

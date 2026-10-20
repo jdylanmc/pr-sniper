@@ -263,6 +263,12 @@ const toolRows: Record<
     scope: "primary",
     path: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   },
+  wait: {
+    name: "Wait",
+    detail: "Yield until an external prerequisite changes",
+    scope: "primary",
+    path: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  },
   approve_pull_request: {
     name: "Approve",
     detail: "Approve with a comment",
