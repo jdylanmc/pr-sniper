@@ -1023,7 +1023,7 @@ function repoEditor(id) {
     `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
   return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
     <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}${row("Review drafts", `<input type="checkbox" class="switch" name="reviewDrafts" aria-label="Review drafts" ${checked(repo.reviewDrafts)} />`)}</section>
-    <section class="group-card admission-group">${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button></section>
+    <section class="group-card admission-group">${row("Explicit PRs only", `<input type="checkbox" class="switch" name="admissionExplicit" aria-label="Explicit PRs only" ${checked(repo.admission.mode === "explicit")} />`)}${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button></section>
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
     <details class="group-card repo-disclosure"><summary>Repository</summary>
@@ -1112,11 +1112,16 @@ function syncAdmission(form) {
   const admission = form._admission;
   const all = admission.mode === "all";
   form.elements.namedItem("admissionAll").checked = all;
+  form.elements.namedItem("admissionExplicit").checked =
+    admission.mode === "explicit";
+  form.elements.namedItem("admissionAll").disabled =
+    admission.mode === "explicit";
   const open = form.querySelector('[data-action="open-filters"]');
-  open.disabled = all;
-  form.querySelector("[data-filter-summary]").textContent = all
-    ? ""
-    : `${admission.rules.filter((rule) => rule.enabled).length} on`;
+  open.disabled = admission.mode !== "filtered";
+  form.querySelector("[data-filter-summary]").textContent =
+    admission.mode !== "filtered"
+      ? ""
+      : `${admission.rules.filter((rule) => rule.enabled).length} on`;
   renderAdmission(form);
 }
 
@@ -1465,7 +1470,7 @@ function preferencesPage() {
     )
     .join(
       "",
-    )}</div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
+    )}</div><div class="form-group"><h3>Copilot CLI</h3><div class="preference-row"><span>/pr-sniper</span><output data-skill-status>Not installed</output></div><button type="button" class="quiet-action" data-action="install-control-skill">Install</button><button type="button" class="icon-button" data-action="remove-control-skill" aria-label="Remove PR Sniper skill" disabled>${icon("trash")}</button></div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
 }
 
 function diagnosticsText() {
@@ -2036,6 +2041,12 @@ stage.addEventListener("change", (event) => {
     dirty = true;
     syncAdmission(form);
   }
+  if (event.target.name === "admissionExplicit") {
+    const form = event.target.closest("form");
+    form._admission.mode = event.target.checked ? "explicit" : "filtered";
+    dirty = true;
+    syncAdmission(form);
+  }
   if (event.target.dataset.ruleSwitch) {
     const form = event.target.closest("form");
     form._admission.rules.find(
@@ -2086,6 +2097,18 @@ popover.addEventListener("click", (event) => {
     return;
   }
   const action = button.dataset.action;
+  if (action === "install-control-skill" || action === "remove-control-skill") {
+    const installed = action === "install-control-skill";
+    document.querySelector("[data-skill-status]").textContent = installed
+      ? "Installed (demo)"
+      : "Not installed";
+    document.querySelector(
+      '[data-action="install-control-skill"]',
+    ).textContent = installed ? "Update" : "Install";
+    document.querySelector('[data-action="remove-control-skill"]').disabled =
+      !installed;
+    return;
+  }
   const id = button.dataset.id;
   if (!action) return;
   if (action === "reviewed-more") {

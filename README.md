@@ -59,6 +59,15 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 - Approve and merge are opt-in, primary-agent-only, fail closed.
 - Agents get host-owned review tools (reads plus one exit). That is a boundary, not a sandbox.
 
+## Copilot CLI
+
+- Settings → Preferences → Copilot CLI → **Install**, then `/skills reload`.
+- `/pr-sniper start watching this PR <url>` inspects configuration, resolves
+  scope and reuses queued work. Unchanged completed work runs again only on
+  explicit request.
+- macOS and Windows; existing connected accounts, no login automation.
+- [Setup and command contract](docs/agentic-control.md).
+
 ## Docs
 
 - [docs/README.md](docs/README.md): index of references and specs.

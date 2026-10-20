@@ -16,6 +16,9 @@ pub const MAX_PATTERN_LENGTH: usize = 256;
 pub enum AdmissionMode {
     All,
     Filtered,
+    /// Only native explicit intake may admit new PRs. Already admitted PRs
+    /// retain heartbeat/iteration monitoring.
+    Explicit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -172,11 +175,12 @@ impl AdmissionConfig {
 
     /// Whether an enabled assigned rule matches (used for baseline bypass).
     pub fn assigned_matches(&self, account_id: &str, pull: &PullRequest) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.enabled
-                && rule.kind == AdmissionRuleKind::Assigned
-                && is_requested_reviewer(account_id, pull)
-        })
+        self.mode != AdmissionMode::Explicit
+            && self.rules.iter().any(|rule| {
+                rule.enabled
+                    && rule.kind == AdmissionRuleKind::Assigned
+                    && is_requested_reviewer(account_id, pull)
+            })
     }
 
     pub fn include_users_matches(&self, pull: &PullRequest) -> bool {
@@ -186,9 +190,11 @@ impl AdmissionConfig {
     }
 
     pub fn mentioned_enabled(&self) -> bool {
-        self.rules
-            .iter()
-            .any(|rule| rule.enabled && rule.kind == AdmissionRuleKind::Mentioned)
+        self.mode != AdmissionMode::Explicit
+            && self
+                .rules
+                .iter()
+                .any(|rule| rule.enabled && rule.kind == AdmissionRuleKind::Mentioned)
     }
 
     /// `files` is `None` when the changed-file list has not been loaded.
@@ -198,6 +204,9 @@ impl AdmissionConfig {
         pull: &PullRequest,
         files: Option<&[ChangedFile]>,
     ) -> Decision {
+        if self.mode == AdmissionMode::Explicit {
+            return Decision::Reject(None);
+        }
         if self.mode == AdmissionMode::All {
             return Decision::Admit(None);
         }

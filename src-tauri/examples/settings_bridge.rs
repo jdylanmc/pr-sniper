@@ -427,6 +427,33 @@ fn explicit_intake_fixture(store: &Store, args: &Value) -> Result<Value, String>
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     match request.command.as_str() {
+        "control_installation" | "control_install" | "control_uninstall" => {
+            let root = PathBuf::from(std::env::args().nth(1).unwrap()).join("skill-host");
+            // This bridge receives only the isolated browser fixture root.
+            let directory = root.join(".copilot/skills/pr-sniper");
+            let result = match request.command.as_str() {
+                "control_installation" => pr_sniper_lib::control::installation_at(&directory),
+                "control_install" => pr_sniper_lib::control::install_at(
+                    &directory,
+                    &root.join("fixture-app"),
+                    request.args["expected"].as_str(),
+                ),
+                _ => pr_sniper_lib::control::remove_at(
+                    &directory,
+                    request.args["expected"]
+                        .as_str()
+                        .ok_or("Installation revision required.")?,
+                ),
+            };
+            result
+                .and_then(|r| {
+                    serde_json::to_value(r).map_err(|_| pr_sniper_lib::control::Error {
+                        code: "encoding".into(),
+                        detail: Value::Null,
+                    })
+                })
+                .map_err(|e| e.code)
+        }
         "fixture_explicit_pr_intake" => explicit_intake_fixture(store, &request.args),
         "fixture_repository_url_target" => {
             let input = request.args["repository"]

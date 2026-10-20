@@ -60,6 +60,41 @@ const openEditor = async (page) => {
   return editor(page);
 };
 
+test("explicit PR scope persists without enabling the repository or changing grants", async ({
+  page,
+  store,
+}) => {
+  const before = await seed(store);
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  const modal = await openEditor(page);
+  await modal.getByRole("switch", { name: "Explicit PRs only" }).check();
+  await expect(
+    modal.getByRole("switch", { name: "All pull requests" }),
+  ).toBeDisabled();
+  await modal
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await page.evaluate(() => window.__settingsIdle());
+  const saved = (await store("snapshot")).settings;
+  expect(saved.repositories[0].admission.mode).toBe("explicit");
+  expect(saved.repositories[0].enabled).toBe(false);
+  expect(saved.repositories[0].assignments).toEqual(
+    before.repositories[0].assignments,
+  );
+  expect(saved.repositories[1]).toEqual(before.repositories[1]);
+  await page.reload();
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Repositories");
+  const reopened = await openEditor(page);
+  await expect(
+    reopened.getByRole("switch", { name: "Explicit PRs only" }),
+  ).toBeChecked();
+  await expect(
+    reopened.getByRole("button", { name: "Filtered pull requests" }),
+  ).toBeDisabled();
+});
+
 test("failed new configuration Save cannot enable a later nested assignment Save", async ({
   page,
   store,

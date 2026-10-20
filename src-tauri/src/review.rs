@@ -189,12 +189,22 @@ impl Selection {
             .iter()
             .find(|a| a.id == assignment_id)
             .ok_or("Configure an Agent assignment for this repository.")?;
-        let agent = settings
+        let request_override = job
+            .work
+            .as_ref()
+            .and_then(|work| work.request_override.as_ref());
+        let agent_id = request_override
+            .and_then(|request| request.agent_id.as_ref())
+            .unwrap_or(&assignment.agent_id);
+        let mut agent = settings
             .agents
             .iter()
-            .find(|a| a.id == assignment.agent_id)
+            .find(|a| &a.id == agent_id)
             .ok_or("The assigned Agent is unavailable.")?
             .clone();
+        if let Some(ids) = request_override.and_then(|request| request.doctrine_ids.as_ref()) {
+            agent.doctrine_ids = ids.clone();
+        }
         if agent.model.is_empty()
             || agent
                 .ai_account

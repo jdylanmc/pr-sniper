@@ -3,6 +3,7 @@ pub mod admission;
 pub mod backpressure;
 pub mod capacity;
 pub mod connectivity;
+pub mod control;
 mod copilot;
 pub mod exit_writes;
 pub mod exits;
@@ -4351,6 +4352,9 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _| {
+            if _args.iter().any(|arg| arg == "--background") {
+                return;
+            }
             #[cfg(windows)]
             notifications::windows::forward(app, &_args);
             // Launching the app again (Finder, Spotlight) opens the panel.
@@ -4358,6 +4362,9 @@ pub fn run() {
             show_queue_panel(app);
         }))
         .invoke_handler(tauri::generate_handler![
+            control::installer::control_installation,
+            control::installer::control_install,
+            control::installer::control_uninstall,
             result_page,
             result_detail,
             clean_reviewed,
@@ -4511,6 +4518,9 @@ pub fn run() {
                 mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
+            if let Err(error) = control::start(app.handle(), &root) {
+                report(app.handle(), error);
+            }
             #[cfg(windows)]
             notifications::windows::ready(app.handle());
             if let Err(error) = notification_restore {

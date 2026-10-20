@@ -314,7 +314,12 @@ pub fn honour_local(
                 reason: *reason,
                 state_seq: state_seq(&run.job),
                 assignment_id: run.assignment_id.clone(),
-                agent_id: run.selection.agent.id.clone(),
+                agent_id: run
+                    .job
+                    .work
+                    .as_ref()
+                    .map(|w| w.agent_id.clone())
+                    .unwrap_or_else(|| run.selection.agent.id.clone()),
                 snapshot,
             },
         );

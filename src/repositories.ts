@@ -15,7 +15,7 @@ export interface AdmissionRule {
 }
 /** All pull requests, or the first enabled matching rule (in order) decides. */
 export interface Admission {
-  mode: "all" | "filtered";
+  mode: "all" | "filtered" | "explicit";
   rules: AdmissionRule[];
 }
 

@@ -294,6 +294,69 @@ fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration()
 }
 
 #[test]
+fn explicit_only_scope_survives_restart_without_admitting_other_mentioned_prs() {
+    use pr_sniper_lib::admission::{AdmissionConfig, AdmissionMode};
+    let (_fixture, store, _) = explicit_configuration(1);
+    let expected = store.load_settings().unwrap().repositories.remove(0);
+    let mut scoped = expected.clone();
+    scoped.admission = Some(AdmissionConfig {
+        mode: AdmissionMode::Explicit,
+        ..Default::default()
+    });
+    store
+        .save_resource(ResourceEdit::Repository {
+            id: expected.id.clone(),
+            expected: Some(Box::new(expected)),
+            value: Some(Box::new(scoped)),
+        })
+        .unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    explicit(&mut monitor, &store, pull('a')).unwrap();
+    let mut other = pull('b');
+    other.id = "10".into();
+    other.number = 102;
+    other.mentioned = true;
+    other.requested_reviewers.push(Identity {
+        id: "22".into(),
+        login: "acting-account".into(),
+    });
+    scan(
+        &mut monitor,
+        &store,
+        vec![pull('a'), other.clone()],
+        NOW + 3,
+    );
+    assert_eq!(store.load_queue_state().unwrap().tracked.len(), 1);
+    let mut restored = Monitor::restore(&store).unwrap();
+    scan(&mut restored, &store, vec![pull('c'), other], NOW + 1000);
+    let queue = store.load_queue_state().unwrap();
+    assert_eq!(queue.tracked.len(), 1);
+    assert_eq!(queue.tracked[0].number, 101);
+    assert_eq!(queue.tracked[0].head_sha, "c".repeat(40));
+    assert!(queue.jobs.iter().all(|job| job.number == 101));
+}
+
+#[test]
+fn explicit_intake_respects_the_repository_draft_opt_in() {
+    let (_fixture, store, _) = explicit_configuration(1);
+    let expected = store.load_settings().unwrap().repositories.remove(0);
+    let mut configured = expected.clone();
+    configured.review_drafts = true;
+    store
+        .save_resource(ResourceEdit::Repository {
+            id: expected.id.clone(),
+            expected: Some(Box::new(expected)),
+            value: Some(Box::new(configured)),
+        })
+        .unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut draft = pull('a');
+    draft.draft = true;
+    assert!(explicit(&mut monitor, &store, draft).unwrap().queued);
+    assert_eq!(store.load_queue().unwrap().len(), 1);
+}
+
+#[test]
 fn explicit_pr_queue_survives_pause_and_drains_without_another_poll() {
     let (_fixture, store, mut monitor) = explicit_configuration(2);
     let mut settings = store.load_settings().unwrap();

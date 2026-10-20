@@ -25,7 +25,7 @@ fn reject_link(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn existing_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn existing_directory(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(ErrorKind::InvalidInput, "relative storage"));
     }
@@ -65,7 +65,7 @@ pub(crate) fn directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn existing_file(path: &Path) -> io::Result<()> {
+pub(crate) fn existing_file(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     reject_link(&metadata)?;
     if !metadata.is_file() {
@@ -296,7 +296,7 @@ pub(super) fn sync_entries(directory: &Path) -> io::Result<()> {
     sync_directory(directory)
 }
 
-pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+pub(crate) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())

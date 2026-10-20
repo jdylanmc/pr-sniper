@@ -361,6 +361,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                 job.head_sha = format!("{iteration:040x}");
                 job.detected_at += iteration as i64;
                 job.work = Some(crate::monitoring::NormalWork {
+                    request_override: None,
                     id: format!("job-{iteration}"),
                     item_id: format!("iteration-{iteration}"),
                     iteration_id: format!("iteration-{iteration}"),

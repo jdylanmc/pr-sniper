@@ -99,7 +99,7 @@ An explicit repository-scoped grant on an assignment: Publish Comment for any as
 _Avoid_: Automation override, reusable Agent permission, merge-only grant
 
 **Authorization Boundary**:
-Saving a repository with Agent assignments authorizes ongoing read-only reviews of all open and future admitted PRs, including forks and later revisions. No scope or revision-trust prompt. Save is one atomic settings replacement and reads no backlog. Unrelated saves never enable an unconfigured or disabled repository.
+Saving a repository with Agent assignments authorizes ongoing read-only reviews of admitted PRs, including forks and later revisions. **All** and **Filtered** modes consider open and future PRs; **Explicit PRs only** admits individually requested PRs, never repository-wide work. Save is one atomic settings replacement and reads no backlog. Unrelated saves and watch requests never enable an unconfigured or disabled repository.
 _Avoid_: Scope prompt, trust prompt
 
 ### Admission and scheduling
@@ -111,6 +111,24 @@ _Avoid_: Reviewer requests, People you watch, watch filter
 **Explicit PR Intake**:
 PR URL entered at **+ URL** resolves its repository and that exact PR. After a valid repository Save the PR is admitted at once, outside admission rules, with no schedule wait. Same URL and same Iteration reuse existing work. Normal gates still apply. A plain repository URL creates no PR work. Failed intake never undoes a committed Save.
 _Avoid_: Manual scan, force review
+
+**Agentic Control**:
+Human-invoked `/pr-sniper` skill and a small local CLI for validated native
+operations. App owns configuration, scheduling, execution and provider gates.
+Existing connected accounts only; no credentials or login operations. See
+[control contract](docs/agentic-control.md) and [ADR 0025](docs/adr/0025-local-agentic-control.md).
+
+**Explicit PRs only**:
+Repository admission mode that rejects automatic admission, including mentions
+and reviewer requests. Native explicit intake admits one PR; already tracked
+PRs retain heartbeat monitoring across revisions. Existing repository scope
+does not change when a single PR is watched.
+
+**Request override**:
+Existing Agent and/or ordered Doctrine references attached to never-started
+work for one request. Shared configuration and assignment grants do not change.
+Execution captures the selected content normally; subsequent passes use shared
+configuration unless overridden again. Pending override references prevent deletion.
 
 **Repository Schedule**:
 Each repository's five-field cron (new repositories: every 30 minutes), built in its editor (Every, Hourly, Daily, Advanced; days of the week; no working hours), evaluated in the one saved **Time Zone**. No per-Agent schedule. One provider read per account/repository binding fans out to per-Agent jobs. Missed or sleep occurrences collapse to one poll; no catch-up. Replaced the single global cron ([ADR 0024](docs/adr/0024-repository-schedules.md)); a saved global cron migrated onto every repository; a legacy interval or never-firing cron migrated repositories paused.
@@ -140,7 +158,13 @@ One tracked revision of a PR. A new head SHA starts a new Iteration and supersed
 _Avoid_: Revision (as tracked unit; "revision" means the provider commit)
 
 **One-review-per-head rule**:
-Each head SHA gets one review per assigned Agent. A new revision is the only permission for another review. On the same revision an Agent only replies to new comments. Added Agent gets its missing job at next scan; completed unchanged passes never repeat. Agent context is PR description, changed files and all comments, plus prior feedback. Being replaced by **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-state)).
+Each head SHA gets one review per assigned Agent unless meaningful **PR state**
+changes or the human explicitly requests **Review again**. Added Agents get
+missing jobs at the next scan; unchanged completed passes never repeat merely
+because a watch request is duplicated. Review again creates new pass identities,
+retains completed evidence and receipts, and never bypasses running work or Wait.
+Agent context is PR description, changed files and all comments, plus prior
+feedback. See **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-state)).
 _Avoid_: Re-review, manual re-run
 
 **PR state**:
