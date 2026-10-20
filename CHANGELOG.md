@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Reviews retry with fresh context when owned-feedback observations change during
+  analysis, instead of failing permanently after one attempt. Recovery remains
+  bounded, rejects stale results and restores affected failures after upgrade.
+
 ## 0.4.2 - 2026-10-20
 
 ### Added
