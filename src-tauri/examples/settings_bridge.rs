@@ -448,6 +448,18 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 .map_err(|_| "Invalid result destination.")?,
         )?)
         .map_err(|_| "Cannot encode result detail.".into()),
+        "dismiss_stale_review" => {
+            pr_sniper_lib::queue::dismissal::dismiss(
+                store,
+                request.args["itemId"]
+                    .as_str()
+                    .ok_or("Item identity required.")?,
+                request.args["expectedToken"]
+                    .as_str()
+                    .ok_or("State identity required.")?,
+            )?;
+            Ok(Value::Null)
+        }
         "clean_reviewed" => {
             let item = request.args["itemId"].as_str();
             pr_sniper_lib::retention::recover(store)?;

@@ -2620,8 +2620,29 @@ button:disabled {
   color: var(--ink);
   text-align: left;
 }
-.queue-row + .queue-row {
+.queue-entry + .queue-entry {
   border-top: 1px solid var(--line-slate-edf0f4);
+}
+.queue-entry {
+  position: relative;
+}
+.queue-entry:has(.queue-dismiss) .queue-row {
+  padding-right: 48px;
+}
+.queue-dismiss {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--ink);
+  background: var(--paper);
 }
 .queue-row:hover {
   background: var(--bg-teal-f8fafb);

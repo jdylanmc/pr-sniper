@@ -11,6 +11,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   permitted own-PR merges from approval votes instead of defaulting to handoff.
 - All PR CI workflows cancel superseded runs for the same PR without cancelling
   main-branch or release runs.
+- Stale Queue entries can be dismissed locally across refreshes and restarts.
+  Later PR changes remain eligible; history and provider-effect evidence stay
+  intact. Entries with in-flight or uncertain work cannot be dismissed.
 
 ## 0.4.1 - 2026-10-18
 

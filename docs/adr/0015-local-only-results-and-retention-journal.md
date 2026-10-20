@@ -25,3 +25,12 @@ Review detail grows without bound. Wrong deletion loses evidence. A database add
 
 - Cleanup is human-triggered: Reviewed **Clean** per PR and **Clean all**. No timer deletes terminal detail. Terminal PRs only.
 - Also deletes the PR's `pr-state.json` record. Uncertain publication and action records stay (ADR 0015 reconciliation). Ad hoc scope, owner review requested.
+
+## Local stale-queue dismissal (2026-10-19)
+
+- **Dismiss stale review** acknowledges one stale state, not terminal cleanup.
+- `queue-dismissals.json`: item IDs and state fingerprints only; no evidence deletion.
+- Exact state revalidated under the Store lock before atomic save. New head/base
+  or normalized PR-state changes do not inherit dismissal.
+- In-flight or uncertain work stays visible; no provider write, baseline consume,
+  blanket PR ignore, permission change or retry.

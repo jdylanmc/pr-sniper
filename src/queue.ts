@@ -28,6 +28,8 @@ export interface NormalWork {
 }
 
 export interface QueueItem {
+  dismiss_token?: string | null;
+  dismissed?: boolean;
   action_status?: ActionStatus | null;
   feedback?: {
     context: {
@@ -241,6 +243,7 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
   return [...current.values()]
     .filter(
       (item) =>
+        !item.dismissed &&
         ![
           "queued",
           "reviewing",
@@ -513,6 +516,43 @@ export function renderQueue(
           );
         };
         actions.append(retry);
+      }
+      if (item.dismiss_token && !item.dismissed) {
+        const dismiss = document.createElement("button");
+        dismiss.type = "button";
+        dismiss.className = "queue-dismiss";
+        dismiss.dataset.dismissItem = item.id;
+        dismiss.setAttribute("aria-label", "Dismiss stale review");
+        dismiss.title = "Dismiss stale review";
+        dismiss.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg>`;
+        dismiss.onclick = async () => {
+          const hadFocus = document.activeElement === dismiss;
+          dismiss.disabled = true;
+          try {
+            await invoke("dismiss_stale_review", {
+              itemId: item.id,
+              expectedToken: item.dismiss_token,
+            });
+            await refresh();
+            if (
+              hadFocus &&
+              document.activeElement === document.body &&
+              !root.closest("[hidden]")
+            ) {
+              const heading =
+                root
+                  .closest(".panel-shell")
+                  ?.querySelector<HTMLElement>("[data-panel-heading]") ?? root;
+              heading.tabIndex = -1;
+              heading.focus({ preventScroll: true });
+            }
+          } catch (error) {
+            showError(typeof error === "string" ? error : "Dismiss failed");
+          } finally {
+            dismiss.disabled = false;
+          }
+        };
+        actions.append(dismiss);
       }
       if (!options.compact) actions.append(github);
       row.append(actions);

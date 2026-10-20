@@ -1329,6 +1329,21 @@ fn retention_maintenance(
 }
 
 #[tauri::command]
+async fn dismiss_stale_review(
+    app: tauri::AppHandle,
+    item_id: String,
+    expected_token: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        queue::dismissal::dismiss(&store, &item_id, &expected_token)
+    })
+    .await
+    .map_err(|_| "Stale review dismissal could not run.".to_string())?
+}
+
+#[tauri::command]
 async fn clean_reviewed(app: tauri::AppHandle, item_id: Option<String>) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let select = |scope: &monitoring::TrackedPullRequest| {
@@ -4291,6 +4306,7 @@ pub fn run() {
             result_page,
             result_detail,
             clean_reviewed,
+            dismiss_stale_review,
             snapshot,
             save_preferences,
             saved_resources,

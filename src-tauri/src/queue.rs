@@ -10,6 +10,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod dismissal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -77,6 +79,8 @@ pub const CAUSE_EXIT_FAILED: &str = "exit_failed";
 
 #[derive(Serialize)]
 pub struct Item {
+    pub dismiss_token: Option<String>,
+    pub dismissed: bool,
     pub action_status: Option<crate::actions::Status>,
     /// The exit the item's primary run ended on (`panic_exit` for a panic).
     pub exit: Option<crate::exits::Exit>,
@@ -147,6 +151,7 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let mut snapshot = normal_snapshot(store, health)?;
     crate::actions::project(store, &mut snapshot)?;
+    dismissal::project(store, &mut snapshot)?;
     Ok(snapshot)
 }
 
@@ -923,6 +928,8 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             _ => None,
         };
         items.push(Item {
+            dismiss_token: None,
+            dismissed: false,
             action_status: None,
             exit,
             exit_run_id: exit_run.map(|(_, run, _)| run.operation.id.clone()),

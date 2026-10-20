@@ -247,6 +247,9 @@ _Avoid_: Needs attention (that term is the failure group)
 Review superseded by a new head or base. Stale after publication is the same condition on a **Publication**: receipt kept, labeled stale, no publish against a different diff. Base move without new head needs explicit Review again.
 _Avoid_: Outdated review
 
+**Dismiss stale review**:
+Local Queue visibility acknowledgement for one exact stale PR state, scoped to its account and repository binding. Persists across refresh and restart; later head, base or meaningful PR-state changes remain eligible. Keeps history and receipts; never consumes a review baseline, retries work, ignores the PR or dismisses a GitHub review. Uncertain or in-flight work prevents dismissal and overrides an earlier acknowledgement.
+
 **Destination**:
 Exact PR, Iteration or job identity addressed by a panel route, notification or provider link. Unavailable exact identity is a missing destination; never substitutes another item.
 
