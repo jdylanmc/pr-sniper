@@ -5,6 +5,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.4.2 - 2026-10-20
+
 ### Added
 
 - Primary **Wait** exit yields for pending CI, drafts or required reviews without
@@ -14,7 +16,6 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 ### Fixed
 
 - Settings Back preserves newer in-page focus when delayed tab navigation completes.
-
 - Review packets honor the configured Include self choice and distinguish
   permitted own-PR merges from approval votes instead of defaulting to handoff.
 - All PR CI workflows cancel superseded runs for the same PR without cancelling
@@ -23,7 +24,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   Later PR changes remain eligible; history and provider-effect evidence stay
   intact. Entries with in-flight or uncertain work cannot be dismissed.
 - Queue reload failures retain paired screenshots, renderer/build context and bounded WebKit CI artifacts for diagnosis.
-- Reviews and repository checks suspend during verified service outages and resume automatically without spending retry budgets.
+- Reviews and repository checks suspend during verified service outages and
+  resume without spending retry budgets. Replacement work retains Copilot probes;
+  reconnected parked repository polls recover their configured schedule.
 - Stalled reviews expire after a saved inactivity timeout (default 15 minutes),
   without extending total review budgets.
 - Copied diagnostics include publication mismatches, typed provider failures, replacement attempts and nested Rubber Duck outcomes.

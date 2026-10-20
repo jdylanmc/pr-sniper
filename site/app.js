@@ -526,7 +526,7 @@ window.setInterval(() => {
 
 // Boot: once per session, skipped under reduced motion.
 const BOOT_LINES = [
-  "TERMLINK BIOS 0.4.1 · PR SNIPER PROJECT",
+  "TERMLINK BIOS 0.4.2 · PR SNIPER PROJECT",
   "",
   "MEMORY TEST ............ 65536K OK",
   "LOADING SCOPE.DRV ...... OK",
