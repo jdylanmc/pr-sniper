@@ -13,6 +13,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Settings Back preserves newer in-page focus when delayed tab navigation completes.
+
 - Review packets honor the configured Include self choice and distinguish
   permitted own-PR merges from approval votes instead of defaulting to handoff.
 - All PR CI workflows cancel superseded runs for the same PR without cancelling

@@ -111,6 +111,31 @@ for (const viewport of [
   });
 }
 
+test("Back preserves newer Settings focus across a delayed tab round trip", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await queueFixture(store);
+  await page.goto("/");
+  await tab(page, "Settings").click();
+  await row(page, "Accounts").click();
+  await row(page, "Git Repository").click();
+  await row(page, "GitHub").click();
+  await page.evaluate(() => window.__settingsIdle());
+
+  const held = ipc.holdNext("panel_navigate");
+  await tab(page, "Queue").click();
+  await held.arrived;
+  await tab(page, "Settings").click();
+  await expect(page.locator(".github-auth-card")).toBeVisible();
+  await back(page).click();
+  await expect(row(page, "GitHub")).toBeFocused();
+  held.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(row(page, "GitHub")).toBeFocused();
+});
+
 test("provider summaries isolate failed reads and retain an available retry route", async ({
   page,
   store,

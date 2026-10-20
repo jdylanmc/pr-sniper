@@ -270,7 +270,9 @@ export async function mountPanel(app: HTMLElement) {
     error.hidden = true;
   };
   const remember = (opener?: HTMLElement) => {
-    if (!opener && navigationOrigin === key(route)) return;
+    // Settings can navigate internally while a tab change is still pending.
+    if (!opener && navigationOrigin === key(route) && route.tab !== "settings")
+      return;
     const previous = positions.get(positionKey());
     const focus =
       opener ??
