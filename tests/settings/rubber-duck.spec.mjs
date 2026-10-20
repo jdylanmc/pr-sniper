@@ -81,11 +81,12 @@ for (const width of [408, 320]) {
       await seed(page, store);
       const editor = await openAssignment(page);
       await expect(duckSummary(editor)).toHaveText("None");
-      await expect(toolSummary(editor)).toHaveText("9");
+      await expect(toolSummary(editor)).toHaveText("10");
       await pickDuck(page, editor, "Duck");
       await expect(duckSummary(editor)).toHaveText("Duck");
-      await expect(toolSummary(editor)).toHaveText("10");
+      await expect(toolSummary(editor)).toHaveText("11");
       await editor.locator("[data-open-tools]").click();
+      await expect(toolSwitch(editor, "Wait")).toBeChecked();
       await expect(toolSwitch(editor, "Rubber duck")).toBeChecked();
       await expect(
         editor.locator('[data-tool-row="rubber_duck"] [data-tool-detail]'),
