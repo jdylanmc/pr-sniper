@@ -5,8 +5,18 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-20
+
 ### Added
 
+- Configure and control PR Sniper through the human-invoked `/pr-sniper`
+  Copilot CLI skill on macOS and Windows, with validated native operations and
+  a Settings installer. Login setup stays human-managed.
+- Watch exact PRs with persistent queue priority, explicit review-again and
+  request-only Agent/doctrine selections; preserve pause, prerequisites and
+  existing grants.
+- Set up SOLID and Security teammates feeding a Maintainer primary using a
+  shipped preset that preserves customized components.
 - `lgtm` sign-off exit for the primary: it accounts for every own open thread
   (`fixed` with evidence, `author_wont_fix`, `withdrawn` or `no_longer_applies`
   on a changed head), dismisses every teammate finding with a rationale,
