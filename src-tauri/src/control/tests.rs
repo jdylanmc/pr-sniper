@@ -680,3 +680,60 @@ fn bundled_cli_crosses_framed_transport_to_real_validated_store_save() {
     assert_eq!(reopened.agents[0].prompt, "Exact CLI-edited prompt");
     assert_eq!(reopened.repositories, before.repositories);
 }
+
+#[test]
+fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejection() {
+    use std::time::Duration;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let endpoint = Endpoint {
+            protocol: 1,
+            port,
+            token: "a".repeat(64),
+            app_version: "fixture".into(),
+        };
+        let mut calls = 0;
+        serve_connection(stream, &endpoint, &mut |request| {
+            calls += 1;
+            assert_eq!(request["operation"], "login");
+            Err(Error::new("invalid_request", ()))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+    });
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let payload = serde_json::to_vec(
+        &json!({"protocol":1,"token":"a".repeat(64),"request":{"operation":"login"}}),
+    )
+    .unwrap();
+    stream.write_all(b"SNIPER1\n").unwrap();
+    std::thread::sleep(Duration::from_millis(40));
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(40));
+    stream.write_all(&payload).unwrap();
+    let mut size = [0; 4];
+    stream.read_exact(&mut size).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
+    stream.read_exact(&mut bytes).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()["error"]["code"],
+        "invalid_request"
+    );
+    server.join().unwrap();
+}

@@ -19,6 +19,9 @@
   Never included in diagnostics, command output or account enumeration.
 - Eight-byte magic, four-byte length, at most 1 MiB per frame; two-second
   total request-read deadline; authenticated native operation budget 90 seconds.
+- Listener polling is nonblocking; each accepted connection explicitly switches
+  to bounded blocking I/O so inherited socket flags cannot discard split frames.
+  Failed frames produce only a bounded private phase/IO-kind/timing diagnostic.
 - One control reader; unsupported methods, unknown fields, authentication and
   protocol mismatches fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.

@@ -96,12 +96,28 @@ impl Server {
         quitting: impl Fn() -> bool,
         mut execute: impl FnMut(Value) -> Result<Value, Error>,
     ) {
+        let mut failures = Vec::new();
         while !quitting() {
             match self.listener.accept() {
                 Ok((stream, address)) if address.ip().is_loopback() => {
                     // A single bounded reader: unauthenticated clients never
                     // allocate workers or reach any application operation.
-                    let _ = serve_connection(stream, &self.endpoint, &mut execute);
+                    let started = Instant::now();
+                    if let Err(failure) = serve_diagnosed(stream, &self.endpoint, &mut execute) {
+                        failures.push(json!({
+                            "stage":failure.stage,"kind":format!("{:?}",failure.error.kind()),
+                            "elapsed_ms":started.elapsed().as_millis()
+                        }));
+                        if failures.len() > 16 {
+                            failures.remove(0);
+                        }
+                        // Content-free and bounded; never include frame/token bytes.
+                        let _ = private_fs::replace(
+                            &self.path.with_file_name("transport-errors.json"),
+                            &serde_json::to_vec(&failures).unwrap(),
+                            "control transport diagnostics",
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -136,22 +152,49 @@ fn read_deadline(
 }
 
 pub fn serve_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     endpoint: &Endpoint,
     execute: &mut impl FnMut(Value) -> Result<Value, Error>,
 ) -> std::io::Result<()> {
+    serve_diagnosed(stream, endpoint, execute).map_err(|failure| failure.error)
+}
+
+struct TransportFailure {
+    stage: &'static str,
+    error: std::io::Error,
+}
+
+fn stage<T>(name: &'static str, result: std::io::Result<T>) -> Result<T, TransportFailure> {
+    result.map_err(|error| TransportFailure { stage: name, error })
+}
+
+fn serve_diagnosed(
+    mut stream: TcpStream,
+    endpoint: &Endpoint,
+    execute: &mut impl FnMut(Value) -> Result<Value, Error>,
+) -> Result<(), TransportFailure> {
+    // BSD/macOS (and some other socket stacks) inherit the listener's
+    // nonblocking mode on accept. This connection uses bounded blocking I/O;
+    // otherwise a split frame is mistaken for a zero-millisecond timeout.
+    stage("connection_mode", stream.set_nonblocking(false))?;
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut header = [0u8; 12];
-    read_deadline(&mut stream, &mut header, deadline)?;
+    stage(
+        "request_header",
+        read_deadline(&mut stream, &mut header, deadline),
+    )?;
     if &header[..8] != MAGIC {
-        return Err(std::io::ErrorKind::InvalidData.into());
+        return stage("request_magic", Err(std::io::ErrorKind::InvalidData.into()));
     }
     let size = u32::from_be_bytes(header[8..].try_into().unwrap()) as usize;
     if size > MAX_FRAME {
-        return Err(std::io::ErrorKind::InvalidData.into());
+        return stage("request_size", Err(std::io::ErrorKind::InvalidData.into()));
     }
     let mut bytes = vec![0; size];
-    read_deadline(&mut stream, &mut bytes, deadline)?;
+    stage(
+        "request_body",
+        read_deadline(&mut stream, &mut bytes, deadline),
+    )?;
     let result = match serde_json::from_slice::<Envelope>(&bytes) {
         Ok(envelope) if authenticated(&envelope.token, &endpoint.token) => {
             if envelope.protocol != PROTOCOL {
@@ -169,16 +212,26 @@ pub fn serve_connection(
         Ok(value) => json!({"protocol": PROTOCOL, "ok": true, "result": value}),
         Err(error) => json!({"protocol": PROTOCOL, "ok": false, "error": error}),
     };
-    let mut bytes = serde_json::to_vec(&response)?;
+    let mut bytes = stage(
+        "response_encode",
+        serde_json::to_vec(&response).map_err(std::io::Error::other),
+    )?;
     if bytes.len() > MAX_FRAME {
         bytes = serde_json::to_vec(&json!({
             "protocol": PROTOCOL, "ok": false,
             "error": {"code": "response_too_large", "detail": null}
-        }))?;
+        }))
+        .unwrap();
     }
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(&(bytes.len() as u32).to_be_bytes())?;
-    stream.write_all(&bytes)
+    stage(
+        "response_timeout",
+        stream.set_write_timeout(Some(Duration::from_secs(2))),
+    )?;
+    stage(
+        "response_header",
+        stream.write_all(&(bytes.len() as u32).to_be_bytes()),
+    )?;
+    stage("response_body", stream.write_all(&bytes))
 }
 
 fn authenticated(actual: &str, expected: &str) -> bool {

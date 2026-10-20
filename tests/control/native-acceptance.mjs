@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import net from "node:net";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -65,6 +66,7 @@ const receipt = {
   checks: [],
   operations: [],
   owned_processes: [],
+  native_transport: [],
 };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const run = (file, args, options = {}) => {
@@ -164,6 +166,7 @@ function call(input) {
     ok: response.ok,
     code: response.error?.code ?? null,
     elapsed_ms: Date.now() - started,
+    native_alive: observedProcesses().length,
   });
   assert.equal(
     result.status,
@@ -180,6 +183,79 @@ function okay(input) {
     `Native operation ${input.operation} failed: ${response.error?.code}`,
   );
   return response.result;
+}
+
+async function fragmentedRejection() {
+  const endpoint = JSON.parse(
+    await fs.readFile(path.join(root, "data/control/endpoint.json"), "utf8"),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({
+      protocol: 1,
+      token: endpoint.token,
+      request: {
+        operation: "login",
+        request_id: randomUUID(),
+        issued_at: Math.floor(Date.now() / 1000),
+      },
+    }),
+  );
+  const response = await new Promise((resolve, reject) => {
+    const socket = net.createConnection({
+      host: "127.0.0.1",
+      port: endpoint.port,
+    });
+    let received = Buffer.alloc(0);
+    const deadline = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Fragmented native request timed out"));
+    }, 4000);
+    let write;
+    const done = (error, value) => {
+      clearTimeout(deadline);
+      clearTimeout(write);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    socket.on("connect", () => {
+      const header = Buffer.alloc(12);
+      Buffer.from("SNIPER1\n").copy(header);
+      header.writeUInt32BE(payload.length, 8);
+      socket.write(header);
+      write = setTimeout(() => socket.write(payload), 100);
+    });
+    socket.on("data", (bytes) => {
+      received = Buffer.concat([received, bytes]);
+      if (received.length > 1024 * 1024 + 4)
+        return done(new Error("Oversized native reply"));
+      if (
+        received.length >= 4 &&
+        received.length === received.readUInt32BE(0) + 4
+      ) {
+        try {
+          done(null, JSON.parse(received.subarray(4)));
+        } catch {
+          done(new Error("Invalid native reply"));
+        }
+      }
+    });
+    socket.on("error", () =>
+      done(new Error("Fragmented native request lost its connection")),
+    );
+    socket.on("end", () => {
+      if (
+        received.length < 4 ||
+        received.length !== received.readUInt32BE(0) + 4
+      )
+        done(new Error("Fragmented native request lost its reply"));
+    });
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.error?.code, "invalid_request");
+  receipt.checks.push(
+    "actual native listener accepts a fragmented frame and returns typed rejection",
+  );
 }
 
 try {
@@ -265,6 +341,7 @@ try {
   receipt.checks.push(
     "native pause and rejection of login/unknown fields/malformed JSON",
   );
+  await fragmentedRejection();
   const before = observedProcesses()[0];
   await stopOwned();
   const restored = okay({ operation: "inspect" });
@@ -294,6 +371,19 @@ try {
   receipt.error = String(error.message ?? error);
   process.exitCode = 1;
 } finally {
+  receipt.native_alive_before_cleanup = observedProcesses().length;
+  try {
+    const file = path.join(root, "data/control/transport-errors.json");
+    const stat = await fs.stat(file);
+    assert(
+      stat.size <= 16 * 1024,
+      "Native transport diagnostics exceeded bound",
+    );
+    receipt.native_transport = JSON.parse(await fs.readFile(file, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      receipt.native_transport_read_error = error.code ?? "unavailable";
+  }
   try {
     await stopOwned();
     receipt.cleanup =
