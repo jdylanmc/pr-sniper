@@ -108,7 +108,8 @@ test("missing owned MCP entry offers explicit repair without losing other server
   page,
   store,
   dataRoot,
-}) => {
+  ipc,
+}, testInfo) => {
   await store("snapshot");
   const installed = await store("control_install", {
     host: "copilot_cli",
@@ -122,14 +123,73 @@ test("missing owned MCP entry offers explicit repair without losing other server
   );
   await page.goto("/?view=settings");
   await page.evaluate(() => window.__settingsIdle());
+  const started = Date.now();
+  const diagnostics = [];
+  const record = (event) => {
+    if (diagnostics.length >= 16) return;
+    const entry = { ...event, elapsed_ms: Date.now() - started };
+    diagnostics.push(entry);
+    console.info(`[control-installer] ${JSON.stringify(entry)}`);
+  };
+  await page.exposeFunction("__installerTiming", record);
+  await page.evaluate(() => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (!command.startsWith("control_")) return invoke(command, args);
+      await window.__installerTiming({ command, phase: "requested" });
+      try {
+        const result = await invoke(command, args);
+        await window.__installerTiming({
+          command,
+          phase: "response",
+          state: result.state,
+          registered: result.mcp_registered,
+        });
+        return result;
+      } catch (error) {
+        const code = typeof error === "string" ? error : error?.code;
+        await window.__installerTiming({
+          command,
+          phase: "error",
+          code: /^[a-z_]{1,64}$/.test(code) ? code : "native_error",
+        });
+        throw error;
+      }
+    };
+  });
   await section(page, "Preferences");
   await expect(page.getByLabel("Skill status")).toHaveText("Incomplete");
   await page.evaluate(() => window.__settingsIdle());
-  await page.getByRole("button", { name: "Repair", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Update", exact: true }),
-  ).toBeEnabled();
-  const config = JSON.parse(await readFile(file, "utf8"));
-  expect(config.mcpServers.other).toEqual({ command: "preserved" });
-  expect(config.mcpServers["pr-sniper"].type).toBe("local");
+  const completion = ipc.holdNext("control_install");
+  let release;
+  try {
+    await page.getByRole("button", { name: "Repair", exact: true }).click();
+    await completion.arrived;
+    const committed = JSON.parse(await readFile(file, "utf8"));
+    expect(committed.mcpServers["pr-sniper"].type).toBe("local");
+    record({ phase: "native_committed", registered: true });
+    await expect(
+      page.getByRole("button", { name: "Repair", exact: true }),
+    ).toBeDisabled();
+    // A successful native response may arrive after Playwright's assertion
+    // budget; settling the operation, not a five-second race, is the contract.
+    release = setTimeout(() => {
+      record({ phase: "reply_released" });
+      completion.release();
+    }, 6500);
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(
+      page.getByRole("button", { name: "Update", exact: true }),
+    ).toBeEnabled();
+    const config = JSON.parse(await readFile(file, "utf8"));
+    expect(config.mcpServers.other).toEqual({ command: "preserved" });
+    expect(config.mcpServers["pr-sniper"].type).toBe("local");
+  } finally {
+    clearTimeout(release);
+    completion.release();
+    await testInfo.attach("installer-commands", {
+      body: JSON.stringify(diagnostics),
+      contentType: "application/json",
+    });
+  }
 });

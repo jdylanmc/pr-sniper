@@ -24,6 +24,8 @@
 - A durable integration intent joins package activation and host registration.
   Reopen completes only an already-authorized intent. Missing registration is
   shown as **Incomplete** with **Repair**, not a successful installation.
+- Registration-only Repair reuses an exactly verified current package; it does
+  not republish unchanged assets. Customized content still fails verification.
 - Source/skills.sh-compatible package: [`skills/pr-sniper`](../skills/pr-sniper).
   Skill discovery alone does not register MCP; use the app's explicit setup.
   Only Copilot CLI is configured; no additional host is required.

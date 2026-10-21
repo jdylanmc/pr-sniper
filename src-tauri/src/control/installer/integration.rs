@@ -291,7 +291,9 @@ pub fn install_integration_at(
     };
     scope.write(INTENT, &intent)?;
     checkpoint("mcp-intent-written")?;
-    install_at(&scope.target, executable, before.as_deref())?;
+    if intent.before_package != intent.after_package {
+        install_at(&scope.target, executable, before.as_deref())?;
+    }
     checkpoint("mcp-package-installed")?;
     scope.recover()?;
     scope.status()

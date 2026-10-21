@@ -19,6 +19,49 @@ fn write_config(home: &Path, value: &Value) {
 }
 
 #[test]
+fn registration_only_repair_does_not_rewrite_a_verified_current_package() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let executable = home.join("app");
+    install_integration_at(&home, &executable, None).unwrap();
+    let package = home.join(".copilot/skills/pr-sniper");
+    let before = fs::metadata(package.join("scripts/mcp-server.mjs"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    write_config(
+        &home,
+        &json!({"mcpServers":{"other":{"command":"preserve"}}}),
+    );
+    let status = integration_at(&home).unwrap();
+    assert_eq!(status.state, "incomplete");
+    // Any attempt to republish package payloads fails, independently of timing.
+    fail("asset-0");
+    let started = std::time::Instant::now();
+    let result = install_integration_at(&home, &executable, status.revision.as_deref());
+    eprintln!(
+        "[installer-repair] elapsed_ms={} outcome={}",
+        started.elapsed().as_millis(),
+        if result.is_ok() {
+            "installed"
+        } else {
+            "failed"
+        }
+    );
+    let repaired = result.expect("registration repair must not republish unchanged package assets");
+    assert_eq!(repaired.state, "installed");
+    assert_eq!(
+        fs::metadata(package.join("scripts/mcp-server.mjs"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before
+    );
+    assert_eq!(config(&home)["mcpServers"]["other"]["command"], "preserve");
+    assert_eq!(config(&home)["mcpServers"]["pr-sniper"]["type"], "local");
+}
+
+#[test]
 fn setup_update_remove_owns_only_its_server_and_preserves_custom_configuration() {
     let root = root();
     let home = root.path().canonicalize().unwrap();
