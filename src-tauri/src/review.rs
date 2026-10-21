@@ -509,10 +509,10 @@ fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> 
     {
         return false;
     }
-    if !jobs
+    if jobs
         .iter()
         .find(|job| run.matches_job(job))
-        .is_some_and(monitoring::actionable)
+        .is_none_or(monitoring::retired)
     {
         end_quietly(run);
         return true;

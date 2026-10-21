@@ -13,6 +13,8 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
   with fresh context through that same bounded budget. Relevant replies, closure
   and ownership remain checked; unrelated ledger/publication bookkeeping does not
   invalidate the captured contexts.
+- Guarded preparation reads retain the original typed local gate rejection across
+  the provider transport boundary; actual provider errors keep their own cause.
 - Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else 30s x2^n capped at 15m with deterministic jitter. A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
 - Credential, permission, permanent failure: park at once.
 - Superseded is not failure: a moved head, closed/merged/unadmitted PR or removed/replaced assignment, seen before or during a run, requeues without an attempt and never parks. It re-dispatches only after the repository's next successful poll observes the PR, which retargets or retires it ([ADR 0008](0008-one-review-per-head-sha.md)); a failing poll never loops it. A base move after an AI run waits for a poll that observed another base: at most one AI attempt per base.
@@ -33,8 +35,10 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Historical packet reviews parked permanently by the exact owned-feedback-change
   rejection migrate once to the toss retry policy. Operation identity, spent
   attempts and deadline survive; expired windows enter the normal cooldown.
-  Retired work ends quietly. Legacy follow-ups and other permanent failures stay
-  unchanged; no provider effects are replayed by this migration.
+  Retired or missing work ends quietly; temporarily blocked live work keeps its
+  operation and budget until ordinary dispatch gates permit it again.
+  Legacy follow-ups and other permanent failures stay unchanged; no provider
+  effects are replayed by this migration.
 - Sleep/wake and network changes use the same bounded wall-clock checks: no catch-up burst and no OS network changes. Endpoint reachability is not a guarantee that every model route is healthy; a reachable endpoint leaves genuine request failures under the existing retry policy.
 - Disabled or unassigned repositories with eligible tracked PRs retain reachability checks for their connected, exact account/repository binding. Recovery restores terminal lifecycle observation only; it never enables monitoring or admits reviews. Removed, unbound, mismatched and disconnected bindings add no lifecycle probe scope.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.

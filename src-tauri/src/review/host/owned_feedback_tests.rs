@@ -337,3 +337,266 @@ fn owned_feedback_recovery_requires_an_unfinished_packet_review_without_effects(
         assert_eq!(store.load_reviews().unwrap()[0], saved, "{excluded}");
     }
 }
+
+#[test]
+fn owned_feedback_blocked_migration_keeps_the_operation_until_unblocked() {
+    for teammate in [false, true] {
+        for blocked in [
+            monitoring::WAITING_ACCOUNT_DISCONNECTED,
+            monitoring::WAITING_REPOSITORY_DISABLED,
+            monitoring::WAITING_BINDING_CHANGED,
+            monitoring::WAITING_POLICY_CHANGED,
+        ] {
+            let (root, store, template) = feedback_fixture(teammate);
+            let now = crate::now_seconds().unwrap();
+            let run = running_packet(&store, &template, now - 20);
+            complete(
+                &store,
+                &run.operation.id,
+                Err(Failure::permanent(CHANGED)),
+                now - 19,
+            )
+            .unwrap();
+            let mut reviews = store.load_reviews().unwrap();
+            reviews[0].operation.resume_cycle = 2;
+            store.save_reviews(&reviews).unwrap();
+            let mut jobs = store.load_queue().unwrap();
+            jobs[0].waiting = blocked.into();
+            store.save_queue(&jobs).unwrap();
+
+            let restarted = Store::new(root.path().into());
+            crate::review::restore(&restarted).unwrap();
+            let recovered = restarted.load_reviews().unwrap().remove(0);
+            assert_eq!(
+                recovered.operation.failure,
+                Some(OperationFailure::Tossed),
+                "{blocked}"
+            );
+            assert_eq!(recovered.operation.state, OperationState::Queued);
+            assert_eq!(recovered.operation.id, run.operation.id);
+            assert_eq!(recovered.operation.attempt_count, 1);
+            assert_eq!(
+                recovered.operation.retry_deadline,
+                run.operation.retry_deadline
+            );
+            assert_eq!(recovered.operation.resume_cycle, 2);
+            let next = recovered.operation.next_attempt_at.unwrap();
+            assert!(prepare_dispatch(&restarted, &run.key, next).is_err());
+            crate::review::restore(&restarted).unwrap();
+            assert_eq!(restarted.load_reviews().unwrap()[0], recovered);
+
+            jobs[0].waiting = monitoring::WAITING_HUMAN_START.into();
+            restarted.save_queue(&jobs).unwrap();
+            let fresh = prepare_dispatch(&restarted, &run.key, next).unwrap();
+            assert_eq!(fresh.operation.id, run.operation.id);
+            assert_eq!(fresh.operation.attempt_count, 2);
+            assert_eq!(fresh.operation.retry_deadline, run.operation.retry_deadline);
+            assert_eq!(fresh.operation.resume_cycle, 2);
+            assert_eq!(restarted.load_reviews().unwrap().len(), 1);
+        }
+    }
+}
+
+struct PreparationWire {
+    during_read: Box<dyn Fn()>,
+    error: Option<crate::github::ConnectionError>,
+}
+
+impl crate::github::provider::Transport for PreparationWire {
+    fn get(
+        &self,
+        _: &str,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        (self.during_read)();
+        if let Some(error) = &self.error {
+            return Err(*error);
+        }
+        Ok(crate::github::provider::Response {
+            status: 200,
+            headers: Default::default(),
+            body: b"{}".to_vec(),
+        })
+    }
+}
+
+impl crate::github::threads::QueryTransport for PreparationWire {
+    fn query(
+        &self,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        crate::github::provider::Transport::get(self, "graphql")
+    }
+}
+
+#[test]
+fn owned_feedback_guarded_preparation_preserves_in_flight_tosses_for_both_roles() {
+    use crate::github::provider::GithubClient;
+    use std::sync::atomic::AtomicUsize;
+
+    for teammate in [false, true] {
+        for snapshot in [false, true] {
+            let (root, store, template) = feedback_fixture(teammate);
+            let run = running_packet(&store, &template, 100);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let read_calls = calls.clone();
+            let path = root.path().to_owned();
+            let client = GithubClient::new(PreparationWire {
+                during_read: Box::new(move || {
+                    read_calls.fetch_add(1, Ordering::SeqCst);
+                    change_feedback(&Store::new(path.clone()));
+                }),
+                error: None,
+            });
+            let gate_path = root.path().to_owned();
+            let gate_run = run.clone();
+            let gate = Arc::new(move || {
+                crate::review::validate_execution_selection(
+                    &Store::new(gate_path.clone()),
+                    &gate_run,
+                )
+            });
+            let repo = RemoteRepository {
+                id: run.job.repository_id.clone(),
+                name: run.job.repository_name.clone(),
+            };
+            let outcome = with_preparation_client(client, gate, |client| {
+                if snapshot {
+                    client
+                        .pr_snapshot(&repo, run.job.number)
+                        .map(|_| ())
+                        .map_err(Failure::from)
+                } else {
+                    client
+                        .review_context(&repo, run.job.number, &run.job.head_sha)
+                        .map(|_| ())
+                        .map_err(Failure::from)
+                }
+            });
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "the provider read must actually start"
+            );
+            let failure = outcome.unwrap_err();
+            complete(&store, &run.operation.id, Err(failure), 101).unwrap();
+            let saved = store.load_reviews().unwrap().remove(0);
+            assert_eq!(saved.operation.failure, Some(OperationFailure::Tossed));
+            assert_eq!(saved.operation.state, OperationState::Queued);
+            assert_eq!(saved.operation.attempt_count, 1);
+            assert!(saved.operation.next_attempt_at.unwrap() > 101);
+            assert!(saved.result.is_none());
+            assert_eq!(
+                store
+                    .load_pr_states()
+                    .unwrap()
+                    .get(&crate::retention::Binding::job(&run.job))
+                    .unwrap()
+                    .error_count,
+                1
+            );
+            assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+        }
+    }
+}
+
+fn assert_same_failure(actual: &Failure, expected: &Failure) {
+    assert_eq!(actual.kind, expected.kind);
+    assert_eq!(actual.cancelled, expected.cancelled);
+    assert_eq!(actual.origin, expected.origin);
+    assert_eq!(actual.resume, expected.resume);
+    assert_eq!(actual.retry_after_seconds, expected.retry_after_seconds);
+    assert_eq!(actual.message, expected.message);
+}
+
+#[test]
+fn preparation_guard_preserves_local_provenance_and_rejects_ignored_refusals() {
+    use crate::github::{provider::GithubClient, ConnectionError};
+    for expected in [
+        Failure::cancelled(),
+        Failure::timeout(),
+        Failure::policy(monitoring::PolicyRejection::RevisionChanged),
+        Failure::superseded("Base moved").after(crate::review::Resume::NewBase("old-base".into())),
+        Failure::from(ConnectionError::SignedOut),
+        Failure::from(ConnectionError::MissingReadPermission),
+    ] {
+        for ignore_refusal in [false, true] {
+            let read_finished = Arc::new(AtomicBool::new(false));
+            let on_read = read_finished.clone();
+            let client = GithubClient::new(PreparationWire {
+                during_read: Box::new(move || {
+                    on_read.store(true, Ordering::SeqCst);
+                }),
+                error: None,
+            });
+            let refusal = expected.clone();
+            let gate = Arc::new(move || {
+                if read_finished.load(Ordering::SeqCst) {
+                    Err(refusal.clone())
+                } else {
+                    Ok(())
+                }
+            });
+            let repo = RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            };
+            let actual = with_preparation_client(client, gate, |client| {
+                let read = client
+                    .pr_snapshot(&repo, 1)
+                    .map(|_| ())
+                    .map_err(Failure::from);
+                if ignore_refusal {
+                    Ok(())
+                } else {
+                    read
+                }
+            })
+            .unwrap_err();
+            assert_same_failure(&actual, &expected);
+        }
+    }
+}
+
+#[test]
+fn preparation_guard_keeps_actual_provider_errors_when_no_guard_refused() {
+    use crate::github::{provider::GithubClient, ConnectionError};
+    for provider in [
+        ConnectionError::Network,
+        ConnectionError::Timeout,
+        ConnectionError::SignedOut,
+        ConnectionError::MissingReadPermission,
+        ConnectionError::RateLimitedAfter(47),
+        ConnectionError::Configuration,
+    ] {
+        let read_finished = Arc::new(AtomicBool::new(false));
+        let on_read = read_finished.clone();
+        let client = GithubClient::new(PreparationWire {
+            during_read: Box::new(move || {
+                on_read.store(true, Ordering::SeqCst);
+            }),
+            error: Some(provider),
+        });
+        let gate = Arc::new(move || {
+            if read_finished.load(Ordering::SeqCst) {
+                Err(Failure::tossed(
+                    "A later local change must not overwrite a provider error.",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        let repo = RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        };
+        let actual = with_preparation_client(client, gate, |client| {
+            client
+                .pr_snapshot(&repo, 1)
+                .map(|_| ())
+                .map_err(Failure::from)
+        })
+        .unwrap_err();
+        assert_same_failure(&actual, &Failure::from(provider));
+    }
+}
