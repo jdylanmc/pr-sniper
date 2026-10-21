@@ -1,4 +1,39 @@
-# Local control protocol 1
+# PR Sniper MCP tools
+
+The installed local stdio server is the agent-facing interface. Its typed
+`tools/list` schemas define exact inputs and outputs. It calls the same native
+operations as the desktop UI; annotations never grant app permissions.
+
+| Need / native operation   | MCP tool                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Retry identity            | `prepare_request` (no app effect)                                                                       |
+| Summary / `inspect`       | `inspect`                                                                                               |
+| Resources / `resources`   | `list_agents`, `list_doctrines`, `list_voices`, `list_repositories`, `get_preferences`                  |
+| Accounts / `accounts`     | `list_repository_accounts`, `list_copilot_accounts`                                                     |
+| Queue / health / detail   | `list_queue`, `list_health`, `read_evidence`                                                            |
+| Target / resolve / models | `inspect_target`, `resolve_repository`, `list_models`                                                   |
+| Validate / save           | `validate_agent`, `save_agent` (likewise doctrine, voice, repository, preferences)                      |
+| Preset / watch            | `apply_review_preset`, `watch_pull_request`                                                             |
+| Pause / check / retry     | `set_pause`, `check_now`, `retry_poll`, `retry_review`, `retry_state`                                   |
+| Review / publication      | `cancel_review`, `publish_review`, `cancel_publication`                                                 |
+| Action / follow-up        | `cancel_action`, `reconcile_action`, `retry_action_observation`, `resume_follow_up`, `cancel_follow_up` |
+| Local cleanup             | `clean_reviewed`, `dismiss_stale`                                                                       |
+| Immediate preferences     | `set_theme`, `set_login_item`, `get_notifications`, `set_notifications`, `set_notification_category`    |
+
+- Every mutation requires the identity from `prepare_request`. A new resource
+  may use a separately prepared UUID as its stable resource ID.
+- Replies expose the native envelope in `structuredContent` and text;
+  `isError:true` preserves a typed native error, not success.
+- On an uncertain reply, retry only the same tool with identical arguments and
+  identity within the receipt lifetime. Cancellation after dispatch does not
+  undo native work. A replay is an old observation; read current state afterward.
+- No login, arbitrary shell, generic execute or second review engine.
+- Installation/update/removal is an explicit human Settings action; the server
+  cannot silently register itself or edit another server.
+
+## Internal diagnostic protocol 1
+
+The CLI below is retained for diagnostics/acceptance, **not** the primary agent API.
 
 Commands: `node scripts/pr-sniper.mjs describe|inspect|--version`; otherwise read
 one JSON object from stdin. Output: `{protocol,ok,result}` or `{protocol,ok:false,error:{code,detail}}`.
@@ -38,6 +73,7 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `theme`                          | `theme`: `light`, `dark`, `os`                                                                                            |
 | `login_item`                     | `enabled`; OS registration, not authentication                                                                            |
 | `notifications`                  | `enabled`                                                                                                                 |
+| `notification_settings`          | none; bounded notification preferences and OS permission state                                                            |
 | `notification_category`          | `category`, `enabled`                                                                                                     |
 | `installation`                   | none                                                                                                                      |
 | `install`                        | `host`: `copilot_cli`, `expected`: installation revision or null                                                          |
@@ -102,3 +138,10 @@ After interruption, read `installation` and use its current revision; stale
 expected revisions still fail. Customized, foreign and linked content is never
 force-replaced or deleted. Linked profile/installation ancestry is unsupported.
 Native isolated profiles cannot recover or mutate the real user-wide install.
+
+Installation also owns only `mcpServers.pr-sniper` in
+`~/.copilot/mcp-config.json`. Other servers and root fields are preserved.
+An existing unowned or customized entry is a conflict. Registration intent
+survives process interruption; status completes only previously authorized
+work. A package without registration is `incomplete`, not installed; use Repair.
+SDK 2.3.1 handles legacy initialization and modern 2026-07-28 stdio negotiation.

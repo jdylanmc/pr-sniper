@@ -135,6 +135,7 @@ pub(super) enum Command {
     Notifications {
         enabled: bool,
     },
+    NotificationSettings,
     NotificationCategory {
         category: crate::notifications::Category,
         enabled: bool,
@@ -182,6 +183,7 @@ impl Command {
                 | Self::Resolve { .. }
                 | Self::Validate { .. }
                 | Self::Installation
+                | Self::NotificationSettings
         )
     }
 }
@@ -706,22 +708,45 @@ async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Val
             crate::save_login(app.state::<Host>(), enabled).map_err(operation)?;
             Ok(json!({"state":"saved"}))
         }
-        Command::Notifications { enabled } => value(
+        Command::NotificationSettings => notification_settings(
+            crate::notifications::host::notification_snapshot(app.clone())
+                .await
+                .map_err(operation)?,
+        ),
+        Command::Notifications { enabled } => {
             crate::notifications::host::set_notifications_enabled(app.clone(), enabled)
                 .await
-                .map_err(operation)?,
-        ),
-        Command::NotificationCategory { category, enabled } => value(
+                .map_err(operation)?;
+            notification_settings(
+                crate::notifications::host::notification_snapshot(app.clone())
+                    .await
+                    .map_err(operation)?,
+            )
+        }
+        Command::NotificationCategory { category, enabled } => {
             crate::notifications::host::set_notification_category(app.clone(), category, enabled)
                 .await
-                .map_err(operation)?,
-        ),
+                .map_err(operation)?;
+            notification_settings(
+                crate::notifications::host::notification_snapshot(app.clone())
+                    .await
+                    .map_err(operation)?,
+            )
+        }
         Command::Installation => value(installer::control_installation(app.clone())?),
         Command::Install { host, expected } => {
             value(installer::control_install(app.clone(), host, expected)?)
         }
+
         Command::Uninstall { host, expected } => {
             value(installer::control_uninstall(app.clone(), host, expected)?)
         }
     }
+}
+
+fn notification_settings(snapshot: crate::notifications::host::Snapshot) -> Result<Value, Error> {
+    Ok(
+        json!({"platform":snapshot.platform,"enabled":snapshot.enabled,
+        "permission":snapshot.permission,"error":snapshot.error,"categories":snapshot.categories}),
+    )
 }

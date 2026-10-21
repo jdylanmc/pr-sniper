@@ -226,7 +226,8 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                     "repository_health":store.load_monitoring_state().map_err(storage)?.health.len(),
                     "pending_watch_configuration":work::holds(&store).map_err(storage)?.len()},
                 "automation":{"paused":store.load_automation().map_err(storage)?.paused,"capacity":settings.capacity},
-                "theme":settings.theme,"notifications":{"enabled":notifications.enabled,"muted":notifications.muted},
+                "theme":settings.theme,"launch_at_login":settings.launch_at_login,
+                "notifications":{"enabled":notifications.enabled,"muted":notifications.muted},
                 "login_registration":runtime.login_status()?
             }))
         }

@@ -1470,7 +1470,7 @@ function preferencesPage() {
     )
     .join(
       "",
-    )}</div><div class="form-group"><h3>Copilot CLI</h3><div class="preference-row"><span>/pr-sniper</span><output data-skill-status>Not installed</output></div><button type="button" class="quiet-action" data-action="install-control-skill">Install</button><button type="button" class="icon-button" data-action="remove-control-skill" aria-label="Remove PR Sniper skill" disabled>${icon("trash")}</button></div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
+    )}</div><div class="form-group"><h3>Copilot CLI</h3><div class="preference-row"><span>MCP · /pr-sniper</span><output data-skill-status>Not installed</output></div><button type="button" class="quiet-action" data-action="install-control-skill">Install</button><button type="button" class="icon-button" data-action="remove-control-skill" aria-label="Remove PR Sniper skill" disabled>${icon("trash")}</button></div><div class="form-group"><button type="button" class="quiet-action copy-diagnostics" data-action="copy-diagnostics" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button></div><button class="primary-action wide" type="submit">Save preferences</button></form></div>`;
 }
 
 function diagnosticsText() {

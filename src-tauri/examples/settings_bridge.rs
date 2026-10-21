@@ -430,16 +430,18 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         "control_installation" | "control_install" | "control_uninstall" => {
             let root = PathBuf::from(std::env::args().nth(1).unwrap()).join("skill-host");
             // This bridge receives only the isolated browser fixture root.
-            let directory = root.join(".copilot/skills/pr-sniper");
             let result = match request.command.as_str() {
-                "control_installation" => pr_sniper_lib::control::installation_at(&directory),
-                "control_install" => pr_sniper_lib::control::install_at(
-                    &directory,
-                    &root.join("fixture-app"),
+                "control_installation" => pr_sniper_lib::control::integration_at(&root),
+                "control_install" => pr_sniper_lib::control::install_integration_at(
+                    &root,
+                    &request.args["executable"]
+                        .as_str()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| root.join("fixture-app")),
                     request.args["expected"].as_str(),
                 ),
-                _ => pr_sniper_lib::control::remove_at(
-                    &directory,
+                _ => pr_sniper_lib::control::remove_integration_at(
+                    &root,
                     request.args["expected"]
                         .as_str()
                         .ok_or("Installation revision required.")?,

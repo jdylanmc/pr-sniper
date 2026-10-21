@@ -113,7 +113,7 @@ PR URL entered at **+ URL** resolves its repository and that exact PR. After a v
 _Avoid_: Manual scan, force review
 
 **Agentic Control**:
-Human-invoked `/pr-sniper` skill and a small local CLI for validated native
+Human-invoked `/pr-sniper` skill and typed local stdio MCP tools for validated native
 operations. App owns configuration, scheduling, execution and provider gates.
 Existing connected accounts only; no credentials or login operations. See
 [control contract](docs/agentic-control.md) and [ADR 0025](docs/adr/0025-local-agentic-control.md).

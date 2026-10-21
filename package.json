@@ -9,14 +9,15 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run build:control-mcp && tsc --noEmit && vite build",
+    "build:control-mcp": "node scripts/build-control-mcp.mjs",
     "tauri": "tauri",
     "dev:signed": "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=$PWD/scripts/dev-sign-run.sh tauri dev",
-    "format": "prettier --write src site tests/settings tests/site tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md CONTEXT.md AGENTS.md CHANGELOG.md docs/*.md docs/adr/*.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all",
-    "format:check": "prettier --check src site tests/settings tests/site tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md CONTEXT.md AGENTS.md CHANGELOG.md docs/*.md docs/adr/*.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+    "format": "prettier --write src src-control scripts/build-control-mcp.mjs tests/control/*.mjs site tests/settings tests/site tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md CONTEXT.md AGENTS.md CHANGELOG.md docs/*.md docs/adr/*.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all",
+    "format:check": "prettier --check src src-control scripts/build-control-mcp.mjs tests/control/*.mjs site tests/settings tests/site tests/release/*.mjs index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json .github/workflows/*.yml README.md CONTEXT.md AGENTS.md CHANGELOG.md docs/*.md docs/adr/*.md && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
     "lint": "tsc --noEmit && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-    "test:skills": "node --test .agents/skills/joe-mode-cmux/tests/skill-file.test.mjs .agents/skills/joe-mode-cmux/tests/pr-sniper.test.mjs tests/control/cli.test.mjs",
+    "test:skills": "node scripts/build-control-mcp.mjs --check && node --test .agents/skills/joe-mode-cmux/tests/skill-file.test.mjs .agents/skills/joe-mode-cmux/tests/pr-sniper.test.mjs tests/control/cli.test.mjs tests/control/mcp.test.mjs",
     "test:release": "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
     "test:release:windows": "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
     "test:site": "playwright test --config tests/site/playwright.config.mjs",
@@ -30,12 +31,16 @@
     "@tauri-apps/api": "2.11.1"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "2.11.4",
+    "esbuild": "0.28.2",
     "pngjs": "7.0.0",
     "prettier": "3.9.6",
     "typescript": "7.0.2",
     "vite": "8.3.0",
-    "yaml": "2.8.1"
+    "yaml": "2.8.1",
+    "zod": "4.6.7"
   }
 }

@@ -260,7 +260,7 @@ jobs:
       - name: Build standalone executable with embedded frontend
         run: npm run build:windows
         timeout-minutes: 20
-      - name: Exercise bundled CLI against the real native executable on this fresh hosted VM
+      - name: Exercise installed MCP and CLI against the real native executable on this fresh hosted VM
         id: control-native-acceptance
         run: node tests/control/native-acceptance.mjs --executable src-tauri/target/release/pr-sniper.exe
         timeout-minutes: 4

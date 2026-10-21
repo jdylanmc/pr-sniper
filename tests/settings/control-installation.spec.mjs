@@ -30,6 +30,16 @@ test("Copilot CLI installation uses native package writes and preserves edits on
     "SKILL.md",
   );
   expect(await readFile(skill, "utf8")).toContain("name: pr-sniper");
+  const config = JSON.parse(
+    await readFile(
+      join(dataRoot, "skill-host", ".copilot", "mcp-config.json"),
+      "utf8",
+    ),
+  );
+  expect(config.mcpServers["pr-sniper"].type).toBe("local");
+  expect(config.mcpServers["pr-sniper"].args[0]).toMatch(
+    /scripts[/\\]mcp-server\.mjs$/,
+  );
   await controls.getByRole("button", { name: "Update", exact: true }).click();
   await page.evaluate(() => window.__settingsIdle());
   await writeFile(skill, "Human customization");
@@ -68,6 +78,13 @@ test("Copilot CLI removal and reload reflect actual isolated installation state"
   await page.evaluate(() => window.__settingsIdle());
   await section(page, "Preferences");
   await expect(page.getByLabel("Skill status")).toHaveText("Not installed");
+  const config = JSON.parse(
+    await readFile(
+      join(dataRoot, "skill-host", ".copilot", "mcp-config.json"),
+      "utf8",
+    ),
+  );
+  expect(config.mcpServers["pr-sniper"]).toBeUndefined();
   await expect(
     readFile(
       join(
@@ -80,4 +97,33 @@ test("Copilot CLI removal and reload reflect actual isolated installation state"
       ),
     ),
   ).rejects.toThrow();
+});
+
+test("missing owned MCP entry offers explicit repair without losing other servers", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  await store("snapshot");
+  const installed = await store("control_install", {
+    host: "copilot_cli",
+    expected: null,
+  });
+  expect(installed.mcp_registered).toBe(true);
+  const file = join(dataRoot, "skill-host", ".copilot", "mcp-config.json");
+  await writeFile(
+    file,
+    JSON.stringify({ mcpServers: { other: { command: "preserved" } } }),
+  );
+  await page.goto("/?view=settings");
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Preferences");
+  await expect(page.getByLabel("Skill status")).toHaveText("Incomplete");
+  await page.getByRole("button", { name: "Repair", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Update", exact: true }),
+  ).toBeEnabled();
+  const config = JSON.parse(await readFile(file, "utf8"));
+  expect(config.mcpServers.other).toEqual({ command: "preserved" });
+  expect(config.mcpServers["pr-sniper"].type).toBe("local");
 });

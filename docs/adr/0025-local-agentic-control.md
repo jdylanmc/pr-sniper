@@ -1,7 +1,8 @@
 # 0025 — App-owned local agentic control
 
 - Scope: #103, macOS and Windows, Copilot CLI.
-- Decision: authenticated loopback framing; native operations own all writes.
+- Decision: local stdio MCP agent interface over authenticated native app framing;
+  native operations own all writes.
 - Authority: human-approved non-login configuration and explicit PR watching.
 
 ## Compared routes
@@ -13,6 +14,23 @@
 | Authenticated loopback           | One framed client/server on both platforms; existing `storage/private_fs` provides Unix modes and protected current-user Windows DACLs. Requires a private capability descriptor and explicit bounds. Selected. |
 
 ## Contract
+
+- Human amendment: MCP is another client of the UI's application/service layer.
+  The original shell-JSON skill interface is superseded; the diagnostic CLI and
+  authenticated app transport remain shared infrastructure.
+- Official split MCP server/client SDK 2.3.1 is bundled with Zod using esbuild.
+  It supports both legacy and modern stdio negotiation; no hand-written JSON-RPC
+  or generic untyped execute facade. Runtime externals are Node built-ins only.
+- Scout comparison: SDK v1 1.32.1 is maintenance-oriented and brings a wider HTTP
+  dependency graph; split v2 supplies current stdio negotiation with a smaller
+  server/core bundle. A Rust SDK sidecar would require a second executable
+  packaging/signing path; the self-contained Node bundle reuses the already
+  declared Node prerequisite and shared bridge on both supported platforms.
+  A remote HTTP MCP listener and an independent writer/engine were rejected:
+  neither matches the human-selected local stdio/native-owner architecture.
+- MCP discovery and request-identity preparation have no native side effects.
+  Typed tools invoke native operations; app permission checks override host
+  annotations. No sampling, login, credential export or review implementation.
 
 - Bind only `127.0.0.1`, ephemeral port. No HTTP, URL dispatcher or shell RPC.
 - Private `control/endpoint.json`: protocol, port, per-launch random capability.
@@ -54,7 +72,13 @@
 ## Distribution
 
 - `skills/pr-sniper` is the source package; native binary embeds matching assets.
-- Settings installs only Copilot CLI at `~/.copilot/skills/pr-sniper`.
+- Settings installs only Copilot CLI at `~/.copilot/skills/pr-sniper` and owns
+  only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`.
+- A separate integration lock and durable intent coordinate verified package
+  activation with exact owned-entry registration/removal. Other server entries
+  and root configuration are merged from the latest read. Custom own entries,
+  malformed config and links conflict; no force/adoption. This is not a global
+  lock against unrelated host writers: a detected concurrent change fails.
 - Install receipts verify every managed file. Existing unowned, changed,
   linked or additional content produces a conflict, not overwrite/removal.
 - Package staging, prior-package backups and a durable activation journal live
@@ -74,15 +98,17 @@
   and completes rollback. Quarantine is preserved outside skill discovery.
 - Installer records the exact app executable; source-distributed skills also
   recognize standard per-user/system install locations.
-- Node 22+ runs the small CLI. `/skills reload` discovers installation changes.
+- Node 22+ runs the bundled server without npm installation. Restart Copilot CLI
+  for MCP registration changes; `/skills reload` discovers skill changes.
 
 ## Verification boundary
 
 - Native tests exercise real Store, queue, preset, installer and framed CLI
   boundaries using synthetic profiles; browser tests use the native Store bridge.
-- `tests/control/native-acceptance.mjs` runs the real bundled CLI and app in
+- `tests/control/native-acceptance.mjs` runs the real bundled MCP server, CLI and app in
   both native CI lanes: closed-app launch, save/conflict, pause, rejected
-  operations and close/relaunch persistence. macOS uses a separately compiled
+  operations, typed SDK stdio discovery/invocation and close/relaunch persistence.
+  macOS uses a separately compiled
   test identifier; Windows requires a fresh hosted VM. Compilation or workflow
   wiring alone is not runtime acceptance.
 - These checks do not establish live provider review, OS notification

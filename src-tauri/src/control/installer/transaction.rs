@@ -381,11 +381,7 @@ pub(super) fn recover(directory: &Path) -> Result<(), Error> {
             return Err(conflict());
         }
         for proof in journal.before.iter().chain(journal.after.iter()) {
-            let names: std::collections::BTreeSet<_> = ASSETS
-                .iter()
-                .map(|(name, _)| *name)
-                .chain(std::iter::once("launcher.json"))
-                .collect();
+            let names = asset_names(proof.manifest.format).ok_or_else(conflict)?;
             if proof.manifest.protocol != PROTOCOL
                 || proof
                     .manifest
@@ -420,6 +416,7 @@ pub(super) fn install(
     expected: Option<&str>,
 ) -> Result<(), Error> {
     let manifest = Manifest {
+        format: 2,
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION").into(),
         files: contents

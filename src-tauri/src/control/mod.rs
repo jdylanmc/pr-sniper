@@ -8,7 +8,10 @@ mod tests;
 mod transport;
 pub(crate) mod work;
 
-pub use installer::{install_at, installation_at, remove_at, Installation};
+pub use installer::{
+    install_at, install_integration_at, installation_at, integration_at, remove_at,
+    remove_integration_at, Installation,
+};
 pub use transport::{serve_connection, Endpoint, MAX_FRAME, PROTOCOL};
 pub use work::{prioritize, request_again, RequestOverride, WatchResult};
 

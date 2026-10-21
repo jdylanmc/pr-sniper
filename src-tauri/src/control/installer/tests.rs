@@ -27,11 +27,15 @@ pub(super) fn fault(point: &str) -> Result<(), Error> {
     })
 }
 
-fn fail(point: &str) {
+pub(super) fn fail(point: &str) {
     FAILURE.with(|value| *value.borrow_mut() = Some((point.into(), false)));
 }
 
-fn root() -> tempfile::TempDir {
+pub(super) fn crash(point: &str) {
+    FAILURE.with(|value| *value.borrow_mut() = Some((point.into(), true)));
+}
+
+pub(super) fn root() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("installer-transaction-")
         .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))

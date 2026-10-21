@@ -6,6 +6,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import net from "node:net";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -86,6 +88,23 @@ const run = (file, args, options = {}) => {
 let executable;
 let cli;
 let env;
+let mcp;
+let installation;
+function setup(command, args = {}) {
+  const bridge = path.join(
+    target,
+    "debug/examples",
+    process.platform === "win32" ? "settings_bridge.exe" : "settings_bridge",
+  );
+  const response = JSON.parse(
+    run(bridge, [path.join(root, "installer-store")], {
+      input: JSON.stringify({ command, args }),
+      timeout: 30000,
+    }),
+  );
+  assert(response.ok, `Native setup failed: ${JSON.stringify(response.error)}`);
+  return response.ok;
+}
 const owned = new Map();
 
 function observedProcesses() {
@@ -283,13 +302,22 @@ try {
     executable = path.join(root, "pr-sniper.exe");
     await fs.copyFile(source, executable);
   }
-  const skill = path.join(root, "skill");
-  await fs.cp(path.join(repository, "skills", "pr-sniper"), skill, {
-    recursive: true,
+  installation = setup("control_install", {
+    host: "copilot_cli",
+    expected: null,
+    executable,
   });
-  await fs.writeFile(
-    path.join(skill, "launcher.json"),
-    JSON.stringify({ protocol: 1, executable }),
+  assert.equal(installation.mcp_registered, true);
+  const hostHome = path.join(root, "installer-store/skill-host");
+  const skill = path.join(hostHome, ".copilot/skills/pr-sniper");
+  const registered = JSON.parse(
+    await fs.readFile(path.join(hostHome, ".copilot/mcp-config.json"), "utf8"),
+  );
+  assert.deepEqual(registered.mcpServers["pr-sniper"].args, [
+    path.join(skill, "scripts/mcp-server.mjs"),
+  ]);
+  receipt.checks.push(
+    "native installer creates verified embedded skill/server and owned stdio registration in synthetic home",
   );
   cli = path.join(skill, "scripts", "pr-sniper.mjs");
   env = {
@@ -365,12 +393,114 @@ try {
   receipt.checks.push(
     "real close/relaunch preserves pause and committed resource",
   );
+  await stopOwned();
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(skill, "scripts/mcp-server.mjs")],
+    env,
+    stderr: "pipe",
+  });
+  let diagnostics = "";
+  transport.stderr?.on("data", (bytes) => {
+    diagnostics = (diagnostics + bytes).slice(-8192);
+  });
+  mcp = new Client({ name: "pr-sniper-native-acceptance", version: "1" });
+  await mcp.connect(transport, { timeout: 10000 });
+  const tools = await mcp.listTools();
+  assert(tools.tools.some((tool) => tool.name === "save_doctrine"));
+  assert(!tools.tools.some((tool) => tool.name === "login"));
+  assert.equal(
+    observedProcesses().length,
+    0,
+    "MCP discovery must not launch the app",
+  );
+  const tool = async (name, args = {}, expectedError) => {
+    const response = await mcp.callTool({ name, arguments: args }, undefined, {
+      timeout: 140000,
+    });
+    claimProcesses();
+    assert.equal(
+      Boolean(response.isError),
+      Boolean(expectedError),
+      `${name}: ${JSON.stringify(response)} ${diagnostics}`,
+    );
+    const native = response.structuredContent;
+    assert(native, `${name} must return structured native data`);
+    if (expectedError) assert.equal(native.error?.code, expectedError);
+    else assert.equal(native.ok, true, JSON.stringify(native));
+    return native.result;
+  };
+  const prepared = async () =>
+    (await mcp.callTool({ name: "prepare_request", arguments: {} }))
+      .structuredContent;
+  const summary = await tool("inspect");
+  assert.equal(summary.automation.paused, true);
+  assert.equal(observedProcesses().length, 1);
+  for (const name of [
+    "list_agents",
+    "list_doctrines",
+    "list_voices",
+    "list_repositories",
+    "get_preferences",
+    "list_repository_accounts",
+    "list_copilot_accounts",
+    "list_queue",
+    "list_health",
+    "get_notifications",
+  ]) {
+    await tool(name);
+  }
+  const mcpId = randomUUID();
+  const doctrine = {
+    id: mcpId,
+    title: "MCP native acceptance",
+    body: "SDK stdio to real native Store.",
+  };
+  const save = {
+    ...(await prepared()),
+    revision: summary.revision,
+    id: mcpId,
+    expected: null,
+    value: doctrine,
+  };
+  await tool("save_doctrine", save);
+  await tool("save_doctrine", { ...save, ...(await prepared()) }, "conflict");
+  await tool("set_pause", { ...(await prepared()), paused: true });
+  await tool(
+    "list_models",
+    { account_id: "not-connected" },
+    "operation_failed",
+  );
+  const invalid = await mcp.callTool({ name: "save_doctrine", arguments: {} });
+  assert.equal(invalid.isError, true, "Malformed tool input must be rejected");
+  await assert.rejects(
+    mcp.callTool({ name: "login", arguments: {} }),
+    /Tool login not found/,
+  );
+  await stopOwned();
+  assert.equal((await tool("inspect")).automation.paused, true);
+  let mcpFound = false;
+  let mcpOffset = 0;
+  do {
+    const page = await tool("list_doctrines", { offset: mcpOffset });
+    mcpFound ||= page.values.some(
+      (entry) => entry.id === mcpId && entry.body === doctrine.body,
+    );
+    mcpOffset = page.next_offset;
+  } while (mcpOffset !== null);
+  assert(mcpFound, "MCP save must persist through native app restart");
+  await mcp.close();
+  mcp = undefined;
+  receipt.checks.push(
+    "packaged SDK stdio discovers typed tools, launches native app, reads all views, saves/conflicts/rejects invalid and login operations, preserves pause and state after close/relaunch",
+  );
   receipt.status = "PASS";
 } catch (error) {
   receipt.status = "FAIL";
   receipt.error = String(error.message ?? error);
   process.exitCode = 1;
 } finally {
+  if (mcp) await mcp.close();
   receipt.native_alive_before_cleanup = observedProcesses().length;
   try {
     const file = path.join(root, "data/control/transport-errors.json");
@@ -386,6 +516,16 @@ try {
   }
   try {
     await stopOwned();
+    if (installation) {
+      const removed = setup("control_uninstall", {
+        host: "copilot_cli",
+        expected: installation.revision,
+      });
+      assert.equal(removed.state, "absent");
+      receipt.checks.push(
+        "native integration uninstall removes owned package and server entry",
+      );
+    }
     receipt.cleanup =
       "All exact run-owned native processes stopped; no global installation, login, provider effects or inference.";
     // Preserve only content-free receipts in CI, not the private endpoint token
@@ -393,6 +533,7 @@ try {
     for (const name of [
       "data",
       "skill",
+      "installer-store",
       "PR Sniper Control Acceptance.app",
       "pr-sniper.exe",
     ]) {

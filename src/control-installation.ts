@@ -1,14 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 interface Installation {
-  state: "absent" | "installed";
+  state: "absent" | "installed" | "incomplete";
   revision: string | null;
   version: string | null;
 }
 
 export function mountControlInstallation(container: HTMLElement) {
   container.innerHTML = `<fieldset aria-label="Copilot CLI"><legend>Copilot CLI</legend>
-    <div class="setting-row"><span>/pr-sniper</span><output aria-label="Skill status">Loading</output></div>
+    <div class="setting-row"><span>MCP · /pr-sniper</span><output aria-label="Skill status">Loading</output></div>
     <div class="resource-actions"><button type="button" data-install-skill disabled>Install</button><button type="button" data-remove-skill aria-label="Remove PR Sniper skill" disabled><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></button></div>
     <p role="alert" hidden></p></fieldset>`;
   const status = container.querySelector("output")!;
@@ -25,12 +25,19 @@ export function mountControlInstallation(container: HTMLElement) {
     status.textContent =
       current?.state === "installed"
         ? current.version
-        : current
-          ? "Not installed"
-          : "Unavailable";
-    install.textContent = current?.state === "installed" ? "Update" : "Install";
+        : current?.state === "incomplete"
+          ? "Incomplete"
+          : current
+            ? "Not installed"
+            : "Unavailable";
+    install.textContent =
+      current?.state === "installed"
+        ? "Update"
+        : current?.state === "incomplete"
+          ? "Repair"
+          : "Install";
     install.disabled = pending || !current;
-    remove.disabled = pending || current?.state !== "installed";
+    remove.disabled = pending || !current?.revision;
   };
   const perform = async (command: string, args?: Record<string, unknown>) => {
     if (pending) return;

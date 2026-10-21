@@ -2,9 +2,11 @@ use super::{revision, transport::private_directory, Error, PROTOCOL};
 use crate::storage::private_fs;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::Path};
+mod integration;
 #[cfg(test)]
 mod tests;
 mod transaction;
+pub use integration::{install_integration_at, integration_at, remove_integration_at};
 
 fn checkpoint(point: &str) -> Result<(), Error> {
     #[cfg(test)]
@@ -27,21 +29,67 @@ const ASSETS: &[(&str, &str)] = &[
         "scripts/pr-sniper.mjs",
         include_str!("../../../skills/pr-sniper/scripts/pr-sniper.mjs"),
     ),
+    (
+        "scripts/control-client.mjs",
+        include_str!("../../../skills/pr-sniper/scripts/control-client.mjs"),
+    ),
+    (
+        "scripts/mcp-server.mjs",
+        include_str!("../../../skills/pr-sniper/scripts/mcp-server.mjs"),
+    ),
+    (
+        "scripts/mcp-server.mjs.LEGAL.txt",
+        include_str!("../../../skills/pr-sniper/scripts/mcp-server.mjs.LEGAL.txt"),
+    ),
+    (
+        "THIRD_PARTY_NOTICES.txt",
+        include_str!("../../../skills/pr-sniper/THIRD_PARTY_NOTICES.txt"),
+    ),
 ];
+
+fn legacy_format() -> u32 {
+    1
+}
+fn asset_names(format: u32) -> Option<std::collections::BTreeSet<&'static str>> {
+    match format {
+        1 => Some(
+            [
+                "SKILL.md",
+                "references/control.md",
+                "scripts/pr-sniper.mjs",
+                "launcher.json",
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        2 => Some(
+            ASSETS
+                .iter()
+                .map(|(name, _)| *name)
+                .chain(std::iter::once("launcher.json"))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
+    #[serde(default = "legacy_format")]
+    format: u32,
     protocol: u32,
     version: String,
     files: BTreeMap<String, String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Installation {
     pub state: &'static str,
     pub revision: Option<String>,
     pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_registered: Option<bool>,
 }
 
 fn io_error(_: impl std::fmt::Debug) -> Error {
@@ -78,6 +126,7 @@ fn inspect_at(directory: &Path) -> Result<Installation, Error> {
             state: "absent",
             revision: None,
             version: None,
+            mcp_registered: None,
         });
     }
     let manifest_path = directory.join(".pr-sniper-install.json");
@@ -92,11 +141,8 @@ fn inspect_at(directory: &Path) -> Result<Installation, Error> {
     let bytes = fs::read(&manifest_path).map_err(io_error)?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .map_err(|_| Error::new("installation_conflict", "Invalid installation receipt."))?;
-    let names: std::collections::BTreeSet<_> = ASSETS
-        .iter()
-        .map(|(name, _)| *name)
-        .chain(std::iter::once("launcher.json"))
-        .collect();
+    let names = asset_names(manifest.format)
+        .ok_or_else(|| Error::new("installation_conflict", "Unsupported package format."))?;
     if manifest
         .files
         .keys()
@@ -121,6 +167,7 @@ fn inspect_at(directory: &Path) -> Result<Installation, Error> {
         state: "installed",
         revision: Some(revision(&bytes)),
         version: Some(manifest.version),
+        mcp_registered: None,
     })
 }
 
@@ -214,12 +261,7 @@ pub(crate) fn control_installation(app: tauri::AppHandle) -> Result<Installation
     if app.state::<crate::Host>().isolated {
         return Err(Error::new("isolated_installation", ()));
     }
-    installation_at(
-        &app.path()
-            .home_dir()
-            .map_err(io_error)?
-            .join(".copilot/skills/pr-sniper"),
-    )
+    integration_at(&app.path().home_dir().map_err(io_error)?)
 }
 
 #[tauri::command]
@@ -235,11 +277,8 @@ pub(crate) fn control_install(
     if host != "copilot_cli" {
         return Err(Error::new("unsupported_host", ()));
     }
-    install_at(
-        &app.path()
-            .home_dir()
-            .map_err(io_error)?
-            .join(".copilot/skills/pr-sniper"),
+    install_integration_at(
+        &app.path().home_dir().map_err(io_error)?,
         &std::env::current_exe().map_err(io_error)?,
         expected.as_deref(),
     )
@@ -258,11 +297,24 @@ pub(crate) fn control_uninstall(
     if host != "copilot_cli" {
         return Err(Error::new("unsupported_host", ()));
     }
-    remove_at(
-        &app.path()
-            .home_dir()
-            .map_err(io_error)?
-            .join(".copilot/skills/pr-sniper"),
-        &expected,
-    )
+    remove_integration_at(&app.path().home_dir().map_err(io_error)?, &expected)
+}
+
+fn planned_revision(executable: &Path) -> Result<String, Error> {
+    let launcher =
+        serde_json::to_string(&serde_json::json!({"protocol":PROTOCOL,"executable":executable}))
+            .map_err(io_error)?;
+    let files = ASSETS
+        .iter()
+        .copied()
+        .chain(std::iter::once(("launcher.json", launcher.as_str())))
+        .map(|(name, body)| (name.to_string(), revision(&body.as_bytes())))
+        .collect();
+    let manifest = Manifest {
+        format: 2,
+        protocol: PROTOCOL,
+        version: env!("CARGO_PKG_VERSION").into(),
+        files,
+    };
+    Ok(revision(&serde_json::to_vec(&manifest).map_err(io_error)?))
 }
