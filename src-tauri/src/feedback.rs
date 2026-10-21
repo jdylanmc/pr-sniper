@@ -587,13 +587,19 @@ fn contexts_excluding_checked(
     Ok(contexts)
 }
 
+pub(crate) const CONTEXT_CHANGED: &str =
+    "Owned feedback changed during analysis; no stale assessment accepted.";
+
 pub fn validate_context(
     store: &Store,
     job: &QueueJob,
     agent: &str,
     captured: &[Context],
 ) -> Result<(), Failure> {
-    validate_captured_context(store, job, &contexts(store, job, agent)?, captured)
+    if contexts(store, job, agent)? != captured {
+        return Err(Failure::tossed(CONTEXT_CHANGED));
+    }
+    validate_observation_health(store, job, captured)
 }
 
 pub fn validate_conversation_context(
@@ -617,10 +623,16 @@ pub(crate) fn validate_captured_context(
     captured: &[Context],
 ) -> Result<(), Failure> {
     if current != captured {
-        return Err(Failure::permanent(
-            "Owned feedback changed during analysis; no stale assessment accepted.",
-        ));
+        return Err(Failure::permanent(CONTEXT_CHANGED));
     }
+    validate_observation_health(store, job, captured)
+}
+
+fn validate_observation_health(
+    store: &Store,
+    job: &QueueJob,
+    captured: &[Context],
+) -> Result<(), Failure> {
     if !captured.is_empty()
         && store
             .load_monitoring_state()

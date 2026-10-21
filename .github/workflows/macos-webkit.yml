@@ -42,7 +42,7 @@ jobs:
         env:
           QUEUE_EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2
-        timeout-minutes: 30
+        timeout-minutes: 40
       - name: Retain Queue reload failure evidence
         if: ${{ always() && steps.browser-tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

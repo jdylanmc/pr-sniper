@@ -8,6 +8,26 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 
 - Persist the operation (identity, attempt count, 15-minute deadline) before work. `RETRY_WINDOW_SECONDS` and `MAX_FAILED_ATTEMPTS = 3` live in `src-tauri/src/monitoring.rs`.
 - Transient failure: backoff, retry. After 3 failed attempts or deadline: park (`ManualRetry`).
+- Owned feedback changing during a review is a typed state toss, not a permanent
+  failure: discard the assessment and duck evidence, count the attempt, and retry
+  with fresh context through that same bounded budget. Relevant replies, closure
+  and ownership remain checked; unrelated ledger/publication bookkeeping does not
+  invalidate the captured contexts.
+- One attempt-owned guard retains the first typed local rejection across
+  preparation, runtime and duck reads, exit gates and final-state reads, including
+  escaped client clones. It stays rejected even if inputs change back; final
+  settlement never consumes the cause or re-evaluates policy after a provider
+  error. Actual provider errors keep their own cause when no local guard refused.
+- The outer review runtime commits its terminal error at its outcome selection,
+  before abort/shutdown cleanup. Each poll that can select the outcome and the
+  commit of a selected failure form one critical section against whole
+  attempt-gate evaluations (re-entrant on the polling thread). Ordering rule: a
+  refusal latched before that poll began (Tossed, or a pause/shutdown/cancel the
+  runtime could have observed, including one that caused the failure) wins and a
+  cancellation still refunds; any gate evaluation not finished by then waits and
+  observes the committed failure, so late reads stay rejected but cannot replace
+  it or refund its budget. Individual tool errors and duck verdicts are not
+  commitments. Successful outcomes remain subject to finalization freshness checks.
 - Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else 30s x2^n capped at 15m with deterministic jitter. A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
 - Credential, permission, permanent failure: park at once.
 - Superseded is not failure: a moved head, closed/merged/unadmitted PR or removed/replaced assignment, seen before or during a run, requeues without an attempt and never parks. It re-dispatches only after the repository's next successful poll observes the PR, which retargets or retires it ([ADR 0008](0008-one-review-per-head-sha.md)); a failing poll never loops it. A base move after an AI run waits for a poll that observed another base: at most one AI attempt per base.
@@ -25,6 +45,13 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 ## Consequences
 
 - Restart-safe. No silent retry loops.
+- Historical packet reviews parked permanently by the exact owned-feedback-change
+  rejection migrate once to the toss retry policy. Operation identity, spent
+  attempts and deadline survive; expired windows enter the normal cooldown.
+  Retired or missing work ends quietly; temporarily blocked live work keeps its
+  operation and budget until ordinary dispatch gates permit it again.
+  Legacy follow-ups and other permanent failures stay unchanged; no provider
+  effects are replayed by this migration.
 - Sleep/wake and network changes use the same bounded wall-clock checks: no catch-up burst and no OS network changes. Endpoint reachability is not a guarantee that every model route is healthy; a reachable endpoint leaves genuine request failures under the existing retry policy.
 - Disabled or unassigned repositories with eligible tracked PRs retain reachability checks for their connected, exact account/repository binding. Recovery restores terminal lifecycle observation only; it never enables monitoring or admits reviews. Removed, unbound, mismatched and disconnected bindings add no lifecycle probe scope.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.

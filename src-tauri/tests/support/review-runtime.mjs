@@ -138,6 +138,12 @@ process.stdin.on("data", (chunk) => {
     if (request.id === undefined) continue;
     switch (request.method) {
       case "connect":
+        if (scenario === "connect-error") {
+          frame({ jsonrpc: "2.0", id: request.id, error: {
+            code: -32000, message: "Fixture runtime start failed",
+          } });
+          break;
+        }
         respond(request.id, {
           ok: true,
           protocolVersion: 3,
@@ -232,6 +238,16 @@ process.stdin.on("data", (chunk) => {
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
         receipt({ method: "fixture.prompt", prompt: request.params.prompt ?? null });
+        if (scenario === "guarded-provider-held-abort") {
+          const held = setInterval(() => {
+            if (!existsSync(process.env.TEST_TERMINAL_RELEASE)) return;
+            clearInterval(held);
+            receipt({ method: "fixture.primaryFailure" });
+            event("session.error", { statusCode: 503, retryAfterSeconds: 7 });
+          }, 10);
+          break;
+        }
+        if (scenario === "guarded-inactivity-held-abort") break;
         if (duckCalls) {
           setTimeout(() => {
             if (sequential) duckCall(0);
