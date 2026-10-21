@@ -102,6 +102,8 @@ pub(crate) struct ExitSetup {
     pub gate: ExitGate,
 }
 
+pub(crate) type FailureCommit = Arc<dyn Fn(Failure) -> Failure + Send + Sync>;
+
 pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
     pub inactivity: Duration,
     pub diagnostics: Option<Arc<super::diagnostics::Trace>>,
@@ -111,6 +113,8 @@ pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
     pub selection: Selection,
     pub before_send: Gate,
     pub local_gate: Gate,
+    /// Commit only this review runtime's terminal error, not individual tool/duck errors.
+    pub failure_commit: Option<FailureCommit>,
     pub task: K,
     pub exits: ExitSetup,
     /// The primary's Rubber Duck: set up before inference, offered as `rubber_duck`.
@@ -1017,6 +1021,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     request: Request<T, K>,
 ) -> Result<ReviewResult<K::Output>, Failure> {
     let diagnostics = request.diagnostics.clone();
+    let failure_commit = request.failure_commit.clone();
     let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
     let original_gate = request.local_gate.clone();
     let gate_progress = progress.clone();
@@ -1057,6 +1062,10 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     let client = match client {
         Ok(client) => client,
         Err(error) => {
+            let error = match &failure_commit {
+                Some(commit) => commit(error),
+                None => error,
+            };
             progress.retire();
             if let Some(trace) = &diagnostics {
                 trace.emit(DiagnosticEvent::Teardown {
@@ -1346,6 +1355,10 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     };
     let result =
         tokio::select! { biased; error = &mut monitor => Err(error), result = run => result };
+    let result = result.map_err(|error| match &failure_commit {
+        Some(commit) => commit(error),
+        None => error,
+    });
     progress.retire();
     // Whatever ended the attempt, an in-flight duck call stops now: it aborts its turn,
     // closes its session and records itself; no new call starts.

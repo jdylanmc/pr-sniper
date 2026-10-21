@@ -107,6 +107,7 @@ fn primary_request(setup: DuckSetup) -> Request<Synthetic> {
         .to_vec();
     let offered = [Exit::ReadyForHuman, Exit::PanicExit];
     Request {
+        failure_commit: None,
         inactivity: Duration::from_secs(900),
         exits: ExitSetup {
             tool_set: tools::tool_set(&granted, true, &offered),
@@ -163,14 +164,18 @@ async fn review(
 ) {
     let root = tempfile::tempdir().unwrap();
     let duck = duck(&root.path().join("duck"), duck_scenario, limits, false);
+    let mut request = primary_request(duck.setup);
+    let attempt = crate::review::host::AttemptGuard::new(request.local_gate.clone());
+    request.local_gate = attempt.gate();
+    request.failure_commit = Some(attempt.committer());
     let result = execute(
         options(root.path(), scenario),
         &identity(),
         &operation(seconds),
-        primary_request(duck.setup),
+        request,
     )
     .await;
-    (root, result, duck.paced)
+    (root, attempt.finish(result), duck.paced)
 }
 
 #[tokio::test]

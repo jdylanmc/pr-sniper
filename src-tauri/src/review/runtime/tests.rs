@@ -18,6 +18,9 @@ const OFFERED: [crate::exits::Exit; 2] = [
     crate::exits::Exit::PanicExit,
 ];
 
+#[path = "outcome_commit_tests.rs"]
+mod outcome_commit_tests;
+
 #[test]
 fn escaped_client_keeps_runtime_feedback_refusal_for_source_and_log_reads() {
     use crate::review::host::AttemptGuard;
@@ -207,6 +210,7 @@ async fn runtime_feedback_refusal_survives_sdk_tool_error_and_teardown() {
         Request {
             client,
             local_gate: attempt.gate(),
+            failure_commit: Some(attempt.committer()),
             inactivity: base.inactivity,
             diagnostics: base.diagnostics,
             context: base.context,
@@ -324,6 +328,7 @@ fn session_config(selection: &Selection, tools: Arc<ReadTools<Synthetic>>) -> Se
 }
 fn request(changed: bool) -> Request<Synthetic> {
     Request {
+        failure_commit: None,
         inactivity: Duration::from_secs(900),
         exits: exit_setup(),
         diagnostics: None,
@@ -1279,6 +1284,7 @@ async fn blocked_host_read_expires_and_cannot_return_a_late_result() {
     let base = request(true);
     let request = Request {
         inactivity: Duration::from_secs(2),
+        failure_commit: None,
         client: Arc::new(GithubClient::new(SlowRead(called.clone()))),
         diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
         context: base.context,
@@ -1614,6 +1620,7 @@ mod exits {
     fn exit_request(offered: &[Exit], gate: ExitGate) -> Request<Synthetic, ExitReview> {
         let granted = ["read_changes".to_string(), "get_thread".to_string()];
         Request {
+            failure_commit: None,
             inactivity: Duration::from_secs(900),
             exits: ExitSetup {
                 tool_set: tools::tool_set(&granted, false, offered),

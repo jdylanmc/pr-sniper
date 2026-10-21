@@ -18,6 +18,11 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
   escaped client clones. It stays rejected even if inputs change back; final
   settlement never consumes the cause or re-evaluates policy after a provider
   error. Actual provider errors keep their own cause when no local guard refused.
+- The outer review runtime commits its terminal error at its existing outcome
+  decision, before abort/shutdown cleanup. An earlier guard refusal wins; after
+  commitment, late reads remain rejected but cannot replace that error or refund
+  its spent budget. Individual tool errors and duck verdicts are not commitments.
+  Successful runtime outcomes remain subject to finalization freshness checks.
 - Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else 30s x2^n capped at 15m with deterministic jitter. A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
 - Credential, permission, permanent failure: park at once.
 - Superseded is not failure: a moved head, closed/merged/unadmitted PR or removed/replaced assignment, seen before or during a run, requeues without an attempt and never parks. It re-dispatches only after the repository's next successful poll observes the PR, which retargets or retires it ([ADR 0008](0008-one-review-per-head-sha.md)); a failing poll never loops it. A base move after an AI run waits for a poll that observed another base: at most one AI attempt per base.

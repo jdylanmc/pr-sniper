@@ -232,6 +232,16 @@ process.stdin.on("data", (chunk) => {
       case "session.send":
         respond(request.id, { messageId: randomUUID() });
         receipt({ method: "fixture.prompt", prompt: request.params.prompt ?? null });
+        if (scenario === "guarded-provider-held-abort") {
+          const held = setInterval(() => {
+            if (!existsSync(process.env.TEST_TERMINAL_RELEASE)) return;
+            clearInterval(held);
+            receipt({ method: "fixture.primaryFailure" });
+            event("session.error", { statusCode: 503, retryAfterSeconds: 7 });
+          }, 10);
+          break;
+        }
+        if (scenario === "guarded-inactivity-held-abort") break;
         if (duckCalls) {
           setTimeout(() => {
             if (sequential) duckCall(0);

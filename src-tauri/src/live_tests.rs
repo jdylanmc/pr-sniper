@@ -426,6 +426,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
     .unwrap();
     let allow: runtime::Gate = Arc::new(|| Ok(()));
     let request = runtime::Request {
+        failure_commit: None,
         inactivity: Duration::from_secs(900),
         exits: prepared.setup,
         diagnostics: Some(trace),

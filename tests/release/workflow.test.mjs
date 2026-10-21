@@ -805,7 +805,7 @@ test("WebKit build and full suite have separate budgets and isolated file worker
   );
   assert.equal(job["timeout-minutes"], 60);
   assert.equal(build["timeout-minutes"], 30);
-  assert.equal(suite["timeout-minutes"], 30);
+  assert.equal(suite["timeout-minutes"], 40);
   assert.equal(job.steps.indexOf(suite), job.steps.indexOf(build) + 1);
   assert.equal(
     suite.run,

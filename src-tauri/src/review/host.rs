@@ -824,6 +824,7 @@ async fn execute_attempt(
             selection: run.selection.clone(),
             before_send,
             local_gate: gate.clone(),
+            failure_commit: Some(attempt.committer()),
             duck,
         };
         let mut result = integration.review(request, cancelled, deadline).await?;
@@ -868,7 +869,7 @@ async fn execute_attempt(
 }
 
 /// The provider transport speaks ConnectionError; keep a rejected local gate's
-/// original failure for the entire attempt and every escaped client/tool clone.
+/// first refusal or committed runtime failure for the attempt and its clones.
 #[derive(Clone)]
 pub(super) struct AttemptGuard {
     gate: runtime::Gate,
@@ -897,6 +898,14 @@ impl AttemptGuard {
 
     pub(super) fn gate(&self) -> runtime::Gate {
         self.gate.clone()
+    }
+
+    pub(super) fn committer(&self) -> runtime::FailureCommit {
+        let attempt = self.clone();
+        Arc::new(move |error| match attempt.rejected.lock() {
+            Ok(mut rejected) => rejected.get_or_insert(error).clone(),
+            Err(_) => Failure::permanent("Review attempt gate unavailable."),
+        })
     }
 
     pub(super) fn prepare<T: crate::github::threads::QueryTransport, R>(
