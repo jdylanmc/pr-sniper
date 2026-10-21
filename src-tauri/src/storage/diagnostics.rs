@@ -105,14 +105,12 @@ impl Context {
         if let Some(key) = duck_key(&id, map) {
             let identity = identity?;
             let event = map.get_mut("event")?.as_object_mut()?;
+            // A changed identity stays as written: `model` (never null) marks
+            // the declaration and absent session/runtime fields mean `None`.
             if self.ducks.get(&key) == Some(&identity) {
                 DUCK_IDENTITY.iter().for_each(|field| {
                     event.remove(*field);
                 });
-            } else {
-                for (field, value) in DUCK_IDENTITY.iter().zip(identity) {
-                    event.insert((*field).into(), value);
-                }
             }
         }
         if let Some((ordinal, event)) = inner(map) {
@@ -758,6 +756,17 @@ impl Record {
 }
 
 impl Store {
+    /// Drops this profile's writer compaction state, as a process restart
+    /// does. Test seam.
+    #[doc(hidden)]
+    pub fn forget_attempt_journal(&self) {
+        if let Ok(mut journal) = JOURNAL.lock() {
+            if let Some(journal) = journal.as_mut() {
+                journal.remove(&self.root.join("state").join(FILES[0]));
+            }
+        }
+    }
+
     pub fn record_attempt_start(&self, record: Record) -> Result<(), String> {
         let previous = self
             .attempt_diagnostics()?

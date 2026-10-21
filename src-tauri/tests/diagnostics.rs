@@ -643,6 +643,10 @@ fn compact_and_legacy_attempt_lines_read_back_identically() {
         "tool identity once per call"
     );
     assert!(!text.contains("\"returned\"") && !text.contains("\"missing\""));
+    // The Duck declares a changed identity without session/runtime: no nulls.
+    let first_duck = text.lines().nth(1).unwrap();
+    assert!(first_duck.contains("duck-model") && !first_duck.contains("session_id"));
+    assert!(!text.contains("null"), "{text}");
 
     // Older full-header lines, in a rotated file and before compact lines in
     // the current file, still read back and correlate.
@@ -719,7 +723,7 @@ fn every_rotated_attempt_generation_reads_on_its_own() {
         )
     };
     let mut round = 0;
-    while !state.join("attempts.1.jsonl").exists() {
+    while !state.join("attempts.2.jsonl").exists() {
         fixture.store().record_attempt(coverage(round)).unwrap();
         round += 1;
     }
@@ -727,14 +731,42 @@ fn every_rotated_attempt_generation_reads_on_its_own() {
         .store()
         .record_attempt(failure_record("long"))
         .unwrap();
+    for name in ["attempts.jsonl", "attempts.1.jsonl", "attempts.2.jsonl"] {
+        let text = fs::read_to_string(state.join(name)).unwrap();
+        let mut lines = text.lines();
+        assert!(lines.next().unwrap().contains("\"work_id\""), "{name}");
+        assert!(!lines.next().unwrap().contains("\"work_id\""), "{name}");
+        // Each generation alone, as the only retained file.
+        let alone = Fixture::new();
+        fs::create_dir_all(alone.path().join("state")).unwrap();
+        fs::write(alone.path().join("state/attempts.jsonl"), &text).unwrap();
+        let records = attempt_values(&alone);
+        assert_eq!(records.len(), text.lines().count(), "{name}");
+        assert!(
+            records
+                .iter()
+                .all(|record| record["attempt"]["work_id"] == "same-work"),
+            "{name}"
+        );
+    }
+
+    // A restart forgets what the file holds: the next line declares in full.
+    let before = fs::read_to_string(state.join("attempts.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    fixture.store().forget_attempt_journal();
+    fixture
+        .store()
+        .record_attempt(failure_record("long"))
+        .unwrap();
     let current = fs::read_to_string(state.join("attempts.jsonl")).unwrap();
-    assert!(current.lines().next().unwrap().contains("\"work_id\""));
-    assert!(!current.lines().nth(1).unwrap().contains("\"work_id\""));
-    fs::remove_file(state.join("attempts.1.jsonl")).unwrap();
-    let records = attempt_values(&fixture);
-    assert_eq!(records.len(), 2);
-    assert!(records
-        .iter()
-        .all(|record| record["attempt"]["work_id"] == "same-work"));
-    assert_eq!(records[1]["event"]["failure"], "incomplete_coverage");
+    assert_eq!(current.lines().count(), before + 1);
+    assert!(current.lines().last().unwrap().contains("\"work_id\""));
+    let alone = Fixture::new();
+    fs::create_dir_all(alone.path().join("state")).unwrap();
+    fs::write(alone.path().join("state/attempts.jsonl"), &current).unwrap();
+    let records = attempt_values(&alone);
+    assert_eq!(records.len(), before + 1);
+    assert_eq!(records[before]["event"]["failure"], "incomplete_coverage");
 }
