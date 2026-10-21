@@ -533,3 +533,208 @@ fn crossing_the_log_limit_rotates_before_the_new_record_exceeds_it() {
     assert_eq!(actual.as_array().unwrap().len(), 1);
     assert_eq!(actual[0]["event"], "quit_requested");
 }
+
+fn duck(session: Option<&str>, event: Event) -> Event {
+    Event::DuckEvent {
+        ordinal: 1,
+        session_id: session.map(Into::into),
+        runtime_version: session.map(|_| "duck-runtime".into()),
+        model: "duck-model".into(),
+        event: Box::new(event),
+    }
+}
+
+// One attempt whose header and Duck identity change mid-stream.
+fn lifecycle() -> Vec<Record> {
+    let mut started = attempt_record("lifecycle", Event::Started);
+    started.attempt.session_id = None;
+    let session = |event| Event::Session {
+        event,
+        status_code: None,
+        failure: None,
+        runtime_error: None,
+        tool_success: None,
+        aborted: None,
+        runtime_call_id: None,
+        tool: None,
+    };
+    let mut records = vec![started.clone()];
+    for event in [
+        duck(None, Event::Started),
+        duck(Some("duck-session"), Event::SessionCreated),
+        duck(
+            Some("duck-session"),
+            session(pr_sniper_lib::storage::diagnostics::SessionEvent::Message),
+        ),
+        duck(None, Event::RuntimeReady),
+    ] {
+        records.push(Record {
+            event,
+            ..started.clone()
+        });
+    }
+    let mut created = attempt_record("lifecycle", Event::SessionCreated);
+    created.sequence = Some(6);
+    records.push(created.clone());
+    records.push(Record {
+        event: session(pr_sniper_lib::storage::diagnostics::SessionEvent::Error),
+        ..created.clone()
+    });
+    let paths = || Paths::new(["one.rs".into(), "two.rs".into()]);
+    records.push(Record {
+        event: Event::ToolStarted {
+            call: 1,
+            runtime_call_id: Some("call-1".into()),
+            tool: ToolName::ReadChanges,
+            requested: paths(),
+            unknown_paths: 0,
+            side: None,
+            query_bytes: None,
+        },
+        ..created.clone()
+    });
+    records.push(Record {
+        event: Event::ToolFinished {
+            call: 1,
+            runtime_call_id: Some("call-1".into()),
+            tool: ToolName::ReadChanges,
+            duration_ms: 5,
+            response_bytes: Some(10),
+            response_limit_bytes: 32_000,
+            rejected_by_limit: false,
+            returned: paths(),
+            covered: Paths::new(["one.rs".into()]),
+            failure: None,
+        },
+        ..created.clone()
+    });
+    records.push(failure_record("lifecycle"));
+    records
+}
+
+fn attempt_values(fixture: &Fixture) -> Vec<serde_json::Value> {
+    fixture
+        .store()
+        .diagnostics()
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| entry.attempt)
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect()
+}
+
+#[test]
+fn compact_and_legacy_attempt_lines_read_back_identically() {
+    let expected: Vec<_> = lifecycle()
+        .into_iter()
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect();
+    let compact = Fixture::new();
+    for record in lifecycle() {
+        compact.store().record_attempt(record).unwrap();
+    }
+    assert_eq!(attempt_values(&compact), expected);
+    let text = fs::read_to_string(compact.path().join("state/attempts.jsonl")).unwrap();
+    assert_eq!(text.matches("\"work_id\"").count(), 2, "header per change");
+    assert_eq!(text.matches("duck-model").count(), 3, "identity per change");
+    assert_eq!(
+        text.matches("call-1").count(),
+        1,
+        "tool identity once per call"
+    );
+    assert!(!text.contains("\"returned\"") && !text.contains("\"missing\""));
+
+    // Older full-header lines, in a rotated file and before compact lines in
+    // the current file, still read back and correlate.
+    let legacy = Fixture::new();
+    let line = |record: Record| {
+        let mut line = serde_json::to_string(&pr_sniper_lib::storage::Diagnostic {
+            timestamp_secs: 1,
+            event: DiagnosticEvent::Attempt,
+            attempt: Some(record),
+        })
+        .unwrap();
+        line.push('\n');
+        line
+    };
+    let mut older = lifecycle();
+    let newer = older.split_off(4);
+    let legacy_bytes: usize = lifecycle().into_iter().map(line).map(|l| l.len()).sum();
+    assert!(
+        text.len() * 3 < legacy_bytes * 2,
+        "{} vs {legacy_bytes}",
+        text.len()
+    );
+    fs::create_dir_all(legacy.path().join("state")).unwrap();
+    fs::write(
+        legacy.path().join("state/attempts.1.jsonl"),
+        older.into_iter().map(line).collect::<String>(),
+    )
+    .unwrap();
+    fs::write(
+        legacy.path().join("state/attempts.jsonl"),
+        line(newer[0].clone()),
+    )
+    .unwrap();
+    for record in newer.into_iter().skip(1) {
+        legacy.store().record_attempt(record).unwrap();
+    }
+    assert_eq!(attempt_values(&legacy), expected);
+    legacy
+        .store()
+        .record_attempt_decision(
+            "same-operation",
+            Event::Retry {
+                decision: RetryDecision::Scheduled,
+                failure: Some(FailureKind::Provider),
+                next_attempt_at: None,
+                attempt_count: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        attempt_values(&legacy).last().unwrap()["attempt"],
+        expected[9]["attempt"]
+    );
+}
+
+#[test]
+fn every_rotated_attempt_generation_reads_on_its_own() {
+    let fixture = Fixture::new();
+    let state = fixture.path().join("state");
+    let coverage = |round: usize| {
+        let paths: Vec<String> = (0..128)
+            .map(|i| format!("src/{round}/{i:0>64}.rs"))
+            .collect();
+        attempt_record(
+            "long",
+            Event::Coverage {
+                coverage: Coverage {
+                    changed: Paths::new(paths.clone()),
+                    covered: Paths::new(Vec::new()),
+                    missing: Paths::new(paths),
+                    responsible_tool: ToolName::ReadChanges,
+                },
+            },
+        )
+    };
+    let mut round = 0;
+    while !state.join("attempts.1.jsonl").exists() {
+        fixture.store().record_attempt(coverage(round)).unwrap();
+        round += 1;
+    }
+    fixture
+        .store()
+        .record_attempt(failure_record("long"))
+        .unwrap();
+    let current = fs::read_to_string(state.join("attempts.jsonl")).unwrap();
+    assert!(current.lines().next().unwrap().contains("\"work_id\""));
+    assert!(!current.lines().nth(1).unwrap().contains("\"work_id\""));
+    fs::remove_file(state.join("attempts.1.jsonl")).unwrap();
+    let records = attempt_values(&fixture);
+    assert_eq!(records.len(), 2);
+    assert!(records
+        .iter()
+        .all(|record| record["attempt"]["work_id"] == "same-work"));
+    assert_eq!(records[1]["event"]["failure"], "incomplete_coverage");
+}
