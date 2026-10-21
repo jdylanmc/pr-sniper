@@ -39,7 +39,7 @@ struct Scope {
 }
 impl Scope {
     fn new(home: &Path) -> Result<Self, Error> {
-        let target = home.join(".copilot/skills/pr-sniper");
+        let target = home.join(".copilot").join("skills").join("pr-sniper");
         verify_parents(&target)?;
         let work = transaction::workspace(&target)?;
         verify_parents(&work)?;
@@ -50,7 +50,7 @@ impl Scope {
         Ok(Self {
             target,
             work,
-            config: home.join(".copilot/mcp-config.json"),
+            config: home.join(".copilot").join("mcp-config.json"),
         })
     }
     fn lock(&self) -> Result<Guard, Error> {
@@ -257,7 +257,7 @@ fn conflict() -> Error {
     Error::new("installation_conflict","Copilot entry or integration ownership changed; preserve custom configuration before repair.")
 }
 fn desired(target: &Path) -> Value {
-    json!({"type":"local","command":"node","args":[target.join("scripts/mcp-server.mjs")],"tools":["*"],"timeout":180000})
+    json!({"type":"local","command":"node","args":[target.join("scripts").join("mcp-server.mjs")],"tools":["*"],"timeout":180000})
 }
 
 pub fn integration_at(home: &Path) -> Result<Installation, Error> {

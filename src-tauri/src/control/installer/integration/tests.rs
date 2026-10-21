@@ -29,6 +29,20 @@ fn uncreated_ordinary_home_beyond_max_path_supports_the_lifecycle() {
         .join("skill-host");
     let first = install_integration_at(&home, &home.join("app"), None).unwrap();
     assert_eq!(first.state, "installed");
+    // Host config receives native separators, not mixed `/` joins.
+    let server = [
+        ".copilot",
+        "skills",
+        "pr-sniper",
+        "scripts",
+        "mcp-server.mjs",
+    ]
+    .iter()
+    .fold(home.clone(), |path, part| path.join(part));
+    assert_eq!(
+        config(&home)["mcpServers"]["pr-sniper"]["args"],
+        json!([server])
+    );
     let updated =
         install_integration_at(&home, &home.join("new-app"), first.revision.as_deref()).unwrap();
     assert_eq!(updated.state, "installed");
