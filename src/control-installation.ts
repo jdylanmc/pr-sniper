@@ -35,14 +35,26 @@ export function mountControlInstallation(container: HTMLElement) {
         ? "Update"
         : current?.state === "incomplete"
           ? "Repair"
-          : "Install";
-    install.disabled = pending || !current;
+          : !current && !alert.hidden
+            ? "Retry"
+            : "Install";
+    install.disabled = pending || (!current && Boolean(alert.hidden));
     remove.disabled = pending || !current?.revision;
   };
-  const perform = async (command: string, args?: Record<string, unknown>) => {
+  const perform = async (
+    command: string,
+    args?: Record<string, unknown>,
+    opener?: HTMLElement,
+  ) => {
     if (pending) return;
+    let focusMoved = false;
+    const onInteraction = () => {
+      focusMoved = true;
+    };
+    document.addEventListener("pointerdown", onInteraction, true);
+    document.addEventListener("keydown", onInteraction, true);
     pending = true;
-    alert.hidden = true;
+    if (command !== "control_installation") alert.hidden = true;
     render();
     try {
       current = await invoke<Installation>(command, args);
@@ -53,28 +65,59 @@ export function mountControlInstallation(container: HTMLElement) {
           : error && typeof error === "object" && "code" in error
             ? error.code
             : "";
-      alert.textContent =
-        code === "installation_conflict"
-          ? "Conflict"
-          : code === "conflict"
-            ? "Changed"
-            : "Unavailable";
+      if (command !== "control_installation" || alert.hidden)
+        alert.textContent =
+          code === "installation_conflict"
+            ? "Conflict"
+            : code === "conflict"
+              ? "Changed"
+              : "Unavailable";
       alert.hidden = false;
       current = undefined;
+      if (command !== "control_installation") {
+        try {
+          current = await invoke<Installation>("control_installation");
+        } catch {
+          // Preserve the mutation failure; Retry only reads status.
+        }
+      }
     } finally {
+      document.removeEventListener("pointerdown", onInteraction, true);
+      document.removeEventListener("keydown", onInteraction, true);
       pending = false;
-      if (container.isConnected) render();
+      if (container.isConnected) {
+        render();
+        if (
+          opener &&
+          !focusMoved &&
+          (document.activeElement === document.body ||
+            document.activeElement === opener)
+        )
+          (opener.matches(":disabled") ? install : opener).focus({
+            preventScroll: true,
+          });
+      }
     }
   };
   install.onclick = () =>
-    void perform("control_install", {
-      host: "copilot_cli",
-      expected: current?.revision ?? null,
-    });
+    void perform(
+      current ? "control_install" : "control_installation",
+      current
+        ? {
+            host: "copilot_cli",
+            expected: current?.revision ?? null,
+          }
+        : undefined,
+      install,
+    );
   remove.onclick = () =>
-    void perform("control_uninstall", {
-      host: "copilot_cli",
-      expected: current?.revision,
-    });
+    void perform(
+      "control_uninstall",
+      {
+        host: "copilot_cli",
+        expected: current?.revision,
+      },
+      remove,
+    );
   void perform("control_installation");
 }

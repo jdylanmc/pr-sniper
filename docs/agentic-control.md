@@ -18,6 +18,9 @@
 - Explicit Install/Update/Repair owns the skill and server entry. Other servers
   and root configuration survive updates/removal. A foreign or customized own
   entry conflicts; no force overwrite or implicit adoption.
+- Failed setup/removal refreshes status once while retaining the original error.
+  If status remains unavailable, **Retry** only reads status; it never repeats
+  the failed mutation or overwrites customized content.
 - A durable integration intent joins package activation and host registration.
   Reopen completes only an already-authorized intent. Missing registration is
   shown as **Incomplete** with **Repair**, not a successful installation.

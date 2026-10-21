@@ -71,7 +71,10 @@ impl Fixture {
         json!({"operation":"watch","expected":self.store.lock().unwrap().load_settings().unwrap().repositories[0],
             "url":"https://github.com/fixture/repo-1/pull/1","account_generation":7,"review_again":again})
     }
-    fn call(&self, mut input: Value) -> Value {
+    fn call(&self, input: Value) -> Value {
+        self.call_with_auth_failure(input, false)
+    }
+    fn call_with_auth_failure(&self, mut input: Value, fail_refresh: bool) -> Value {
         input
             .as_object_mut()
             .unwrap()
@@ -101,12 +104,24 @@ impl Fixture {
                         .block_on(super::super::operations::execute_request(
                             &self.store,
                             input,
-                            |command| async {
-                                assert!(
-                                    handles(&command),
-                                    "Command must use the native shared route"
-                                );
-                                dispatch(self, command)
+                            |command| {
+                                super::super::operations::execute_with_auth_refresh(
+                                    command,
+                                    async {
+                                        if fail_refresh {
+                                            Err(operation("Copilot secure storage unavailable"))
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                    |command| async {
+                                        assert!(
+                                            handles(&command),
+                                            "Command must use the native shared route"
+                                        );
+                                        dispatch(self, command)
+                                    },
+                                )
                             },
                         ))
                 })
@@ -262,6 +277,29 @@ fn unit_commands_reject_unknown_fields_before_dispatch() {
     let response = fixture.call(json!({"operation":"inspect","unexpected":true}));
     assert_eq!(response["error"]["code"], "invalid_request");
     assert!(fixture.launched.lock().unwrap().is_empty());
+}
+
+#[test]
+fn repository_accounts_cross_facade_without_refreshing_unrelated_copilot_auth() {
+    let fixture = Fixture::new();
+    let response =
+        fixture.call_with_auth_failure(json!({"operation":"accounts","kind":"repository"}), true);
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["values"][0]["account_id"], "101");
+    assert_eq!(response["result"]["values"][0]["connection_generation"], 7);
+    for command in [
+        json!({"operation":"accounts","kind":"copilot"}),
+        json!({"operation":"inspect"}),
+    ] {
+        let response = fixture.call_with_auth_failure(command, true);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "operation_failed");
+        assert_eq!(
+            response["error"]["detail"],
+            "Copilot secure storage unavailable"
+        );
+        assert!(response.get("result").is_none());
+    }
 }
 
 #[test]

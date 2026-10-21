@@ -500,11 +500,43 @@ async fn validate_model(
 }
 
 async fn execute_command(app: &tauri::AppHandle, command: Command) -> Result<Value, Error> {
-    if matches!(command, Command::Inspect | Command::Accounts { .. }) {
-        crate::copilot::copilot_auth_state(app.clone())
-            .await
-            .map_err(operation)?;
+    execute_with_auth_refresh(
+        command,
+        async {
+            crate::copilot::copilot_auth_state(app.clone())
+                .await
+                .map(|_| ())
+                .map_err(operation)
+        },
+        |command| execute_ready_command(app, command),
+    )
+    .await
+}
+
+pub(super) async fn execute_with_auth_refresh<R, D, F>(
+    command: Command,
+    refresh: R,
+    dispatch: D,
+) -> Result<Value, Error>
+where
+    R: std::future::Future<Output = Result<(), Error>>,
+    D: FnOnce(Command) -> F,
+    F: std::future::Future<Output = Result<Value, Error>>,
+{
+    if matches!(
+        command,
+        Command::Inspect
+            | Command::Accounts {
+                kind: AccountKind::Copilot,
+                ..
+            }
+    ) {
+        refresh.await?;
     }
+    dispatch(command).await
+}
+
+async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Result<Value, Error> {
     if super::dispatcher::handles(&command) {
         let app = app.clone();
         return tauri::async_runtime::spawn_blocking(move || {

@@ -47,6 +47,11 @@ test("Copilot CLI installation uses native package writes and preserves edits on
     .getByRole("button", { name: "Remove PR Sniper skill" })
     .click();
   await expect(controls.getByRole("alert")).toHaveText("Conflict");
+  const retry = controls.getByRole("button", { name: "Retry", exact: true });
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect(retry).toBeEnabled();
+  await expect(controls.getByRole("alert")).toHaveText("Conflict");
   expect(await readFile(skill, "utf8")).toBe("Human customization");
 });
 
@@ -119,6 +124,7 @@ test("missing owned MCP entry offers explicit repair without losing other server
   await page.evaluate(() => window.__settingsIdle());
   await section(page, "Preferences");
   await expect(page.getByLabel("Skill status")).toHaveText("Incomplete");
+  await page.evaluate(() => window.__settingsIdle());
   await page.getByRole("button", { name: "Repair", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Update", exact: true }),
