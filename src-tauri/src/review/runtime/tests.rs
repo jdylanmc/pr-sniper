@@ -18,6 +18,213 @@ const OFFERED: [crate::exits::Exit; 2] = [
     crate::exits::Exit::PanicExit,
 ];
 
+#[test]
+fn escaped_client_keeps_runtime_feedback_refusal_for_source_and_log_reads() {
+    use crate::review::host::AttemptGuard;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Wire {
+        calls: Arc<AtomicUsize>,
+        changed: Arc<AtomicBool>,
+        provider_error: bool,
+    }
+    impl Transport for Wire {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            let prior_calls = self.calls.fetch_add(1, Ordering::SeqCst);
+            if path.ends_with("/logs") {
+                return Ok(Response {
+                    status: 302,
+                    headers: BTreeMap::from([(
+                        "location".into(),
+                        "https://blob.example/log".into(),
+                    )]),
+                    body: vec![],
+                });
+            }
+            if prior_calls > 0 {
+                self.changed.store(true, Ordering::SeqCst);
+                if self.provider_error {
+                    return Err(ConnectionError::Network);
+                }
+            }
+            if path.contains("/git/blobs/") {
+                Synthetic.get(path)
+            } else {
+                Ok(Response {
+                    status: 200,
+                    headers: Default::default(),
+                    body: b"{}".to_vec(),
+                })
+            }
+        }
+
+        fn get_unauthenticated_tail(
+            &self,
+            url: &str,
+            _: usize,
+        ) -> Result<(Response, bool), ConnectionError> {
+            assert_eq!(url, "https://blob.example/log");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.changed.store(true, Ordering::SeqCst);
+            Ok((
+                Response {
+                    status: 200,
+                    headers: Default::default(),
+                    body: b"log".to_vec(),
+                },
+                false,
+            ))
+        }
+    }
+    impl crate::github::threads::QueryTransport for Wire {
+        fn query(&self, _: &str, _: Value) -> Result<Response, ConnectionError> {
+            unreachable!()
+        }
+    }
+    for (log, provider_error) in [(false, false), (true, false), (false, true)] {
+        let changed = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate_changed = changed.clone();
+        let gate: Gate = Arc::new(move || {
+            if gate_changed.load(Ordering::SeqCst) {
+                Err(Failure::tossed("Owned feedback changed."))
+            } else {
+                Ok(())
+            }
+        });
+        let context = context(true);
+        let attempt = AttemptGuard::new(gate);
+        let client = attempt
+            .prepare(
+                GithubClient::new(Wire {
+                    calls: calls.clone(),
+                    changed: changed.clone(),
+                    provider_error,
+                }),
+                |client| {
+                    client
+                        .review_source("example/repo", &context.head["source.rs"])
+                        .map_err(Failure::from)?;
+                    Ok(client)
+                },
+            )
+            .unwrap();
+        let tools = ReadTools::new(
+            None,
+            context,
+            Arc::new(client),
+            "example/repo".into(),
+            attempt.gate(),
+        )
+        .with_facts(Arc::new(crate::packet::ToolFacts {
+            checks: vec![crate::packet::CheckFact {
+                id: Some("1".into()),
+                name: "ci".into(),
+                status: "COMPLETED".into(),
+                conclusion: "FAILURE".into(),
+                log: true,
+            }],
+            ..Default::default()
+        }));
+        let outcome = if log {
+            tools.execute("read_check_log", json!({"id":"1"}))
+        } else {
+            tools.execute("read_source", json!({"side":"head","path":"source.rs"}))
+        };
+        let failure = attempt.finish(outcome).unwrap_err();
+        let expected_calls = if log { 3 } else { 2 };
+        assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+        if provider_error {
+            assert_eq!(failure.kind, crate::monitoring::OperationFailure::Network);
+            assert_eq!(failure.origin, crate::backpressure::Origin::Github);
+        } else {
+            assert_eq!(failure.kind, crate::monitoring::OperationFailure::Tossed);
+            changed.store(false, Ordering::SeqCst);
+            assert_eq!(
+                tools.execute("get_checks", json!({})).unwrap_err().kind,
+                crate::monitoring::OperationFailure::Tossed
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_feedback_refusal_survives_sdk_tool_error_and_teardown() {
+    use crate::review::host::AttemptGuard;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Wire {
+        calls: Arc<AtomicUsize>,
+        changed: Arc<AtomicBool>,
+    }
+    impl Transport for Wire {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                self.changed.store(true, Ordering::SeqCst);
+            }
+            Synthetic.get(path)
+        }
+    }
+    impl crate::github::threads::QueryTransport for Wire {
+        fn query(&self, _: &str, _: Value) -> Result<Response, ConnectionError> {
+            unreachable!()
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let changed = Arc::new(AtomicBool::new(false));
+    let gate_changed = changed.clone();
+    let attempt = AttemptGuard::new(Arc::new(move || {
+        if gate_changed.load(Ordering::SeqCst) {
+            Err(Failure::tossed("Owned feedback changed."))
+        } else {
+            Ok(())
+        }
+    }));
+    let base = request(true);
+    let client = attempt
+        .prepare(
+            GithubClient::new(Wire {
+                calls: calls.clone(),
+                changed,
+            }),
+            |client| {
+                client
+                    .review_source("example/repo", &base.context.head["source.rs"])
+                    .map_err(Failure::from)?;
+                Ok(Arc::new(client))
+            },
+        )
+        .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let outcome = execute(
+        options(root.path(), "read-source-only"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(15),
+        Request {
+            client,
+            local_gate: attempt.gate(),
+            inactivity: base.inactivity,
+            diagnostics: base.diagnostics,
+            context: base.context,
+            repository_name: base.repository_name,
+            selection: base.selection,
+            before_send: base.before_send,
+            task: base.task,
+            exits: base.exits,
+            duck: base.duck,
+        },
+    )
+    .await;
+    let error = attempt.finish(outcome).unwrap_err();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Tossed);
+    stopped(root.path());
+}
+
 /// The run's tool ids: two investigation tools, then the offered exits.
 fn tool_names() -> Vec<String> {
     tools::tool_set(

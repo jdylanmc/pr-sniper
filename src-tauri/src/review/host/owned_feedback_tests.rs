@@ -474,7 +474,7 @@ fn owned_feedback_guarded_preparation_preserves_in_flight_tosses_for_both_roles(
                 id: run.job.repository_id.clone(),
                 name: run.job.repository_name.clone(),
             };
-            let outcome = with_preparation_client(client, gate, |client| {
+            let outcome = AttemptGuard::new(gate).prepare(client, |client| {
                 if snapshot {
                     client
                         .pr_snapshot(&repo, run.job.number)
@@ -544,8 +544,9 @@ fn preparation_guard_preserves_local_provenance_and_rejects_ignored_refusals() {
                 error: None,
             });
             let refusal = expected.clone();
+            let gate_finished = read_finished.clone();
             let gate = Arc::new(move || {
-                if read_finished.load(Ordering::SeqCst) {
+                if gate_finished.load(Ordering::SeqCst) {
                     Err(refusal.clone())
                 } else {
                     Ok(())
@@ -555,19 +556,29 @@ fn preparation_guard_preserves_local_provenance_and_rejects_ignored_refusals() {
                 id: "100".into(),
                 name: "example/repo".into(),
             };
-            let actual = with_preparation_client(client, gate, |client| {
-                let read = client
-                    .pr_snapshot(&repo, 1)
-                    .map(|_| ())
-                    .map_err(Failure::from);
-                if ignore_refusal {
-                    Ok(())
-                } else {
-                    read
-                }
-            })
-            .unwrap_err();
+            let attempt = AttemptGuard::new(gate);
+            let actual = attempt
+                .prepare(client, |client| {
+                    let read = client
+                        .pr_snapshot(&repo, 1)
+                        .map(|_| ())
+                        .map_err(Failure::from);
+                    if ignore_refusal {
+                        Ok(())
+                    } else {
+                        read
+                    }
+                })
+                .unwrap_err();
             assert_same_failure(&actual, &expected);
+            read_finished.store(false, Ordering::SeqCst);
+            assert_same_failure(&attempt.gate()().unwrap_err(), &expected);
+            assert_same_failure(
+                &attempt
+                    .finish::<()>(Err(Failure::provider("Later runtime failure")))
+                    .unwrap_err(),
+                &expected,
+            );
         }
     }
 }
@@ -604,13 +615,121 @@ fn preparation_guard_keeps_actual_provider_errors_when_no_guard_refused() {
             id: "100".into(),
             name: "example/repo".into(),
         };
-        let actual = with_preparation_client(client, gate, |client| {
-            client
-                .pr_snapshot(&repo, 1)
-                .map(|_| ())
-                .map_err(Failure::from)
-        })
-        .unwrap_err();
+        let actual = AttemptGuard::new(gate)
+            .prepare(client, |client| {
+                client
+                    .pr_snapshot(&repo, 1)
+                    .map(|_| ())
+                    .map_err(Failure::from)
+            })
+            .unwrap_err();
         assert_same_failure(&actual, &Failure::from(provider));
+    }
+}
+
+struct FinalSnapshotWire {
+    during_read: Box<dyn Fn()>,
+}
+
+impl crate::github::provider::Transport for FinalSnapshotWire {
+    fn get(
+        &self,
+        _: &str,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        unreachable!("snapshot-only fixture")
+    }
+}
+
+impl crate::github::threads::QueryTransport for FinalSnapshotWire {
+    fn query(
+        &self,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        (self.during_read)();
+        let body = json!({"data":{"repository":{"databaseId":100,"p1":{
+            "fullDatabaseId":"9","number":1,"title":"Review","body":"",
+            "state":"OPEN","isDraft":false,"mergeable":"UNKNOWN","reviewDecision":null,
+            "baseRefOid":"b".repeat(40),"headRefOid":"a".repeat(40),
+            "baseRef":{"branchProtectionRule":null},"labels":{"nodes":[]},
+            "latestOpinionatedReviews":{"nodes":[]},"comments":{"totalCount":0,"nodes":[]},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+                "totalCount":1,"nodes":[{"__typename":"CheckRun","name":"ci","status":"IN_PROGRESS","conclusion":null}]
+            }}}}]},"reviewThreads":{"totalCount":0,"nodes":[]}
+        }}}});
+        Ok(crate::github::provider::Response {
+            status: 200,
+            headers: Default::default(),
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn feedback_change_after_preparation_is_tossed_at_ready_and_wait_finalization() {
+    use crate::github::provider::GithubClient;
+    use std::sync::atomic::AtomicUsize;
+
+    for wait in [false, true] {
+        let (root, store, template) = feedback_fixture(false);
+        let run = running_packet(&store, &template, 100);
+        let original_feedback = store.load_feedback().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let wire_count = count.clone();
+        let path = root.path().to_owned();
+        let client = GithubClient::new(FinalSnapshotWire {
+            during_read: Box::new(move || {
+                if wire_count.fetch_add(1, Ordering::SeqCst) == 1 {
+                    change_feedback(&Store::new(path.clone()));
+                }
+            }),
+        });
+        let gate_path = root.path().to_owned();
+        let gate_run = run.clone();
+        let gate = Arc::new(move || {
+            crate::review::validate_execution_selection(&Store::new(gate_path.clone()), &gate_run)
+        });
+        let repo = RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        };
+        let attempt = AttemptGuard::new(gate);
+        let (client, snapshot) = attempt
+            .prepare(client, |client| {
+                let snapshot = client.pr_snapshot(&repo, 1).map_err(Failure::from)?;
+                Ok((client, snapshot.normalize()))
+            })
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let mut packet = run.packet.clone().unwrap();
+        packet.state_hash = Some(snapshot.hash());
+        packet.wait_snapshot = Some(snapshot);
+        let mut result = packet_result(if wait {
+            json!({"exit":"wait","reason":"ci"})
+        } else {
+            json!({"exit":"ready_for_human","summary":"Reviewed."})
+        });
+
+        let failure = attempt
+            .finish(finalize_local_exit(&client, &repo, 1, &packet, &mut result))
+            .unwrap_err();
+        // Even if observation rolls back, the first refusal invalidated this
+        // attempt: neither its client nor a late successful result can recover it.
+        store.save_feedback(&original_feedback).unwrap();
+        crate::review::validate_execution_selection(&store, &run).unwrap();
+        assert_eq!(attempt.gate()().unwrap_err().kind, OperationFailure::Tossed);
+        assert!(client.action_observation(&repo, 1).is_err());
+        assert_eq!(
+            attempt.finish(Ok(result)).unwrap_err().kind,
+            OperationFailure::Tossed
+        );
+        complete(&store, &run.operation.id, Err(failure), 101).unwrap();
+        let saved = store.load_reviews().unwrap().remove(0);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(saved.operation.failure, Some(OperationFailure::Tossed));
+        assert_eq!(saved.operation.state, OperationState::Queued);
+        assert_eq!(saved.operation.attempt_count, 1);
+        assert!(saved.result.is_none());
+        assert!(store.load_feedback().unwrap().exit_writes.is_empty());
     }
 }
