@@ -365,14 +365,28 @@ fn owned_feedback_blocked_migration_keeps_the_operation_until_unblocked() {
             store.save_queue(&jobs).unwrap();
 
             let restarted = Store::new(root.path().into());
+            let before_restore = crate::now_seconds().unwrap();
             crate::review::restore(&restarted).unwrap();
+            let after_restore = crate::now_seconds().unwrap();
             let recovered = restarted.load_reviews().unwrap().remove(0);
             assert_eq!(
                 recovered.operation.failure,
                 Some(OperationFailure::Tossed),
                 "{blocked}"
             );
-            assert_eq!(recovered.operation.state, OperationState::Queued);
+            assert_eq!(
+                recovered.operation.state,
+                OperationState::Queued,
+                "role_teammate={teammate} blocked={blocked} fixture_now={now} \
+                 restore_clock=[{before_restore},{after_restore}] \
+                 initial={} deadline={} count={} cycle={} next={:?} resume={:?}",
+                recovered.operation.initial_attempt_at,
+                recovered.operation.retry_deadline,
+                recovered.operation.attempt_count,
+                recovered.operation.resume_cycle,
+                recovered.operation.next_attempt_at,
+                recovered.operation.resume_at
+            );
             assert_eq!(recovered.operation.id, run.operation.id);
             assert_eq!(recovered.operation.attempt_count, 1);
             assert_eq!(
