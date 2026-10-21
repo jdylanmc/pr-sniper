@@ -2,11 +2,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
+import { performInstaller } from "./control-installation-helpers.mjs";
 
 test("Copilot CLI installation uses native package writes and preserves edits on removal", async ({
   page,
   store,
   dataRoot,
+  ipc,
 }) => {
   await store("snapshot");
   await page.goto("/?view=settings");
@@ -17,7 +19,12 @@ test("Copilot CLI installation uses native package writes and preserves edits on
     exact: true,
   });
   await expect(controls.getByLabel("Skill status")).toHaveText("Not installed");
-  await controls.getByRole("button", { name: "Install", exact: true }).click();
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Install", exact: true }),
+    "control_install",
+  );
   await expect(
     controls.getByRole("button", { name: "Update", exact: true }),
   ).toBeEnabled();
@@ -40,16 +47,24 @@ test("Copilot CLI installation uses native package writes and preserves edits on
   expect(config.mcpServers["pr-sniper"].args[0]).toMatch(
     /scripts[/\\]mcp-server\.mjs$/,
   );
-  await controls.getByRole("button", { name: "Update", exact: true }).click();
-  await page.evaluate(() => window.__settingsIdle());
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Update", exact: true }),
+    "control_install",
+  );
   await writeFile(skill, "Human customization");
-  await controls
-    .getByRole("button", { name: "Remove PR Sniper skill" })
-    .click();
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Remove PR Sniper skill" }),
+    "control_uninstall",
+  );
   await expect(controls.getByRole("alert")).toHaveText("Conflict");
   const retry = controls.getByRole("button", { name: "Retry", exact: true });
   await expect(retry).toBeEnabled();
   await retry.click();
+  await page.evaluate(() => window.__settingsIdle());
   await expect(retry).toBeEnabled();
   await expect(controls.getByRole("alert")).toHaveText("Conflict");
   expect(await readFile(skill, "utf8")).toBe("Human customization");
@@ -59,6 +74,7 @@ test("Copilot CLI removal and reload reflect actual isolated installation state"
   page,
   store,
   dataRoot,
+  ipc,
 }) => {
   await store("snapshot");
   await page.goto("/?view=settings");
@@ -68,13 +84,21 @@ test("Copilot CLI removal and reload reflect actual isolated installation state"
     name: "Copilot CLI",
     exact: true,
   });
-  await controls.getByRole("button", { name: "Install", exact: true }).click();
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Install", exact: true }),
+    "control_install",
+  );
   await expect(
     controls.getByRole("button", { name: "Remove PR Sniper skill" }),
   ).toBeEnabled();
-  await controls
-    .getByRole("button", { name: "Remove PR Sniper skill" })
-    .click();
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Remove PR Sniper skill" }),
+    "control_uninstall",
+  );
   await expect(controls.getByLabel("Skill status")).toHaveText("Not installed");
   await expect(
     controls.getByRole("button", { name: "Remove PR Sniper skill" }),
@@ -160,24 +184,22 @@ test("missing owned MCP entry offers explicit repair without losing other server
   await section(page, "Preferences");
   await expect(page.getByLabel("Skill status")).toHaveText("Incomplete");
   await page.evaluate(() => window.__settingsIdle());
-  const completion = ipc.holdNext("control_install");
-  let release;
   try {
-    await page.getByRole("button", { name: "Repair", exact: true }).click();
-    await completion.arrived;
-    const committed = JSON.parse(await readFile(file, "utf8"));
-    expect(committed.mcpServers["pr-sniper"].type).toBe("local");
-    record({ phase: "native_committed", registered: true });
-    await expect(
+    await performInstaller(
+      page,
+      ipc,
       page.getByRole("button", { name: "Repair", exact: true }),
-    ).toBeDisabled();
-    // A successful native response may arrive after Playwright's assertion
-    // budget; settling the operation, not a five-second race, is the contract.
-    release = setTimeout(() => {
-      record({ phase: "reply_released" });
-      completion.release();
-    }, 6500);
-    await page.evaluate(() => window.__settingsIdle());
+      "control_install",
+      {
+        delay: 6500,
+        record,
+        afterNative: async () => {
+          const committed = JSON.parse(await readFile(file, "utf8"));
+          expect(committed.mcpServers["pr-sniper"].type).toBe("local");
+          record({ phase: "native_committed", registered: true });
+        },
+      },
+    );
     await expect(
       page.getByRole("button", { name: "Update", exact: true }),
     ).toBeEnabled();
@@ -185,8 +207,6 @@ test("missing owned MCP entry offers explicit repair without losing other server
     expect(config.mcpServers.other).toEqual({ command: "preserved" });
     expect(config.mcpServers["pr-sniper"].type).toBe("local");
   } finally {
-    clearTimeout(release);
-    completion.release();
     await testInfo.attach("installer-commands", {
       body: JSON.stringify(diagnostics),
       contentType: "application/json",

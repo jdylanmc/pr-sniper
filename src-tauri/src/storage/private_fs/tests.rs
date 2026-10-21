@@ -376,3 +376,43 @@ fn windows_claim_and_payload_are_private_and_denied_claims_stay_denied() {
     assert!(!stage.exists());
     assert!(!marker.exists());
 }
+
+#[cfg(windows)]
+#[test]
+fn non_verbatim_paths_beyond_max_path_are_created_protected_and_replaced() {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    fs::create_dir_all(&parent).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("long-path-")
+        .tempdir_in(parent)
+        .unwrap();
+    // Ordinary drive paths, as Node and the user profile supply them.
+    assert!(!root.path().to_string_lossy().starts_with(r"\\"));
+    let mut long = root.path().join("nested/long");
+    while long.as_os_str().len() < 300 {
+        long.push("long-path-component");
+    }
+    directory(&long).unwrap();
+    let file = long.join("state.json");
+    replace(&file, b"first", "state").unwrap();
+    replace(&file, b"second", "state").unwrap();
+    assert_eq!(read(&file).unwrap(), b"second");
+    let created = long.join("created.json");
+    drop(create_file(&created).unwrap());
+    for (path, is_directory) in [(&long, true), (&file, false), (&created, false)] {
+        windows_permissions::assert_private(&fs::canonicalize(path).unwrap(), is_directory);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn extended_paths_normalize_drive_unc_and_preserve_verbatim_forms() {
+    let encoded = |path: &str| {
+        let wide = windows::extended_path(Path::new(path)).unwrap();
+        String::from_utf16(&wide[..wide.len() - 1]).unwrap()
+    };
+    assert_eq!(encoded(r"C:\a\.\b/c\..\d"), r"\\?\C:\a\b\d");
+    assert_eq!(encoded(r"\\server\share\a/b"), r"\\?\UNC\server\share\a\b");
+    assert_eq!(encoded(r"\\?\C:\a/b"), r"\\?\C:\a/b");
+    assert_eq!(encoded(r"\\.\pipe\x"), r"\\.\pipe\x");
+}

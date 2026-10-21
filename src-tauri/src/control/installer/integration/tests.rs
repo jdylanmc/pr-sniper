@@ -19,6 +19,24 @@ fn write_config(home: &Path, value: &Value) {
 }
 
 #[test]
+fn uncreated_ordinary_home_beyond_max_path_supports_the_lifecycle() {
+    let root = root();
+    // Like the browser fixture: an ordinary (non-verbatim) absolute home that
+    // does not exist yet. Package stage paths exceed Windows MAX_PATH.
+    let home = root
+        .path()
+        .join("long-profile-".repeat(8))
+        .join("skill-host");
+    let first = install_integration_at(&home, &home.join("app"), None).unwrap();
+    assert_eq!(first.state, "installed");
+    let updated =
+        install_integration_at(&home, &home.join("new-app"), first.revision.as_deref()).unwrap();
+    assert_eq!(updated.state, "installed");
+    let removed = remove_integration_at(&home, updated.revision.as_deref().unwrap()).unwrap();
+    assert_eq!(removed.state, "absent");
+}
+
+#[test]
 fn registration_only_repair_does_not_rewrite_a_verified_current_package() {
     let root = root();
     let home = root.path().canonicalize().unwrap();

@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
+import { performInstaller } from "./control-installation-helpers.mjs";
 
 async function openInstalled(page, store) {
   const installed = await store("control_install", {
@@ -67,12 +68,16 @@ for (const mode of ["conflict", "installation_io"]) {
     }
     expect(newer.revision).not.toBe(installed.revision);
     await observeControl(page, mode === "installation_io" ? mode : null);
-    const hold =
-      mode === "installation_io" ? ipc.holdNext("control_installation") : null;
+    const hold = ipc.holdNext(
+      mode === "installation_io" ? "control_installation" : "control_install",
+    );
     await controls.getByRole("button", { name: "Update", exact: true }).focus();
     await controls.getByRole("button", { name: "Update", exact: true }).click();
-    if (hold) {
-      await hold.arrived;
+    await hold.arrived;
+    await expect(
+      controls.getByRole("button", { name: "Update", exact: true }),
+    ).toBeDisabled();
+    if (mode === "installation_io") {
       await page.evaluate(() => {
         const button = document.createElement("button");
         button.id = "other-focus";
@@ -81,8 +86,9 @@ for (const mode of ["conflict", "installation_io"]) {
       });
       await page.locator("#other-focus").click();
       await page.locator("#other-focus").focus();
-      hold.release();
     }
+    hold.release();
+    await page.evaluate(() => window.__settingsIdle());
     const action = controls.getByRole("button", {
       name: mode === "conflict" ? "Update" : "Repair",
       exact: true,
@@ -91,7 +97,8 @@ for (const mode of ["conflict", "installation_io"]) {
     await expect(controls.getByRole("alert")).toHaveText(
       mode === "conflict" ? "Changed" : "Unavailable",
     );
-    if (hold) await expect(page.locator("#other-focus")).toBeFocused();
+    if (mode === "installation_io")
+      await expect(page.locator("#other-focus")).toBeFocused();
     else await expect(action).toBeFocused();
     const calls = await page.evaluate(() => window.__controlCalls);
     expect(
@@ -100,8 +107,7 @@ for (const mode of ["conflict", "installation_io"]) {
     expect(
       calls.filter((call) => call.command === "control_installation"),
     ).toHaveLength(1);
-    await action.click();
-    await page.evaluate(() => window.__settingsIdle());
+    await performInstaller(page, ipc, action, "control_install");
     await expect(
       controls.getByRole("button", { name: "Update", exact: true }),
     ).toBeEnabled();
@@ -121,6 +127,7 @@ test("repeated status failures expose explicit read-only Retry and retain origin
   page,
   store,
   dataRoot,
+  ipc,
 }) => {
   const { installed, controls } = await openInstalled(page, store);
   const newer = await store("control_install", {
@@ -130,13 +137,19 @@ test("repeated status failures expose explicit read-only Retry and retain origin
   });
   await observeControl(page, null, 2);
   await controls.getByRole("button", { name: "Update", exact: true }).focus();
-  await controls.getByRole("button", { name: "Update", exact: true }).click();
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Update", exact: true }),
+    "control_install",
+  );
   const retry = controls.getByRole("button", { name: "Retry", exact: true });
   await expect(retry).toBeEnabled();
   await expect(retry).toBeFocused();
   await expect(controls.getByLabel("Skill status")).toHaveText("Unavailable");
   await expect(controls.getByRole("alert")).toHaveText("Changed");
   await retry.click();
+  await page.evaluate(() => window.__settingsIdle());
   await expect(retry).toBeEnabled();
   await expect(controls.getByRole("alert")).toHaveText("Changed");
   expect(
@@ -148,6 +161,7 @@ test("repeated status failures expose explicit read-only Retry and retain origin
     ),
   ).toBe(2);
   await retry.click();
+  await page.evaluate(() => window.__settingsIdle());
   const update = controls.getByRole("button", { name: "Update", exact: true });
   await expect(update).toBeEnabled();
   await expect(update).toBeFocused();

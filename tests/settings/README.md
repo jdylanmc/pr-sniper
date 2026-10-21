@@ -7,6 +7,13 @@ All other commands use the isolated Store bridge. Assertions drain Store IPC wit
 fixtures do not execute native recovery or provider writes. The adjacent error
 case deliberately rejects recovery and verifies the error toast.
 
+`control-installation*.spec.mjs` run every Install, Update, Repair and Remove
+through `performInstaller`: hold the real native reply, assert the pending
+control, release, then drain IPC with `__settingsIdle()`. Assertions follow
+operation settlement, not a five-second window. The Store bridge writes beneath
+an uncreated ordinary-path `skill-host`; on Windows its package stages can exceed
+MAX_PATH.
+
 `repository-account-inference.spec.mjs` exercises the shared URL intake with
 zero, sole and multiple compatible Git Repository connections. Sole-account
 inference is compact; ambiguous selection uses a named native select with
