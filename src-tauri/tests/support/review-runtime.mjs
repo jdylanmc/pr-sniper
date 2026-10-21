@@ -138,6 +138,12 @@ process.stdin.on("data", (chunk) => {
     if (request.id === undefined) continue;
     switch (request.method) {
       case "connect":
+        if (scenario === "connect-error") {
+          frame({ jsonrpc: "2.0", id: request.id, error: {
+            code: -32000, message: "Fixture runtime start failed",
+          } });
+          break;
+        }
         respond(request.id, {
           ok: true,
           protocolVersion: 3,

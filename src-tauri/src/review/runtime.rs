@@ -102,7 +102,40 @@ pub(crate) struct ExitSetup {
     pub gate: ExitGate,
 }
 
-pub(crate) type FailureCommit = Arc<dyn Fn(Failure) -> Failure + Send + Sync>;
+/// Applies the commit to a selected failure inside the critical section.
+pub(crate) type OutcomeSelection<'a> = dyn FnMut(&dyn Fn(Failure) -> Failure) + 'a;
+
+/// Commits the runtime's terminal failure at the point it is selected.
+pub(crate) trait FailureCommitment: Send + Sync {
+    /// Runs `selection` exclusively with respect to attempt-gate evaluations,
+    /// passing the commit that must be applied to a selected failure.
+    fn decide(&self, selection: &mut OutcomeSelection<'_>);
+}
+
+pub(crate) type FailureCommit = Arc<dyn FailureCommitment>;
+
+/// Polls an outcome selection so that selecting a failure and committing it are
+/// one critical section relative to the attempt gate.
+async fn decide<R>(
+    commit: Option<&FailureCommit>,
+    selection: impl std::future::Future<Output = Result<R, Failure>>,
+) -> Result<R, Failure> {
+    let mut selection = std::pin::pin!(selection);
+    std::future::poll_fn(|cx| {
+        let Some(commitment) = commit else {
+            return selection.as_mut().poll(cx);
+        };
+        let mut outcome = std::task::Poll::Pending;
+        commitment.decide(&mut |commit| {
+            outcome = match selection.as_mut().poll(cx) {
+                std::task::Poll::Ready(Err(error)) => std::task::Poll::Ready(Err(commit(error))),
+                other => other,
+            };
+        });
+        outcome
+    })
+    .await
+}
 
 pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
     pub inactivity: Duration,
@@ -113,7 +146,8 @@ pub(crate) struct Request<T: Transport = HttpTransport, K: Task = ExitReview> {
     pub selection: Selection,
     pub before_send: Gate,
     pub local_gate: Gate,
-    /// Commit only this review runtime's terminal error, not individual tool/duck errors.
+    /// Commits only this runtime's selected terminal error, atomically with selection;
+    /// individual tool/duck errors are not commitments.
     pub failure_commit: Option<FailureCommit>,
     pub task: K,
     pub exits: ExitSetup,
@@ -1054,18 +1088,17 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         diagnostics.as_deref(),
     );
     tokio::pin!(monitor);
-    let client = tokio::select! {
-        biased;
-        error = &mut monitor => Err(error),
-        result = Client::start(options) => result.map_err(Failure::sdk),
-    };
+    let client = decide(failure_commit.as_ref(), async {
+        tokio::select! {
+            biased;
+            error = &mut monitor => Err(error),
+            result = Client::start(options) => result.map_err(Failure::sdk),
+        }
+    })
+    .await;
     let client = match client {
         Ok(client) => client,
         Err(error) => {
-            let error = match &failure_commit {
-                Some(commit) => commit(error),
-                None => error,
-            };
             progress.retire();
             if let Some(trace) = &diagnostics {
                 trace.emit(DiagnosticEvent::Teardown {
@@ -1353,12 +1386,10 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         }
         .await
     };
-    let result =
-        tokio::select! { biased; error = &mut monitor => Err(error), result = run => result };
-    let result = result.map_err(|error| match &failure_commit {
-        Some(commit) => commit(error),
-        None => error,
-    });
+    let result = decide(failure_commit.as_ref(), async {
+        tokio::select! { biased; error = &mut monitor => Err(error), result = run => result }
+    })
+    .await;
     progress.retire();
     // Whatever ended the attempt, an in-flight duck call stops now: it aborts its turn,
     // closes its session and records itself; no new call starts.

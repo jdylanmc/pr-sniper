@@ -874,13 +874,62 @@ async fn execute_attempt(
 pub(super) struct AttemptGuard {
     gate: runtime::Gate,
     rejected: Arc<std::sync::Mutex<Option<Failure>>>,
+    decision: Arc<Decision>,
+}
+
+/// Re-entrant exclusion between whole gate evaluations and the runtime's outcome
+/// selection: a gate evaluation completes either before a selecting poll starts
+/// or after its failure is committed, never between selection and commitment.
+#[derive(Default)]
+struct Decision {
+    owner: std::sync::Mutex<(Option<std::thread::ThreadId>, usize)>,
+    free: std::sync::Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+struct Entered<'a>(&'a Decision);
+
+impl Decision {
+    fn enter(&self) -> Entered<'_> {
+        let me = std::thread::current().id();
+        let mut owner = self.owner.lock().unwrap_or_else(|e| e.into_inner());
+        if owner.0.is_some_and(|id| id != me) {
+            #[cfg(test)]
+            self.waiting
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            while owner.0.is_some_and(|id| id != me) {
+                owner = self.free.wait(owner).unwrap_or_else(|e| e.into_inner());
+            }
+            #[cfg(test)]
+            self.waiting
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        owner.0 = Some(me);
+        owner.1 += 1;
+        Entered(self)
+    }
+}
+
+impl Drop for Entered<'_> {
+    fn drop(&mut self) {
+        let mut owner = self.0.owner.lock().unwrap_or_else(|e| e.into_inner());
+        owner.1 -= 1;
+        if owner.1 == 0 {
+            owner.0 = None;
+            self.0.free.notify_all();
+        }
+    }
 }
 
 impl AttemptGuard {
     pub(super) fn new(check: runtime::Gate) -> Self {
         let rejected = Arc::new(std::sync::Mutex::new(None::<Failure>));
+        let decision = Arc::new(Decision::default());
         let guard_rejection = rejected.clone();
+        let guard_decision = decision.clone();
         let gate = Arc::new(move || {
+            let _entered = guard_decision.enter();
             let mut rejected = guard_rejection
                 .lock()
                 .map_err(|_| Failure::permanent("Review attempt gate unavailable."))?;
@@ -893,7 +942,11 @@ impl AttemptGuard {
             }
             outcome
         });
-        Self { gate, rejected }
+        Self {
+            gate,
+            rejected,
+            decision,
+        }
     }
 
     pub(super) fn gate(&self) -> runtime::Gate {
@@ -901,11 +954,22 @@ impl AttemptGuard {
     }
 
     pub(super) fn committer(&self) -> runtime::FailureCommit {
-        let attempt = self.clone();
-        Arc::new(move |error| match attempt.rejected.lock() {
+        Arc::new(self.clone())
+    }
+
+    /// Gate evaluations from other threads blocked behind an outcome selection.
+    #[cfg(test)]
+    pub(super) fn blocked_gates(&self) -> usize {
+        self.decision
+            .waiting
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn commit(&self, error: Failure) -> Failure {
+        match self.rejected.lock() {
             Ok(mut rejected) => rejected.get_or_insert(error).clone(),
             Err(_) => Failure::permanent("Review attempt gate unavailable."),
-        })
+        }
     }
 
     pub(super) fn prepare<T: crate::github::threads::QueryTransport, R>(
@@ -936,6 +1000,13 @@ impl AttemptGuard {
             .map_err(|_| Failure::permanent("Review attempt gate unavailable."))?
             .clone()
             .map_or(outcome, Err)
+    }
+}
+
+impl runtime::FailureCommitment for AttemptGuard {
+    fn decide(&self, selection: &mut runtime::OutcomeSelection<'_>) {
+        let _entered = self.decision.enter();
+        selection(&|error| self.commit(error));
     }
 }
 

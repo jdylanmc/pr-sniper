@@ -572,7 +572,7 @@ fn preparation_guard_preserves_local_provenance_and_rejects_ignored_refusals() {
                 .unwrap_err();
             assert_same_failure(&actual, &expected);
             assert_same_failure(
-                &(attempt.committer())(Failure::provider("Primary runtime terminal error")),
+                &attempt.commit(Failure::provider("Primary runtime terminal error")),
                 &expected,
             );
             read_finished.store(false, Ordering::SeqCst);
