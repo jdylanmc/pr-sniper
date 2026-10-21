@@ -9,9 +9,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
-- Configure and control PR Sniper through the human-invoked `/pr-sniper`
-  Copilot CLI skill on macOS and Windows, with validated native operations and
-  a Settings installer. Login setup stays human-managed.
+- Configure and control PR Sniper through local MCP tools and the human-invoked
+  `/pr-sniper` Copilot CLI skill on macOS and Windows. Settings installs the owned
+  server entry and skill together; login setup stays human-managed.
 - Watch exact PRs with persistent queue priority, explicit review-again and
   request-only Agent/doctrine selections; preserve pause, prerequisites and
   existing grants.
