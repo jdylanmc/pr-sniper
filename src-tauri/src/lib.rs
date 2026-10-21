@@ -26,6 +26,7 @@ mod seeds;
 pub mod startup;
 pub mod storage;
 mod storage_state;
+mod wake;
 
 #[cfg(test)]
 mod live_tests;
@@ -1321,6 +1322,9 @@ fn retention_maintenance(
     }
     // Applying journals already excluded all related workers before cutover.
     retention::recover(&store)?;
+    if clean.is_none() {
+        monitoring::compact_saved_queue(&store)?;
+    }
     match clean {
         Some(select) if host.ai.settle_terminal(&store)? => {
             retention::maintain_where(&store, true, select)
@@ -4447,6 +4451,8 @@ pub fn run() {
             let copilot = copilot::Integration::new(isolated)?;
             let store = Store::new(root.clone()).with_initial_time_zone(policy::host_time_zone());
             retention::recover(&store).map_err(std::io::Error::other)?;
+            // Bounded queue before any worker or snapshot reads it.
+            let compaction = monitoring::compact_saved_queue(&store);
             review::restore(&store).map_err(std::io::Error::other)?;
             publication::restore(&store).map_err(std::io::Error::other)?;
             follow_up::restore(&store).map_err(std::io::Error::other)?;
@@ -4483,9 +4489,13 @@ pub fn run() {
             if let Err(error) = notification_restore {
                 report(app.handle(), error);
             }
+            if let Err(error) = compaction {
+                report(app.handle(), error);
+            }
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let mut wake = wake::Wake::default();
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     let host = scheduler_app.state::<Host>();
@@ -4497,6 +4507,15 @@ pub fn run() {
                     }
                     if let Err(error) = start_checks(&scheduler_app, false) {
                         report(&scheduler_app, error);
+                    }
+                    // Sample before the gated passes: their own writes wake
+                    // the next tick once, then an unchanged store settles.
+                    let generation = match host.store.lock() {
+                        Ok(store) => store.wake_generation(),
+                        Err(_) => continue,
+                    };
+                    if !wake.due(generation, now_seconds().unwrap_or(i64::MAX)) {
+                        continue;
                     }
                     if let Err(error) = retention_maintenance(&scheduler_app, None) {
                         report(&scheduler_app, error);

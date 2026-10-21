@@ -227,16 +227,17 @@ fn obsolete(job: &QueueJob) -> bool {
     )
 }
 
-fn publication_cause<'a>(
-    publications: &'a [publication::host::Candidate],
+fn publication_cause(
+    publications: &[publication::host::Candidate],
+    publication_items: &[Option<String>],
     id: &str,
-    current: impl Fn(&'a QueueJob) -> &'a QueueJob,
 ) -> Option<&'static str> {
     let own: Vec<_> = publications
         .iter()
-        .filter_map(|p| p.publication.as_ref())
+        .zip(publication_items)
+        .filter(|(_, item)| item.as_deref() == Some(id))
+        .filter_map(|(p, _)| p.publication.as_ref())
         .filter(|p| p.phase != publication::Phase::Discarded)
-        .filter(|p| item_id(current(&p.review.job)) == id)
         .collect();
     if own.iter().any(|p| p.uncertain) {
         Some("publication_unresolved")
@@ -546,7 +547,50 @@ fn follow_up_state(candidate: &follow_up::host::Candidate) -> Option<State> {
 }
 
 fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
-    let current = |job| current_job(job, &snapshot.jobs);
+    // Indexes keep projection linear in history; each lookup matches the
+    // former first-match scan exactly.
+    let index = CurrentJobs::new(&snapshot.jobs);
+    let current = |job| index.current(job);
+    let publication_items: Vec<Option<String>> = snapshot
+        .publications
+        .iter()
+        .map(|p| {
+            p.publication
+                .as_ref()
+                .map(|p| item_id(current(&p.review.job)))
+        })
+        .collect();
+    let mut publications_by_item: BTreeMap<&str, Vec<&publication::Publication>> = BTreeMap::new();
+    for (candidate, item) in snapshot.publications.iter().zip(&publication_items) {
+        if let (Some(publication), Some(item)) = (candidate.publication.as_ref(), item) {
+            publications_by_item
+                .entry(item.as_str())
+                .or_default()
+                .push(publication);
+        }
+    }
+    let own_publications = |id: &str| {
+        publications_by_item
+            .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+    };
+    let mut reviews_by_item: BTreeMap<String, Vec<&review::host::Candidate>> = BTreeMap::new();
+    for review in &snapshot.reviews {
+        reviews_by_item
+            .entry(item_id(&review.job))
+            .or_default()
+            .push(review);
+    }
+    let mut aliases_by_item: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for job in &snapshot.jobs {
+        let aliases = aliases_by_item.entry(item_id(job)).or_default();
+        if let Some(alias) = job.work.as_ref().and_then(|w| w.legacy_item_id.clone()) {
+            aliases.push(alias);
+        }
+    }
     let mut groups = BTreeMap::new();
     for job in snapshot
         .jobs
@@ -574,11 +618,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     }
     let mut items = Vec::new();
     for (id, job) in groups {
-        let mut reviews: Vec<_> = snapshot
-            .reviews
-            .iter()
-            .filter(|r| item_id(&r.job) == id)
-            .collect();
+        let mut reviews: Vec<_> = reviews_by_item.remove(&id).unwrap_or_default();
         // One entry per PR: an older state's result is history and must not
         // mask the newest state's wait.
         let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
@@ -628,25 +668,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .iter()
             .filter_map(|r| r.run.as_ref())
             .map(|r| &r.operation)
-            .chain(
-                snapshot
-                    .publications
-                    .iter()
-                    .filter_map(|p| p.publication.as_ref())
-                    .filter(|p| item_id(current(&p.review.job)) == id)
-                    .map(|p| &p.operation),
-            )
+            .chain(own_publications(&id).map(|p| &p.operation))
             .filter(|operation| operation.parked())
             .filter_map(|operation| operation.resume_at)
             .min();
-        failures.extend(
-            snapshot
-                .publications
-                .iter()
-                .filter_map(|p| p.publication.as_ref())
-                .filter(|p| item_id(current(&p.review.job)) == id)
-                .filter_map(|p| p.operation.failure_class()),
-        );
+        failures.extend(own_publications(&id).filter_map(|p| p.operation.failure_class()));
         failures.extend(follow_ups.iter().flat_map(|f| {
             [&f.run.analysis, &f.run.publication]
                 .into_iter()
@@ -782,12 +808,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 warnings.insert(intent.blocked.clone().unwrap_or_else(|| "Observed discussion awaits durable primary assessment; no clearance inferred.".into()));
             }
         }
-        for publication in snapshot
-            .publications
-            .iter()
-            .filter_map(|p| p.publication.as_ref())
-            .filter(|p| item_id(current(&p.review.job)) == id)
-        {
+        for publication in own_publications(&id) {
             if let Some(error) = &publication.error {
                 warnings.insert(error.clone());
             }
@@ -797,17 +818,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         if obsolete(job) {
-            let published = snapshot
-                .publications
-                .iter()
-                .filter_map(|p| p.publication.as_ref())
-                .any(|p| {
-                    item_id(current(&p.review.job)) == id
-                        && p.receipts
-                            .last()
-                            .is_some_and(|r| r.state == RemoteState::Commented)
-                })
-                || follow_ups.iter().any(|f| f.run.receipt.is_some());
+            let published = own_publications(&id).any(|p| {
+                p.receipts
+                    .last()
+                    .is_some_and(|r| r.state == RemoteState::Commented)
+            }) || follow_ups.iter().any(|f| f.run.receipt.is_some());
             states.push(if published {
                 State::StaleAfterPublication
             } else {
@@ -928,7 +943,8 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 }
             });
         let failure_cause = if state == State::Failed {
-            exit_cause.or_else(|| publication_cause(&snapshot.publications, &id, current))
+            exit_cause
+                .or_else(|| publication_cause(&snapshot.publications, &publication_items, &id))
         } else {
             None
         };
@@ -957,12 +973,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             exit_run_id: exit_run.map(|(_, run, _)| run.operation.id.clone()),
             progress,
             feedback,
-            aliases: snapshot
-                .jobs
-                .iter()
-                .filter(|j| item_id(j) == id)
-                .filter_map(|j| j.work.as_ref()?.legacy_item_id.clone())
-                .collect(),
+            aliases: aliases_by_item.get(&id).cloned().unwrap_or_default(),
             id,
             job: job.clone(),
             state,
@@ -1025,16 +1036,31 @@ fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
     })
 }
 
-fn current_job<'a>(job: &'a QueueJob, jobs: &'a [QueueJob]) -> &'a QueueJob {
-    let Some(assignment_id) = &job.assignment_id else {
-        return job;
-    };
-    jobs.iter()
-        .find(|j| {
-            j.assignment_id == job.assignment_id
-                && review::key(j, assignment_id) == review::key(job, assignment_id)
-        })
-        .unwrap_or(job)
+/// The first saved job for the same assignment and review key, if any.
+struct CurrentJobs<'a>(std::collections::HashMap<(&'a str, String), &'a QueueJob>);
+
+impl<'a> CurrentJobs<'a> {
+    fn new(jobs: &'a [QueueJob]) -> Self {
+        let mut index = std::collections::HashMap::new();
+        for job in jobs {
+            if let Some(assignment_id) = job.assignment_id.as_deref() {
+                index
+                    .entry((assignment_id, review::key(job, assignment_id)))
+                    .or_insert(job);
+            }
+        }
+        Self(index)
+    }
+
+    fn current(&self, job: &'a QueueJob) -> &'a QueueJob {
+        let Some(assignment_id) = job.assignment_id.as_deref() else {
+            return job;
+        };
+        self.0
+            .get(&(assignment_id, review::key(job, assignment_id)))
+            .copied()
+            .unwrap_or(job)
+    }
 }
 
 pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {

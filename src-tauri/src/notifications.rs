@@ -113,6 +113,20 @@ fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
+/// Records the queue's current events; saves only when a transition was new.
+/// Returns the next notice waiting to be sent.
+pub(crate) fn observe_queue(
+    store: &Store,
+    snapshot: &queue::Snapshot,
+    now: i64,
+) -> Result<Option<Notice>, String> {
+    let mut ledger = store.load_notifications()?;
+    if ledger.observe(&frames(snapshot), now)? {
+        store.save_notifications(&ledger)?;
+    }
+    Ok(ledger.next().cloned())
+}
+
 pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
     let mut frames = Vec::new();
     let mut merged = BTreeMap::<String, &queue::Item>::new();

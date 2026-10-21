@@ -389,6 +389,37 @@ pub(crate) fn prepare_next_effect(
     Ok(None)
 }
 
+/// The item whose provider state should be observed next, if any.
+pub(crate) fn next_target(store: &Store, now: i64) -> Result<Option<queue::Item>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
+    expire_prepared(store, now)?;
+    let snapshot = queue::normal_snapshot(store, vec![])?;
+    let ledger = store.load_actions()?;
+    let unadopted = packet::unadopted(store, &ledger)?;
+    let settings = store.load_settings()?;
+    Ok(snapshot
+        .items
+        .into_iter()
+        .filter(|item| {
+            ledger
+                .observations
+                .iter()
+                .find(|o| o.item_id == item.id)
+                .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
+        })
+        .filter(|i| observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id))
+        .min_by_key(|i| {
+            ledger
+                .observations
+                .iter()
+                .find(|o| o.item_id == i.id)
+                .map(|o| o.at)
+                .unwrap_or(0)
+        }))
+}
+
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|v| !*v)
@@ -411,36 +442,7 @@ impl Coordinator {
                 .store
                 .lock()
                 .map_err(|_| "Action storage unavailable.")?;
-            if store.load_automation()?.paused {
-                return Ok(());
-            }
-            expire_prepared(&store, now_seconds()?)?;
-            let snapshot = queue::normal_snapshot(&store, vec![])?;
-            let ledger = store.load_actions()?;
-            let unadopted = packet::unadopted(&store, &ledger)?;
-            let settings = store.load_settings()?;
-            let now = now_seconds()?;
-            snapshot
-                .items
-                .into_iter()
-                .filter(|item| {
-                    ledger
-                        .observations
-                        .iter()
-                        .find(|o| o.item_id == item.id)
-                        .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
-                })
-                .filter(|i| {
-                    observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id)
-                })
-                .min_by_key(|i| {
-                    ledger
-                        .observations
-                        .iter()
-                        .find(|o| o.item_id == i.id)
-                        .map(|o| o.at)
-                        .unwrap_or(0)
-                })
+            next_target(&store, now_seconds()?)?
         };
         let Some(target) = target else {
             return Ok(());
@@ -465,6 +467,7 @@ impl Coordinator {
                         .lock()
                         .map_err(|_| "Action storage unavailable.")?;
                     let mut ledger = store.load_actions()?;
+                    let mut reconciling = false;
                     for effect in ledger
                         .effects
                         .iter_mut()
@@ -472,8 +475,12 @@ impl Coordinator {
                     {
                         effect.reconcile_attempts = effect.reconcile_attempts.saturating_add(1);
                         effect.reconcile_requested = false;
+                        reconciling = true;
                     }
-                    store.save_actions(&ledger)?;
+                    // An unchanged ledger is not rewritten (or re-indexed).
+                    if reconciling {
+                        store.save_actions(&ledger)?;
+                    }
                 }
                 let observed = observation(&app, &target.job);
                 let effect = {

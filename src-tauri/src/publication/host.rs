@@ -31,6 +31,8 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let jobs = store.load_queue()?;
     let publications = store.load_publications()?;
     let reviews = store.review_evidence()?;
+    // Loaded once per scan; per-review loads made this quadratic in history.
+    let feedback = store.load_feedback();
     let latest: std::collections::BTreeMap<_, _> = reviews
         .iter()
         .map(|review| (&review.key, &review.operation.id))
@@ -51,7 +53,11 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 .and_then(|automatic| {
                     // Freshness authorizes new mutations, not an immutable confirmed receipt.
                     // Queue readiness separately aggregates current feedback and pending work.
-                    if !completed { crate::feedback::publication_gate(store, review)?; }
+                    if !completed {
+                        let ledger = feedback.as_ref().map_err(Clone::clone)?;
+                        crate::feedback::publication_gate_with(store, review, ledger, &publications)
+                            .map_err(crate::publication::GateError::message)?;
+                    }
                     Ok(automatic)
                 })
                 .and_then(|automatic| {
@@ -63,8 +69,10 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 policy = Err("Another review attempt owns this revision's publication; reconcile it instead of creating another batch.".into());
             }
             if publication.is_none() && policy.is_ok() {
-                if let Some(reason) = crate::exit_writes::holds_publication(store, review)
-                    .unwrap_or_else(Some)
+                if let Some(reason) = feedback
+                    .as_ref()
+                    .map(|ledger| crate::exit_writes::holds_publication_with(&ledger.exit_writes, review))
+                    .unwrap_or_else(|error| crate::exit_writes::plan(review, 0).map(|_| error.clone()))
                 {
                     policy = Err(reason);
                 }
@@ -85,7 +93,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
         }).collect())
 }
 
-fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> {
+pub(crate) fn next_candidate(store: &Store, now: i64) -> Result<Option<Candidate>, String> {
     if store.load_automation()?.paused {
         return Ok(None);
     }

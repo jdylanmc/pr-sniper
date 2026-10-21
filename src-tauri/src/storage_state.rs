@@ -133,7 +133,23 @@ impl Store {
         &self,
         state: &crate::connectivity::Connectivity,
     ) -> Result<(), String> {
-        self.commit_operational("connectivity.json", state)
+        let offline = |c: &crate::connectivity::Connectivity| -> Vec<_> {
+            c.services
+                .iter()
+                .map(|s| (s.scope.clone(), s.offline_since))
+                .collect()
+        };
+        // Probe timestamps change every check; only reachability changes work.
+        let changed = self
+            .load_connectivity()
+            .map_or(true, |previous| offline(&previous) != offline(state));
+        // Not result evidence: no result-index rebuild for a liveness probe.
+        crate::retention::guard(self)?;
+        self.write_state("connectivity.json", state)?;
+        if changed {
+            self.wake();
+        }
+        Ok(())
     }
 
     pub fn save_backpressure(

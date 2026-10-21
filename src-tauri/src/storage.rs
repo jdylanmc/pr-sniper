@@ -1386,6 +1386,10 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
 pub struct Store {
     root: PathBuf,
     initial_time_zone: String,
+    /// Bumped by every write that can change what a coordinator would do.
+    wake: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    state_writes: std::sync::Mutex<BTreeMap<String, usize>>,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
     #[cfg(test)]
@@ -1397,6 +1401,9 @@ impl Store {
         Self {
             root,
             initial_time_zone: "UTC".into(),
+            wake: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            state_writes: std::sync::Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             failed_state_write: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -1414,6 +1421,21 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn take_state_reads(&self) -> BTreeMap<String, usize> {
         std::mem::take(&mut *self.state_reads.lock().unwrap())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_state_writes(&self) -> BTreeMap<String, usize> {
+        std::mem::take(&mut *self.state_writes.lock().unwrap())
+    }
+
+    /// Changes whenever saved state that coordinators act on changes. Idle
+    /// scheduler ticks compare it instead of rebuilding derived snapshots.
+    pub(crate) fn wake_generation(&self) -> u64 {
+        self.wake.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn wake(&self) {
+        self.wake.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -1461,7 +1483,28 @@ impl Store {
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
         let bytes =
             serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
-        private_fs::replace(&directory.join(name), &bytes, "monitoring state")
+        #[cfg(test)]
+        {
+            *self
+                .state_writes
+                .lock()
+                .unwrap()
+                .entry(name.to_string())
+                .or_default() += 1;
+        }
+        let result = private_fs::replace(&directory.join(name), &bytes, "monitoring state");
+        // Liveness probes and derived indexes are bookkeeping; they never
+        // create work, so they must not wake the coordinators that wrote them.
+        if !matches!(
+            name,
+            "connectivity.json"
+                | "result-index.json"
+                | "result-index-pending.json"
+                | "queue-selection.json"
+        ) {
+            self.wake();
+        }
+        result
     }
 
     fn directory(&self, name: &str) -> std::io::Result<PathBuf> {
@@ -1999,7 +2042,9 @@ impl Store {
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
-        private_fs::replace(&directory.join("settings.json"), &bytes, "settings")
+        let result = private_fs::replace(&directory.join("settings.json"), &bytes, "settings");
+        self.wake();
+        result
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {

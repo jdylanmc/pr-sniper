@@ -25,19 +25,7 @@ pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
             .store
             .lock()
             .map_err(|_| "Exit write storage unavailable.")?;
-        if store.load_automation()?.paused {
-            return Ok(());
-        }
-        let now = now_seconds()?;
-        admit(&store, now)?;
-        match next_due(&store, now)? {
-            Some(id) => store
-                .load_feedback()?
-                .exit_writes
-                .into_iter()
-                .find(|w| w.id == id),
-            None => None,
-        }
+        next_write(&store, now_seconds()?)?
     };
     let Some(mut write) = next else {
         return Ok(());

@@ -107,11 +107,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
                 .store
                 .lock()
                 .map_err(|_| "Notification storage unavailable.")?;
-            let mut ledger = store.load_notifications()?;
-            if ledger.observe(&frames(&snapshot), now_seconds()?)? {
-                store.save_notifications(&ledger)?;
-            }
-            ledger.next().cloned()
+            observe_queue(&store, &snapshot, now_seconds()?)?
         };
         let Some(next) = next else {
             break;
