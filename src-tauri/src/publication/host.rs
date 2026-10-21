@@ -166,18 +166,14 @@ impl Coordinator {
         self.active.lock().is_ok_and(|active| active.is_none())
     }
 
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+    /// Scans `view`, a frozen copy of saved state; launch revalidates under
+    /// the Store lock, exactly as after the former locked scan.
+    pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) || !host.publications.finished() {
             return Ok(());
         }
-        let candidate = {
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| "Publication storage unavailable.")?;
-            next_candidate(&store, now_seconds()?)?
-        };
+        let candidate = next_candidate(view, now_seconds()?)?;
         if let Some(candidate) = candidate {
             Self::launch(app, &candidate.review_operation_id, false)?;
         }

@@ -62,7 +62,8 @@ impl Coordinator {
         })
     }
 
-    pub(crate) fn pump(app: &tauri::AppHandle) {
+    /// Starts a notification run; false when one is already in flight.
+    pub(crate) fn pump(app: &tauri::AppHandle) -> bool {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst)
             || host
@@ -71,7 +72,7 @@ impl Coordinator {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
         {
-            return;
+            return false;
         }
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -83,6 +84,7 @@ impl Coordinator {
                 .active
                 .store(false, Ordering::SeqCst);
         });
+        true
     }
 }
 
@@ -235,11 +237,12 @@ pub(crate) async fn notification_snapshot(app: tauri::AppHandle) -> Result<Snaps
             .as_ref()
             .map_err(Clone::clone)
             .and_then(Adapter::permission);
-        let store = host
+        let frozen = host
             .store
             .lock()
-            .map_err(|_| "Notification storage unavailable.")?;
-        view(&store, permission)
+            .map_err(|_| "Notification storage unavailable.")?
+            .freeze()?;
+        view(&frozen, permission)
     })
     .await
     .map_err(|_| "Notification status could not be read.".to_string())?

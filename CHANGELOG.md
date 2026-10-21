@@ -15,9 +15,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   chatter and successful nested Duck tool calls are counted, and coverage
   repeats are dropped. Failures stay itemized; older logs still read.
 - Large profiles no longer pin a CPU core or starve the panel. Coordinators
-  sleep until saved state changes (60 s heartbeat), unchanged passes write
-  nothing, Queue projection and publication scans stay linear in history, and
-  retired Queue entries no longer needed for evidence are compacted at startup.
+  run on saved transitions and saved retry times (60 s heartbeat), not on
+  running-review progress; scans parse a frozen copy outside the storage lock;
+  unchanged passes write nothing; Queue projection and publication scans stay
+  linear in history; unneeded retired Queue entries are compacted.
 
 ## 0.4.2 - 2026-10-20
 

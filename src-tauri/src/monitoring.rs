@@ -9,7 +9,7 @@ use crate::storage::{ProviderId, SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 // Old queue records remain actionable without requiring per-revision consent.
 pub const WAITING_TRUST_CONFIRMATION: &str = "trust_confirmation";
@@ -474,6 +474,24 @@ fn group(job: &QueueJob) -> Option<(Group<'_>, (u64, u64, u64))> {
         ),
         (work.pass_ordinal, work.state_seq, work.enqueue_order),
     ))
+}
+
+/// Whether any account a run uses connected since the last resume pass.
+fn run_reconnected(run: &crate::review::ReviewRun, reconnected: &BTreeSet<String>) -> bool {
+    reconnected.contains(&run.job.account_id)
+        || run
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .is_some_and(|ai| reconnected.contains(&ai.account_id))
+        || run
+            .selection
+            .configuration
+            .as_ref()
+            .and_then(|c| c.rubber_duck.as_ref())
+            .and_then(|duck| duck.agent.ai_account.as_ref())
+            .is_some_and(|ai| reconnected.contains(&ai.account_id))
 }
 
 /// Drops retired history entries nothing can read again. Kept: every live or
@@ -4276,22 +4294,91 @@ impl Monitor {
     /// Requeues parked failures that earned another attempt: after their
     /// cooldown, or (credentials) once a relevant GitHub or Copilot account is
     /// connected again. Superseded and terminal work is never resumed.
+    fn reconnections(
+        &self,
+        accounts: &BTreeMap<String, AccountAvailability>,
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        let connected: BTreeSet<String> = accounts
+            .iter()
+            .filter(|(_, account)| account.connected)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // The first tick cannot see a transition, so connected accounts count.
+        let reconnected = match &self.connected_seen {
+            Some(seen) => connected.difference(seen).cloned().collect(),
+            None => connected.clone(),
+        };
+        (connected, reconnected)
+    }
+
+    /// Read-only probe of `auto_resume` over a frozen copy: true when it
+    /// would resume or re-suspend anything. When false, records the seen
+    /// accounts exactly as `auto_resume` would, so no reconnection is lost.
+    pub fn auto_resume_due(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<bool, String> {
+        let (connected, reconnected) = self.reconnections(accounts);
+        if !self.state.admission_upgrade_done {
+            return Ok(true);
+        }
+        let connectivity = store.load_connectivity()?;
+        let jobs = store.load_queue()?;
+        let finished = |waiting: &str| {
+            matches!(
+                waiting,
+                WAITING_SUPERSEDED | WAITING_CLOSED | WAITING_MERGED
+            )
+        };
+        for run in store.load_reviews()? {
+            let offline = connectivity
+                .offline(&crate::connectivity::scopes(&run))
+                .and_then(|s| s.offline_since);
+            if crate::connectivity::would_sync(&run.operation, offline, now) {
+                return Ok(true);
+            }
+            if finished(&run.job.waiting)
+                || jobs
+                    .iter()
+                    .any(|job| run.matches_job(job) && finished(&job.waiting))
+            {
+                continue;
+            }
+            let account = run_reconnected(&run, &reconnected);
+            if run.operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        for publication in store.load_publications()? {
+            let account = reconnected.contains(&publication.review.job.account_id);
+            if publication.operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        for operation in self
+            .state
+            .health
+            .values()
+            .filter_map(|h| h.operation.as_ref())
+        {
+            let account = reconnected.contains(&operation.account_id);
+            if operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        self.connected_seen = Some(connected);
+        Ok(false)
+    }
+
     pub fn auto_resume(
         &mut self,
         store: &Store,
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) -> Result<usize, String> {
-        let connected: std::collections::BTreeSet<String> = accounts
-            .iter()
-            .filter(|(_, account)| account.connected)
-            .map(|(id, _)| id.clone())
-            .collect();
-        // The first tick cannot see a transition, so connected accounts count.
-        let reconnected: std::collections::BTreeSet<String> = match &self.connected_seen {
-            Some(seen) => connected.difference(seen).cloned().collect(),
-            None => connected.clone(),
-        };
+        let (connected, reconnected) = self.reconnections(accounts);
         self.connected_seen = Some(connected);
         let mut resumed = 0;
         let mut reviews = store.load_reviews()?;
@@ -4318,20 +4405,7 @@ impl Monitor {
             {
                 continue;
             }
-            let account = reconnected.contains(&run.job.account_id)
-                || run
-                    .selection
-                    .agent
-                    .ai_account
-                    .as_ref()
-                    .is_some_and(|ai| reconnected.contains(&ai.account_id))
-                || run
-                    .selection
-                    .configuration
-                    .as_ref()
-                    .and_then(|c| c.rubber_duck.as_ref())
-                    .and_then(|duck| duck.agent.ai_account.as_ref())
-                    .is_some_and(|ai| reconnected.contains(&ai.account_id));
+            let account = run_reconnected(run, &reconnected);
             if run.operation.auto_resume(account, now) {
                 run.error = None;
                 run.phase = "Waiting for shared AI capacity".into();

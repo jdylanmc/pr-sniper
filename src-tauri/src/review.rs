@@ -438,7 +438,7 @@ fn retired_job(run: &ReviewRun, jobs: &[QueueJob]) -> bool {
         .is_some_and(monitoring::retired)
 }
 
-fn end_retired_runs(reviews: &mut [ReviewRun], jobs: &[QueueJob]) -> bool {
+pub(crate) fn end_retired_runs(reviews: &mut [ReviewRun], jobs: &[QueueJob]) -> bool {
     let mut changed = false;
     for run in reviews {
         if matches!(

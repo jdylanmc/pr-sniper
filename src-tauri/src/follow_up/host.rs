@@ -466,18 +466,13 @@ impl Coordinator {
             }
         }
     }
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+    /// Scans `view`, a frozen copy of saved state; launch revalidates.
+    pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) || !host.follow_ups.finished() {
             return Ok(());
         }
-        let next = {
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| "Thread storage unavailable.")?;
-            next_due(&store, now_seconds()?)?
-        };
+        let next = next_due(view, now_seconds()?)?;
         if let Some(id) = next {
             Self::launch(app, &id, false)?;
         }

@@ -15,9 +15,14 @@ const OWNER_PREFIX: &str = "exit-writes:";
 
 /// Scheduler tick: add writes for newly completed exits and start the next due one.
 /// Integration point: call beside `publication::host::Coordinator::pump`.
-pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    let now = now_seconds()?;
+    // Decide on the frozen copy; lock only to admit or to read the due write.
+    if !write_pending(view, now)? {
         return Ok(());
     }
     let next = {
@@ -25,7 +30,7 @@ pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
             .store
             .lock()
             .map_err(|_| "Exit write storage unavailable.")?;
-        next_write(&store, now_seconds()?)?
+        next_write(&store, now)?
     };
     let Some(mut write) = next else {
         return Ok(());

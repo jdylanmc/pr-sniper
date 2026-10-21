@@ -24,42 +24,625 @@ const OPEN_PRS: u64 = 5;
 const PASSES: u64 = 24;
 
 #[test]
-fn heartbeat_bounds_an_unchanged_generation() {
-    let mut wake = Wake::default();
-    assert!(wake.due(0, NOW), "the first tick always runs");
-    assert!(!wake.due(0, NOW + TICK));
-    assert!(!wake.due(0, NOW + HEARTBEAT_SECONDS - 1));
-    assert!(wake.due(0, NOW + HEARTBEAT_SECONDS));
-    assert!(
-        wake.due(1, NOW + HEARTBEAT_SECONDS + TICK),
-        "a saved change wakes"
+fn deadline_heartbeat_and_transitions_gate_each_coordinator() {
+    let mut gates = Gates::default();
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.save_settings(&settings()).unwrap();
+    store
+        .write_state(
+            "backpressure.json",
+            &json!({"gates": [], "wake_at": NOW + 7}),
+        )
+        .unwrap();
+    let generations = store.generations();
+    assert_eq!(gates.due(&generations, NOW), Coordinator::ALL.to_vec());
+    gates.settle(
+        &Coordinator::ALL,
+        &generations,
+        &store.freeze().unwrap(),
+        NOW,
     );
-    assert!(!wake.due(1, NOW + HEARTBEAT_SECONDS + 2 * TICK));
+    assert!(gates.due(&generations, NOW + TICK).is_empty());
+    // A saved instant wakes exactly the coordinators that read its file.
+    let woken = gates.due(&generations, NOW + 2 * TICK);
+    assert!(woken.contains(&Coordinator::Capacity), "{woken:?}");
+    assert!(!woken.contains(&Coordinator::ExitWrites), "{woken:?}");
+    // A transition wakes only its readers.
+    store.write_state("pr-state.json", &json!({})).unwrap();
+    let woken = gates.due(&store.generations(), NOW + TICK);
+    assert!(woken.contains(&Coordinator::Publication), "{woken:?}");
+    assert!(!woken.contains(&Coordinator::ExitWrites), "{woken:?}");
+    assert!(!woken.contains(&Coordinator::Maintenance), "{woken:?}");
+    // Nothing saved at all: the heartbeat bounds in-memory transitions.
+    assert!(gates
+        .due(&generations, NOW + HEARTBEAT_SECONDS)
+        .contains(&Coordinator::Maintenance));
     // A clock that moves backwards cannot suppress work forever.
-    assert!(wake.due(1, NOW));
+    assert_eq!(
+        gates.due(&generations, NOW - 1).len(),
+        Coordinator::ALL.len()
+    );
 }
 
 #[test]
-fn bookkeeping_writes_do_not_wake_coordinators() {
+fn instants_are_found_in_saved_documents() {
+    let bytes = serde_json::to_vec_pretty(&json!({
+        "operation": {"next_attempt_at": NOW + 6, "detected_at": NOW - 9, "retry_deadline": NOW + 900},
+        "gates": [{"until": NOW + 17}],
+        "count": NOW + 3,
+        "text": "\"resume_at\": 1"
+    }))
+    .unwrap();
+    assert_eq!(
+        future_instants(&bytes, NOW),
+        vec![NOW + 6, NOW + 17, NOW + 900]
+    );
+}
+
+#[test]
+fn bookkeeping_and_progress_writes_do_not_wake_coordinators() {
     use crate::connectivity::Observation::{Reachable, Unreachable};
+    let transitions =
+        |store: &Store| -> u64 { store.generations().values().map(|c| c.transitions).sum() };
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
-    let start = store.wake_generation();
+    bloated(&store, 8);
+    let start = transitions(&store);
     store.save_queue_selection(Some("item")).unwrap();
     let mut connectivity = crate::connectivity::Connectivity::default();
     store.save_connectivity(&connectivity).unwrap();
-    assert_eq!(store.wake_generation(), start);
+    assert_eq!(transitions(&store), start);
     let scope = crate::backpressure::Scope::github("22");
     connectivity.observe(scope.clone(), Reachable, NOW);
     store.save_connectivity(&connectivity).unwrap();
-    let online = store.wake_generation();
+    let online = transitions(&store);
     assert_ne!(online, start, "a newly observed service is a change");
     connectivity.observe(scope.clone(), Reachable, NOW + 30);
     store.save_connectivity(&connectivity).unwrap();
-    assert_eq!(store.wake_generation(), online, "a repeated success is not");
+    assert_eq!(transitions(&store), online, "a repeated success is not");
     connectivity.observe(scope, Unreachable, NOW + 60);
     store.save_connectivity(&connectivity).unwrap();
-    assert_ne!(store.wake_generation(), online, "going offline is");
+    let offline = transitions(&store);
+    assert_ne!(offline, online, "going offline is");
+
+    let mut reviews = store.load_reviews().unwrap();
+    store.save_reviews(&reviews).unwrap();
+    let saved = transitions(&store);
+    reviews[0].phase = "Reading changed files".into();
+    store.save_reviews(&reviews).unwrap();
+    assert_eq!(transitions(&store), saved, "progress is not a transition");
+    reviews[0].operation.next_attempt_at = Some(NOW + 5);
+    store.save_reviews(&reviews).unwrap();
+    assert_ne!(transitions(&store), saved, "a new retry time is");
+}
+
+#[test]
+fn coordinator_inputs_cover_every_file_their_pass_reads() {
+    let root = tempfile::tempdir().unwrap();
+    let store = std::sync::Mutex::new(Store::new(root.path().into()));
+    bloated(&store.lock().unwrap(), 8);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    // Compaction is time-driven (hourly), not woken by inputs.
+    assert!(sim.gates.compaction_due(sim.now));
+    for coordinator in Coordinator::ALL {
+        store.lock().unwrap().take_state_reads();
+        let view = store.lock().unwrap().freeze().unwrap();
+        sim.pass(coordinator, &view);
+        let mut reads = store.lock().unwrap().take_state_reads();
+        reads.extend(view.take_state_reads());
+        for name in reads.keys() {
+            assert!(
+                coordinator.reads(name),
+                "{coordinator:?} reads {name} without waking for it"
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// The current scheduler: gates, frozen scans, locked writes only.
+    Gated,
+    /// The former loop: every coordinator, every tick, scans under the lock.
+    Legacy,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Stats {
+    pub(crate) ticks: usize,
+    pub(crate) passes: BTreeMap<String, usize>,
+    pub(crate) snapshots: usize,
+    pub(crate) notices: usize,
+    pub(crate) writes: BTreeMap<String, usize>,
+    pub(crate) heavy_reads: usize,
+    pub(crate) max_hold: std::time::Duration,
+    pub(crate) total_hold: std::time::Duration,
+    pub(crate) holds: BTreeMap<String, std::time::Duration>,
+}
+
+impl Stats {
+    pub(crate) fn passes(&self) -> usize {
+        self.passes.values().sum()
+    }
+}
+
+/// Scheduler model: `prepare` every tick, then the due coordinators with the
+/// same store-level steps and lock scopes as the native pumps.
+pub(crate) struct Sim<'a> {
+    store: &'a std::sync::Mutex<Store>,
+    mode: Mode,
+    gates: Gates,
+    monitor: Monitor,
+    pub(crate) ai: crate::capacity::Coordinator,
+    accounts: BTreeMap<String, AccountAvailability>,
+    pub(crate) now: i64,
+    pub(crate) stats: Stats,
+    pub(crate) dispatched: Vec<crate::capacity::Dispatch>,
+    step: &'static str,
+}
+
+impl<'a> Sim<'a> {
+    pub(crate) fn new(store: &'a std::sync::Mutex<Store>, mode: Mode) -> Self {
+        let monitor = Monitor::restore(&store.lock().unwrap()).unwrap();
+        let accounts = store
+            .lock()
+            .unwrap()
+            .load_settings()
+            .unwrap()
+            .repositories
+            .iter()
+            .filter_map(|r| r.provider_account_id.clone())
+            .map(|id| {
+                (
+                    id,
+                    AccountAvailability {
+                        login: "operator".into(),
+                        connected: true,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            store,
+            mode,
+            gates: Gates::default(),
+            monitor,
+            ai: Default::default(),
+            accounts,
+            now: NOW,
+            stats: Stats::default(),
+            dispatched: Vec::new(),
+            step: "tick",
+        }
+    }
+
+    fn locked<T>(&mut self, f: impl FnOnce(&Store, &mut Monitor) -> T) -> T {
+        let store = self.store.lock().unwrap();
+        let held = std::time::Instant::now();
+        let value = f(&store, &mut self.monitor);
+        let held = held.elapsed();
+        self.stats.max_hold = self.stats.max_hold.max(held);
+        self.stats.total_hold += held;
+        let step = self.stats.holds.entry(self.step.into()).or_default();
+        *step = (*step).max(held);
+        value
+    }
+
+    pub(crate) fn run(&mut self, seconds: i64) {
+        let end = self.now + seconds;
+        while self.now < end {
+            self.now += TICK;
+            self.tick();
+        }
+    }
+
+    pub(crate) fn tick(&mut self) -> Vec<Coordinator> {
+        self.stats.ticks += 1;
+        let (now, accounts) = (self.now, self.accounts.clone());
+        let tickets = self.locked(|store, monitor| {
+            monitor
+                .prepare_checks_with_accounts(store, &accounts, now, false)
+                .unwrap()
+        });
+        assert!(tickets.is_empty());
+        let generations = self.locked(|store, _| store.generations());
+        self.step = "prepare";
+        let due = match self.mode {
+            Mode::Gated => self.gates.due(&generations, now),
+            Mode::Legacy => Coordinator::ALL.to_vec(),
+        };
+        if !due.is_empty() {
+            self.step = "freeze";
+            let view = match self.mode {
+                Mode::Gated => self.locked(|store, _| store.freeze().unwrap()),
+                Mode::Legacy => Store::new(std::path::PathBuf::new()),
+            };
+            for &coordinator in &due {
+                self.pass(coordinator, &view);
+            }
+            if self.mode == Mode::Gated {
+                self.gates.settle(&due, &generations, &view, now);
+            }
+        }
+        self.step = "tick";
+        let (writes, reads) =
+            self.locked(|store, _| (store.take_state_writes(), store.take_state_reads()));
+        for (name, count) in writes {
+            *self.stats.writes.entry(name).or_default() += count;
+        }
+        self.stats.heavy_reads += reads
+            .into_iter()
+            .filter(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "reviews.json" | "publications.json" | "actions.json" | "feedback.json"
+                )
+            })
+            .map(|(_, count)| count)
+            .sum::<usize>();
+        due
+    }
+
+    /// One coordinator pass. Gated: scans read `view` outside the lock and
+    /// only writes lock, as in the native pumps. Legacy: all under the lock.
+    pub(crate) fn pass(&mut self, coordinator: Coordinator, view: &Store) {
+        *self
+            .stats
+            .passes
+            .entry(format!("{coordinator:?}"))
+            .or_default() += 1;
+        let (now, accounts, legacy) = (self.now, self.accounts.clone(), self.mode == Mode::Legacy);
+        self.step = match coordinator {
+            Coordinator::Maintenance => "maintenance",
+            Coordinator::Resume => "resume",
+            Coordinator::Capacity => "capacity",
+            Coordinator::Publication => "publication",
+            Coordinator::ExitWrites => "exit_writes",
+            Coordinator::FollowUps => "follow_ups",
+            Coordinator::Actions => "actions",
+            Coordinator::Notifications => "notifications",
+        };
+        // Legacy scans run on the locked live store instead of the view.
+        macro_rules! scan {
+            (|$store:ident| $body:expr) => {
+                if legacy {
+                    self.locked(|$store, _| $body)
+                } else {
+                    let $store = view;
+                    $body
+                }
+            };
+        }
+        match coordinator {
+            Coordinator::Maintenance => {
+                let compact = legacy || self.gates.compaction_due(now);
+                self.locked(|store, _| {
+                    crate::retention::recover(store).unwrap();
+                    if compact {
+                        crate::monitoring::compact_saved_queue(store).unwrap();
+                    }
+                });
+            }
+            Coordinator::Resume => {
+                if legacy || self.monitor.auto_resume_due(view, &accounts, now).unwrap() {
+                    self.locked(|store, monitor| {
+                        monitor.auto_resume(store, &accounts, now).unwrap()
+                    });
+                }
+            }
+            Coordinator::Capacity => {
+                let ai = std::mem::take(&mut self.ai);
+                if !legacy && ai.dispatch_idle(view, now).unwrap() {
+                    self.ai = ai;
+                    return;
+                }
+                let batch = self.locked(|store, _| ai.dispatch(store, now).unwrap());
+                self.ai = ai;
+                assert!(batch.errors.is_empty(), "{:?}", batch.errors);
+                self.dispatched.extend(batch.dispatched);
+            }
+            Coordinator::Publication => {
+                assert!(
+                    scan!(|store| crate::publication::host::next_candidate(store, now))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            Coordinator::ExitWrites => {
+                if scan!(|store| crate::exit_writes::write_pending(store, now)).unwrap() {
+                    assert!(self
+                        .locked(|store, _| crate::exit_writes::next_write(store, now))
+                        .unwrap()
+                        .is_none());
+                }
+            }
+            Coordinator::FollowUps => {
+                assert!(scan!(|store| crate::follow_up::host::next_due(store, now))
+                    .unwrap()
+                    .is_none());
+            }
+            Coordinator::Actions => {
+                if scan!(|store| crate::actions::prepared_expired(store, now)).unwrap() {
+                    self.locked(|store, _| crate::actions::expire_prepared(store, now))
+                        .unwrap();
+                }
+                assert!(scan!(|store| crate::actions::host::next_target(store, now))
+                    .unwrap()
+                    .is_none());
+            }
+            Coordinator::Notifications => {
+                let (snapshot_view, health) = self.locked(|store, monitor| {
+                    monitor
+                        .synchronize_configuration(store, &accounts, now)
+                        .unwrap();
+                    let view = if legacy {
+                        None
+                    } else {
+                        Some(store.freeze().unwrap())
+                    };
+                    (view, monitor.snapshot())
+                });
+                let snapshot = match &snapshot_view {
+                    Some(view) => crate::queue::snapshot(view, health).unwrap(),
+                    None => self.locked(|store, _| crate::queue::snapshot(store, health).unwrap()),
+                };
+                self.stats.snapshots += 1;
+                let notices = self.locked(|store, _| {
+                    // Deliver as the native loop does; idle windows send nothing.
+                    let frames = crate::notifications::frames(&snapshot);
+                    let mut sent = 0;
+                    while let Some(next) =
+                        crate::notifications::observe_queue(store, &snapshot, now).unwrap()
+                    {
+                        sent += 1;
+                        let notice =
+                            crate::notifications::prepare(store, &frames, &next.id, now).unwrap();
+                        crate::notifications::complete(
+                            store,
+                            &notice.id,
+                            crate::notifications::Phase::AcceptedUnconfirmed,
+                            None,
+                        )
+                        .unwrap();
+                    }
+                    sent
+                });
+                self.stats.notices += notices;
+            }
+        }
+    }
+}
+
+#[test]
+fn bloated_profile_settles_to_idle_without_rewrites() {
+    let root = tempfile::tempdir().unwrap();
+    let store = std::sync::Mutex::new(Store::new(root.path().into()));
+    {
+        let store = store.lock().unwrap();
+        bloated(&store, 64);
+        let jobs = store.load_queue().unwrap().len();
+        assert!(jobs >= 1_400, "{jobs}");
+        // Startup compaction drops unreviewed retired passes but keeps every
+        // entry evidence would restore and each PR's newest pass.
+        let removed = crate::monitoring::compact_saved_queue(&store).unwrap();
+        assert_eq!(removed, MERGED_PRS as usize * 2 + OPEN_PRS as usize * 2);
+        assert_eq!(crate::monitoring::compact_saved_queue(&store).unwrap(), 0);
+    }
+    let mut sim = Sim::new(&store, Mode::Gated);
+    // Settle whatever the first passes adopt, then observe five idle minutes.
+    sim.run(2 * TICK);
+    sim.stats = Stats::default();
+    sim.run(300);
+    let idle = sim.stats;
+    assert_eq!(idle.ticks, 60);
+    assert_eq!(idle.notices, 0);
+    assert!(
+        idle.writes.is_empty(),
+        "an unchanged store must never be rewritten: {:?}",
+        idle.writes
+    );
+    // Only heartbeats: nothing re-triggers itself.
+    let heartbeats = (300 / HEARTBEAT_SECONDS) as usize;
+    for (coordinator, passes) in &idle.passes {
+        assert!(*passes <= heartbeats, "{coordinator}: {passes}");
+    }
+    let mut legacy = Sim::new(&store, Mode::Legacy);
+    legacy.run(4 * TICK);
+    assert!(legacy.stats.writes.is_empty(), "{:?}", legacy.stats.writes);
+    assert_eq!(legacy.stats.passes(), 4 * Coordinator::ALL.len());
+    // Idle ticks touch none of the large stores; only gated passes do.
+    assert!(
+        idle.heavy_reads * legacy.stats.ticks * 10 <= legacy.stats.heavy_reads * idle.ticks,
+        "{} reads in {} gated ticks vs {} in {} legacy",
+        idle.heavy_reads,
+        idle.ticks,
+        legacy.stats.heavy_reads,
+        legacy.stats.ticks
+    );
+}
+
+/// Ticks until a coordinator dispatches; panics after `limit` seconds.
+fn ticks_until_dispatch(sim: &mut Sim, limit: i64) -> i64 {
+    let start = sim.now;
+    while sim.dispatched.is_empty() {
+        assert!(sim.now - start < limit, "nothing dispatched in {limit} s");
+        sim.now += TICK;
+        sim.tick();
+    }
+    sim.now
+}
+
+fn finish(sim: &mut Sim, error: crate::review::Failure) -> i64 {
+    let work = sim.dispatched.remove(0);
+    let key = work.key();
+    let crate::capacity::Dispatch::Review(run, _) = work;
+    let now = sim.now + 1;
+    crate::review::host::complete(
+        &sim.store.lock().unwrap(),
+        &run.operation.id,
+        Err(error),
+        now,
+    )
+    .unwrap();
+    sim.ai.release(&key, &run.operation.id).unwrap();
+    now
+}
+
+fn retried(store: &std::sync::Mutex<Store>) -> i64 {
+    let reviews = store.lock().unwrap().load_reviews().unwrap();
+    reviews[0].operation.next_attempt_at.unwrap()
+}
+
+fn assert_next_tick(sim: &mut Sim, due: i64) {
+    let dispatched = ticks_until_dispatch(sim, HEARTBEAT_SECONDS);
+    assert!(
+        (due..due + TICK).contains(&dispatched),
+        "due at {due}, dispatched at {dispatched}"
+    );
+}
+
+#[test]
+fn transient_retry_dispatches_on_the_first_tick_after_it_is_due() {
+    let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    ticks_until_dispatch(&mut sim, TICK * 2);
+    finish(&mut sim, crate::review::Failure::provider("transient"));
+    let due = retried(&store);
+    assert!(
+        due > sim.now + TICK,
+        "retry {due} must outlive the next tick"
+    );
+    assert_next_tick(&mut sim, due);
+}
+
+#[test]
+fn provider_retry_after_dispatches_on_the_first_tick_after_it_is_due() {
+    let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    ticks_until_dispatch(&mut sim, TICK * 2);
+    let mut limited = crate::review::Failure::provider("rate limited");
+    limited.kind = crate::monitoring::OperationFailure::RateLimited;
+    limited.retry_after_seconds = Some(17);
+    let failed_at = finish(&mut sim, limited);
+    let due = retried(&store);
+    assert_eq!(due, failed_at + 17);
+    assert_next_tick(&mut sim, due);
+}
+
+#[test]
+fn superseded_retry_dispatches_on_the_first_tick_after_it_is_due() {
+    let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    ticks_until_dispatch(&mut sim, TICK * 2);
+    let work = sim.dispatched.remove(0);
+    let key = work.key();
+    let crate::capacity::Dispatch::Review(run, _) = work;
+    let superseded_at = sim.now + 1;
+    {
+        let store = store.lock().unwrap();
+        let mut reviews = store.load_reviews().unwrap();
+        let saved = reviews
+            .iter_mut()
+            .find(|r| r.operation.id == run.operation.id)
+            .unwrap();
+        saved.operation.requeue_superseded(superseded_at, None);
+        store.save_reviews(&reviews).unwrap();
+    }
+    sim.ai.release(&key, &run.operation.id).unwrap();
+    let due = retried(&store);
+    assert_eq!(due, superseded_at + 30);
+    assert_next_tick(&mut sim, due);
+}
+
+#[test]
+fn running_review_progress_neither_wakes_coordinators_nor_waits_on_scans() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = tempfile::tempdir().unwrap();
+    let store = std::sync::Mutex::new(Store::new(root.path().into()));
+    // Live byte sizes (reviews ~74 MB) for local release measurement: 17000.
+    let scale = std::env::var("PR_SNIPER_FIXTURE_SCALE")
+        .ok()
+        .and_then(|scale| scale.parse().ok())
+        .unwrap_or(256);
+    bloated(&store.lock().unwrap(), scale);
+    let measure = |mode: Mode, seconds: i64| {
+        let stop = AtomicBool::new(false);
+        let (sim, progress) = std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                let mut saves = 0usize;
+                let mut wait = std::time::Duration::ZERO;
+                while !stop.load(Ordering::SeqCst) {
+                    let asked = std::time::Instant::now();
+                    let store = store.lock().unwrap();
+                    wait = wait.max(asked.elapsed());
+                    let mut reviews = store.load_reviews().unwrap();
+                    reviews[saves % 4].phase = format!("Reading file {saves}");
+                    store.save_reviews(&reviews).unwrap();
+                    drop(store);
+                    saves += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                (saves, wait)
+            });
+            let mut sim = Sim::new(&store, mode);
+            sim.run(2 * TICK);
+            sim.stats = Stats::default();
+            sim.run(seconds);
+            stop.store(true, Ordering::SeqCst);
+            (sim.stats, writer.join().unwrap())
+        });
+        (sim, progress)
+    };
+    let (legacy, (legacy_saves, legacy_wait)) = measure(Mode::Legacy, 30);
+    let (gated, (gated_saves, gated_wait)) = measure(Mode::Gated, 120);
+    eprintln!(
+        "active load legacy: {} passes, max hold {:?}, total hold {:?}, writer {} saves, max wait {:?}",
+        legacy.passes(),
+        legacy.max_hold,
+        legacy.total_hold,
+        legacy_saves,
+        legacy_wait
+    );
+    eprintln!("active load legacy holds: {:?}", legacy.holds);
+    eprintln!("active load gated holds: {:?}", gated.holds);
+    eprintln!(
+        "active load gated: {} passes, max hold {:?}, total hold {:?}, writer {} saves, max wait {:?}",
+        gated.passes(),
+        gated.max_hold,
+        gated.total_hold,
+        gated_saves,
+        gated_wait
+    );
+    assert!(gated_saves > 0 && legacy_saves > 0);
+    // Progress writes wake nobody: at most one pass per coordinator per
+    // heartbeat while reviews keep saving.
+    let heartbeats = (120 / HEARTBEAT_SECONDS) as usize + 1;
+    for (coordinator, passes) in &gated.passes {
+        assert!(*passes <= heartbeats, "{coordinator}: {passes}");
+    }
+    assert_eq!(legacy.passes(), 6 * Coordinator::ALL.len());
+    // Scans parse outside the lock: the longest hold is a fraction of the
+    // former locked snapshot, the Store is held far less per tick, and a
+    // review saving progress waits far less for it.
+    assert!(
+        gated.max_hold * 4 <= legacy.max_hold,
+        "gated {:?} vs legacy {:?}",
+        gated.max_hold,
+        legacy.max_hold
+    );
+    assert!(gated.max_hold < std::time::Duration::from_millis(250));
+    assert!(
+        gated.total_hold.as_secs_f64() / gated.ticks as f64 * 10.0
+            <= legacy.total_hold.as_secs_f64() / legacy.ticks as f64
+    );
+    assert!(
+        gated_wait * 4 <= legacy_wait,
+        "writer waited {gated_wait:?} vs {legacy_wait:?}"
+    );
 }
 
 fn settings() -> Settings {
@@ -254,137 +837,6 @@ pub(crate) fn bloated(store: &Store, scale: usize) {
         )
         .unwrap();
     }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Idle {
-    pub(crate) ticks: usize,
-    pub(crate) passes: usize,
-    pub(crate) snapshots: usize,
-    pub(crate) notices: usize,
-    pub(crate) writes: BTreeMap<String, usize>,
-    pub(crate) heavy_reads: usize,
-}
-
-/// One scheduler window: `prepare` runs every tick exactly as in the native
-/// loop; the coordinator passes run when `Wake` allows (or always, ungated).
-/// Coordinator steps are the same store-level functions the native pumps call.
-pub(crate) fn simulate(store: &Store, seconds: i64, gated: bool) -> Idle {
-    let accounts: BTreeMap<_, _> = [(
-        "22".to_string(),
-        AccountAvailability {
-            login: "operator".into(),
-            connected: true,
-        },
-    )]
-    .into();
-    let mut monitor = Monitor::restore(store).unwrap();
-    let ai = crate::capacity::Coordinator::default();
-    let mut wake = Wake::default();
-    let mut idle = Idle::default();
-    store.take_state_writes();
-    store.take_state_reads();
-    let mut now = NOW;
-    while now < NOW + seconds {
-        now += TICK;
-        idle.ticks += 1;
-        assert!(monitor
-            .prepare_checks_with_accounts(store, &accounts, now, false)
-            .unwrap()
-            .is_empty());
-        if !gated || wake.due(store.wake_generation(), now) {
-            idle.passes += 1;
-            crate::retention::recover(store).unwrap();
-            crate::monitoring::compact_saved_queue(store).unwrap();
-            monitor.auto_resume(store, &accounts, now).unwrap();
-            assert!(ai.dispatch(store, now).unwrap().dispatched.is_empty());
-            assert!(crate::publication::host::next_candidate(store, now)
-                .unwrap()
-                .is_none());
-            assert!(crate::exit_writes::next_write(store, now)
-                .unwrap()
-                .is_none());
-            assert!(crate::follow_up::host::next_due(store, now)
-                .unwrap()
-                .is_none());
-            assert!(crate::actions::host::next_target(store, now)
-                .unwrap()
-                .is_none());
-            let snapshot = crate::queue::snapshot(store, monitor.snapshot()).unwrap();
-            idle.snapshots += 2;
-            // Deliver as the native loop does; idle windows must send nothing.
-            let frames = crate::notifications::frames(&snapshot);
-            while let Some(next) =
-                crate::notifications::observe_queue(store, &snapshot, now).unwrap()
-            {
-                idle.notices += 1;
-                let notice = crate::notifications::prepare(store, &frames, &next.id, now).unwrap();
-                crate::notifications::complete(
-                    store,
-                    &notice.id,
-                    crate::notifications::Phase::AcceptedUnconfirmed,
-                    None,
-                )
-                .unwrap();
-            }
-        }
-        for (name, count) in store.take_state_writes() {
-            *idle.writes.entry(name).or_default() += count;
-        }
-        idle.heavy_reads += store
-            .take_state_reads()
-            .into_iter()
-            .filter(|(name, _)| {
-                matches!(
-                    name.as_str(),
-                    "reviews.json" | "publications.json" | "actions.json" | "feedback.json"
-                )
-            })
-            .map(|(_, count)| count)
-            .sum::<usize>();
-    }
-    idle
-}
-
-#[test]
-fn bloated_profile_settles_to_idle_without_rewrites() {
-    let root = tempfile::tempdir().unwrap();
-    let store = Store::new(root.path().into());
-    bloated(&store, 64);
-    let jobs = store.load_queue().unwrap().len();
-    assert!(jobs >= 1_400, "{jobs}");
-    // Startup compaction drops unreviewed retired passes but keeps every
-    // entry evidence would restore and each PR's newest pass.
-    let removed = crate::monitoring::compact_saved_queue(&store).unwrap();
-    assert_eq!(removed, MERGED_PRS as usize * 2 + OPEN_PRS as usize * 2);
-    assert_eq!(crate::monitoring::compact_saved_queue(&store).unwrap(), 0);
-
-    // Settle whatever the first pass adopts, then observe five idle minutes.
-    simulate(&store, TICK, true);
-    let idle = simulate(&store, 300, true);
-    assert_eq!(idle.ticks, 60);
-    assert_eq!(idle.notices, 0);
-    assert!(
-        idle.writes.is_empty(),
-        "an unchanged store must never be rewritten: {:?}",
-        idle.writes
-    );
-    // One pass at start plus one per heartbeat; nothing re-triggers itself.
-    assert_eq!(idle.passes, (300 / HEARTBEAT_SECONDS) as usize);
-    assert!(idle.snapshots <= 2 * idle.passes);
-    // The former loop ran every coordinator on every 5 s tick.
-    let ungated = simulate(&store, 20, false);
-    assert!(ungated.writes.is_empty(), "{:?}", ungated.writes);
-    assert_eq!(ungated.passes, ungated.ticks);
-    // Idle ticks touch none of the large stores; only gated passes do.
-    assert!(
-        idle.heavy_reads * ungated.ticks * 10 <= ungated.heavy_reads * idle.ticks,
-        "{} reads in {} gated ticks vs {} in {} ungated",
-        idle.heavy_reads,
-        idle.ticks,
-        ungated.heavy_reads,
-        ungated.ticks
-    );
 }
 
 #[test]

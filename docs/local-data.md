@@ -79,6 +79,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 ## Queue compaction and idle scheduling
 
-- Startup and each maintenance pass drop retired `queue.json` entries (`monitoring::retired`) that nothing reads again. Kept: live, `repository_disabled` and legacy entries; entries matched by saved reviews, publications or follow-ups; each PR assignment's newest pass; one entry per revision; PRs with unresolved legacy mentions. Saved via the atomic queue write; idempotent; never lowers enqueue order.
-- The 5 s scheduler always runs connectivity and poll checks. Coordinators (capacity, publication, exit writes, follow-ups, actions, notifications, maintenance) run only when saved state changed or the 60 s heartbeat elapses (`src-tauri/src/wake.rs`).
-- Liveness probes, the result index and the queue selection do not wake coordinators. An unchanged pass writes nothing, so a quiet profile stays idle.
+- Startup and an hourly maintenance pass drop retired `queue.json` entries (`monitoring::retired`) that nothing reads again. Kept: live, `repository_disabled` and legacy entries; entries matched by saved reviews, publications or follow-ups; each PR assignment's newest pass; one entry per revision; PRs with unresolved legacy mentions. Saved via the atomic queue write; idempotent; never lowers enqueue order.
+- The 5 s scheduler always runs connectivity and poll checks. Each coordinator (maintenance, resume, capacity, publication, exit writes, follow-ups, actions, notifications) runs only when a saved file it reads records a transition, when a saved instant in those files (`*_at`, `*until`, `*deadline`) arrives, or after the 60 s heartbeat (`src-tauri/src/wake.rs`).
+- Not transitions: liveness probes (unless reachability changes), the result index, the queue selection, and running-review progress (phase label, duck calls). An unchanged pass writes nothing.
+- Scans parse a frozen byte copy of saved state taken under the Store lock (`Store::freeze`); only writes take the lock.

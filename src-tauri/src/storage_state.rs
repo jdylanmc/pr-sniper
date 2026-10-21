@@ -62,7 +62,8 @@ impl Store {
                     migrated = true;
                 }
             }
-            if migrated {
+            // A read-only snapshot migrates in memory; the next real load saves.
+            if migrated && !self.is_frozen() {
                 // Pin proof before returning it, including index reads. Do not
                 // recursively refresh the index that may have requested this load.
                 crate::retention::mark_activity_pending(self)?;
@@ -147,7 +148,7 @@ impl Store {
         crate::retention::guard(self)?;
         self.write_state("connectivity.json", state)?;
         if changed {
-            self.wake();
+            self.wake_file("connectivity.json");
         }
         Ok(())
     }
@@ -244,7 +245,18 @@ impl Store {
 
     pub fn save_reviews(&self, reviews: &[crate::review::ReviewRun]) -> Result<(), String> {
         crate::retention::reject_cleaned(self, reviews.iter().map(|r| r.job.clone()))?;
-        self.commit_operational("reviews.json", reviews)
+        let fingerprint = review_transitions(reviews);
+        if self.same_transition("reviews.json", fingerprint) {
+            // Progress of a running review: saved and marked for the result
+            // index (rebuilt when read), but it wakes no coordinator.
+            crate::retention::guard(self)?;
+            crate::retention::mark_activity_pending(self)?;
+            return self.write_state_as("reviews.json", reviews, Some(fingerprint));
+        }
+        crate::retention::guard(self)?;
+        crate::retention::mark_activity_pending(self)?;
+        self.write_state_as("reviews.json", reviews, Some(fingerprint))?;
+        crate::retention::refresh(self)
     }
 
     /// Publication records retain their immutable originating review even if an
@@ -336,4 +348,44 @@ impl Store {
         self.write_state(name, value)?;
         crate::retention::refresh(self)
     }
+}
+
+/// Hash of the review facts coordinators act on: identity, job, operation
+/// (state, attempts, deadlines, failure), error and whether context, packet
+/// and result exist. Those three are set once, alongside an operation
+/// change. Running progress (phase label, duck calls) is excluded.
+fn review_transitions(reviews: &[crate::review::ReviewRun]) -> u64 {
+    use std::hash::Hasher;
+    struct Hashing(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for Hashing {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut hashing = Hashing(Default::default());
+    for run in reviews {
+        let _ = serde_json::to_writer(
+            &mut hashing,
+            &(
+                run.feedback_context.is_some(),
+                &run.key,
+                &run.assignment_id,
+                &run.job,
+                &run.selection.agent.id,
+                &run.operation,
+                run.manual_start,
+                run.trust_confirmed,
+                &run.error,
+                run.result.is_some(),
+                &run.mode,
+                run.packet.is_some(),
+                &run.failed_duck,
+            ),
+        );
+    }
+    hashing.0.finish()
 }

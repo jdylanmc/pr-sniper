@@ -390,11 +390,11 @@ pub(crate) fn prepare_next_effect(
 }
 
 /// The item whose provider state should be observed next, if any.
+/// Read-only: selection never writes, so it can scan a frozen copy.
 pub(crate) fn next_target(store: &Store, now: i64) -> Result<Option<queue::Item>, String> {
     if store.load_automation()?.paused {
         return Ok(None);
     }
-    expire_prepared(store, now)?;
     let snapshot = queue::normal_snapshot(store, vec![])?;
     let ledger = store.load_actions()?;
     let unadopted = packet::unadopted(store, &ledger)?;
@@ -424,7 +424,20 @@ impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|v| !*v)
     }
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+    /// `pump` against a copy of saved state taken now.
+    pub(crate) fn pump_fresh(app: &tauri::AppHandle) -> Result<(), String> {
+        let view = app
+            .state::<Host>()
+            .store
+            .lock()
+            .map_err(|_| "Action storage unavailable.")?
+            .freeze()?;
+        Self::pump(app, &view)
+    }
+
+    /// Selects on `view`, a frozen copy of saved state; the worker
+    /// revalidates under the Store lock before any provider effect.
+    pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Ok(());
@@ -437,13 +450,18 @@ impl Coordinator {
         if *active {
             return Ok(());
         }
-        let target = {
+        let now = now_seconds()?;
+        if view.load_automation()?.paused {
+            return Ok(());
+        }
+        if prepared_expired(view, now)? {
             let store = host
                 .store
                 .lock()
                 .map_err(|_| "Action storage unavailable.")?;
-            next_target(&store, now_seconds()?)?
-        };
+            expire_prepared(&store, now)?;
+        }
+        let target = next_target(view, now)?;
         let Some(target) = target else {
             return Ok(());
         };
@@ -586,7 +604,7 @@ pub(crate) fn reconcile_provider_action(app: tauri::AppHandle, id: String) -> Re
         request_reconciliation(&store, &id, now_seconds()?)?;
     }
 
-    Coordinator::pump(&app)
+    Coordinator::pump_fresh(&app)
 }
 
 #[tauri::command]
@@ -602,5 +620,5 @@ pub(crate) fn retry_action_observation(
             .map_err(|_| "Action storage unavailable.")?;
         request_observation_retry(&store, &item_id, now_seconds()?)?;
     }
-    Coordinator::pump(&app)
+    Coordinator::pump_fresh(&app)
 }

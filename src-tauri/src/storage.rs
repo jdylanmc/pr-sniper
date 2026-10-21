@@ -1383,11 +1383,25 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
     }
 }
 
+/// Saved bytes by (directory, file name) in a frozen copy.
+type FrozenFiles = BTreeMap<(String, String), Vec<u8>>;
+
+/// Saved-file counters; see `Store::generations`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Counter {
+    pub(crate) writes: u64,
+    pub(crate) transitions: u64,
+    fingerprint: Option<u64>,
+}
+
 pub struct Store {
     root: PathBuf,
     initial_time_zone: String,
-    /// Bumped by every write that can change what a coordinator would do.
-    wake: std::sync::atomic::AtomicU64,
+    /// Per saved file: every write, and the writes that can give a
+    /// coordinator work (transitions, not progress or bookkeeping).
+    counters: std::sync::Mutex<BTreeMap<String, Counter>>,
+    /// Read-only point-in-time copy for scans outside the Store lock.
+    frozen: Option<std::sync::Arc<FrozenFiles>>,
     #[cfg(test)]
     state_writes: std::sync::Mutex<BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -1401,7 +1415,8 @@ impl Store {
         Self {
             root,
             initial_time_zone: "UTC".into(),
-            wake: std::sync::atomic::AtomicU64::new(0),
+            counters: std::sync::Mutex::new(BTreeMap::new()),
+            frozen: None,
             #[cfg(test)]
             state_writes: std::sync::Mutex::new(BTreeMap::new()),
             #[cfg(test)]
@@ -1428,14 +1443,111 @@ impl Store {
         std::mem::take(&mut *self.state_writes.lock().unwrap())
     }
 
-    /// Changes whenever saved state that coordinators act on changes. Idle
-    /// scheduler ticks compare it instead of rebuilding derived snapshots.
-    pub(crate) fn wake_generation(&self) -> u64 {
-        self.wake.load(std::sync::atomic::Ordering::SeqCst)
+    /// Per-file write and transition counters since this Store opened. Idle
+    /// scheduler ticks compare them instead of rebuilding derived snapshots.
+    pub(crate) fn generations(&self) -> BTreeMap<String, Counter> {
+        self.counters
+            .lock()
+            .map(|counters| counters.clone())
+            .unwrap_or_default()
     }
 
-    pub(crate) fn wake(&self) {
-        self.wake.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    /// Records a transition in `name` that its write alone did not signal.
+    pub(crate) fn wake_file(&self, name: &str) {
+        if let Ok(mut counters) = self.counters.lock() {
+            counters.entry(name.into()).or_default().transitions += 1;
+        }
+    }
+
+    /// Whether `fingerprint` equals the transition fingerprint of the last
+    /// write to `name`, i.e. a new write would only record progress.
+    pub(crate) fn same_transition(&self, name: &str, fingerprint: u64) -> bool {
+        self.counters.lock().is_ok_and(|counters| {
+            counters.get(name).and_then(|c| c.fingerprint) == Some(fingerprint)
+        })
+    }
+
+    fn record_write(&self, name: &str, fingerprint: Option<u64>) {
+        let Ok(mut counters) = self.counters.lock() else {
+            return;
+        };
+        let counter = counters.entry(name.into()).or_default();
+        counter.writes += 1;
+        // Liveness probes and derived indexes are bookkeeping; they never
+        // create work, so they must not wake the coordinators that wrote them.
+        let bookkeeping = matches!(
+            name,
+            "connectivity.json"
+                | "result-index.json"
+                | "result-index-pending.json"
+                | "queue-selection.json"
+        );
+        if !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint) {
+            counter.transitions += 1;
+        }
+        counter.fingerprint = fingerprint;
+    }
+
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen.is_some()
+    }
+
+    /// A consistent read-only copy of saved state. Take it under the Store
+    /// lock (cheap byte copies), then parse and project without holding it.
+    pub(crate) fn freeze(&self) -> Result<Store, String> {
+        if let Some(frozen) = &self.frozen {
+            return Ok(self.frozen_with(frozen.clone()));
+        }
+        // Creates default settings first, as an ordinary read would.
+        self.load_settings()?;
+        let mut files = BTreeMap::new();
+        let unreadable = |_| "Cannot snapshot local state.".to_string();
+        let settings = self
+            .read_file("config", "settings.json")
+            .map_err(unreadable)?;
+        files.insert(
+            ("config".to_string(), "settings.json".to_string()),
+            settings,
+        );
+        let directory = self.root.join("state");
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>().map_err(unreadable)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(unreadable(error)),
+        };
+        for entry in entries {
+            let Some(name) = entry.file_name().to_str().map(String::from) else {
+                continue;
+            };
+            if !name.ends_with(".json") || name.contains(".pr-sniper-write-") {
+                continue;
+            }
+            match private_fs::read(&directory.join(&name)) {
+                Ok(bytes) => {
+                    files.insert(("state".to_string(), name), bytes);
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(unreadable(error)),
+            }
+        }
+        Ok(self.frozen_with(std::sync::Arc::new(files)))
+    }
+
+    fn frozen_with(&self, files: std::sync::Arc<FrozenFiles>) -> Store {
+        let mut view =
+            Store::new(self.root.clone()).with_initial_time_zone(self.initial_time_zone.clone());
+        view.frozen = Some(files);
+        view
+    }
+
+    /// Names of saved state files in this frozen copy.
+    pub(crate) fn frozen_state_files(&self) -> Vec<&str> {
+        self.frozen
+            .iter()
+            .flat_map(|files| files.keys())
+            .filter(|(directory, _)| directory == "state")
+            .map(|(_, name)| name.as_str())
+            .collect()
     }
 
     #[cfg(test)]
@@ -1478,6 +1590,20 @@ impl Store {
                 }
             }
         }
+        self.write_state_as(name, value, None)
+    }
+
+    /// `write_state` carrying a transition fingerprint: an unchanged
+    /// fingerprint records progress without waking coordinators.
+    pub(crate) fn write_state_as<T: Serialize + ?Sized>(
+        &self,
+        name: &str,
+        value: &T,
+        fingerprint: Option<u64>,
+    ) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Err("A read-only state snapshot cannot be saved.".into());
+        }
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
@@ -1493,17 +1619,7 @@ impl Store {
                 .or_default() += 1;
         }
         let result = private_fs::replace(&directory.join(name), &bytes, "monitoring state");
-        // Liveness probes and derived indexes are bookkeeping; they never
-        // create work, so they must not wake the coordinators that wrote them.
-        if !matches!(
-            name,
-            "connectivity.json"
-                | "result-index.json"
-                | "result-index-pending.json"
-                | "queue-selection.json"
-        ) {
-            self.wake();
-        }
+        self.record_write(name, fingerprint);
         result
     }
 
@@ -1541,6 +1657,12 @@ impl Store {
     }
 
     fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
+        if let Some(files) = &self.frozen {
+            return files
+                .get(&(directory.to_string(), name.to_string()))
+                .cloned()
+                .ok_or_else(|| ErrorKind::NotFound.into());
+        }
         private_fs::existing_directory(&self.root)?;
         let directory = self.root.join(directory);
         private_fs::existing_directory(&directory)?;
@@ -2037,13 +2159,16 @@ impl Store {
     }
 
     fn write_settings(&self, settings: &Settings) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Err("A read-only state snapshot cannot be saved.".into());
+        }
         let directory = self
             .directory("config")
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
         let result = private_fs::replace(&directory.join("settings.json"), &bytes, "settings");
-        self.wake();
+        self.record_write("settings.json", None);
         result
     }
 

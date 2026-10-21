@@ -1231,22 +1231,26 @@ async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<queue::Snapshot, S
 }
 
 fn queue_snapshot(host: &Host) -> Result<queue::Snapshot, String> {
-    let _generation = host
-        .github_generations
-        .lock()
-        .map_err(|_| "Monitoring coordination is unavailable.")?;
-    let accounts = host
-        .github_auth
-        .lock()
-        .map_err(|_| "GitHub connection state is unavailable.")?
-        .monitoring_accounts();
-    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
-    let mut monitor = host
-        .monitor
-        .lock()
-        .map_err(|_| "Monitoring is unavailable.")?;
-    monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
-    queue::snapshot(&store, monitor.snapshot())
+    let (view, health) = {
+        let _generation = host
+            .github_generations
+            .lock()
+            .map_err(|_| "Monitoring coordination is unavailable.")?;
+        let accounts = host
+            .github_auth
+            .lock()
+            .map_err(|_| "GitHub connection state is unavailable.")?
+            .monitoring_accounts();
+        let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+        let mut monitor = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?;
+        monitor.synchronize_configuration(&store, &accounts, now_seconds()?)?;
+        (store.freeze()?, monitor.snapshot())
+    };
+    // Projection parses every saved review; never hold the Store lock for it.
+    queue::snapshot(&view, health)
 }
 
 #[tauri::command]
@@ -1288,6 +1292,7 @@ async fn result_detail(
 fn retention_maintenance(
     app: &tauri::AppHandle,
     clean: Option<&dyn Fn(&monitoring::TrackedPullRequest) -> bool>,
+    compact: bool,
 ) -> Result<usize, String> {
     let host = app.state::<Host>();
     // Existing launchers take these locks before Store. Nonblocking acquisition
@@ -1322,7 +1327,7 @@ fn retention_maintenance(
     }
     // Applying journals already excluded all related workers before cutover.
     retention::recover(&store)?;
-    if clean.is_none() {
+    if compact && clean.is_none() {
         monitoring::compact_saved_queue(&store)?;
     }
     match clean {
@@ -1354,7 +1359,7 @@ async fn clean_reviewed(app: tauri::AppHandle, item_id: Option<String>) -> Resul
         let select = |scope: &monitoring::TrackedPullRequest| {
             item_id.as_deref().is_none_or(|id| scope.item_id == id)
         };
-        retention_maintenance(&app, Some(&select))
+        retention_maintenance(&app, Some(&select), false)
     })
     .await
     .map_err(|_| "Cleanup could not run.".to_string())?
@@ -1510,7 +1515,7 @@ fn finish_monitored_ticket(
     }
 }
 
-fn auto_resume_parked(app: &tauri::AppHandle) -> Result<(), String> {
+fn auto_resume_parked(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
     let host = app.state::<Host>();
     let mut accounts = host
         .github_auth
@@ -1524,6 +1529,15 @@ fn auto_resume_parked(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|_| "Copilot connection state is unavailable.")?
             .monitoring_accounts(),
     );
+    // Probe the frozen copy first; take the Store lock only to resume.
+    if !host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?
+        .auto_resume_due(view, &accounts, now_seconds()?)?
+    {
+        return Ok(());
+    }
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
     host.monitor
         .lock()
@@ -1697,7 +1711,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
             };
             if continue_checks && !host.quitting.load(Ordering::SeqCst) {
-                if let Err(error) = retention_maintenance(&app, None) {
+                if let Err(error) = retention_maintenance(&app, None, false) {
                     report(&app, error);
                 }
                 if let Err(error) = start_checks(&app, false) {
@@ -3883,7 +3897,13 @@ fn confirm_github_account(
         if let Ok(mut monitor) = host.monitor.lock() {
             monitor.credentials_renewed(&account_id);
         }
-        if let Err(error) = auto_resume_parked(&app) {
+        let resumed = host
+            .store
+            .lock()
+            .map_err(|_| "Storage is unavailable.".to_string())
+            .and_then(|store| store.freeze())
+            .and_then(|frozen| auto_resume_parked(&app, &frozen));
+        if let Err(error) = resumed {
             report(&app, error);
         }
     }
@@ -4495,7 +4515,7 @@ pub fn run() {
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut wake = wake::Wake::default();
+                let mut gates = wake::Gates::default();
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     let host = scheduler_app.state::<Host>();
@@ -4508,37 +4528,69 @@ pub fn run() {
                     if let Err(error) = start_checks(&scheduler_app, false) {
                         report(&scheduler_app, error);
                     }
+                    let now = now_seconds().unwrap_or(i64::MAX);
                     // Sample before the gated passes: their own writes wake
                     // the next tick once, then an unchanged store settles.
-                    let generation = match host.store.lock() {
-                        Ok(store) => store.wake_generation(),
+                    let generations = match host.store.lock() {
+                        Ok(store) => store.generations(),
                         Err(_) => continue,
                     };
-                    if !wake.due(generation, now_seconds().unwrap_or(i64::MAX)) {
+                    let mut due = gates.due(&generations, now);
+                    let mut deferred = Vec::new();
+                    if due.is_empty() {
                         continue;
                     }
-                    if let Err(error) = retention_maintenance(&scheduler_app, None) {
-                        report(&scheduler_app, error);
+                    // Byte copy under the lock; every scan below parses it
+                    // without holding Store against UI commands and workers.
+                    let view = match host
+                        .store
+                        .lock()
+                        .map_err(|_| "Storage is unavailable.".to_string())
+                        .and_then(|store| store.freeze())
+                    {
+                        Ok(view) => view,
+                        Err(error) => {
+                            report(&scheduler_app, error);
+                            continue;
+                        }
+                    };
+                    for coordinator in &due {
+                        let result = match coordinator {
+                            wake::Coordinator::Maintenance => {
+                                let compact = gates.compaction_due(now);
+                                retention_maintenance(&scheduler_app, None, compact).map(|_| ())
+                            }
+                            wake::Coordinator::Resume => auto_resume_parked(&scheduler_app, &view),
+                            wake::Coordinator::Capacity => {
+                                capacity::Coordinator::pump_scheduled(&scheduler_app, &view)
+                            }
+                            wake::Coordinator::Publication => {
+                                publication::host::Coordinator::pump(&scheduler_app, &view)
+                            }
+                            wake::Coordinator::ExitWrites => {
+                                exit_writes::host::pump(&scheduler_app, &view)
+                            }
+                            wake::Coordinator::FollowUps => {
+                                follow_up::host::Coordinator::pump(&scheduler_app, &view)
+                            }
+                            wake::Coordinator::Actions => {
+                                actions::host::Coordinator::pump(&scheduler_app, &view)
+                            }
+                            wake::Coordinator::Notifications => {
+                                // A run already in flight may predate this
+                                // change: stay due rather than settle.
+                                if !notifications::host::Coordinator::pump(&scheduler_app) {
+                                    deferred.push(*coordinator);
+                                }
+                                Ok(())
+                            }
+                        };
+                        if let Err(error) = result {
+                            report(&scheduler_app, error);
+                        }
                     }
-                    if let Err(error) = auto_resume_parked(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = capacity::Coordinator::pump(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = publication::host::Coordinator::pump(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = exit_writes::host::pump(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = follow_up::host::Coordinator::pump(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = actions::host::Coordinator::pump(&scheduler_app) {
-                        report(&scheduler_app, error);
-                    }
-                    notifications::host::Coordinator::pump(&scheduler_app);
+                    due.retain(|coordinator| !deferred.contains(coordinator));
+                    gates.settle(&due, &generations, &view, now);
                 }
             });
             let menu = Menu::new(app)?;

@@ -125,6 +125,17 @@ pub fn record(
     store.save_connectivity(&state)
 }
 
+/// Whether `sync_operation` would change the saved suspension; read-only.
+pub(crate) fn would_sync(operation: &JobOperation, since: Option<i64>, now: i64) -> bool {
+    let mut probe = operation.clone();
+    if let Some(since) = since {
+        probe.freeze_offline(since.max(probe.initial_attempt_at));
+    } else if probe.state != OperationState::Running {
+        probe.resume_online(now);
+    }
+    probe.offline_since != operation.offline_since
+}
+
 pub fn sync_operation(store: &Store, operation: &mut JobOperation, since: Option<i64>, now: i64) {
     let before = operation.offline_since;
     if let Some(since) = since {
