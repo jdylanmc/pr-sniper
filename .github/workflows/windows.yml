@@ -13,10 +13,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  windows:
+  windows-checks:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -44,35 +47,83 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
         timeout-minutes: 5
-      - name: Cache Rust dependencies (main writes only)
+      - name: Restore Rust dependencies (never writes)
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         timeout-minutes: 10
         with:
           workspaces: src-tauri -> target
-          key: windows-2022
+          shared-key: windows-2022-debug
           cache-bin: "false"
           cache-targets: "false"
           cache-directories: |
             src-tauri\target\debug\.fingerprint
             src-tauri\target\debug\build
             src-tauri\target\debug\deps
-            src-tauri\target\release\.fingerprint
-            src-tauri\target\release\build
-            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: "false"
+      - run: npm run format:check
+        timeout-minutes: 5
+      - name: Compile native integration, binary and example tests
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --bins --examples --test '*' --no-run
+        timeout-minutes: 15
+      - name: Settle generated Tauri assets so later tests reuse the compiled binary
+        run: node scripts/ci-settle-codegen.mjs
+        timeout-minutes: 2
+      - name: Test native integration, binary and example targets with bounded concurrency
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --bins --examples --test '*' -- --nocapture --test-threads=2
+        timeout-minutes: 10
+  windows-native-lib:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+        timeout-minutes: 5
+      - run: npm run build
+        timeout-minutes: 5
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Cache Rust dependencies (main writes only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-debug
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
           cache-workspace-crates: "false"
           cache-on-failure: "false"
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - run: npm run format:check
-        timeout-minutes: 5
-      - name: Check all native application targets
-        run: cargo check --manifest-path src-tauri\Cargo.toml --locked --all-targets
+      - name: Lint all native application targets
+        run: cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
         timeout-minutes: 10
+      - name: Compile native library tests
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib --no-run
+        timeout-minutes: 15
+      - name: Settle generated Tauri assets so later tests reuse the compiled binary
+        run: node scripts/ci-settle-codegen.mjs
+        timeout-minutes: 2
       - name: Verify SDK startup cancellation in isolation
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::cancelled_or_failed_startup_does_not_leave_a_child -- --exact --nocapture --test-threads=1
-        timeout-minutes: 10
-      - name: Test remaining native application targets with bounded concurrency
-        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child
-        timeout-minutes: 15
+        timeout-minutes: 5
+      - name: Test remaining native library tests with bounded concurrency
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child
+        timeout-minutes: 12
       - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
         timeout-minutes: 2
@@ -80,13 +131,87 @@ jobs:
         id: agent-intelligence-offline
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1
         timeout-minutes: 2
-      - name: Lint all native application targets
-        run: cargo clippy --manifest-path src-tauri\Cargo.toml --locked --all-targets -- -D warnings
+  windows-browser:
+    name: windows-browser (${{ matrix.shard }}/3)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Restore Rust dependencies (never writes)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-debug
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: "false"
       - run: npm exec playwright install chromium
         timeout-minutes: 5
-      - run: npm run test:settings
+      - name: Build frontend and Store bridge, then run this shard of the full suite
+        run: npm run test:settings -- --shard=${{ matrix.shard }}/3 --workers=2
         timeout-minutes: 20
+  windows-package:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Cache Rust dependencies (main writes only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-release
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Build standalone executable with embedded frontend
         run: npm run build:windows
         timeout-minutes: 20
@@ -112,9 +237,43 @@ jobs:
           name: pr-sniper-windows-unsigned-installer-${{ github.sha }}
           path: src-tauri/target/windows-installer-artifact/
           if-no-files-found: error
+  windows-upgrade-fixture:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Restore Rust dependencies (never writes)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-release
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: "false"
       - name: Build disposable upgrade fixture without changing release versions
         run: .\scripts\windows-upgrade-fixture.ps1
-        timeout-minutes: 10
+        timeout-minutes: 20
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pr-sniper-windows-upgrade-test-only-${{ github.sha }}
@@ -123,13 +282,25 @@ jobs:
             src-tauri/target/windows-upgrade-fixture/fixture.json
           if-no-files-found: error
   windows-installer-acceptance:
-    needs: windows
+    needs: [windows-package, windows-upgrade-fixture]
+    if: ${{ always() }}
     runs-on: windows-2022
     timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
     steps:
+      - name: Require successful installer and upgrade fixture builds
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          $needs = $env:NEEDS | ConvertFrom-Json
+          $names = @($needs.PSObject.Properties.Name)
+          foreach ($name in $names) { "${name}: $($needs.$name.result)" }
+          if ($names.Count -eq 0 -or @($names | Where-Object { $needs.$_.result -cne 'success' }).Count -ne 0) {
+            throw 'Every needed job must succeed.'
+          }
+        timeout-minutes: 2
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -156,3 +327,23 @@ jobs:
           name: pr-sniper-windows-installer-acceptance-${{ github.sha }}
           path: src-tauri/target/windows-acceptance/acceptance.json
           if-no-files-found: error
+  windows:
+    needs:
+      [
+        windows-checks,
+        windows-native-lib,
+        windows-browser,
+        windows-package,
+        windows-upgrade-fixture,
+      ]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
+        timeout-minutes: 2

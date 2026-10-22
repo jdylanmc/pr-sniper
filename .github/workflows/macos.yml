@@ -12,8 +12,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  macos:
+  macos-native:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -24,18 +27,37 @@ jobs:
           cache: npm
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Cache Rust dependencies (main writes only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: macos-15
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri/target/debug/.fingerprint
+            src-tauri/target/debug/build
+            src-tauri/target/debug/deps
+            src-tauri/target/release/.fingerprint
+            src-tauri/target/release/build
+            src-tauri/target/release/deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm ci
       - run: npm run test:skills
       - run: npm run format:check
       - run: npm run lint
       - run: npm test
+      - name: Settle generated Tauri assets so later tests reuse the compiled binary
+        run: node scripts/ci-settle-codegen.mjs
+        timeout-minutes: 2
       - name: Verify bundled macOS Agent Intelligence (offline, no credentials or inference)
         id: agent-intelligence-offline
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1
         timeout-minutes: 2
       - run: npm run test:release
-      - run: npm exec playwright install chromium
-      - run: npm run test:settings
       - run: npm run bundle
       - name: Verify native notification bundle identity
         run: |
@@ -55,3 +77,97 @@ jobs:
           name: pr-sniper-macos-local
           path: ${{ runner.temp }}/PR-Sniper-macos.zip
           if-no-files-found: error
+  browser:
+    name: browser (${{ matrix.shard }}/4)
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+        timeout-minutes: 5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+        timeout-minutes: 5
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+        timeout-minutes: 5
+      - name: Restore Rust dependencies (never writes)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        timeout-minutes: 10
+        with:
+          workspaces: src-tauri -> target
+          shared-key: macos-15
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri/target/debug/.fingerprint
+            src-tauri/target/debug/build
+            src-tauri/target/debug/deps
+            src-tauri/target/release/.fingerprint
+            src-tauri/target/release/build
+            src-tauri/target/release/deps
+          cache-workspace-crates: "false"
+          cache-on-failure: "false"
+          save-if: "false"
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Install matching Chromium and WebKit browsers
+        run: npm exec playwright install chromium webkit
+        timeout-minutes: 5
+      - name: Build frontend and Store bridge
+        run: npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge
+        timeout-minutes: 30
+      - name: Run this Chromium shard of the full suite
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --shard=${{ matrix.shard }}/4 --workers=2
+        timeout-minutes: 20
+      - name: Run this WebKit shard of the full suite
+        id: browser-tests
+        env:
+          QUEUE_EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --shard=${{ matrix.shard }}/4 --workers=2
+        timeout-minutes: 20
+      - name: Retain Queue reload failure evidence
+        if: ${{ always() && steps.browser-tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        timeout-minutes: 5
+        with:
+          name: queue-reload-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: |
+            src-tauri/target/settings-browser/**/queue-reload/*.png
+            src-tauri/target/settings-browser/**/queue-reload/manifest.json
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: false
+  macos:
+    needs: [macos-native, browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
+        timeout-minutes: 2
+  webkit:
+    needs: [browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
+        timeout-minutes: 2

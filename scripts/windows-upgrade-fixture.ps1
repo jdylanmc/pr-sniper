@@ -5,7 +5,17 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 $repository = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'windows-installer-payload.ps1')
 $target = Join-Path $repository 'src-tauri\target'
-$base = Get-Content (Join-Path $target 'windows-installer-artifact\installer.json') -Raw | ConvertFrom-Json
+# Built in parallel with the candidate: derive its base from the same clean commit.
+$commit = git -C $repository rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$' -or $commit -cne $env:GITHUB_SHA) {
+    throw 'Upgrade fixture source commit mismatch.'
+}
+$changes = git -C $repository status --porcelain
+if ($LASTEXITCODE -ne 0 -or $changes) { throw 'Upgrade fixture requires clean committed source.' }
+$base = [ordered]@{
+    commit = $commit
+    version = (Get-Content (Join-Path $repository 'package.json') -Raw | ConvertFrom-Json).version
+}
 $parts = $base.version.Split('.')
 $version = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
 $destination = Join-Path $target 'windows-upgrade-fixture'

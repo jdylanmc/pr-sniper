@@ -141,7 +141,8 @@ viewport/dialog fallbacks through minification.
 - `npm run test:settings` (Playwright, ~800 tests) takes ~11 minutes serially.
   Shard 4 ways (`--shard=N/4`) with a separate `SETTINGS_TEST_PORT` and a
   separate `--output` dir per shard. Never `pkill` leftover servers.
-- CI also runs it on WebKit (`--browser=webkit --workers=2`); run it before
+- CI shards it by spec file (`--shard=N/4` macOS Chromium + WebKit,
+  `--shard=N/3` Windows, `--workers=2`). Run WebKit (`--browser=webkit`) before
   pushing UI changes that touch focus or layout.
 - Text hidden with CSS stays in the DOM; do not assert visibility on it.
 - When the UI changes on purpose, update the spec to the new intent. Never
