@@ -390,6 +390,15 @@ fn review_state(
             | ExitOutcome::SubmitReport
             | ExitOutcome::Approve { .. }
             | ExitOutcome::ApproveAndMerge { .. } => return State::MachineSignedOff,
+            // A sign-off is Ready once signed; its resolutions or actions show progress.
+            ExitOutcome::Lgtm { .. } => {
+                return match context.write(run).map(|write| write.phase) {
+                    Some(Phase::Failed) => State::Failed,
+                    Some(Phase::Tossed) if context.parked(run) => State::Failed,
+                    Some(Phase::Tossed) => State::Queued,
+                    _ => State::MachineSignedOff,
+                }
+            }
             ExitOutcome::Comments {
                 new_comments, body, ..
             } => match context.write(run) {
@@ -960,6 +969,17 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 Some(crate::exits::Exit::ApprovePullRequest | crate::exits::Exit::ApproveAndMerge),
                 State::MachineSignedOff,
             ) => Some(Progress::Approving),
+            (Some(crate::exits::Exit::Lgtm), State::MachineSignedOff)
+                if exit_run.is_some_and(|(_, run, _)| {
+                    matches!(
+                        run.result.as_ref().and_then(|r| r.output.exit.as_ref()),
+                        Some(crate::exits::ExitOutcome::Lgtm { action, .. })
+                            if *action != crate::exits::LgtmAction::Ready
+                    )
+                }) =>
+            {
+                Some(Progress::Approving)
+            }
             (Some(crate::exits::Exit::LeaveComments), State::AwaitingPublication) => {
                 Some(Progress::Publishing)
             }
@@ -1033,6 +1053,7 @@ fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
         ExitOutcome::Approve { .. } => Exit::ApprovePullRequest,
         ExitOutcome::ApproveAndMerge { .. } => Exit::ApproveAndMerge,
         ExitOutcome::SubmitReport => Exit::SubmitReport,
+        ExitOutcome::Lgtm { .. } => Exit::Lgtm,
     })
 }
 

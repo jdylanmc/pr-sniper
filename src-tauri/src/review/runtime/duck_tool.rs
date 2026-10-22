@@ -193,10 +193,17 @@ pub(super) struct DuckTool<T: Transport> {
     tool_calls: AtomicU64,
     /// Every path any duck session of this attempt was served.
     read: Mutex<std::collections::BTreeSet<String>>,
+    /// The primary's own served-evidence check: a verify_fixed claim it could not
+    /// use for `fixed` is refused before a call is spent.
+    claim_evidence: Option<ClaimEvidence>,
     /// Calls run as their own task so dropping the primary's handler cannot drop a
     /// call mid-turn: it still aborts its turn and records itself.
     me: std::sync::Weak<Self>,
 }
+
+/// Whether the primary was served one evidence ref in this attempt.
+pub(super) type ClaimEvidence =
+    Arc<dyn Fn(&duck::EvidenceRef) -> Result<(), duck::Unserved> + Send + Sync>;
 
 impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
     #[allow(clippy::too_many_arguments)]
@@ -211,6 +218,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
         progress: Option<Arc<super::Watchdog>>,
+        claim_evidence: Option<ClaimEvidence>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             engine,
@@ -227,6 +235,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
             read: Default::default(),
+            claim_evidence,
             me: me.clone(),
         })
     }
@@ -328,6 +337,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 self.refused(DuckFailure::InvalidInput);
                 DuckFailure::InvalidInput.message(Some(&reason))
             })?;
+        if let Some(reason) = self.unusable_claim(&input) {
+            self.refused(DuckFailure::InvalidInput);
+            return Err(DuckFailure::InvalidInput.message(Some(&reason)));
+        }
         let _serial = self.engine.serial.lock().await;
         let ordinal = self.started.load(Ordering::SeqCst) + 1;
         let refuse = |failure: DuckFailure, input: DuckInput| {
@@ -387,6 +400,16 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         };
         self.record(call);
         result
+    }
+
+    /// A verify_fixed claim whose evidence `fixed` would refuse: no call is spent.
+    fn unusable_claim(&self, input: &DuckInput) -> Option<String> {
+        let check = self.claim_evidence.as_ref().filter(|_| input.verify_fixed)?;
+        if input.evidence.is_empty() {
+            return Some("verify_fixed needs the current-head evidence you read; fixed is refused without it. No duck call was spent.".into());
+        }
+        duck::unserved(&input.evidence, |e| check(e))
+            .map(|reason| format!("{reason} fixed would be refused with this evidence. No duck call was spent."))
     }
 
     fn refused(&self, failure: DuckFailure) {

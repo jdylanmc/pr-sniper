@@ -51,8 +51,59 @@ fn exit_comment(run: &ReviewRun) -> Option<(String, bool)> {
     match run.result.as_ref()?.output.exit.as_ref()? {
         ExitOutcome::Approve { comment } => Some((comment.clone(), false)),
         ExitOutcome::ApproveAndMerge { comment } => Some((comment.clone(), true)),
+        ExitOutcome::Lgtm {
+            comment, action, ..
+        } => match action {
+            crate::exits::LgtmAction::Ready => None,
+            crate::exits::LgtmAction::Approve => Some((comment.clone(), false)),
+            crate::exits::LgtmAction::Merge => Some((comment.clone(), true)),
+        },
         _ => None,
     }
+}
+
+/// A sign-off acts only after its own thread resolutions completed. `Err` while
+/// they are pending (the action waits) or once they stopped (the final is abandoned).
+fn sign_off_written(store: &Store, run: &FinalReview) -> Result<Option<String>, String> {
+    use crate::exit_writes::Phase;
+    if !matches!(
+        run.execution.result.as_ref().and_then(|r| r.output.exit.as_ref()),
+        Some(ExitOutcome::Lgtm { .. })
+    ) {
+        return Ok(None);
+    }
+    let Some(write) = crate::exit_writes::plan(&run.execution, 0).map(|_| {
+        crate::exit_writes::for_review(store, &run.execution.operation.id)
+    }) else {
+        return Ok(None);
+    };
+    Ok(match write?.map(|w| w.phase) {
+        Some(Phase::Completed) => None,
+        Some(Phase::Tossed | Phase::Failed) => {
+            Some("The sign-off's thread resolutions stopped; nothing more is sent.".into())
+        }
+        _ => Some(PENDING_SIGN_OFF.into()),
+    })
+}
+
+pub const PENDING_SIGN_OFF: &str = "The sign-off's own thread resolutions are not complete yet.";
+
+/// The exit's state is still the newest and unconsumed, or consumed only by this
+/// sign-off's own completed thread resolutions (which baseline just those writes).
+fn live(states: &crate::pr_state::PrStates, writes: &[crate::exit_writes::ExitWrite], run: &ReviewRun) -> bool {
+    let seq = consume::state_seq(&run.job);
+    states.get(&Binding::job(&run.job)).is_some_and(|r| {
+        r.state_seq == seq
+            && r.exit.as_ref().is_none_or(|e| {
+                e.state_seq != seq
+                    || writes.iter().any(|w| {
+                        w.review_operation_id == run.operation.id
+                            && w.sign_off.is_some()
+                            && w.phase == crate::exit_writes::Phase::Completed
+                            && w.consumed
+                    })
+            })
+    })
 }
 
 /// Record each completed approve exit of this item as a packet final. The state
@@ -72,6 +123,7 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
     }
     let reviews = store.load_reviews()?;
     let states = store.load_pr_states()?;
+    let writes = store.load_feedback()?.exit_writes;
     let settings = store.load_settings()?;
     let monitor = store.load_monitoring_state()?;
     let mut changed = false;
@@ -91,9 +143,7 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
             continue;
         }
         let seq = consume::state_seq(&run.job);
-        let live = states.get(&Binding::job(&run.job)).is_some_and(|r| {
-            r.state_seq == seq && r.exit.as_ref().is_none_or(|e| e.state_seq != seq)
-        });
+        let live = live(&states, &writes, run);
         let reviewed = run
             .result
             .as_ref()
@@ -189,7 +239,12 @@ pub(super) fn settled_hold(
     let changed = || "A settled finding's thread changed after review; a fresh review is needed.";
     for evidence in dispositions
         .iter()
-        .filter(|a| a.disposition == Disposition::AuthorWontFix)
+        .filter(|a| {
+            matches!(
+                a.disposition,
+                Disposition::AuthorWontFix | Disposition::SignedOff
+            )
+        })
         .chain(carried)
     {
         let anchor = evidence.anchor.as_ref().ok_or_else(changed)?;
@@ -335,6 +390,9 @@ pub fn ready(
             }
         }
     }
+    if let Some(reason) = sign_off_written(store, run)? {
+        return Err(reason);
+    }
     if action == Action::Merge {
         settled_threads_hold(run, observation)?;
     }
@@ -414,6 +472,12 @@ pub fn settle(
             changed = true;
             continue;
         }
+        if sign_off_written(store, run)?.is_some_and(|reason| reason != PENDING_SIGN_OFF) {
+            // The exit write tosses and re-queues itself; nothing more to watch here.
+            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            changed = true;
+            continue;
+        }
         let effects: Vec<_> = ledger
             .effects
             .iter()
@@ -485,6 +549,7 @@ pub fn unadopted(
     ledger: &Ledger,
 ) -> Result<std::collections::HashSet<String>, String> {
     let states = store.load_pr_states()?;
+    let writes = store.load_feedback()?.exit_writes;
     let settings = store.load_settings()?;
     let monitor = store.load_monitoring_state()?;
     let adoptable = |r: &ReviewRun| {
@@ -519,10 +584,7 @@ pub fn unadopted(
                         .as_ref()
                         .is_some_and(|p| p.run_id == r.operation.id)
                 })
-                && states.get(&Binding::job(&r.job)).is_some_and(|s| {
-                    let seq = consume::state_seq(&r.job);
-                    s.state_seq == seq && s.exit.as_ref().is_none_or(|e| e.state_seq != seq)
-                })
+                && live(&states, &writes, r)
         })
         .map(|r| queue::item_id(&r.job))
         .collect())

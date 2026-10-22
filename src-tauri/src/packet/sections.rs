@@ -405,6 +405,7 @@ fn exits(out: &mut String, input: &PacketInput) {
     out.push_str("Call exactly one. Host re-checks gates when you call it.\n");
     if input.role == Role::Primary {
         if let Some(preferred) = [
+            Exit::Lgtm,
             Exit::ApproveAndMerge,
             Exit::Wait,
             Exit::ApprovePullRequest,

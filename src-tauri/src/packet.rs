@@ -93,6 +93,8 @@ pub struct FindingFacts {
     pub own_comments: std::collections::BTreeSet<String>,
     /// Standing resolution evidence of every carried-forward thread.
     pub carried: Vec<crate::review::findings::Assessment>,
+    /// What a sign-off does after resolving: the assignment's authority.
+    pub lgtm_action: crate::exits::LgtmAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

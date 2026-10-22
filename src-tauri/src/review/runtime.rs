@@ -1,4 +1,5 @@
 use super::{tools, Events, Failure, ReviewResult, Selection};
+use super::duck::Unserved;
 use crate::storage::diagnostics::{
     Event as DiagnosticEvent, FailureKind, Outcome, Paths, ToolName,
 };
@@ -390,30 +391,53 @@ impl<T: Transport> ReadTools<T> {
     }
 
     fn served_evidence(&self, evidence: &super::duck::EvidenceRef) -> bool {
-        if evidence.side.as_deref().unwrap_or("head") != "head" || evidence.path.len() > 1024 {
-            return false;
+        self.evidence_served(evidence).is_ok()
+    }
+
+    /// Whether `evidence` names current-head code served in this attempt by
+    /// read_source or read_changes after-content: the cited lines, or (no line) the
+    /// whole head file. Never cached or claimed reads.
+    fn evidence_served(&self, evidence: &super::duck::EvidenceRef) -> Result<(), Unserved> {
+        if evidence.side.as_deref().unwrap_or("head") != "head" {
+            return Err(Unserved::NotHead);
         }
-        let Some(line) = evidence.line.filter(|line| *line > 0) else {
-            return false;
-        };
-        let end_line = evidence.end_line.unwrap_or(line);
-        if end_line < line {
-            return false;
+        if evidence.path.len() > 1024 {
+            return Err(Unserved::UnknownPath);
         }
         let key = ("head".to_string(), evidence.path.clone());
-        let Some(entry) = self.context.head.get(&evidence.path) else {
-            return false;
+        let entry = self
+            .context
+            .head
+            .get(&evidence.path)
+            .ok_or(Unserved::UnknownPath)?;
+        let blobs = self.blobs.lock().map_err(|_| Unserved::NotRead)?;
+        let blob = blobs
+            .get(&(entry.sha.clone(), entry.mode.clone()))
+            .ok_or(Unserved::NotRead)?;
+        let served = |start: usize, end: usize| {
+            self.served.lock().is_ok_and(|served| {
+                served.get(&key).is_some_and(|span| {
+                    span.ranges.iter().any(|(a, b)| *a <= start && *b >= end)
+                })
+            })
         };
-        let Ok(blobs) = self.blobs.lock() else {
-            return false;
+        let Some(line) = evidence.line else {
+            return if served(0, blob.text.len()) {
+                Ok(())
+            } else {
+                Err(Unserved::NoLine)
+            };
         };
-        let Some(blob) = blobs.get(&(entry.sha.clone(), entry.mode.clone())) else {
-            return false;
-        };
+        let end_line = evidence.end_line.unwrap_or(line);
+        if line == 0 || end_line < line {
+            return Err(Unserved::BadRange);
+        }
         let mut offset = 0;
         let mut range = None;
+        let mut lines = 0;
         for (index, text) in blob.text.split_inclusive('\n').enumerate() {
             let number = index as u64 + 1;
+            lines = index + 1;
             if number == line {
                 range = Some((offset, offset));
             }
@@ -426,13 +450,13 @@ impl<T: Transport> ReadTools<T> {
             }
         }
         let Some((start, end)) = range.filter(|(start, end)| end > start) else {
-            return false;
+            return Err(Unserved::PastEnd(lines));
         };
-        self.served.lock().is_ok_and(|served| {
-            served
-                .get(&key)
-                .is_some_and(|span| span.ranges.iter().any(|(a, b)| *a <= start && *b >= end))
-        })
+        if served(start, end) {
+            Ok(())
+        } else {
+            Err(Unserved::NotRead)
+        }
     }
 
     fn new(
@@ -1278,6 +1302,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             },
             diagnostics.clone(),
         );
+        let finding_primary = finding_contract.is_some();
         if let Some(contract) = finding_contract {
             exit_tools.require_finding_identity = true;
             let reads = tools.clone();
@@ -1289,8 +1314,11 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                         .clone(),
                     None => Vec::new(),
                 };
+                if let crate::exits::ExitCall::Lgtm { .. } = call {
+                    return contract.sign_off(call, assessments);
+                }
                 contract.prepare(call, assessments, &ducks, |evidence| {
-                    reads.served_evidence(evidence)
+                    reads.evidence_served(evidence)
                 })
             }));
         }
@@ -1312,6 +1340,11 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 }),
                 diagnostics.clone(),
                 Some(progress.clone()),
+                finding_primary.then(|| {
+                    let reads = tools.clone();
+                    Arc::new(move |e: &super::duck::EvidenceRef| reads.evidence_served(e))
+                        as duck_tool::ClaimEvidence
+                }),
             )
         });
         let session = session.insert(

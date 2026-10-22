@@ -914,7 +914,8 @@ async fn execute_attempt(
                 crate::exits::ExitOutcome::ReadyForHuman { .. }
                     | crate::exits::ExitOutcome::Wait { .. }
             )
-        ) {
+        ) || crate::exits::consume::local_sign_off(result.output.exit.as_ref()).is_some()
+        {
             let repo = RemoteRepository {
                 id: run.job.repository_id.clone(),
                 name: run.job.repository_name.clone(),

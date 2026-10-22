@@ -1,7 +1,7 @@
 //! Pure gate table: which exits the host offers for a PR state, and why not.
 //! Run at packet build (offered set + reasons in the packet) and again at exit time.
 
-use super::{Exit, ExitCall, WaitReason};
+use super::{Exit, ExitCall, LgtmAction, WaitReason};
 use crate::github::actions::{Action, Observation};
 use serde::{Deserialize, Serialize};
 
@@ -158,7 +158,7 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
     let f = &input.facts;
     Exit::ALL
         .into_iter()
-        .filter(|exit| input.tools.iter().any(|tool| tool == exit.id()))
+        .filter(|exit| *exit == Exit::Lgtm || input.tools.iter().any(|tool| tool == exit.id()))
         .filter(|exit| match exit {
             Exit::SubmitReport => !input.primary,
             Exit::SubmitVerdict => false,
@@ -186,6 +186,13 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     approve_denial(input).map_or(Offer::Offered, Offer::Denied)
                 }
                 Exit::ApproveAndMerge => merge_denial(input).map_or(Offer::Offered, Offer::Denied),
+                // Own open threads are the sign-off's to resolve; others' are checked
+                // against fresh ownership when it is called.
+                Exit::Lgtm => {
+                    let mut own = input.clone();
+                    own.facts.unresolved_threads = false;
+                    lgtm_denial(&own).map_or(Offer::Offered, Offer::Denied)
+                }
                 Exit::Wait => {
                     if wait_reasons(input).is_empty() {
                         Offer::Denied(
@@ -291,6 +298,47 @@ fn merge_denial(input: &GateInput) -> Option<String> {
         "Unresolved threads remain. Cannot merge.".into()
     } else {
         return f.merge_blocker.clone();
+    })
+}
+
+/// The sign-off's action: the assignment's strongest configured authority.
+pub fn lgtm_action(input: &GateInput) -> LgtmAction {
+    let has = |exit: Exit| input.tools.iter().any(|tool| tool == exit.id());
+    if input.grants.merge && has(Exit::ApproveAndMerge) {
+        LgtmAction::Merge
+    } else if (input.grants.approve || input.grants.merge) && has(Exit::ApprovePullRequest) {
+        LgtmAction::Approve
+    } else {
+        LgtmAction::Ready
+    }
+}
+
+/// Why a sign-off is refused on these facts. `facts.unresolved_threads` must
+/// already exclude the own threads the sign-off resolves.
+pub fn lgtm_denial(input: &GateInput) -> Option<String> {
+    let f = &input.facts;
+    Some(if !input.primary {
+        "lgtm is primary-only.".into()
+    } else if !f.open {
+        "PR is closed or merged.".into()
+    } else if f.draft {
+        "PR is draft. Do not sign off.".into()
+    } else if f.conflicts {
+        "Merge conflicts. Do not sign off.".into()
+    } else if f.ci == Ci::Red {
+        "CI is red. Do not sign off.".into()
+    } else if f.ci == Ci::Pending {
+        "CI is pending. Do not sign off until it is green.".into()
+    } else if f.changes_requested {
+        "Changes requested by a reviewer. Do not sign off.".into()
+    } else if f.unresolved_threads {
+        "Unresolved threads not rooted in your own findings remain. They need the author's fix or reply; lgtm cannot clear them.".into()
+    } else {
+        return match lgtm_action(input) {
+            LgtmAction::Ready => None,
+            LgtmAction::Approve => approve_denial(input),
+            LgtmAction::Merge => merge_denial(input),
+        };
     })
 }
 

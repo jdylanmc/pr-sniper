@@ -1,7 +1,7 @@
 //! Existing provider threads are finding identities. The model establishes truth;
 //! the host enforces identity, revision, evidence and independent-verification contracts.
 
-use super::duck::{DuckCall, DuckOutcome, EvidenceRef, TargetKind, VerdictKind};
+use super::duck::{DuckCall, DuckOutcome, EvidenceRef, TargetKind, Unserved, VerdictKind};
 use crate::{
     exits::{Exit, ExitCall},
     github::threads::{Ownership, Provenance},
@@ -128,6 +128,8 @@ pub enum Disposition {
     /// The PR author replied won't-fix in the thread and the primary accepts that
     /// rationale on its merits.
     AuthorWontFix,
+    /// Host-stamped by the primary's `lgtm` sign-off; never model input.
+    SignedOff,
 }
 
 /// Host-stamped at exit, never model input: what a resolution relied on, so a later
@@ -530,14 +532,17 @@ pub(crate) struct Contract {
     pub identities: crate::packet::FindingFacts,
 }
 
-/// A comment PR Sniper wrote: a saved receipt, or its host marker or signature.
-fn own_comment(own: &BTreeSet<String>, comment: &crate::packet::CommentFact) -> bool {
-    own.contains(&comment.id)
-        || comment.body.contains("<!-- pr-sniper:")
-        || comment
-            .body
-            .trim_end()
-            .ends_with(crate::exit_writes::SIGNATURE)
+/// A comment PR Sniper wrote: a saved receipt, or the acting account's comment with
+/// a host marker or signature. The acting account may also be the PR author: its
+/// unmarked comments are the author's, and a marker from another account is not ours.
+fn own_comment(ids: &crate::packet::FindingFacts, comment: &crate::packet::CommentFact) -> bool {
+    ids.own_comments.contains(&comment.id)
+        || (comment.author_id.as_deref() == Some(ids.account_id.as_str())
+            && (comment.body.contains("<!-- pr-sniper:")
+                || comment
+                    .body
+                    .trim_end()
+                    .ends_with(crate::exit_writes::SIGNATURE)))
 }
 
 impl Contract {
@@ -558,13 +563,13 @@ impl Contract {
             .ok_or("author_comment_id must be a reply in that thread, not its root.")?;
         let by_author = |c: &crate::packet::CommentFact| c.author_id.as_deref() == Some(author);
         let cited = &thread.comments[index];
-        if !by_author(cited) || own_comment(&ids.own_comments, cited) {
+        if !by_author(cited) || own_comment(ids, cited) {
             return Err(
                 "author_comment_id is not a reply by the PR author (provider identity).".into(),
             );
         }
         for later in &thread.comments[index + 1..] {
-            if own_comment(&ids.own_comments, later) {
+            if own_comment(ids, later) {
                 continue;
             }
             return Err(if by_author(later) {
@@ -582,7 +587,7 @@ impl Contract {
         call: &mut ExitCall,
         assessments: &[Assessment],
         ducks: &[DuckCall],
-        served: impl Fn(&EvidenceRef) -> bool,
+        served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
         self.validate(call, assessments, ducks, served)?;
         if let ExitCall::LeaveComments { reply_comments, .. } = call {
@@ -608,12 +613,62 @@ impl Contract {
         Ok(())
     }
 
+    /// The primary's sign-off: every own finding not carried forward becomes
+    /// `signed_off` with the sign-off rationale, and every own open one is resolved.
+    /// The primary is accountable for the judgment; no per-thread evidence or duck.
+    pub fn sign_off(
+        &self,
+        call: &mut ExitCall,
+        assessments: &mut Vec<Assessment>,
+    ) -> Result<(), String> {
+        let ExitCall::Lgtm {
+            comment,
+            resolve_own_threads,
+            action,
+        } = call
+        else {
+            return Ok(());
+        };
+        if !assessments.is_empty() {
+            return Err("lgtm takes no finding_dispositions; the host records your sign-off on every own finding.".into());
+        }
+        if self
+            .corrections
+            .iter()
+            .any(|c| !self.threads.iter().any(|t| t.id == c.thread_id && c.confirmed_in(t)))
+        {
+            return Err("An earlier correction outcome is unresolved; lgtm cannot proceed. Use ready_for_human.".into());
+        }
+        let own: Vec<_> = self.threads.iter().filter(|t| t.mine && !t.carried).collect();
+        *assessments = own
+            .iter()
+            .map(|t| Assessment {
+                thread_id: t.id.clone(),
+                disposition: Disposition::SignedOff,
+                head_sha: self.head.clone(),
+                base_sha: self.base.clone(),
+                rationale: comment.clone(),
+                evidence: Vec::new(),
+                duck_call: None,
+                author_comment_id: None,
+                anchor: None,
+            })
+            .collect();
+        *resolve_own_threads = own
+            .iter()
+            .filter(|t| !t.resolved)
+            .map(|t| t.id.clone())
+            .collect();
+        *action = self.identities.lgtm_action;
+        Ok(())
+    }
+
     pub fn validate(
         &self,
         call: &ExitCall,
         assessments: &[Assessment],
         ducks: &[DuckCall],
-        served: impl Fn(&EvidenceRef) -> bool,
+        served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
         if call.exit() == Exit::Wait
             && ducks.iter().any(|d| match &d.outcome {
@@ -681,6 +736,9 @@ impl Contract {
             if a.duck_call == Some(0) {
                 return Err("duck_call must be a positive call ordinal.".into());
             }
+            if a.disposition == Disposition::SignedOff {
+                return Err("signed_off is host-only; call lgtm to sign off.".into());
+            }
             let thread = self.threads.iter().find(|t| t.id == a.thread_id).unwrap();
             match (a.disposition, a.author_comment_id.as_deref()) {
                 (Disposition::AuthorWontFix, Some(id)) => {
@@ -695,8 +753,11 @@ impl Contract {
                 _ => {}
             }
             if a.disposition == Disposition::Fixed {
-                if a.evidence.is_empty() || !a.evidence.iter().all(&served) {
-                    return Err("Fixed needs current-head code evidence actually read in this attempt; outdated alone is not evidence.".into());
+                if a.evidence.is_empty() {
+                    return Err(format!("Fixed {}: needs current-head code evidence actually read in this attempt; outdated alone is not evidence.", a.thread_id));
+                }
+                if let Some(reason) = super::duck::unserved(&a.evidence, &served) {
+                    return Err(format!("Fixed {}: needs current-head code evidence actually read in this attempt. {reason}", a.thread_id));
                 }
                 if self.duck_required && !a.duck_confirms(&self.state_id, ducks) {
                     return Err("Fixed needs a confirmed rubber_duck verify_fixed call for this thread, rationale and evidence on this state.".into());
@@ -860,7 +921,7 @@ pub(crate) fn stamp_carried(
                 r.thread_id == thread.id
                     && matches!(
                         r.evidence.disposition,
-                        Disposition::Fixed | Disposition::AuthorWontFix
+                        Disposition::Fixed | Disposition::AuthorWontFix | Disposition::SignedOff
                     )
                     && anchor.base_sha == now.base_sha
                     && anchor.manifests == now.manifests
@@ -895,7 +956,7 @@ pub(crate) fn stamp_anchors(
     for a in assessments {
         if !matches!(
             a.disposition,
-            Disposition::Fixed | Disposition::AuthorWontFix
+            Disposition::Fixed | Disposition::AuthorWontFix | Disposition::SignedOff
         ) {
             continue;
         }

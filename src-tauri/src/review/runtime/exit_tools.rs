@@ -23,7 +23,7 @@ pub enum Refusal {
 
 pub(crate) type ExitGate = Arc<dyn Fn(&ExitCall) -> Result<(), Refusal> + Send + Sync>;
 pub(super) type FindingGate = Arc<
-    dyn Fn(&mut ExitCall, &[crate::review::findings::Assessment]) -> Result<(), String>
+    dyn Fn(&mut ExitCall, &mut Vec<crate::review::findings::Assessment>) -> Result<(), String>
         + Send
         + Sync,
 >;
@@ -103,7 +103,7 @@ impl ExitTools {
         {
             return (self.reject("Each new_comments item needs finding_id: null for a distinct new finding, or the existing thread id to update it.".into()), true);
         }
-        let (arguments, findings) = match crate::review::findings::extract(args) {
+        let (arguments, mut findings) = match crate::review::findings::extract(args) {
             Ok(value) => value,
             Err(message) => return (self.reject(message), true),
         };
@@ -130,7 +130,7 @@ impl ExitTools {
             return (error("An exit was already taken. Stop."), true);
         }
         if let Some(gate) = &self.finding_gate {
-            if let Err(reason) = gate(&mut call, &findings) {
+            if let Err(reason) = gate(&mut call, &mut findings) {
                 return (error(&reason), true);
             }
         }

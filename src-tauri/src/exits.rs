@@ -36,10 +36,13 @@ pub enum Exit {
     SubmitReport,
     /// The Rubber Duck's only exit. Never offered to a review assignment.
     SubmitVerdict,
+    /// The primary's sign-off: resolve its own open threads, then act on the
+    /// assignment's authority. Offered to the primary only, never a configured tool.
+    Lgtm,
 }
 
 impl Exit {
-    pub const ALL: [Exit; 8] = [
+    pub const ALL: [Exit; 9] = [
         Exit::LeaveComments,
         Exit::ReadyForHuman,
         Exit::Wait,
@@ -48,6 +51,7 @@ impl Exit {
         Exit::PanicExit,
         Exit::SubmitReport,
         Exit::SubmitVerdict,
+        Exit::Lgtm,
     ];
 
     pub fn id(self) -> &'static str {
@@ -60,6 +64,7 @@ impl Exit {
             Exit::PanicExit => "panic_exit",
             Exit::SubmitReport => "submit_report",
             Exit::SubmitVerdict => "submit_verdict",
+            Exit::Lgtm => "lgtm",
         }
     }
 
@@ -71,7 +76,7 @@ impl Exit {
     pub fn effect(self) -> bool {
         matches!(
             self,
-            Exit::LeaveComments | Exit::ApprovePullRequest | Exit::ApproveAndMerge
+            Exit::LeaveComments | Exit::ApprovePullRequest | Exit::ApproveAndMerge | Exit::Lgtm
         )
     }
 
@@ -85,6 +90,7 @@ impl Exit {
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
             Exit::SubmitVerdict => crate::review::duck::VERDICT_DESCRIPTION,
+            Exit::Lgtm => "Terminal exit: sign off. No new findings and nothing pending. The host posts comment as a reply on each of your own open threads and resolves them, then acts on the assignment's authority after fresh gates: hand to the human, approve, or approve and merge. Refused while others' threads are open, CI is not green, or the PR is draft or conflicting. Ends the run.",
         }
     }
 
@@ -128,6 +134,10 @@ impl Exit {
                 json!(["findings"]),
             ),
             Exit::SubmitVerdict => return crate::review::duck::verdict_schema(),
+            Exit::Lgtm => (
+                json!({"comment":{"type":"string","description":"Short sign-off rationale, posted on each own thread resolved. At most 4096 bytes."}}),
+                json!(["comment"]),
+            ),
         };
         if matches!(
             self,
@@ -209,6 +219,24 @@ pub enum ExitCall {
     SubmitVerdict {
         verdict: crate::review::duck::Verdict,
     },
+    /// The model supplies `comment`; the host fills the threads and the action.
+    Lgtm {
+        comment: String,
+        resolve_own_threads: Vec<String>,
+        action: LgtmAction,
+    },
+}
+
+/// What a sign-off does after its thread resolutions: the assignment's authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LgtmAction {
+    /// No approve authority: hand to the human.
+    #[default]
+    Ready,
+    Approve,
+    /// Approve (unless self-authored), then merge.
+    Merge,
 }
 
 /// What a successful run stored. Panic never completes a run, so it has no outcome.
@@ -236,6 +264,11 @@ pub enum ExitOutcome {
         comment: String,
     },
     SubmitReport,
+    Lgtm {
+        comment: String,
+        resolve_own_threads: Vec<String>,
+        action: LgtmAction,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +290,7 @@ impl ExitCall {
             Self::Panic { .. } => Exit::PanicExit,
             Self::SubmitReport { .. } => Exit::SubmitReport,
             Self::SubmitVerdict { .. } => Exit::SubmitVerdict,
+            Self::Lgtm { .. } => Exit::Lgtm,
         }
     }
 
@@ -297,6 +331,18 @@ impl ExitCall {
                 None,
             ),
             Self::SubmitReport { report } => (ExitOutcome::SubmitReport, Some(report.clone())),
+            Self::Lgtm {
+                comment,
+                resolve_own_threads,
+                action,
+            } => (
+                ExitOutcome::Lgtm {
+                    comment: comment.clone(),
+                    resolve_own_threads: resolve_own_threads.clone(),
+                    action: *action,
+                },
+                None,
+            ),
             Self::Panic { .. } | Self::SubmitVerdict { .. } => return None,
         })
     }
@@ -435,6 +481,20 @@ impl ExitCall {
             Exit::SubmitVerdict => Ok(Self::SubmitVerdict {
                 verdict: crate::review::duck::Verdict::parse(args)?,
             }),
+            Exit::Lgtm => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args {
+                    comment: String,
+                }
+                let a: Args = serde_json::from_value(args.clone()).map_err(bad)?;
+                check_text(&a.comment, MAX_SUMMARY_BYTES, "comment")?;
+                Ok(Self::Lgtm {
+                    comment: a.comment,
+                    resolve_own_threads: Vec::new(),
+                    action: LgtmAction::Ready,
+                })
+            }
         }
     }
 }

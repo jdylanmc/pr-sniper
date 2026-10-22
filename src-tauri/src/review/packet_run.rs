@@ -264,6 +264,7 @@ where
             .chain(receipts)
             .collect(),
         carried,
+        lgtm_action: gates::lgtm_action(&base),
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(
@@ -322,6 +323,47 @@ where
             ..base.clone()
         };
         gates::check_call(&input, call).map_err(Refusal::Denied)?;
+        // Sign-off: only this assignment's verified own threads are resolved; any
+        // other open thread, and every hard gate of its authority, refuses it.
+        if let crate::exits::ExitCall::Lgtm {
+            resolve_own_threads,
+            action,
+            ..
+        } = call
+        {
+            if *action != gates::lgtm_action(&base) {
+                return Err(Refusal::Denied(
+                    "Sign-off authority unavailable now. Try again.".into(),
+                ));
+            }
+            if !resolve_own_threads.is_empty() && !base.grants.reply {
+                return Err(Refusal::Denied(
+                    "No Reply Comment grant to resolve your own threads. Use ready_for_human."
+                        .into(),
+                ));
+            }
+            for id in resolve_own_threads {
+                let thread = client
+                    .review_thread(&repo.id, &pull_request_id, id)
+                    .map_err(|_| {
+                        Refusal::Denied("Thread ownership unreadable now. Try again.".into())
+                    })?
+                    .ok_or_else(|| Refusal::Denied("Thread unavailable now.".into()))?;
+                if !thread.owned_by_any(&ownership) {
+                    return Err(Refusal::Denied(
+                        "Only this assignment's verified own threads may be resolved.".into(),
+                    ));
+                }
+            }
+            let mut fresh = input.clone();
+            fresh.facts.unresolved_threads = observation
+                .threads
+                .iter()
+                .any(|t| !t.resolved && !resolve_own_threads.contains(&t.id));
+            if let Some(reason) = gates::lgtm_denial(&fresh) {
+                return Err(Refusal::Denied(reason));
+            }
+        }
         // A reply or resolve must name a thread of this PR now. Caught here, the agent
         // fixes the id in the loop instead of the host tossing the whole exit later.
         if let crate::exits::ExitCall::LeaveComments {
