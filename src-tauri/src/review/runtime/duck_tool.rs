@@ -18,7 +18,7 @@ use crate::{
     monitoring::OperationFailure,
     packet::{Directive, PacketInput, ToolFacts},
     review::{
-        duck::{self, DuckCall, DuckFailure, DuckInput, DuckOutcome, Verdict},
+        duck::{self, DuckCall, DuckFailure, DuckInput, DuckOutcome, DuckReason, Verdict},
         Events, Failure, ReadCoverage, Selection,
     },
     storage::{
@@ -191,6 +191,8 @@ pub(super) struct DuckTool<T: Transport> {
     progress: Option<Arc<super::Watchdog>>,
     started: AtomicU32,
     tool_calls: AtomicU64,
+    /// Every path any duck session of this attempt was served.
+    read: Mutex<std::collections::BTreeSet<String>>,
     /// Calls run as their own task so dropping the primary's handler cannot drop a
     /// call mid-turn: it still aborts its turn and records itself.
     me: std::sync::Weak<Self>,
@@ -224,8 +226,13 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             progress,
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
+            read: Default::default(),
             me: me.clone(),
         })
+    }
+
+    pub fn read_paths(&self) -> std::collections::BTreeSet<String> {
+        self.read.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
     pub fn calls(&self) -> Vec<DuckCall> {
@@ -251,6 +258,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 },
                 duration_ms: call.session_id.as_ref().map(|_| call.duration_ms),
                 session_id: call.session_id.clone(),
+                reason: call.reason,
+                input_tokens: call.session_id.as_ref().map(|_| call.input_tokens),
+                output_tokens: call.session_id.as_ref().map(|_| call.output_tokens),
+                tool_calls: call.session_id.as_ref().map(|_| call.tool_calls),
             });
         }
         if let Ok(mut calls) = self.engine.setup.log.lock() {
@@ -264,12 +275,16 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             ordinal,
             input,
             outcome: DuckOutcome::Failure { failure },
-            limits: setup.limits,
+            limits: DuckLimits {
+                call_timeout_seconds: self.call_timeout_seconds(),
+                ..setup.limits
+            },
             agent: setup.selection.agent.name.clone(),
             model: setup.selection.agent.model.clone(),
             state_id: setup.prep.base.state_id.clone(),
             packet: None,
             session_id: None,
+            reason: None,
             input_tokens: 0,
             output_tokens: 0,
             tool_calls: 0,
@@ -278,6 +293,27 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             repeats: 0,
             others: Default::default(),
         }
+    }
+
+    /// The per-call timeout for this PR: the saved preference, scaled by PR size.
+    fn call_timeout_seconds(&self) -> u32 {
+        duck::call_timeout(
+            self.engine.setup.limits.call_timeout_seconds,
+            self.context.files.len(),
+        )
+    }
+
+    /// The whole original thread when small enough to serve inside the duck packet.
+    fn inline_thread(&self, input: &DuckInput) -> Option<(String, String)> {
+        let id = input.thread_id.as_ref().filter(|_| input.verify_fixed)?;
+        let thread = self
+            .facts
+            .conversation
+            .threads
+            .iter()
+            .find(|t| &t.id == id)?;
+        let text = crate::review::tools::thread_text(thread);
+        (text.len() <= duck::MAX_INLINE_THREAD_BYTES).then(|| (id.clone(), text))
     }
 
     /// One call, start to finish. `Err` is the typed failure the primary sees.
@@ -309,7 +345,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             .deadline
             .checked_sub(Duration::from_secs(duck::EXIT_RESERVE_SECONDS))
             .map_or(Duration::ZERO, |end| end.saturating_duration_since(now));
-        let timeout = Duration::from_secs(u64::from(setup.limits.call_timeout_seconds));
+        let timeout = Duration::from_secs(u64::from(self.call_timeout_seconds()));
         if available < timeout.min(Duration::from_secs(duck::MIN_CALL_SECONDS)) {
             return refuse(DuckFailure::BudgetExhausted, input);
         }
@@ -322,10 +358,12 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         }
         self.started.store(ordinal, Ordering::SeqCst);
         let mut call = self.blank(ordinal, input, DuckFailure::Failed);
+        let inline = self.inline_thread(&call.input);
         let packet = crate::packet::duck::build(&crate::packet::duck::DuckPacketInput {
             base: &setup.prep.base,
             primary_hash: &setup.prep.primary_hash,
             ordinal,
+            thread: inline.as_ref().map(|(_, text)| text.as_str()),
             claim: &call.input,
             directive: &setup.prep.directive,
             tools: &setup.prep.tools,
@@ -333,7 +371,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         });
         call.packet = Some(packet.record.clone());
         let started = Instant::now();
-        let outcome = self.session(packet.text, call_end, &mut call).await;
+        let outcome = self.session(packet.text, call_end, &mut call, inline).await;
         call.duration_ms = started.elapsed().as_millis() as u64;
         let result = match outcome {
             Ok(verdict) => {
@@ -341,9 +379,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 call.outcome = DuckOutcome::Verdict { verdict };
                 Ok(text)
             }
-            Err(failure) => {
+            Err((failure, reason)) => {
                 call.outcome = DuckOutcome::Failure { failure };
-                Err(failure.message(None))
+                call.reason = reason;
+                Err(failure.explained(reason))
             }
         };
         self.record(call);
@@ -358,6 +397,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 failure: Some(failure),
                 duration_ms: None,
                 session_id: None,
+                reason: None,
+                input_tokens: None,
+                output_tokens: None,
+                tool_calls: None,
             });
         }
     }
@@ -392,7 +435,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         packet_text: String,
         call_end: Instant,
         call: &mut DuckCall,
-    ) -> Result<Verdict, DuckFailure> {
+        inline: Option<(String, String)>,
+    ) -> Result<Verdict, Fail> {
         let setup = &self.engine.setup;
         let diagnostics = self
             .diagnostics
@@ -413,9 +457,41 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             .with_facts(self.facts.clone())
             .with_progress(self.progress.clone()),
         );
+        if let Some((id, text)) = &inline {
+            reads.seed_thread(id, text.len());
+        }
+        // verify_fixed: a confirmed verdict needs the whole original thread and served
+        // head lines. Refused at the exit so the duck can read and resubmit.
+        let refused: Arc<Mutex<Option<DuckReason>>> = Default::default();
+        let verdict_gate: super::exit_tools::ExitGate = {
+            let reads = reads.clone();
+            let input = call.input.clone();
+            let refused = refused.clone();
+            Arc::new(move |exit: &ExitCall| {
+                let ExitCall::SubmitVerdict { verdict } = exit else {
+                    return Ok(());
+                };
+                match unproven(
+                    &input,
+                    verdict,
+                    |e| reads.served_evidence(e),
+                    |id| reads.thread_read(id),
+                ) {
+                    None => Ok(()),
+                    Some(reason) => {
+                        if let Ok(mut slot) = refused.lock() {
+                            *slot = Some(reason);
+                        }
+                        Err(super::exit_tools::Refusal::Denied(
+                            duck::refusal(reason).into(),
+                        ))
+                    }
+                }
+            })
+        };
         let exits = Arc::new(ExitTools::new(
             vec![Exit::SubmitVerdict],
-            Arc::new(|_: &ExitCall| Ok(())),
+            verdict_gate,
             diagnostics.clone(),
         ));
         let create = self.engine.client.create_session(config_with(
@@ -429,8 +505,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         // No turn has started before the session exists: nothing to abort here.
         let session = tokio::select! {
             biased;
-            created = create => created.map_err(|_| DuckFailure::Failed)?,
-            failure = self.watch(call_end) => return Err(failure),
+            created = create => created.map_err(|_| (DuckFailure::Failed, Some(DuckReason::SessionCreate)))?,
+            failure = self.watch(call_end) => return Err((failure, None)),
         };
         call.session_id = Some(session.id().to_string());
         if let Some(trace) = &diagnostics {
@@ -442,11 +518,23 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 connectivity_transitions: true,
             });
         }
+        let usage = Mutex::new((0, 0, 0));
         let result = tokio::select! {
             biased;
-            result = self.converse(&session, packet_text, &names, &reads, &exits, diagnostics.as_ref()) => result,
-            failure = self.watch(call_end) => Err(failure),
+            result = self.converse(&session, packet_text, &names, &reads, &exits, diagnostics.as_ref(), &usage) => result,
+            failure = self.watch(call_end) => Err((failure, None)),
         };
+        if let Ok(usage) = usage.lock() {
+            (call.input_tokens, call.output_tokens, call.tool_calls) = *usage;
+        }
+        // A duck that ended after a refused confirmation gets that typed cause.
+        let result = result.map_err(|(failure, reason)| match failure {
+            DuckFailure::NoVerdict => match refused.lock().ok().and_then(|r| *r) {
+                Some(refusal) => (DuckFailure::Unverified, Some(refusal)),
+                None => (failure, reason),
+            },
+            _ => (failure, reason),
+        });
         let abort = if result.is_err() {
             match tokio::time::timeout(Duration::from_secs(2), session.abort()).await {
                 Ok(Ok(_)) => crate::storage::diagnostics::Outcome::Success,
@@ -467,31 +555,28 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 tool_calls: Some(trace.tool_calls()),
             });
         }
+        if let Ok(mut all) = self.read.lock() {
+            all.extend(reads.touched_paths());
+        }
         let read = reads.read.lock().map(|r| r.len()).unwrap_or(0);
         call.coverage = Some(ReadCoverage {
             read: u32::try_from(read).unwrap_or(u32::MAX),
             changed: u32::try_from(self.context.files.len()).unwrap_or(u32::MAX),
         });
         let (events, verdict) = result?;
-        if call.input.verify_fixed
-            && verdict.verdict == duck::VerdictKind::Confirmed
-            && (verdict.evidence.is_empty()
-                || !verdict.evidence.iter().all(|e| reads.served_evidence(e))
-                || !reads.thread_reads.lock().is_ok_and(|threads| {
-                    call.input
-                        .thread_id
-                        .as_ref()
-                        .is_some_and(|id| threads.get(id).is_some_and(super::Span::complete))
-                }))
-        {
-            return Err(DuckFailure::Failed);
+        (call.input_tokens, call.output_tokens, call.tool_calls) = events;
+        if let Some(reason) = unproven(
+            &call.input,
+            &verdict,
+            |e| reads.served_evidence(e),
+            |id| reads.thread_read(id),
+        ) {
+            return Err((DuckFailure::Unverified, Some(reason)));
         }
-        call.input_tokens = events.0;
-        call.output_tokens = events.1;
-        call.tool_calls = events.2;
         Ok(verdict)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn converse(
         &self,
         session: &github_copilot_sdk::session::Session,
@@ -500,26 +585,27 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         reads: &ReadTools<T>,
         exits: &ExitTools,
         diagnostics: Option<&Arc<crate::review::diagnostics::Trace>>,
-    ) -> Result<((u64, u64, u64), Verdict), DuckFailure> {
+        usage: &Mutex<(u64, u64, u64)>,
+    ) -> Result<((u64, u64, u64), Verdict), Fail> {
         let setup = &self.engine.setup;
         verified_intelligence(session, &setup.selection)
             .await
-            .map_err(|_| DuckFailure::Failed)?;
+            .map_err(|_| (DuckFailure::Failed, Some(DuckReason::Intelligence)))?;
         super::verify_catalog(session, names)
             .await
-            .map_err(|_| DuckFailure::Failed)?;
+            .map_err(|_| (DuckFailure::Failed, Some(DuckReason::Catalog)))?;
         let mut subscription = session.subscribe();
         session
             .send(packet_text)
             .await
-            .map_err(|error| classify(&Failure::sdk(error)))?;
+            .map_err(|error| reasoned(classify(&Failure::sdk(error)), DuckReason::Send))?;
         let mut events = Events::default();
         loop {
             let event = subscription.recv().await.map_err(|_| {
                 if let Some(trace) = diagnostics {
                     trace.emit(DiagnosticEvent::EventStreamLost { lost_events: None });
                 }
-                DuckFailure::Failed
+                (DuckFailure::Failed, Some(DuckReason::StreamLost))
             })?;
             if let Some(trace) = diagnostics {
                 trace.event(&event.event_type, &event.data);
@@ -527,25 +613,28 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             if let Some(progress) = &self.progress {
                 progress.event(&event.event_type, &event.data);
             }
-            events
-                .push(&event.event_type, &event.data)
-                .map_err(|failure| {
-                    if failure.kind == OperationFailure::RateLimited {
-                        (setup.rate_limited)(failure.retry_after_seconds);
-                    }
-                    classify(&failure)
-                })?;
+            let pushed = events.push(&event.event_type, &event.data);
+            if let Ok(mut usage) = usage.lock() {
+                *usage = events.usage();
+            }
+            pushed.map_err(|failure| {
+                if failure.kind == OperationFailure::RateLimited {
+                    (setup.rate_limited)(failure.retry_after_seconds);
+                }
+                (classify(&failure), None)
+            })?;
             if exits.state.take_failure().is_some() {
-                return Err(DuckFailure::NoVerdict);
+                return Err((DuckFailure::NoVerdict, Some(DuckReason::ExitInvalid)));
             }
             if event.event_type == "session.idle" {
                 break;
             }
         }
-        if reads.source_failure.lock().is_ok_and(|f| f.is_some())
-            || reads.limit_failure.lock().is_ok_and(|f| f.is_some())
-        {
-            return Err(DuckFailure::Failed);
+        if reads.source_failure.lock().is_ok_and(|f| f.is_some()) {
+            return Err((DuckFailure::Failed, Some(DuckReason::SourceRead)));
+        }
+        if reads.limit_failure.lock().is_ok_and(|f| f.is_some()) {
+            return Err((DuckFailure::Failed, Some(DuckReason::ReadLimit)));
         }
         let model = setup.selection.agent.model.clone();
         let result = events
@@ -561,9 +650,9 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             )
             .map_err(|failure| {
                 if failure.kind == OperationFailure::Provider {
-                    DuckFailure::NoVerdict
+                    (DuckFailure::NoVerdict, None)
                 } else {
-                    DuckFailure::Failed
+                    (DuckFailure::Failed, Some(DuckReason::Task))
                 }
             })?;
         Ok((
@@ -571,6 +660,35 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             result.output,
         ))
     }
+}
+
+/// A call failure and its typed cause, when known.
+type Fail = (DuckFailure, Option<DuckReason>);
+
+fn reasoned(failure: DuckFailure, reason: DuckReason) -> Fail {
+    (failure, (failure == DuckFailure::Failed).then_some(reason))
+}
+
+/// Why a verify_fixed `confirmed` verdict is not proven by what the duck was served.
+fn unproven(
+    input: &DuckInput,
+    verdict: &Verdict,
+    served: impl Fn(&duck::EvidenceRef) -> bool,
+    thread_read: impl Fn(&str) -> bool,
+) -> Option<DuckReason> {
+    if !input.verify_fixed || verdict.verdict != duck::VerdictKind::Confirmed {
+        return None;
+    }
+    if !input.thread_id.as_deref().is_some_and(thread_read) {
+        return Some(DuckReason::ThreadUnread);
+    }
+    if verdict.evidence.is_empty() {
+        return Some(DuckReason::EvidenceMissing);
+    }
+    if !verdict.evidence.iter().all(served) {
+        return Some(DuckReason::EvidenceUnserved);
+    }
+    None
 }
 
 fn classify(failure: &Failure) -> DuckFailure {

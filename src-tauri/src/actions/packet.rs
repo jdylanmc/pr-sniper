@@ -165,6 +165,83 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Every finding this exit relied on as settled without a fresh check (accepted
+/// author won't-fix, carried forward) still reads exactly as accepted on the provider.
+fn settled_threads_hold(run: &FinalReview, observation: &Observation) -> Result<(), String> {
+    let result = run
+        .execution
+        .result
+        .as_ref()
+        .ok_or("Final review result unavailable.")?;
+    settled_hold(
+        &result.finding_dispositions,
+        &result.carried_findings,
+        observation,
+    )
+}
+
+pub(super) fn settled_hold(
+    dispositions: &[crate::review::findings::Assessment],
+    carried: &[crate::review::findings::Assessment],
+    observation: &Observation,
+) -> Result<(), String> {
+    use crate::review::findings::{self, Disposition, Seen};
+    let changed = || "A settled finding's thread changed after review; a fresh review is needed.";
+    for evidence in dispositions
+        .iter()
+        .filter(|a| a.disposition == Disposition::AuthorWontFix)
+        .chain(carried)
+    {
+        let anchor = evidence.anchor.as_ref().ok_or_else(changed)?;
+        let thread = observation
+            .threads
+            .iter()
+            .find(|t| t.id == evidence.thread_id)
+            .ok_or_else(changed)?;
+        let ids: Vec<(String, Option<String>)> = thread
+            .comments
+            .iter()
+            .map(|c| {
+                let id = |v: &serde_json::Value| match v {
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    _ => None,
+                };
+                (
+                    id(&c["fullDatabaseId"]).unwrap_or_default(),
+                    id(&c["author"]["databaseId"]),
+                )
+            })
+            .collect();
+        let comments: Vec<Seen<'_>> = thread
+            .comments
+            .iter()
+            .zip(&ids)
+            .map(|(c, (id, author))| Seen {
+                id,
+                author_id: author.as_deref(),
+                body: c["body"].as_str().unwrap_or_default(),
+            })
+            .collect();
+        let holds = if evidence.disposition == Disposition::AuthorWontFix {
+            findings::author_reply_holds(
+                evidence,
+                &comments,
+                Some(&observation.author_id),
+                &observation.account_id,
+            )
+        } else {
+            findings::snapshot_holds(anchor, &comments, |c| {
+                findings::own_marked(c, &observation.account_id)
+            })
+        };
+        if !holds || anchor.base_sha != observation.base {
+            return Err(changed().into());
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
     if run.cancelled {
         return Err("Final review was cancelled.".into());
@@ -257,6 +334,9 @@ pub fn ready(
                 return Ok(Ready::AlreadyApproved);
             }
         }
+    }
+    if action == Action::Merge {
+        settled_threads_hold(run, observation)?;
     }
     let facts = Facts::from_observation(observation);
     let self_authored = facts.author_is_acting;

@@ -262,6 +262,12 @@ impl Environment for Native {
         crate::review::findings::proofs(&store, &write.job, &write.assignment_id).map_err(storage)
     }
 
+    fn pr_author(&mut self, write: &ExitWrite) -> Result<Option<String>, Failure> {
+        let client = self.client(write)?;
+        let pull = client.review_pull(&Self::repository(write), write.job.number)?;
+        Ok(pull.author.map(|author| author.id))
+    }
+
     fn thread(&mut self, write: &ExitWrite, id: &str) -> Result<Option<Thread>, Failure> {
         let client = self.client(write)?;
         Ok(client.review_thread(&write.job.repository_id, &write.job.pull_request_id, id)?)
@@ -311,6 +317,21 @@ impl Environment for Native {
             uncertain: false,
         })?;
         let mut result = client.resolve_review_thread(thread_id, request_id);
+        self.pace(write, &mut result);
+        result
+    }
+
+    fn unresolve(
+        &mut self,
+        write: &ExitWrite,
+        thread_id: &str,
+        request_id: &str,
+    ) -> Result<(), WriteFailure> {
+        let client = self.client(write).map_err(|failure| WriteFailure {
+            failure,
+            uncertain: true,
+        })?;
+        let mut result = client.unresolve_review_thread(thread_id, request_id);
         self.pace(write, &mut result);
         result
     }

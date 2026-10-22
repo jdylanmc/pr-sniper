@@ -183,7 +183,9 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
                     .iter()
                     .find(|a| {
                         a.thread_id == *id
-                            && (!duck_required
+                            && (a.disposition
+                                == crate::review::findings::Disposition::AuthorWontFix
+                                || !duck_required
                                 || review
                                     .packet
                                     .as_ref()
@@ -265,6 +267,10 @@ pub trait Environment {
     /// Saved ownership proofs of every comment batch PR Sniper published to this PR.
     fn proofs(&mut self, write: &ExitWrite) -> Result<Vec<Ownership>, Failure>;
     fn thread(&mut self, write: &ExitWrite, id: &str) -> Result<Option<Thread>, Failure>;
+    /// Provider account id of the PR author. Unknown refuses author won't-fix resolutions.
+    fn pr_author(&mut self, _write: &ExitWrite) -> Result<Option<String>, Failure> {
+        Ok(None)
+    }
     /// Local iteration whose head is `commit`, else `unknown`.
     fn revision(&mut self, write: &ExitWrite, commit: Option<&str>) -> String;
     fn reply(
@@ -279,6 +285,18 @@ pub trait Environment {
         thread_id: &str,
         request_id: &str,
     ) -> Result<(), WriteFailure>;
+    /// Undo PR Sniper's own resolution. Unsupported: an uncertain failure.
+    fn unresolve(
+        &mut self,
+        _write: &ExitWrite,
+        _thread_id: &str,
+        _request_id: &str,
+    ) -> Result<(), WriteFailure> {
+        Err(WriteFailure {
+            failure: Failure::permanent("Unresolving is unavailable."),
+            uncertain: true,
+        })
+    }
     /// The confirmed exit consumes the PR state and re-baselines
     /// (`exits::consume::consume_after`). Runs once; retried when it fails.
     fn confirmed(&mut self, write: &ExitWrite) -> Result<(), Failure>;
@@ -453,6 +471,9 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
             }
             StepKind::Resolve => {
                 resolution_proof(write, step)?;
+                if let Some(evidence) = won_t_fix(step) {
+                    author_reply_holds(env, write, evidence, &thread)?;
+                }
                 if !thread.owned_by_any(&proofs) {
                     return Err(Failure::permanent(
                         "Only threads rooted in this agent's own comments can be resolved. The exit was discarded.",
@@ -468,13 +489,20 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
 }
 
 fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
+    use crate::review::findings::Disposition;
     let valid = step.resolution_evidence.as_ref().is_some_and(|a| {
         a.thread_id == step.thread_id
-            && a.disposition == crate::review::findings::Disposition::Fixed
+            && match a.disposition {
+                Disposition::Fixed => !a.evidence.is_empty(),
+                Disposition::AuthorWontFix => {
+                    a.author_comment_id.is_some()
+                        && a.anchor.as_ref().is_some_and(|x| x.author_id.is_some())
+                }
+                _ => false,
+            }
             && a.head_sha == write.job.head_sha
             && Some(a.base_sha.as_str()) == write.reviewed_base_sha.as_deref()
             && !a.rationale.trim().is_empty()
-            && !a.evidence.is_empty()
             && a.evidence.iter().all(|e| {
                 !e.path.trim().is_empty()
                     && e.side.as_deref().unwrap_or("head") == "head"
@@ -485,8 +513,39 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
     if valid {
         Ok(())
     } else {
-        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence; outdated is not proof."))
+        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence, or a verified author won't-fix; outdated is not proof."))
     }
+}
+
+/// Re-read before resolving: the accepted won't-fix snapshot still holds on the
+/// provider thread for the current PR author (see `findings::author_reply_holds`).
+fn author_reply_holds(
+    env: &mut impl Environment,
+    write: &ExitWrite,
+    evidence: &crate::review::findings::Assessment,
+    thread: &Thread,
+) -> Result<(), Failure> {
+    let author = env.pr_author(write)?;
+    let comments: Vec<crate::review::findings::Seen<'_>> =
+        thread.comments.iter().map(Into::into).collect();
+    if crate::review::findings::author_reply_holds(
+        evidence,
+        &comments,
+        author.as_deref(),
+        &write.job.account_id,
+    ) {
+        Ok(())
+    } else {
+        Err(Failure::permanent(
+            "The accepted won't-fix thread or PR author changed since the review. Nothing was resolved.",
+        ))
+    }
+}
+
+fn won_t_fix(step: &Step) -> Option<&crate::review::findings::Assessment> {
+    step.resolution_evidence
+        .as_ref()
+        .filter(|a| a.disposition == crate::review::findings::Disposition::AuthorWontFix)
 }
 
 fn own_proofs(env: &mut impl Environment, write: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
@@ -612,8 +671,28 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
             write.uncertain = true;
             env.save(write)?;
             let request = write.request_id(index);
+            let won_t = won_t_fix(&step);
+            // Last check before the effect: after every local write, a fresh thread
+            // and PR author read. A refusal here sent nothing.
+            if let Some(evidence) = won_t {
+                let fresh = env.thread(write, &step.thread_id).and_then(|thread| {
+                    let thread = thread.ok_or_else(|| {
+                        Failure::permanent("A thread disappeared before its write.")
+                    })?;
+                    author_reply_holds(env, write, evidence, &thread)
+                });
+                if let Err(error) = fresh {
+                    write.steps[index].state = step.state;
+                    write.uncertain = false;
+                    env.save(write)?;
+                    return Err(error);
+                }
+            }
             match env.resolve(write, &step.thread_id, &request) {
                 Ok(()) => {
+                    if let Some(evidence) = won_t {
+                        return confirm_won_t_fix(env, write, index, evidence, request);
+                    }
                     done(write, index, request);
                     env.save(write)
                 }
@@ -636,6 +715,48 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     Err(error.failure)
                 }
             }
+        }
+    }
+}
+
+/// After an accepted won't-fix resolution lands, re-read the thread and PR author. If the
+/// accepted snapshot changed during the write, undo PR Sniper's own resolution and do
+/// not complete the step. Only the GitHub-side gap between this read and the resolve
+/// (sub-second) remains; see ADR 0021.
+fn confirm_won_t_fix(
+    env: &mut impl Environment,
+    write: &mut ExitWrite,
+    index: usize,
+    evidence: &crate::review::findings::Assessment,
+    request: String,
+) -> Result<(), Failure> {
+    let thread_id = write.steps[index].thread_id.clone();
+    let holds = env.thread(write, &thread_id).and_then(|thread| {
+        let thread =
+            thread.ok_or_else(|| Failure::permanent("A thread disappeared after its write."))?;
+        author_reply_holds(env, write, evidence, &thread)
+    });
+    let Err(changed) = holds else {
+        done(write, index, request);
+        return env.save(write);
+    };
+    match env.unresolve(write, &thread_id, &format!("{request}-undo")) {
+        Ok(()) => {
+            write.steps[index].state = StepState::Planned;
+            write.uncertain = false;
+            env.save(write)?;
+            Err(Failure::permanent(format!(
+                "{} The resolution was undone.",
+                changed.message
+            )))
+        }
+        Err(error) => {
+            // Leave the step attempted and uncertain: a human must reconcile it.
+            env.save(write)?;
+            Err(Failure::permanent(format!(
+                "{} Undoing the resolution failed: {}",
+                changed.message, error.failure.message
+            )))
         }
     }
 }

@@ -939,3 +939,96 @@ fn guarded_reads_revalidate_saved_state_only_after_an_input_changes() {
     assert_eq!(reads, READS / 2);
     assert!(outcome.unwrap_err().cancelled);
 }
+
+fn set_observation(store: &Store, job: &QueueJob, failure: Option<&str>) {
+    let mut monitoring = store.load_monitoring_state().unwrap();
+    monitoring.health.insert(
+        "repository-health".into(),
+        serde_json::from_value(json!({
+            "repository_id": job.configuration_id, "name": "example/repo",
+            "schedule_key": "schedule", "enabled": true, "last_attempt": 100,
+            "last_success": null, "next_run": 0, "schedule_available": true,
+            "last_failure": failure, "in_flight": false
+        }))
+        .unwrap(),
+    );
+    store.save_monitoring_state(&monitoring).unwrap();
+}
+
+fn waiting_reason(store: &Store, key: &str, now: i64) -> Option<String> {
+    crate::capacity::candidates(store, now)
+        .unwrap()
+        .into_iter()
+        .find(|work| work.key.id == key)
+        .and_then(|work| work.reason)
+}
+
+#[test]
+fn failed_feedback_observation_is_a_bounded_toss_and_holds_dispatch_until_a_clean_poll() {
+    let (_root, store, template) = feedback_fixture(false);
+    let run = running_packet(&store, &template, 100);
+    set_observation(&store, &run.job, Some("network"));
+    let failure = crate::review::validate_execution_selection(&store, &run).unwrap_err();
+    assert_eq!(failure.kind, OperationFailure::Tossed);
+    assert_eq!(failure.message, crate::feedback::OBSERVATION_FAILED);
+    complete(&store, &run.operation.id, Err(failure), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(saved.operation.state, OperationState::Queued);
+    assert_eq!(saved.operation.attempt_count, 1);
+    assert!(saved.result.is_none());
+
+    // While observation is unhealthy no new AI attempt starts or spends budget.
+    let next = saved.operation.next_attempt_at.unwrap();
+    assert_eq!(
+        waiting_reason(&store, &run.key, next).as_deref(),
+        Some(crate::feedback::WAITING_FOR_OBSERVATION)
+    );
+    assert_eq!(store.load_reviews().unwrap()[0].operation.attempt_count, 1);
+
+    set_observation(&store, &run.job, None);
+    assert_eq!(waiting_reason(&store, &run.key, next), None);
+    let retried = running_packet(&store, &template, next);
+    assert_eq!(retried.operation.id, run.operation.id);
+    assert_eq!(retried.operation.attempt_count, 2);
+    crate::review::validate_execution_selection(&store, &retried).unwrap();
+    complete(
+        &store,
+        &retried.operation.id,
+        Ok(packet_result(
+            json!({"exit":"ready_for_human","summary":"Fresh."}),
+        )),
+        next + 60,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_reviews().unwrap()[0].operation.state,
+        OperationState::Completed
+    );
+}
+
+#[test]
+fn old_permanent_observation_failures_recover_through_the_toss_budget() {
+    let (root, store, template) = feedback_fixture(false);
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::permanent(crate::feedback::OBSERVATION_FAILED)),
+        101,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_reviews().unwrap()[0].operation.failure,
+        Some(OperationFailure::Permanent)
+    );
+    let restarted = Store::new(root.path().into());
+    crate::review::restore(&restarted).unwrap();
+    let recovered = restarted.load_reviews().unwrap().remove(0);
+    assert_eq!(recovered.operation.id, run.operation.id);
+    assert_eq!(recovered.operation.attempt_count, 1);
+    assert_eq!(recovered.operation.failure, Some(OperationFailure::Tossed));
+    assert_eq!(
+        recovered.operation.retry_deadline,
+        run.operation.retry_deadline
+    );
+}

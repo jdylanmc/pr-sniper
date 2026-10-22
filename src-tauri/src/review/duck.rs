@@ -22,6 +22,50 @@ pub const MIN_CALL_SECONDS: u64 = 60;
 /// Refused calls (no session) kept per attempt beyond the started ones; later
 /// refusals only raise the last refusal's `repeats`.
 pub const MAX_REFUSAL_ENTRIES: usize = 8;
+/// A verify_fixed thread up to this size is served whole inside the duck packet.
+pub const MAX_INLINE_THREAD_BYTES: usize = 24 * 1024;
+/// Changed-file counts at which a call's timeout grows 1.5x and 2x.
+pub const LARGE_PR_FILES: usize = 40;
+pub const HUGE_PR_FILES: usize = 100;
+
+/// The per-call timeout for a PR of `changed_files`: the saved preference, 1.5x from
+/// 40 files and 2x from 100, never above the preference range. Calls stay serialized
+/// and bounded by `max_calls`; only wall time grows with the PR.
+pub fn call_timeout(configured: u32, changed_files: usize) -> u32 {
+    let scaled = if changed_files >= HUGE_PR_FILES {
+        configured.saturating_mul(2)
+    } else if changed_files >= LARGE_PR_FILES {
+        configured.saturating_add(configured / 2)
+    } else {
+        configured
+    };
+    scaled.min(*DuckLimits::CALL_TIMEOUT_SECONDS.end())
+}
+
+/// Primary window for own findings that may need a verify_fixed call: one applied
+/// (PR-size scaled) call timeout per finding, at most `max_calls`, never past the
+/// window preference range.
+pub fn primary_window_seconds(
+    limits: &DuckLimits,
+    own_findings: usize,
+    changed_files: usize,
+) -> i64 {
+    let calls = u32::try_from(own_findings)
+        .unwrap_or(u32::MAX)
+        .min(limits.max_calls);
+    let seconds = u64::from(limits.primary_window_minutes) * 60
+        + u64::from(calls) * u64::from(call_timeout(limits.call_timeout_seconds, changed_files));
+    seconds.min(u64::from(*DuckLimits::PRIMARY_WINDOW_MINUTES.end()) * 60) as i64
+}
+
+/// The exit error a duck gets for an unproven verify_fixed confirmation.
+pub fn refusal(reason: DuckReason) -> &'static str {
+    match reason {
+        DuckReason::ThreadUnread => "confirmed refused: read the whole original thread first (get_thread with its thread_id, every page). Then submit again, or submit rejected or unverifiable.",
+        DuckReason::EvidenceMissing => "confirmed refused: cite the current-head lines you read in evidence (path, side head, line).",
+        _ => "confirmed refused: cite only current-head lines served to you by read_source or read_changes after. Read them, then submit again.",
+    }
+}
 
 pub const DESCRIPTION: &str = "Ask the operator's Rubber Duck Agent to verify one finding before you post it. Fresh session, same PR state, read-only. Returns a verdict (confirmed, revise, rejected, unverifiable) as data. You decide. Bounded calls; one at a time.";
 pub const VERDICT_DESCRIPTION: &str =
@@ -131,7 +175,63 @@ pub enum DuckFailure {
     RateLimited,
     TimedOut,
     NoVerdict,
+    /// verify_fixed confirmed without the whole original thread or served head evidence.
+    Unverified,
     Failed,
+}
+
+/// Content-free cause of a `failed`, `no_verdict` or `unverified` call, for the
+/// primary's tool result and diagnostics. Never inferred from text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DuckReason {
+    SessionCreate,
+    Intelligence,
+    Catalog,
+    Send,
+    StreamLost,
+    SourceRead,
+    ReadLimit,
+    ExitInvalid,
+    ThreadUnread,
+    EvidenceUnserved,
+    EvidenceMissing,
+    Task,
+}
+
+impl DuckReason {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::SessionCreate => "session_create",
+            Self::Intelligence => "intelligence",
+            Self::Catalog => "catalog",
+            Self::Send => "send",
+            Self::StreamLost => "stream_lost",
+            Self::SourceRead => "source_read",
+            Self::ReadLimit => "read_limit",
+            Self::ExitInvalid => "exit_invalid",
+            Self::ThreadUnread => "thread_unread",
+            Self::EvidenceUnserved => "evidence_unserved",
+            Self::EvidenceMissing => "evidence_missing",
+            Self::Task => "task",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::ThreadUnread => {
+                "Duck confirmed without reading the whole original thread. Retry once or decide."
+            }
+            Self::EvidenceUnserved => {
+                "Duck cited head lines it was not served. Retry once or decide."
+            }
+            Self::EvidenceMissing => {
+                "Duck confirmed without head-line evidence. Retry once or decide."
+            }
+            Self::SourceRead | Self::ReadLimit => "Duck read failed. Retry once or decide.",
+            _ => "Duck runtime failed. Retry once or decide.",
+        }
+    }
 }
 
 impl DuckFailure {
@@ -145,6 +245,7 @@ impl DuckFailure {
             Self::RateLimited => "rate_limited",
             Self::TimedOut => "timed_out",
             Self::NoVerdict => "no_verdict",
+            Self::Unverified => "unverified",
             Self::Failed => "failed",
         }
     }
@@ -160,6 +261,7 @@ impl DuckFailure {
             Self::RateLimited => "Duck rate limited. You decide.",
             Self::TimedOut => "Duck timed out. Retry once or decide.",
             Self::NoVerdict => "Duck gave no verdict. Retry once or decide.",
+            Self::Unverified => "Duck confirmed fixed without proof it read. Retry once or decide.",
             Self::Failed => "Duck failed. Retry once or decide.",
         }
     }
@@ -169,6 +271,19 @@ impl DuckFailure {
         match detail {
             Some(detail) => format!("duck_failure: {}. {detail}", self.id()),
             None => format!("duck_failure: {}. {}", self.id(), self.hint()),
+        }
+    }
+
+    /// The error text with its typed cause, when known.
+    pub fn explained(self, reason: Option<DuckReason>) -> String {
+        match reason {
+            Some(reason) => format!(
+                "duck_failure: {} (reason: {}). {}",
+                self.id(),
+                reason.id(),
+                reason.hint()
+            ),
+            None => self.message(None),
         }
     }
 }
@@ -198,6 +313,9 @@ pub struct DuckCall {
     pub packet: Option<crate::packet::PacketRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Typed cause of a failed call; absent on verdicts and older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<DuckReason>,
     #[serde(default)]
     pub input_tokens: u64,
     #[serde(default)]

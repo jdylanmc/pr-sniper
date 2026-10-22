@@ -25,6 +25,16 @@ struct Env {
     fail_resolve_save: bool,
     known: Vec<(String, u64)>,
     gate: Option<String>,
+    pr_author: Option<String>,
+    /// Applied right after a reply lands: a later human comment or author change.
+    after_reply: Option<(
+        Option<pr_sniper_lib::github::threads::Comment>,
+        Option<String>,
+    )>,
+    /// Applied when a resolve intent is saved (before the final read) or as the
+    /// resolve mutation lands (before the confirming read).
+    on_attempted: Option<pr_sniper_lib::github::threads::Comment>,
+    during_resolve: Option<pr_sniper_lib::github::threads::Comment>,
 }
 
 impl Env {
@@ -40,6 +50,10 @@ impl Env {
             fail_resolve_save: false,
             known: vec![(HEAD.into(), 1)],
             gate: None,
+            pr_author: None,
+            after_reply: None,
+            on_attempted: None,
+            during_resolve: None,
         }
     }
     fn client(&self) -> GithubClient<Wire> {
@@ -64,6 +78,15 @@ impl Environment for Env {
                 "Injected interruption before resolution receipt save.",
             ));
         }
+        if write.steps.iter().any(|step| {
+            step.kind == exit_writes::StepKind::Resolve && step.state == StepState::Attempted
+        }) {
+            if let Some(comment) = self.on_attempted.take() {
+                self.wire.0.lock().unwrap().threads[0]
+                    .comments
+                    .push(comment);
+            }
+        }
         self.saved.push(write.clone());
         Ok(())
     }
@@ -84,15 +107,44 @@ impl Environment for Env {
     fn thread(&mut self, _: &ExitWrite, id: &str) -> Result<Option<Thread>, Failure> {
         Ok(self.client().review_thread("100", "9", id)?)
     }
+    fn pr_author(&mut self, _: &ExitWrite) -> Result<Option<String>, Failure> {
+        Ok(self.pr_author.clone())
+    }
     fn revision(&mut self, _: &ExitWrite, commit: Option<&str>) -> String {
         exit_writes::targeted_revision(commit, &self.known)
     }
     fn reply(&mut self, w: &ExitWrite, root: &str, body: &str) -> Result<String, WriteFailure> {
-        self.client()
-            .reply_to_review_thread("example/repo", w.job.number, "22", root, body)
+        let posted =
+            self.client()
+                .reply_to_review_thread("example/repo", w.job.number, "22", root, body);
+        if let Some((comment, author)) = self.after_reply.take() {
+            if let Some(comment) = comment {
+                self.wire.0.lock().unwrap().threads[0]
+                    .comments
+                    .push(comment);
+            }
+            if author.is_some() {
+                self.pr_author = author;
+            }
+        }
+        posted
     }
     fn resolve(&mut self, _: &ExitWrite, thread: &str, request: &str) -> Result<(), WriteFailure> {
-        self.client().resolve_review_thread(thread, request)
+        let result = self.client().resolve_review_thread(thread, request);
+        if let Some(comment) = self.during_resolve.take() {
+            self.wire.0.lock().unwrap().threads[0]
+                .comments
+                .push(comment);
+        }
+        result
+    }
+    fn unresolve(
+        &mut self,
+        _: &ExitWrite,
+        thread: &str,
+        request: &str,
+    ) -> Result<(), WriteFailure> {
+        self.client().unresolve_review_thread(thread, request)
     }
     fn confirmed(&mut self, _: &ExitWrite) -> Result<(), Failure> {
         if self.fail_confirm {
@@ -936,4 +988,166 @@ fn a_write_waiting_on_its_batch_does_not_block_other_writes() {
         exit_writes::next_due(&store, 100).unwrap().as_deref(),
         Some(other.id.as_str())
     );
+}
+
+fn hash(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// T1's author reply "101" (account 11, the PR author) declines; the primary accepted it.
+fn won_t_fix_write(cited: &str, anchored_author: &str) -> ExitWrite {
+    let mut review = fake::review(
+        json!([]),
+        json!([reply("T1", "Accepted: intended product behavior.")]),
+        json!(["T1"]),
+        &fake::settings(),
+    );
+    review.result.as_mut().unwrap().finding_dispositions = vec![serde_json::from_value(json!({
+        "thread_id":"T1","disposition":"author_wont_fix","head_sha":HEAD,"base_sha":"b".repeat(40),
+        "rationale":"Accepted: intended product behavior.","evidence":[],
+        "author_comment_id":cited,
+        "anchor":{"base_sha":"b".repeat(40),"blobs":{},"manifests":"m",
+            "comments":{"100":hash("Root finding"),"101":hash("Why?")},"author_id":anchored_author}
+    }))
+    .unwrap()];
+    exit_writes::plan(&review, 100).unwrap()
+}
+
+#[test]
+fn an_accepted_author_won_t_fix_replies_then_resolves_after_rechecking_the_author() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.pr_author = Some("11".into());
+    let mut w = won_t_fix_write("101", "11");
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+    assert!(wire.thread("T1").resolved);
+}
+
+#[test]
+fn an_author_won_t_fix_is_refused_unless_the_provider_still_shows_the_authors_latest_word() {
+    for case in [
+        "unknown",
+        "changed-author",
+        "root",
+        "later-human",
+        "later-author",
+    ] {
+        let wire = wire();
+        let mut env = Env::new(&wire);
+        env.pr_author = (case != "unknown").then(|| "11".into());
+        let (cited, anchored) = match case {
+            "changed-author" => ("101", "99"),
+            "root" => ("100", "11"),
+            _ => ("101", "11"),
+        };
+        if case.starts_with("later") {
+            wire.0.lock().unwrap().threads[0]
+                .comments
+                .push(fake::comment(
+                    "150",
+                    "I still think this loses data.",
+                    if case == "later-human" { "33" } else { "11" },
+                    Some("100"),
+                    Some("43"),
+                ));
+        }
+        let mut w = won_t_fix_write(cited, anchored);
+        drive(&mut env, &mut w);
+        assert_eq!(w.phase, Phase::Tossed, "{case}");
+        assert!(wire.log().is_empty(), "{case}");
+        assert!(!wire.thread("T1").resolved, "{case}");
+    }
+}
+
+#[test]
+fn an_author_won_t_fix_is_rechecked_after_the_audit_reply_right_before_resolving() {
+    let edited = {
+        let mut c = fake::comment("101", "Why?", "11", Some("100"), Some("43"));
+        c.id = "160".into();
+        c.body = "Actually this loses data; please fix.".into();
+        c.author_id = Some("33".into());
+        c
+    };
+    for (case, comment, author) in [
+        ("later human comment", Some(edited), None),
+        ("PR author changed", None, Some("44".to_string())),
+    ] {
+        let wire = wire();
+        let mut env = Env::new(&wire);
+        env.pr_author = Some("11".into());
+        env.after_reply = Some((comment, author));
+        let mut w = won_t_fix_write("101", "11");
+        drive(&mut env, &mut w);
+        assert_eq!(wire.log(), ["reply:100"], "{case}");
+        assert!(!wire.thread("T1").resolved, "{case}");
+        assert_ne!(w.phase, Phase::Completed, "{case}");
+    }
+}
+
+#[test]
+fn an_edited_author_reply_is_not_resolved() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.pr_author = Some("11".into());
+    wire.0.lock().unwrap().threads[0].comments[1].body = "Fine, I will fix it.".into();
+    let mut w = won_t_fix_write("101", "11");
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+}
+
+fn human_concern() -> pr_sniper_lib::github::threads::Comment {
+    fake::comment(
+        "170",
+        "This still loses data.",
+        "33",
+        Some("100"),
+        Some("43"),
+    )
+}
+
+#[test]
+fn a_change_after_the_resolve_intent_is_saved_stops_before_the_mutation() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.pr_author = Some("11".into());
+    env.on_attempted = Some(human_concern());
+    let mut w = won_t_fix_write("101", "11");
+    drive(&mut env, &mut w);
+    // The final read follows the persisted intent: no resolve request was sent.
+    assert_eq!(wire.log(), ["reply:100"]);
+    assert!(!wire.thread("T1").resolved);
+    assert_ne!(w.phase, Phase::Completed);
+    let resolve = w
+        .steps
+        .iter()
+        .find(|s| s.kind == exit_writes::StepKind::Resolve)
+        .unwrap();
+    assert_ne!(resolve.state, StepState::Done);
+}
+
+#[test]
+fn a_change_while_the_resolve_lands_is_undone_and_not_completed() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    env.pr_author = Some("11".into());
+    env.during_resolve = Some(human_concern());
+    let mut w = won_t_fix_write("101", "11");
+    drive(&mut env, &mut w);
+    assert_eq!(wire.log(), ["reply:100", "resolve:T1", "unresolve:T1"]);
+    assert!(!wire.thread("T1").resolved);
+    assert_ne!(w.phase, Phase::Completed);
+    let resolve = w
+        .steps
+        .iter()
+        .find(|s| s.kind == exit_writes::StepKind::Resolve)
+        .unwrap();
+    assert_eq!(resolve.state, StepState::Planned);
+    assert!(w.error.as_deref().unwrap().contains("undone"));
 }

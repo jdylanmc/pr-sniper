@@ -226,11 +226,16 @@ pub(crate) fn prepare_dispatch(
         .as_ref()
         .is_some_and(|c| c.rubber_duck.is_some())
     {
-        let window = store.load_settings()?.rubber_duck.primary_window_minutes;
-        run.operation.retry_deadline = run
-            .operation
-            .retry_deadline
-            .max(now.saturating_add(i64::from(window) * 60));
+        let limits = store.load_settings()?.rubber_duck;
+        // Each own finding may need one verify_fixed call; bounded by max_calls.
+        let own: std::collections::BTreeSet<String> =
+            super::findings::proofs(store, &run.job, &run.assignment_id)?
+                .into_iter()
+                .flat_map(|proof| proof.root_ids)
+                .collect();
+        // The PR size is unknown until preparation, which may extend this window.
+        let window = super::duck::primary_window_seconds(&limits, own.len(), 0);
+        run.operation.retry_deadline = run.operation.retry_deadline.max(now.saturating_add(window));
     }
     run.phase = "Preparing immutable review context".into();
     run.error = None;
@@ -631,7 +636,13 @@ async fn execute_attempt(
     if remaining <= 0 {
         return Err(Failure::timeout());
     }
-    let deadline = Instant::now() + Duration::from_secs(remaining as u64);
+    let started_at = now_seconds().map_err(Failure::permanent)?;
+    let started = Instant::now();
+    // Preparation may extend the window once the PR size is known (Rubber Duck only).
+    let deadline_at = Arc::new(std::sync::Mutex::new(
+        started + Duration::from_secs(remaining as u64),
+    ));
+    let gate_deadline = deadline_at.clone();
     let generation = app
         .state::<Host>()
         .github_generations
@@ -647,7 +658,10 @@ async fn execute_attempt(
     // only after its inputs were rewritten, not hundreds of times per attempt.
     let validated = super::ValidatedSelection::default();
     let gate: runtime::Gate = Arc::new(move || {
-        if Instant::now() >= deadline {
+        if gate_deadline
+            .lock()
+            .map_or(true, |deadline| Instant::now() >= *deadline)
+        {
             return Err(Failure::timeout());
         }
         if gate_cancelled.load(Ordering::SeqCst) {
@@ -720,11 +734,21 @@ async fn execute_attempt(
                         .capabilities
                         .comment
                         == crate::github::provider::CommentCapability::Available;
-                    let (teammates, iterations, last_consumed_at, ownership, corrections) = {
+                    let (
+                        teammates,
+                        iterations,
+                        last_consumed_at,
+                        ownership,
+                        (corrections, resolutions, receipts),
+                    ) = {
                         let store = host
                             .store
                             .lock()
                             .map_err(|_| Failure::permanent("Review storage unavailable."))?;
+                        let writes = store
+                            .load_feedback()
+                            .map_err(Failure::permanent)?
+                            .exit_writes;
                         (
                             super::teammates::entries(&store, &preparation_run)?,
                             crate::exit_writes::known_iterations(&store, &preparation_run.job)
@@ -740,13 +764,18 @@ async fn execute_attempt(
                                 &preparation_run.assignment_id,
                             )
                             .map_err(Failure::permanent)?,
-                            super::findings::corrections(
-                                &store
-                                    .load_feedback()
-                                    .map_err(Failure::permanent)?
-                                    .exit_writes,
-                                &preparation_run.job,
-                                &preparation_run.assignment_id,
+                            (
+                                super::findings::corrections(
+                                    &writes,
+                                    &preparation_run.job,
+                                    &preparation_run.assignment_id,
+                                ),
+                                super::findings::resolutions(
+                                    &writes,
+                                    &preparation_run.job,
+                                    &preparation_run.assignment_id,
+                                ),
+                                super::findings::reply_receipts(&writes, &preparation_run.job),
                             ),
                         )
                     };
@@ -763,6 +792,8 @@ async fn execute_attempt(
                             iterations: &iterations,
                             last_consumed_at,
                             ownership,
+                            resolutions,
+                            receipts,
                         },
                     )?;
                     Arc::make_mut(&mut prepared.setup.facts).corrections = corrections;
@@ -795,6 +826,29 @@ async fn execute_attempt(
             }
             current.phase = "Verifying restricted Copilot runtime and reviewing".into();
             current.packet = Some(packet.packet.record.clone());
+            if packet.duck.is_some() {
+                let limits = store
+                    .load_settings()
+                    .map_err(Failure::permanent)?
+                    .rubber_duck;
+                let pending = packet
+                    .setup
+                    .facts
+                    .conversation
+                    .threads
+                    .iter()
+                    .filter(|t| t.mine && !t.carried)
+                    .count();
+                let window =
+                    super::duck::primary_window_seconds(&limits, pending, context.files.len());
+                let end = started_at.saturating_add(window);
+                if end > current.operation.retry_deadline {
+                    current.operation.retry_deadline = end;
+                    if let Ok(mut deadline) = deadline_at.lock() {
+                        *deadline = started + Duration::from_secs(window.max(0) as u64);
+                    }
+                }
+            }
             store.save_reviews(&reviews).map_err(Failure::permanent)?;
         }
         let remote_app = app.clone();
@@ -837,6 +891,9 @@ async fn execute_attempt(
             failure_commit: Some(attempt.committer()),
             duck,
         };
+        let deadline = *deadline_at
+            .lock()
+            .map_err(|_| Failure::permanent("Review deadline unavailable."))?;
         let mut result = integration.review(request, cancelled, deadline).await?;
         diagnostics.emit(crate::storage::diagnostics::Event::Phase {
             phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,

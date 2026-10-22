@@ -16,6 +16,8 @@ fn existing_identity_reaches_grant_gate_as_reply_not_root_and_keeps_assessment()
     );
     tools.require_finding_identity = true;
     let a = Assessment {
+        author_comment_id: None,
+        anchor: None,
         thread_id: "original".into(),
         disposition: Disposition::StillApplies,
         head_sha: "same-head".into(),

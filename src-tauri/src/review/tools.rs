@@ -116,6 +116,16 @@ pub fn page_items(
     Ok(output)
 }
 
+/// A whole thread exactly as `get_thread` serves it.
+pub fn thread_text(thread: &crate::packet::ThreadFact) -> String {
+    thread
+        .comments
+        .iter()
+        .map(|c| format!("{} by {}:\n{}\n", c.id, c.author, c.body))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn get_thread(
     facts: &ToolFacts,
     args: &Value,
@@ -140,15 +150,7 @@ pub fn get_thread(
                 .ok_or_else(|| Failure::permanent("No description is available."))?,
         )
     } else if let Some(thread) = facts.conversation.threads.iter().find(|t| t.id == id) {
-        (
-            "thread",
-            thread
-                .comments
-                .iter()
-                .map(|c| format!("{} by {}:\n{}\n", c.id, c.author, c.body))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+        ("thread", thread_text(thread))
     } else if let Some(comment) = facts.conversation.comments.iter().find(|c| c.id == id) {
         (
             "comment",

@@ -431,12 +431,25 @@ async fn a_duck_call_returns_a_fenced_verdict_and_is_recorded_with_the_primary()
 }
 
 #[tokio::test]
-async fn fixed_verification_requires_independent_original_thread_and_head_code_reads() {
-    for (scenario, confirmed) in [
-        ("verdict-fixed-read", true),
-        ("verdict-fixed-no-thread", false),
-        ("verdict-fixed-partial-thread", false),
-        ("verdict-ok", false),
+async fn fixed_verification_requires_the_whole_original_thread_and_served_head_code() {
+    use crate::review::duck::{DuckReason, MAX_INLINE_THREAD_BYTES};
+    // (scenario, thread body bytes, expected): small threads are served inline.
+    let large = MAX_INLINE_THREAD_BYTES + 1024;
+    for (scenario, body, expected) in [
+        ("verdict-fixed-read", 16, None),
+        ("verdict-fixed-no-thread", 16, None),
+        ("verdict-fixed-read", large, Some(DuckReason::ThreadUnread)),
+        (
+            "verdict-fixed-no-thread",
+            large,
+            Some(DuckReason::ThreadUnread),
+        ),
+        (
+            "verdict-fixed-partial-thread",
+            large,
+            Some(DuckReason::ThreadUnread),
+        ),
+        ("verdict-ok", 16, Some(DuckReason::EvidenceUnserved)),
     ] {
         let root = tempfile::tempdir().unwrap();
         let mut duck = duck(&root.path().join("duck"), scenario, limits(8, 180), false);
@@ -446,6 +459,7 @@ async fn fixed_verification_requires_independent_original_thread_and_head_code_r
         request.exits.facts = Arc::new(ToolFacts {
             conversation: crate::packet::Conversation {
                 threads: vec![crate::packet::ThreadFact {
+                    carried: false,
                     id: "existing".into(),
                     path: Some("source.rs".into()),
                     line: Some(1),
@@ -455,9 +469,10 @@ async fn fixed_verification_requires_independent_original_thread_and_head_code_r
                     new_since_last_review: false,
                     targeted_revision: Some("1".into()),
                     comments: vec![crate::packet::CommentFact {
+                        author_id: None,
                         id: "root".into(),
                         author: "reviewer".into(),
-                        body: "Original defect.".into(),
+                        body: "x".repeat(body),
                     }],
                 }],
                 comments: vec![],
@@ -473,16 +488,128 @@ async fn fixed_verification_requires_independent_original_thread_and_head_code_r
         .await
         .unwrap();
         assert_eq!(result.ducks.len(), 1);
+        let call = &result.ducks[0];
+        let case = format!("{scenario}/{body}: {call:?}");
+        match expected {
+            None => assert!(
+                matches!(&call.outcome, DuckOutcome::Verdict {verdict}
+                    if verdict.verdict == VerdictKind::Confirmed),
+                "{case}"
+            ),
+            Some(reason) => {
+                assert_eq!(
+                    call.outcome,
+                    DuckOutcome::Failure {
+                        failure: DuckFailure::Unverified
+                    },
+                    "{case}"
+                );
+                assert_eq!(call.reason, Some(reason), "{case}");
+                // The primary sees the typed cause, not a generic failure.
+                let results = duck_results(root.path());
+                assert!(
+                    results[0].contains(&format!("reason: {}", reason.id())),
+                    "{case}: {results:?}"
+                );
+            }
+        }
+        assert!(call.session_id.is_some() && call.input_tokens > 0, "{case}");
+        let prompt = receipt(&root.path().join("duck"))
+            .into_iter()
+            .find(|r| r["method"] == "fixture.prompt")
+            .unwrap()
+            .to_string();
         assert_eq!(
-            matches!(&result.ducks[0].outcome, DuckOutcome::Verdict {verdict}
-            if verdict.verdict == VerdictKind::Confirmed),
-            confirmed,
-            "{scenario}: {:?}",
-            result.ducks
+            prompt.contains("complete: true"),
+            body < MAX_INLINE_THREAD_BYTES,
+            "{case}"
         );
         stopped(root.path());
         stopped(&root.path().join("duck"));
     }
+}
+
+#[tokio::test]
+async fn files_the_duck_only_searched_are_anchored_with_their_whole_head_blob() {
+    let root = tempfile::tempdir().unwrap();
+    let mut duck = duck(
+        &root.path().join("duck"),
+        "verdict-searched",
+        limits(8, 180),
+        false,
+    );
+    duck.setup.prep.tools.insert(0, "search_code".into());
+    let mut request = primary_request(duck.setup);
+    request.exits.facts = Arc::new(ToolFacts {
+        conversation: crate::packet::Conversation {
+            threads: vec![crate::packet::ThreadFact {
+                carried: false,
+                id: "existing".into(),
+                path: Some("elsewhere.rs".into()),
+                line: Some(1),
+                resolved: false,
+                outdated: false,
+                mine: true,
+                new_since_last_review: false,
+                targeted_revision: None,
+                comments: vec![],
+            }],
+            comments: vec![],
+        },
+        ..Default::default()
+    });
+    let result = execute(
+        options(root.path(), "duck-disposed"),
+        &identity(),
+        &operation(600),
+        request,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(&result.ducks[0].outcome, DuckOutcome::Verdict { .. }),
+        "{:?}",
+        result.ducks
+    );
+    let anchor = result.finding_dispositions[0].anchor.as_ref().unwrap();
+    // Neither cited nor the thread's file, nor read by the primary: only searched by the duck.
+    assert_eq!(
+        anchor.blobs.get("source.rs").map(String::as_str),
+        Some("c".repeat(40).as_str())
+    );
+    assert_eq!(
+        anchor.blobs.get("elsewhere.rs").map(String::as_str),
+        Some("")
+    );
+    stopped(root.path());
+    stopped(&root.path().join("duck"));
+}
+
+#[test]
+fn duck_time_scales_with_pr_size_and_own_findings_within_preference_bounds() {
+    use crate::review::duck::{call_timeout, primary_window_seconds};
+    assert_eq!(call_timeout(180, 10), 180);
+    assert_eq!(call_timeout(180, 40), 270);
+    assert_eq!(call_timeout(180, 100), 360);
+    assert_eq!(call_timeout(400, 100), 600);
+    let defaults = crate::storage::DuckLimits::default();
+    assert_eq!(primary_window_seconds(&defaults, 0, 10), 15 * 60);
+    assert_eq!(primary_window_seconds(&defaults, 3, 10), 15 * 60 + 3 * 180);
+    // Never more than max_calls calls.
+    assert_eq!(primary_window_seconds(&defaults, 50, 10), 15 * 60 + 8 * 180);
+    // Large and huge PRs: the window fits max_calls calls at the applied timeout.
+    for (files, timeout) in [(40, 270), (100, 360), (250, 360)] {
+        let window = primary_window_seconds(&defaults, 8, files);
+        assert_eq!(window, 15 * 60 + 8 * timeout, "{files} files");
+        let reserve = crate::review::duck::EXIT_RESERVE_SECONDS as i64;
+        assert!(window - reserve >= 8 * i64::from(call_timeout(180, files)));
+    }
+    let wide = crate::storage::DuckLimits {
+        max_calls: 32,
+        call_timeout_seconds: 600,
+        primary_window_minutes: 60,
+    };
+    assert_eq!(primary_window_seconds(&wide, 32, 200), 120 * 60);
 }
 
 #[tokio::test]

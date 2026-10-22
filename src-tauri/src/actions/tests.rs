@@ -259,6 +259,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         &context,
         &snapshot,
         packet_run::Caller {
+            resolutions: Vec::new(),
+            receipts: Default::default(),
             acting_login: "actor",
             ownership: vec![],
             write_capability: true,
@@ -340,6 +342,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &context,
             &snapshot,
             packet_run::Caller {
+                resolutions: Vec::new(),
+                receipts: Default::default(),
                 acting_login: "actor",
                 ownership: vec![],
                 write_capability: true,
@@ -457,6 +461,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             &context,
             &snapshot,
             packet_run::Caller {
+                resolutions: Vec::new(),
+                receipts: Default::default(),
                 acting_login: "actor",
                 ownership: vec![],
                 write_capability: true,
@@ -943,6 +949,8 @@ struct Env<'a> {
     cancel_after_intent: bool,
     pause_after_intent: bool,
     fail_save: bool,
+    /// A provider comment added to the first thread right after the intent is saved.
+    comment_after_intent: Option<Value>,
 }
 impl host::ActionEnvironment for Env<'_> {
     fn observe(&mut self, _: &Effect) -> Result<Observation, Failure> {
@@ -987,6 +995,11 @@ impl host::ActionEnvironment for Env<'_> {
             self.store
                 .save_automation(&crate::capacity::Automation { paused: true })
                 .unwrap();
+        }
+        if let Some(comment) = self.comment_after_intent.take() {
+            self.wire.0.lock().unwrap().observation.threads[0]
+                .comments
+                .push(comment);
         }
         Ok(effect)
     }
@@ -1045,6 +1058,7 @@ fn env(store: &Store) -> Env<'_> {
         cancel_after_intent: false,
         pause_after_intent: false,
         fail_save: false,
+        comment_after_intent: None,
     }
 }
 
@@ -1652,4 +1666,56 @@ fn an_item_waiting_on_the_provider_is_reobserved_per_heartbeat_not_per_tick() {
         .is_none());
     assert_eq!(target(NOW + 5), None);
     assert_eq!(target(NOW + crate::wake::HEARTBEAT_SECONDS), Some(item));
+}
+
+#[test]
+fn merge_rejects_a_settled_thread_that_differs_from_its_accepted_snapshot() {
+    use crate::review::findings::{body_hash, Assessment};
+    let reply = "Won't fix: intended.";
+    let anchored = |disposition: &str| -> Assessment {
+        serde_json::from_value(json!({
+            "thread_id":"T1","disposition":disposition,"head_sha":"a".repeat(40),
+            "base_sha":"b".repeat(40),"rationale":"Accepted.","evidence":[],
+            "author_comment_id": (disposition == "author_wont_fix").then_some("101"),
+            "anchor":{"base_sha":"b".repeat(40),"blobs":{},"manifests":"m",
+                "comments":{"100":body_hash("Root"),"101":body_hash(reply)},
+                "author_id": (disposition == "author_wont_fix").then_some("11")}
+        }))
+        .unwrap()
+    };
+    let comment = |id: u64, author: u64, body: &str| json!({"fullDatabaseId":id,"body":body,"author":{"login":"x","databaseId":author}});
+    let thread = |comments: Vec<Value>| HumanThread {
+        id: "T1".into(),
+        resolved: true,
+        outdated: false,
+        resolved_by: None,
+        comments,
+    };
+    let base = vec![
+        comment(100, 22, "Root"),
+        comment(101, 11, reply),
+        comment(102, 22, "Accepted. <!-- pr-sniper:reply:exit-1-0 -->"),
+    ];
+    let won_t = anchored("author_wont_fix");
+    let fixed = anchored("fixed");
+    for (dispositions, carried) in [(vec![won_t.clone()], vec![]), (vec![], vec![fixed.clone()])] {
+        let mut observation = observed();
+        observation.threads = vec![thread(base.clone())];
+        assert!(packet::settled_hold(&dispositions, &carried, &observation).is_ok());
+        let mut edited = base.clone();
+        edited[1] = comment(101, 11, "Never mind, will fix.");
+        observation.threads = vec![thread(edited)];
+        assert!(packet::settled_hold(&dispositions, &carried, &observation).is_err());
+        let mut later = base.clone();
+        later.push(comment(103, 33, "This still loses data."));
+        observation.threads = vec![thread(later)];
+        assert!(packet::settled_hold(&dispositions, &carried, &observation).is_err());
+        observation.threads = vec![thread(base.clone())];
+        observation.base = "c".repeat(40);
+        assert!(packet::settled_hold(&dispositions, &carried, &observation).is_err());
+    }
+    let mut observation = observed();
+    observation.threads = vec![thread(base)];
+    observation.author_id = "44".into();
+    assert!(packet::settled_hold(&[won_t], &[], &observation).is_err());
 }

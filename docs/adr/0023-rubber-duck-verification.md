@@ -9,6 +9,14 @@ Status: accepted (owner, 2026-10-14). Plan: [Rubber duck plan](../agent/design/r
 - Primary binds the verdict ordinal to the exact thread, rationale and evidence in `finding_dispositions`. A failure, stale verdict, different claim or missing independent reads cannot support resolution. No new grant, publication authority or background stage.
 - This narrowly supersedes the original “never a mandatory gate” / “verdict never blocks” language for `fixed` dispositions only. Full contract: [finding reconciliation](../review-packet.md#finding-reconciliation).
 
+## Scoped amendment: verify reliability (owner, 2026-10-22)
+
+- Read enforcement for `verify_fixed` stays, and the duck is told: a thread up to 24 KB is served whole in the duck packet and counts as read; larger needs every `get_thread` page.
+- An unproven `confirmed` is refused at `submit_verdict` (gate denial, not a rejected call) so the duck can read and resubmit. A call that ends without a proven verdict is `duck_failure: unverified` with a typed `reason`; no silent downgrade to `failed`. Every failed call records its reason, tokens and tool calls.
+- Duck rules ask for a verdict only; the Directive is lens, not task.
+- Applied per-call timeout scales with PR size: 1.5x from 40 changed files, 2x from 100, never above 600 s. The primary window grows one applied (scaled) call timeout per own finding not carried forward, at most `max_calls`, never above 120 min; known after preparation, so the attempt deadline extends then. Calls stay serialized and bounded by `max_calls`.
+- Own findings PR Sniper resolved whose anchored inputs (base, dependency files, every file read, thread comments) are unchanged are carried forward without a new duck call ([finding reconciliation](../review-packet.md#finding-reconciliation)).
+
 ## Context
 
 - Teammates (e.g. SOLID, Security) report in parallel; the primary runs last and posts ([ADR 0021](0021-review-packet.md)). Teammate order stays irrelevant.

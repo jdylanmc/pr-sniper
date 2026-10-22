@@ -270,6 +270,20 @@ impl MutationTransport for Wire {
         if path == "/graphql" {
             let input = &body["variables"]["input"];
             let id = input["threadId"].as_str().unwrap().to_string();
+            if body["query"]
+                .as_str()
+                .is_some_and(|q| q.contains("unresolveReviewThread"))
+            {
+                server.log.push(format!("unresolve:{id}"));
+                if let Some(thread) = server.threads.iter_mut().find(|t| t.id == id) {
+                    thread.resolved = false;
+                }
+                return Ok(response(
+                    200,
+                    json!({"data":{"unresolveReviewThread":{"clientMutationId":input["clientMutationId"],
+                    "thread":{"id":id,"isResolved":false}}}}),
+                ));
+            }
             server.log.push(format!("resolve:{id}"));
             let fault = server.fault.take_if(|(kind, _)| *kind == "resolve");
             match fault.map(|(_, f)| f) {

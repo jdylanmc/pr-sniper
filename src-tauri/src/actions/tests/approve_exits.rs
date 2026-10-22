@@ -651,3 +651,60 @@ fn an_unadoptable_approve_exit_stops_being_observed() {
     assert!(store.load_actions().unwrap().finals.is_empty());
     assert!(unadopted(&store).is_empty(), "nothing can adopt it");
 }
+
+#[test]
+fn a_settled_thread_changed_after_the_merge_intent_is_saved_blocks_the_merge() {
+    use crate::review::findings::body_hash;
+    let reply = "Won't fix: intended product behavior.";
+    let comment = |id: u64, author: u64, body: &str| json!({"fullDatabaseId":id,"body":body,"author":{"login":"x","databaseId":author}});
+    for changed in [false, true] {
+        let (_root, store, item) = setup(true, true, approve_exit(true), false);
+        let mut current = observed();
+        current.threads.push(HumanThread {
+            id: "T1".into(),
+            resolved: true,
+            outdated: false,
+            resolved_by: Some("actor".into()),
+            comments: vec![comment(100, 22, "Root"), comment(101, 11, reply)],
+        });
+        current.reviews.push(ProviderReview {
+            id: "501".into(),
+            actor_id: "33".into(),
+            head: current.head.clone(),
+            state: "APPROVED".into(),
+            body: "Reviewed.".into(),
+            submitted_at: Some("2026-09-30T00:02:00Z".into()),
+        });
+        let run = adopted(&store, &item, current.clone());
+        let mut ledger = store.load_actions().unwrap();
+        ledger.finals[0]
+            .execution
+            .result
+            .as_mut()
+            .unwrap()
+            .finding_dispositions = vec![serde_json::from_value(json!({
+            "thread_id":"T1","disposition":"author_wont_fix",
+            "head_sha":current.head,"base_sha":current.base,
+            "rationale":"Accepted.","evidence":[],"author_comment_id":"101",
+            "anchor":{"base_sha":current.base,"blobs":{},"manifests":"m",
+                "comments":{"100":body_hash("Root"),"101":body_hash(reply)},"author_id":"11"}
+        }))
+        .unwrap()];
+        store.save_actions(&ledger).unwrap();
+        let effect = prepare_effect(&store, &run.id, Action::Merge, &current, NOW + 20).unwrap();
+        let mut env = env(&store);
+        env.wire.0.lock().unwrap().observation = current.clone();
+        // Lands after the intent is persisted, before the final fresh read.
+        env.comment_after_intent = changed.then(|| comment(102, 33, "This still loses data."));
+        let _ = host::execute_action(&mut env, &effect);
+        assert_eq!(
+            env.wire.0.lock().unwrap().writes.len(),
+            usize::from(!changed),
+            "changed={changed}"
+        );
+        assert_eq!(
+            env.wire.0.lock().unwrap().observation.state == "MERGED",
+            !changed
+        );
+    }
+}

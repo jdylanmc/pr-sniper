@@ -153,6 +153,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let repositories = store.load_settings()?.repositories;
     let tracked = store.load_queue_state()?.tracked;
     let states = store.load_pr_states()?;
+    let monitoring = store.load_monitoring_state()?;
     let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
         .iter()
         .filter(|c| {
@@ -197,9 +198,21 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         let mut reason = candidate.blocked;
         if reason.is_none() {
             if let Some(selection) = &candidate.planned_selection {
-                reason = crate::feedback::contexts(store, &candidate.job, &selection.agent.id)
-                    .err()
-                    .map(|e| e.message);
+                reason = match crate::feedback::contexts(store, &candidate.job, &selection.agent.id)
+                {
+                    Err(error) => Some(error.message),
+                    // Never spend AI work a stale feedback observation would discard.
+                    Ok(contexts)
+                        if !contexts.is_empty()
+                            && crate::feedback::observation_pending(
+                                &monitoring,
+                                &candidate.job,
+                            ) =>
+                    {
+                        Some(crate::feedback::WAITING_FOR_OBSERVATION.into())
+                    }
+                    Ok(_) => None,
+                };
             }
         }
         if reason.is_none() {

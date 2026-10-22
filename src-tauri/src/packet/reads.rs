@@ -27,6 +27,10 @@ pub fn conversation(observation: &Observation) -> Conversation {
                             other => str_of(other),
                         },
                         author: str_of(&c["author"]["login"]),
+                        author_id: match &c["author"]["databaseId"] {
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        },
                         body: str_of(&c["body"]),
                     })
                     .collect();
@@ -41,6 +45,7 @@ pub fn conversation(observation: &Observation) -> Conversation {
                     new_since_last_review: false,
                     targeted_revision: None,
                     comments,
+                    carried: false,
                 }
             })
             .collect(),
@@ -50,6 +55,7 @@ pub fn conversation(observation: &Observation) -> Conversation {
             .map(|c| CommentFact {
                 id: c.id.clone(),
                 author: c.author_login.clone().unwrap_or_default(),
+                author_id: None,
                 body: c.body.clone(),
             })
             .collect(),
@@ -231,5 +237,6 @@ pub fn tool_facts(
         conversation: conversation.clone(),
         checks: checks.to_vec(),
         corrections: Vec::new(),
+        findings: Default::default(),
     }
 }

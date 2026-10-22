@@ -7,6 +7,28 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- The primary may resolve its own finding when the PR author replied won't-fix and
+  the primary accepts that rationale (`author_wont_fix`). The host verifies the
+  reply is the PR author's latest by provider identity, that no one else spoke
+  after it, and rechecks the unedited reply, thread and PR author at preflight,
+  after persisting the resolve intent (undoing the resolution if it changed while
+  landing) and after persisting the merge intent; the acceptance is replied on the
+  thread.
+- Findings PR Sniper already resolved are carried forward while the thread stays
+  resolved with unedited comments and no new non-PR-Sniper ones, the base and
+  every non-source/doc/test file are unchanged, and every cited, read or searched
+  file keeps its head blob: no reclassification and no Rubber Duck call. Any
+  change re-opens it.
+- Rubber Duck `verify_fixed`: the original thread is served inside the duck packet
+  when small; an unproven `confirmed` is refused at `submit_verdict` so the duck
+  can read and resubmit, and otherwise ends `unverified` with a typed reason
+  (`thread_unread`, `evidence_unserved`, …) the primary sees. Duck rules ask for a
+  verdict, not coaching. Calls on 40+/100+ file PRs get 1.5x/2x the call timeout
+  (≤600 s); the primary window grows one applied call timeout per own finding (≤`max_calls`,
+  ≤120 min). Failed calls record tokens, tool calls and reason.
+- A failed or pending feedback observation no longer fails a finished review
+  permanently: the result is tossed and retried through the normal budget, and no
+  new attempt starts until a clean poll. Old permanent failures recover on upgrade.
 - Reviews retry with fresh context when owned-feedback observations change during
   analysis, instead of failing permanently after one attempt. Recovery remains
   bounded, rejects stale results and restores affected failures after upgrade.
