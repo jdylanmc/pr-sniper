@@ -1,9 +1,9 @@
 # Native control acceptance
 
-| Platform | Built artifact                                       | Isolation                                                   |
-| -------- | ---------------------------------------------------- | ----------------------------------------------------------- |
-| macOS    | Debug `.app` built with `tauri.acceptance.conf.json` | Separate compiled Tauri identifier; copied run-owned bundle |
-| Windows  | Existing standalone release executable               | Fresh GitHub-hosted VM only; copied run-owned executable    |
+| Platform | Built artifact                                                              | Isolation                                                   |
+| -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| macOS    | Debug `.app` built with `tauri.acceptance.conf.json`                        | Separate compiled Tauri identifier; copied run-owned bundle |
+| Windows  | Packaged standalone executable artifact (`windows-control-acceptance` lane) | Fresh GitHub-hosted VM only; copied run-owned executable    |
 
 ```sh
 npm run tauri -- build --debug --bundles app --config tests/control/tauri.acceptance.conf.json -- --locked

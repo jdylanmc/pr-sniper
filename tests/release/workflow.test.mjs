@@ -39,6 +39,7 @@ const aggregators = {
       "windows-browser",
       "windows-package",
       "windows-upgrade-fixture",
+      "windows-control-acceptance",
     ],
   ],
 };
@@ -55,6 +56,8 @@ const acceptanceGate = [
   "",
 ].join("\n");
 const settle = "node scripts/ci-settle-codegen.mjs";
+const bridgeBuild =
+  "cargo build --manifest-path src-tauri\\Cargo.toml --locked --example settings_bridge";
 const controlAcceptance =
   "node tests/control/native-acceptance.mjs --executable src-tauri/target/release/pr-sniper.exe";
 const windowsCargo =
@@ -244,6 +247,7 @@ test("Windows native application checks run on every PR and main push with read-
     "windows-browser",
     "windows-package",
     "windows-upgrade-fixture",
+    "windows-control-acceptance",
     "windows-installer-acceptance",
     "windows",
   ]);
@@ -500,6 +504,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       ...prepare,
       "actions/setup-python",
       "Swatinem/rust-cache",
+      "actions/upload-artifact",
     ],
     "windows-native-lib": [...prepare, "Swatinem/rust-cache"],
     "windows-native-lib-rest": [...prepare, "Swatinem/rust-cache"],
@@ -510,11 +515,16 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "Swatinem/rust-cache",
       "actions/upload-artifact",
       "actions/upload-artifact",
-      "actions/upload-artifact",
     ],
     "windows-upgrade-fixture": [
       ...prepare,
       "Swatinem/rust-cache",
+      "actions/upload-artifact",
+    ],
+    "windows-control-acceptance": [
+      ...prepare,
+      "actions/download-artifact",
+      "actions/download-artifact",
       "actions/upload-artifact",
     ],
     "windows-installer-acceptance": [
@@ -559,6 +569,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       `${windowsCargo} ${targets} --no-run`,
       settle,
       `${windowsCargo} ${targets} -- --nocapture --test-threads=2`,
+      bridgeBuild,
     ],
     "windows-native-lib": [
       "npm ci",
@@ -590,7 +601,6 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm ci",
       "rustup show active-toolchain",
       "npm run build:windows",
-      controlAcceptance,
       "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
       ".\\scripts\\windows-installer-artifact.ps1",
@@ -600,6 +610,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "rustup show active-toolchain",
       ".\\scripts\\windows-upgrade-fixture.ps1",
     ],
+    "windows-control-acceptance": ["npm ci", controlAcceptance],
     "windows-installer-acceptance": [
       acceptanceGate,
       ".\\scripts\\windows-installer-acceptance.ps1 -Candidate src-tauri\\target\\candidate -Upgrade src-tauri\\target\\upgrade-fixture",
@@ -1571,7 +1582,10 @@ test("CI keeps line tables but drops full debuginfo without changing local profi
 });
 
 test("both native lanes run bounded real-app MCP acceptance and retain only safe receipts", () => {
-  const lanes = [ci.jobs["macos-native"], windows.jobs["windows-package"]];
+  const lanes = [
+    ci.jobs["macos-native"],
+    windows.jobs["windows-control-acceptance"],
+  ];
   for (const job of lanes) {
     const check = job.steps.find(
       (step) => step.id === "control-native-acceptance",
@@ -1596,12 +1610,38 @@ test("both native lanes run bounded real-app MCP acceptance and retain only safe
   }
   // Both lanes gate their required checks.
   assert(aggregators.macos[1].includes("macos-native"));
-  assert(aggregators.windows[1].includes("windows-package"));
-  const steps = windows.jobs["windows-package"].steps;
-  assert(
-    steps.findIndex((step) => step.run === "npm run build:windows") <
-      steps.findIndex((step) => step.id === "control-native-acceptance"),
+  assert(aggregators.windows[1].includes("windows-control-acceptance"));
+  // Windows runs the exact packaged executable and the checks lane's Store
+  // bridge on a fresh hosted VM, never a rebuild.
+  const control = windows.jobs["windows-control-acceptance"];
+  assert.deepEqual(control.needs, ["windows-checks", "windows-package"]);
+  assert.equal(control.if, undefined);
+  const downloads = control.steps.filter((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
   );
+  assert.deepEqual(
+    downloads.map((step) => [step.with.name, step.with.path]),
+    [
+      ["pr-sniper-windows-x64-${{ github.sha }}", "src-tauri/target/release"],
+      [
+        "pr-sniper-windows-settings-bridge-test-only-${{ github.sha }}",
+        "src-tauri/target/debug/examples",
+      ],
+    ],
+  );
+  assert.ok(
+    !runs(control).some((run) =>
+      /^(?:cargo |npm run (?:build|tauri))/.test(run),
+    ),
+  );
+  const bridge = windows.jobs["windows-checks"].steps.find((step) =>
+    step.with?.name?.startsWith("pr-sniper-windows-settings-bridge-test-only-"),
+  );
+  assert.equal(
+    bridge.with.path,
+    "src-tauri/target/debug/examples/settings_bridge.exe",
+  );
+  assert.equal(bridge.with["retention-days"], 1);
   const mac = ci.jobs["macos-native"].steps;
   const macBuild = mac.find((step) =>
     step.run?.includes("--config tests/control/tauri.acceptance.conf.json"),

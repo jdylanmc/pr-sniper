@@ -56,7 +56,9 @@ A cache miss still runs the full cold build and every check; it is not a bypass.
 
 Parallel lanes (`windows-checks`, `windows-native-lib`, `windows-native-lib-rest`, three
 `windows-browser` shards, `windows-package`, `windows-upgrade-fixture`) have
-45-minute limits and installer acceptance a 15-minute limit, with shorter
+45-minute limits; installer acceptance and `windows-control-acceptance` (the
+packaged executable plus the checks lane's test-only Store bridge, on a fresh
+VM) have 15-minute limits, with shorter
 timeouts on individual command steps. The required `windows` check is an
 aggregate job that fails unless every lane concluded `success`. Every actual Chocolatey
 test command prints a start message, expectation and elapsed-time result.
