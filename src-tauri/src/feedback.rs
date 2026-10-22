@@ -649,25 +649,35 @@ pub(crate) fn validate_captured_context(
     validate_observation_health(store, job, captured)
 }
 
+pub(crate) const OBSERVATION_FAILED: &str = "Feedback observation failed; no clearance accepted.";
+pub(crate) const WAITING_FOR_OBSERVATION: &str = "Waiting for feedback observation.";
+
+/// The repository's last feedback observation failed or is still admitting
+/// conversations: verified owned-feedback context may be stale until a clean poll.
+pub(crate) fn observation_pending(
+    monitoring: &crate::monitoring::MonitoringState,
+    job: &QueueJob,
+) -> bool {
+    monitoring.health.values().any(|h| {
+        h.repository_id == job.configuration_id
+            && (h.last_failure.is_some() || h.conversation_admission_pending)
+    })
+}
+
+/// Transient: discard the assessment and retry through the attempt budget once a
+/// clean poll observes the feedback again, like an owned-feedback change.
 fn validate_observation_health(
     store: &Store,
     job: &QueueJob,
     captured: &[Context],
 ) -> Result<(), Failure> {
     if !captured.is_empty()
-        && store
-            .load_monitoring_state()
-            .map_err(Failure::permanent)?
-            .health
-            .values()
-            .any(|h| {
-                h.repository_id == job.configuration_id
-                    && (h.last_failure.is_some() || h.conversation_admission_pending)
-            })
+        && observation_pending(
+            &store.load_monitoring_state().map_err(Failure::permanent)?,
+            job,
+        )
     {
-        return Err(Failure::permanent(
-            "Feedback observation failed; no clearance accepted.",
-        ));
+        return Err(Failure::tossed(OBSERVATION_FAILED));
     }
     Ok(())
 }

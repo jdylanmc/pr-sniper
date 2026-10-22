@@ -473,6 +473,14 @@ pub enum Event {
         failure: Option<crate::review::duck::DuckFailure>,
         duration_ms: Option<u64>,
         session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<crate::review::duck::DuckReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<u64>,
     },
     DuckEvent {
         ordinal: u32,

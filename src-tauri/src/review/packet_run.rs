@@ -63,6 +63,10 @@ pub(crate) struct Caller<'a> {
     /// When this PR's state was last consumed, for `new_since_last_review`.
     pub last_consumed_at: Option<i64>,
     pub ownership: Vec<crate::github::threads::Ownership>,
+    /// Standing PR Sniper resolutions of own findings on this PR.
+    pub resolutions: Vec<super::findings::Resolved>,
+    /// Every reply receipt PR Sniper holds on this PR.
+    pub receipts: std::collections::BTreeSet<String>,
 }
 
 /// Build the packet and the run's tool set from state read right now.
@@ -86,6 +90,8 @@ where
         iterations,
         last_consumed_at,
         ownership,
+        resolutions,
+        receipts,
     } = caller;
     let mut observation = client
         .action_observation(repo, run.job.number)
@@ -127,6 +133,32 @@ where
         &run.assignment_id,
         &run.job.account_id,
     );
+    let manifests = super::findings::manifest_digest(
+        context
+            .head
+            .iter()
+            .map(|(path, entry)| (path.as_str(), entry.sha.as_str())),
+    );
+    let head_blob = |path: &str| context.head.get(path).map(|entry| entry.sha.clone());
+    super::findings::stamp_carried(
+        &mut conversation.threads,
+        &resolutions,
+        &super::findings::Current {
+            base_sha: &context.pull.base_sha,
+            manifests: &manifests,
+            head_blob: &head_blob,
+        },
+    );
+    let carried: Vec<_> = resolutions
+        .iter()
+        .filter(|r| {
+            conversation
+                .threads
+                .iter()
+                .any(|t| t.carried && t.id == r.thread_id)
+        })
+        .map(|r| r.evidence.clone())
+        .collect();
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
@@ -222,7 +254,18 @@ where
             threads: conversation.threads.iter().map(|t| t.id.clone()).collect(),
             base: duck_input,
         });
-    let facts = Arc::new(reads::tool_facts(description, &conversation, &checks));
+    let mut facts = reads::tool_facts(description, &conversation, &checks);
+    facts.findings = crate::packet::FindingFacts {
+        pr_author_id: Some(observation.author_id.clone()),
+        account_id: run.job.account_id.clone(),
+        own_comments: ownership
+            .iter()
+            .flat_map(|proof| proof.root_ids.iter().cloned())
+            .chain(receipts)
+            .collect(),
+        carried,
+    };
+    let facts = Arc::new(facts);
     let gate = exit_gate(
         client.clone(),
         repo.clone(),

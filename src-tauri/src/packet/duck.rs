@@ -13,6 +13,8 @@ pub struct DuckPacketInput<'a> {
     pub base: &'a PacketInput,
     pub primary_hash: &'a str,
     pub ordinal: u32,
+    /// verify_fixed: the whole original thread, served inline when small enough.
+    pub thread: Option<&'a str>,
     pub claim: &'a DuckInput,
     /// The duck Agent's Doctrines and prompts; preset, signature and Voice are ignored.
     pub directive: &'a Directive,
@@ -67,10 +69,23 @@ fn render(input: &DuckPacketInput<'_>, packet_id: &str, with_time: bool) -> Stri
         let _ = writeln!(out, "{}. {rule}", index + 1);
     }
     sections::pull_request(&mut out, input.base);
-    sections::files(&mut out, input.base);
+    sections::files(&mut out, input.base, Role::Duck);
     out.push_str("\n## Claim\n");
     out.push_str(&sections::fence("primary", &input.claim.render()));
     out.push('\n');
+    if input.claim.verify_fixed {
+        out.push_str("\n## Original thread\n");
+        match input.thread {
+            Some(thread) => {
+                out.push_str("complete: true. Served whole; counts as read.\n");
+                out.push_str(&sections::fence("thread", thread));
+                out.push('\n');
+            }
+            None => out.push_str(
+                "complete: false. Too large to inline: get_thread every page before confirmed.\n",
+            ),
+        }
+    }
     let d = input.directive;
     out.push_str("\n## Directive\n");
     for (title, body) in &d.doctrines {

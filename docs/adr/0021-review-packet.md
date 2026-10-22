@@ -2,6 +2,13 @@
 
 Status: accepted, implemented. Legacy path removed: every run is packet mode. Supersedes the primary final review of [ADR 0017](0017-opt-in-provider-actions.md) and the once-per-lens re-review of [ADR 0008](0008-one-review-per-head-sha.md). Discovery: [#172](https://github.com/jdylanmc/pr-sniper/issues/172). Spec: [Review packet](../review-packet.md).
 
+## Scoped amendment: settled findings (owner, 2026-10-22)
+
+- An own finding may also be resolved as `author_wont_fix` (PR author's latest reply, provider identity, accepted on its merits) and is carried forward unchanged while its anchored inputs hold. Contract: [finding reconciliation](../review-packet.md#finding-reconciliation).
+- Resolve ordering: persist the attempted intent, then fresh-read the thread and PR author and refuse on any difference, then resolve, then re-read; a snapshot changed meanwhile is undone with `unresolveReviewThread` and the step is not completed.
+- Merge ordering: the merge intent is persisted, then the PR (head, base, every thread, PR author) is fresh-read and every `author_wont_fix` or carried thread must still match its accepted snapshot before `mergePullRequest`. Auto-merge stays enabled for these dispositions.
+- Residual race: GitHub's merge and resolve mutations bind only `expectedHeadOid` / the thread id, not thread contents. A comment or edit landing between the final fresh read and the provider mutation (local work only, sub-second) is not detected before the effect; the post-resolve re-read undoes resolutions, while a merge cannot be undone.
+
 ## Context
 
 Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime.rs` (`prompt()`).

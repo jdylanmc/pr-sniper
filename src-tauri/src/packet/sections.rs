@@ -93,7 +93,7 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
     }
     pull_request(&mut out, input);
     conversation(&mut out, input);
-    files(&mut out, input);
+    files(&mut out, input, input.role);
     teammates(&mut out, input);
     directive(&mut out, input);
     voice(&mut out, input);
@@ -207,6 +207,10 @@ fn thread_text(thread: &ThreadFact) -> String {
         thread.new_since_last_review,
         thread.targeted_revision.as_deref().unwrap_or("-"),
     );
+    if thread.carried {
+        out.truncate(out.trim_end().len());
+        out.push_str(" carried_forward=true\n");
+    }
     for comment in &thread.comments {
         out.push_str(&comment_text(
             &format!("thread:{}", thread.id),
@@ -258,10 +262,15 @@ fn conversation(out: &mut String, input: &PacketInput) {
     }
 }
 
-pub(super) fn files(out: &mut String, input: &PacketInput) {
+pub(super) fn files(out: &mut String, input: &PacketInput, role: Role) {
     out.push_str("\n## Files\n");
     let _ = writeln!(out, "changed_files: {}", input.files.len());
-    out.push_str("Read with read_changes (patch, before, after) and read_source. Paged, up to 32000 bytes per chunk. The host records what you read; reading is never enforced.\n");
+    out.push_str("Read with read_changes (patch, before, after) and read_source. Paged, up to 32000 bytes per chunk. The host records what you read; ");
+    out.push_str(if role == Role::Duck {
+        "coverage is never enforced, but verify_fixed confirmed needs served evidence lines.\n"
+    } else {
+        "reading is never enforced.\n"
+    });
     for file in &input.files {
         let parts: Vec<String> = file
             .parts

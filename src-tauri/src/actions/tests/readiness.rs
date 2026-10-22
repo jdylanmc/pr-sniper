@@ -894,6 +894,8 @@ fn prepare(
         &context,
         state,
         packet_run::Caller {
+            resolutions: Vec::new(),
+            receipts: Default::default(),
             acting_login: "actor",
             write_capability: true,
             teammates: crate::review::teammates::entries(store, &run).unwrap(),

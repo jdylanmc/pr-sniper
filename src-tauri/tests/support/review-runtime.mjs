@@ -30,6 +30,7 @@ const exitScenarios = [
 const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
 const duckScenarios = {
   "duck-call": [duckArgs],
+  "duck-disposed": [duckArgs],
   "duck-fixed": [{ kind: "thread", thread_id: "existing", verify_fixed: true,
     claim: "Current head fixes the original defect.", proposed_body: "Fixed.",
     evidence: [{ path: "source.rs", side: "head", line: 1 }] }],
@@ -85,7 +86,10 @@ const toolCall = (name, args) => {
   });
 };
 // Scenarios without their own exit hand over once their reads are done.
-const handOver = () => toolCall("ready_for_human", { summary: "Synthetic review done." });
+const handOver = () => toolCall("ready_for_human", scenario === "duck-disposed"
+  ? { summary: "Synthetic review done.", finding_dispositions: [{ thread_id: "existing", disposition: "fixed",
+      head_sha: "a".repeat(40), base_sha: "b".repeat(40), rationale: "Fixed on head.", evidence: [] }] }
+  : { summary: "Synthetic review done." });
 // A successful terminal tool ends the turn with no final assistant message.
 const endTurn = () => {
   if (exitEnded) return;
@@ -276,6 +280,10 @@ process.stdin.on("data", (chunk) => {
           setInterval(() => event("session.heartbeat", {}), 50);
           break;
         }
+        if (scenario === "verdict-searched") {
+          toolCall("search_code", { query: "answer" });
+          break;
+        }
         if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
           toolCall(scenario === "verdict-fixed-no-thread" ? "read_source" : "get_thread",
             scenario === "verdict-fixed-no-thread" ? { side: "head", path: "source.rs" }
@@ -372,6 +380,11 @@ process.stdin.on("data", (chunk) => {
         if (String(request.params.requestId).startsWith("exit-")) {
           const failed = JSON.stringify(request.params.result ?? null).includes('"failure"');
           receipt({ method: "fixture.exit", requestId: request.params.requestId, failed });
+          if (scenario === "verdict-searched") {
+            if (exitCount === 1) toolCall("submit_verdict", { verdict: "rejected", nano: "Not a defect." });
+            else endTurn();
+            break;
+          }
           if (["verdict-fixed-read", "verdict-fixed-no-thread", "verdict-fixed-partial-thread"].includes(scenario)) {
             if (exitCount === 1 && scenario !== "verdict-fixed-no-thread") {
               toolCall("read_source", { side: "head", path: "source.rs" });
@@ -395,6 +408,8 @@ process.stdin.on("data", (chunk) => {
             toolCall("submit_report", badReport);
           } else if (scenario === "verdict-revise-bad-then-ok") {
             toolCall("submit_verdict", { verdict: "revise", nano: "wrong line", revised_body: "Use checked_add on line 1." });
+          } else if (scenario.startsWith("verdict-")) {
+            endTurn();
           }
           break;
         }

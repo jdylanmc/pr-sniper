@@ -259,6 +259,8 @@ export interface DuckCall {
         };
       }
     | { outcome: "failure"; failure: string };
+  /** Typed cause of a failed call, when known. */
+  reason?: string;
   agent: string;
   model: string;
   input_tokens?: number;

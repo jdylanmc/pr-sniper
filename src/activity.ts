@@ -71,7 +71,9 @@ function duckRow(ducks: DuckCall[], agent: string): Row {
             ? `mixed x${1 + (call.repeats ?? 0) + folded(call.others)}`
             : call.repeats
               ? `${call.outcome.failure} x${call.repeats + 1}`
-              : call.outcome.failure,
+              : call.reason
+                ? `${call.outcome.failure}: ${call.reason}`
+                : call.outcome.failure,
     })),
   };
 }

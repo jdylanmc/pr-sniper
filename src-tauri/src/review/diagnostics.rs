@@ -506,6 +506,10 @@ mod tests {
                 failure: (ordinal == 2).then_some(DuckFailure::Unavailable),
                 duration_ms: Some(30_000),
                 session_id: None,
+                reason: None,
+                input_tokens: None,
+                output_tokens: None,
+                tool_calls: None,
             });
         }
         trace.emit(Event::Teardown {

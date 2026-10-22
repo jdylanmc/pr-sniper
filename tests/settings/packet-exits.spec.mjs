@@ -778,16 +778,24 @@ test("the primary's rubber duck calls show verdicts and failures in Activity", a
         { kind: "thread", thread_id: "T7" },
         { outcome: "failure", failure: "timed_out" },
       ),
+      {
+        ...call(
+          3,
+          { kind: "thread", thread_id: "T8" },
+          { outcome: "failure", failure: "unverified" },
+        ),
+        reason: "thread_unread",
+      },
     ],
   });
   await openDetail(page, store, item);
   const duck = activity(page, "duck");
   await expect(duck).toHaveCount(1);
   await expect(duck.locator(".activity-verb")).toHaveText("Rubber duck");
-  await expect(duck.locator(".activity-value")).toHaveText("2");
+  await expect(duck.locator(".activity-value")).toHaveText("3");
   const facts = await expand(duck);
   await expect(fact(facts, "Confirmed")).toHaveText("1");
-  await expect(fact(facts, "Failed")).toHaveText("1");
+  await expect(fact(facts, "Failed")).toHaveText("2");
   await expect(fact(facts, "Duck")).toHaveText("Duck");
   const finding = (place) =>
     facts.locator(`[data-finding="${place}"] .activity-finding-nano`);
@@ -795,6 +803,7 @@ test("the primary's rubber duck calls show verdicts and failures in Activity", a
     "confirmed: token reaches log",
   );
   await expect(finding("thread T7")).toHaveText("timed_out");
+  await expect(finding("thread T8")).toHaveText("unverified: thread_unread");
   await page.evaluate(() => window.__settingsIdle());
   await page.screenshot({
     path: test.info().outputPath("packet-duck-activity.png"),

@@ -1879,10 +1879,12 @@ mod exits {
     fn pull_tools_page_and_never_cut() {
         use crate::packet::{CheckFact, CommentFact, Conversation, ThreadFact};
         let facts = Arc::new(ToolFacts {
+            findings: Default::default(),
             corrections: Vec::new(),
             description: Some("d".repeat(70_000)),
             conversation: Conversation {
                 threads: vec![ThreadFact {
+                    carried: false,
                     id: "T1".into(),
                     path: None,
                     line: None,
@@ -1892,6 +1894,7 @@ mod exits {
                     new_since_last_review: false,
                     targeted_revision: None,
                     comments: vec![CommentFact {
+                        author_id: None,
                         id: "7".into(),
                         author: "a".into(),
                         body: "thread body".into(),
@@ -1945,10 +1948,20 @@ mod exits {
         assert!(tools
             .execute("list_tree", json!({"side":"nowhere"}))
             .is_err());
+        assert!(!tools.touched_paths().contains("source.rs"));
         let found = tools
             .execute("search_code", json!({"query":"needle"}))
             .unwrap();
         assert_eq!(found["matches"][0]["line"], 2);
+        // A returned match anchors its whole file, even when the snippet is cut.
+        assert_eq!(found["matches"][0]["path"], "source.rs");
+        assert!(tools.touched_paths().contains("source.rs"));
+        assert!(tools
+            .execute("search_code", json!({"query":"absent"}))
+            .unwrap()["matches"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert_eq!(found["matches"][0]["truncated"], false);
         assert!(tools.execute("search_code", json!({"query":""})).is_err());
     }

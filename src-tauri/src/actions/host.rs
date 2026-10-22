@@ -77,7 +77,9 @@ pub fn execute_action(env: &mut impl ActionEnvironment, effect: &Effect) -> Resu
     let current = env.observe(effect)?;
     env.authorize(effect, &current)?;
     let intent = env.intent(&effect.id)?;
-    // Intent is durable before the final fresh read or any external request.
+    // Intent is durable before the final fresh read or any external request. That read
+    // (head, base, every thread, PR author) is the last provider read before the
+    // mutation: settled findings must still match their accepted snapshots.
     let current = match env.observe(&intent).and_then(|current| {
         env.authorize(&intent, &current)?;
         Ok(current)

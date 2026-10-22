@@ -172,6 +172,8 @@ struct ReadTools<T: Transport> {
     source_failure: Mutex<Option<Failure>>,
     served: Mutex<BTreeMap<(String, String), Span>>,
     thread_reads: Mutex<BTreeMap<String, Span>>,
+    /// Paths whose search_code matches were returned to the agent.
+    searched: Mutex<BTreeSet<String>>,
     limit_failure: Mutex<Option<Failure>>,
 }
 
@@ -354,6 +356,39 @@ impl<T: Transport> ReadTools<T> {
         Ok(())
     }
 
+    /// Every path served on any side by read_source or read_changes, or with a
+    /// search_code match on a returned page (its whole file is anchored).
+    fn touched_paths(&self) -> BTreeSet<String> {
+        let mut paths: BTreeSet<String> = self
+            .served
+            .lock()
+            .map(|served| served.keys().map(|(_, path)| path.clone()).collect())
+            .unwrap_or_default();
+        if let Ok(spans) = self.spans.lock() {
+            paths.extend(spans.keys().map(|(path, _)| path.clone()));
+        }
+        if let Ok(searched) = self.searched.lock() {
+            paths.extend(searched.iter().cloned());
+        }
+        paths
+    }
+
+    /// The host served this whole thread in the packet itself.
+    fn seed_thread(&self, id: &str, total: usize) {
+        if let Ok(mut reads) = self.thread_reads.lock() {
+            reads
+                .entry(id.to_string())
+                .or_default()
+                .add(0, total, total);
+        }
+    }
+
+    fn thread_read(&self, id: &str) -> bool {
+        self.thread_reads
+            .lock()
+            .is_ok_and(|threads| threads.get(id).is_some_and(Span::complete))
+    }
+
     fn served_evidence(&self, evidence: &super::duck::EvidenceRef) -> bool {
         if evidence.side.as_deref().unwrap_or("head") != "head" || evidence.path.len() > 1024 {
             return false;
@@ -419,6 +454,7 @@ impl<T: Transport> ReadTools<T> {
             spans: Mutex::new(BTreeMap::new()),
             served: Mutex::new(BTreeMap::new()),
             thread_reads: Mutex::new(BTreeMap::new()),
+            searched: Mutex::new(BTreeSet::new()),
             blobs: Mutex::new(BTreeMap::new()),
             logs: Mutex::new(BTreeMap::new()),
             gate,
@@ -816,7 +852,18 @@ impl<T: Transport> ReadTools<T> {
                         }
                     }
                 }
-                tools::page_items("matches", &matches, &args, rejected_by_limit)
+                let page = tools::page_items("matches", &matches, &args, rejected_by_limit)?;
+                if let Some(returned) = page["matches"].as_array() {
+                    self.searched
+                        .lock()
+                        .map_err(|_| Failure::permanent("Search tracking failed."))?
+                        .extend(
+                            returned
+                                .iter()
+                                .filter_map(|m| m["path"].as_str().map(str::to_string)),
+                        );
+                }
+                Ok(page)
             }
             _ => Err(Failure::permanent(
                 "Tool is not permitted for read-only review.",
@@ -1177,6 +1224,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 threads: request.exits.facts.conversation.threads.clone(),
                 duck_required: c.rubber_duck.is_some(),
                 corrections: request.exits.facts.corrections.clone(),
+                identities: request.exits.facts.findings.clone(),
             });
         let duck_log = request.duck.as_ref().map(|d| d.log.clone());
         // The duck is part of this run's setup: no duck, no inference.
@@ -1196,6 +1244,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
         let exits = request.exits;
         let tool_names = exits.tool_set.clone();
         let tool_facts = exits.facts.clone();
+        let anchor_facts = tool_facts.clone();
         let tool_operation = operation.clone();
         let tool_gate = request.local_gate.clone();
         let tools = Arc::new(
@@ -1372,6 +1421,31 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 .lock()
                 .map_err(|_| Failure::permanent("Finding evidence unavailable."))?
                 .clone();
+            let mut relied_paths = tools.touched_paths();
+            if let Some(duck) = &duck {
+                relied_paths.extend(duck.read_paths());
+            }
+            let manifests = super::findings::manifest_digest(
+                tools
+                    .context
+                    .head
+                    .iter()
+                    .map(|(path, entry)| (path.as_str(), entry.sha.as_str())),
+            );
+            let head_blob =
+                |path: &str| tools.context.head.get(path).map(|entry| entry.sha.clone());
+            super::findings::stamp_anchors(
+                &mut result.finding_dispositions,
+                &anchor_facts.conversation.threads,
+                &super::findings::Relied {
+                    base_sha: &tools.context.pull.base_sha,
+                    manifests: &manifests,
+                    read: &relied_paths,
+                    pr_author_id: anchor_facts.findings.pr_author_id.as_deref(),
+                    head_blob: &head_blob,
+                },
+            );
+            result.carried_findings = anchor_facts.findings.carried.clone();
             if let Some(duck) = &duck {
                 result.ducks = duck.calls();
             }

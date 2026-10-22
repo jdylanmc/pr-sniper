@@ -45,8 +45,11 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 ## Consequences
 
 - Restart-safe. No silent retry loops.
+- A failed or admission-pending feedback observation is the same typed toss: the
+  result is discarded and retried through the bounded budget, and no attempt starts
+  while the repository's observation is unhealthy (no budget spent waiting).
 - Historical packet reviews parked permanently by the exact owned-feedback-change
-  rejection migrate once to the toss retry policy. Operation identity, spent
+  or feedback-observation-failed rejection migrate once to the toss retry policy. Operation identity, spent
   attempts and deadline survive; expired windows enter the normal cooldown.
   Retired or missing work ends quietly; temporarily blocked live work keeps its
   operation and budget until ordinary dispatch gates permit it again.

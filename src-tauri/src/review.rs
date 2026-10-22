@@ -530,15 +530,19 @@ fn recover_parked_supersession(run: &mut ReviewRun, jobs: &[QueueJob], now: i64)
     true
 }
 
-/// Older packet runs stored this local freshness rejection as permanent.
-/// Only this historical signature is migrated; new failures carry typed Tossed.
+/// Older packet runs stored these local freshness rejections (owned feedback changed,
+/// feedback observation failed) as permanent. Only these historical signatures are
+/// migrated; new failures carry typed Tossed.
 /// Keep spent attempts and deadlines, including the normal cooldown if expired.
 fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
     if run.mode != RunMode::Packet
         || run.operation.state != OperationState::Failed
         || run.operation.failure != Some(OperationFailure::Permanent)
         || run.operation.operation_type != "copilot_review"
-        || run.error.as_deref() != Some(crate::feedback::CONTEXT_CHANGED)
+        || !matches!(
+            run.error.as_deref(),
+            Some(crate::feedback::CONTEXT_CHANGED | crate::feedback::OBSERVATION_FAILED)
+        )
         || run.feedback_context.is_none()
         || run.result.is_some()
         || run.operation.attempted_mutation.is_some()
@@ -554,10 +558,9 @@ fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> 
         end_quietly(run);
         return true;
     }
-    run.operation.fail(
-        &Failure::tossed(crate::feedback::CONTEXT_CHANGED).monitoring(),
-        now,
-    );
+    let message = run.error.clone().unwrap_or_default();
+    run.operation
+        .fail(&Failure::tossed(&message).monitoring(), now);
     run.attempt_ducks.clear();
     true
 }
@@ -708,6 +711,9 @@ pub struct ReviewResult<O = ReviewOutput> {
     pub ducks: Vec<duck::DuckCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finding_dispositions: Vec<findings::Assessment>,
+    /// Standing resolutions this run relied on without reclassifying (carried forward).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried_findings: Vec<findings::Assessment>,
     /// Host-validated final observation for Wait; packet evidence stays immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
@@ -967,6 +973,11 @@ pub struct Events {
 }
 
 impl Events {
+    /// Tokens and tool calls seen so far: (input, output, tool calls).
+    pub fn usage(&self) -> (u64, u64, u64) {
+        (self.input_tokens, self.output_tokens, self.tool_calls)
+    }
+
     pub fn push(&mut self, kind: &str, data: &Value) -> Result<(), Failure> {
         match kind {
             "assistant.usage" => {
@@ -1030,6 +1041,7 @@ impl Events {
             coverage: None,
             ducks: Vec::new(),
             finding_dispositions: Vec::new(),
+            carried_findings: Vec::new(),
             wait_snapshot: None,
         })
     }

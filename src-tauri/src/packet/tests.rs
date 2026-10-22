@@ -63,6 +63,7 @@ fn input() -> PacketInput {
         },
         conversation: Conversation {
             threads: vec![ThreadFact {
+                carried: false,
                 id: "PRRT_1".into(),
                 path: Some("src/lib.rs".into()),
                 line: Some(10),
@@ -72,12 +73,14 @@ fn input() -> PacketInput {
                 new_since_last_review: true,
                 targeted_revision: Some("1".into()),
                 comments: vec![CommentFact {
+                    author_id: None,
                     id: "11".into(),
                     author: "octo".into(),
                     body: "Why unwrap?".into(),
                 }],
             }],
             comments: vec![CommentFact {
+                author_id: None,
                 id: "12".into(),
                 author: "reviewer".into(),
                 body: "Please add a test.".into(),
@@ -304,6 +307,7 @@ fn nothing_is_silently_cut_long_content_is_marked_with_how_to_pull_it() {
     i.pr.description = Some("d".repeat(sections::DESCRIPTION_INLINE_BYTES + 77));
     i.conversation.threads = (0..sections::MAX_INLINE_THREADS + 3)
         .map(|n| ThreadFact {
+            carried: false,
             id: format!("T{n}"),
             ..i.conversation.threads[0].clone()
         })
@@ -517,6 +521,7 @@ fn duck_packet(claim: &crate::review::duck::DuckInput, created_at: &str) -> Pack
         base: &base,
         primary_hash: "primaryhash",
         ordinal: 2,
+        thread: None,
         claim,
         directive: &directive,
         tools: &tools,
@@ -571,4 +576,21 @@ fn the_duck_rule_is_present_only_when_the_primary_can_call_rubber_duck() {
     let with = build(&with).text;
     assert!(with.contains(rules::DUCK_RULE));
     assert!(with.contains("tools: read_changes, get_thread, read_check_log, rubber_duck,"));
+}
+
+#[test]
+fn carried_forward_threads_are_marked_on_their_thread_line() {
+    let line = |input: &PacketInput| {
+        let prefix = format!("thread {} ", input.conversation.threads[0].id);
+        build(input)
+            .text
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap()
+            .to_string()
+    };
+    let mut carried = input();
+    assert!(!line(&carried).contains("carried_forward"));
+    carried.conversation.threads[0].carried = true;
+    assert!(line(&carried).ends_with(" carried_forward=true"));
 }

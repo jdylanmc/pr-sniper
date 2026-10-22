@@ -555,13 +555,36 @@ impl<T: MutationTransport> GithubClient<T> {
         thread_id: &str,
         request_id: &str,
     ) -> Result<(), WriteFailure> {
+        self.set_review_thread(thread_id, request_id, true)
+    }
+
+    /// Undoes PR Sniper's own resolution when its accepted snapshot changed during the
+    /// write. Unresolving an unresolved thread is a no-op.
+    pub fn unresolve_review_thread(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+    ) -> Result<(), WriteFailure> {
+        self.set_review_thread(thread_id, request_id, false)
+    }
+
+    fn set_review_thread(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+        resolved: bool,
+    ) -> Result<(), WriteFailure> {
         if thread_id.is_empty() || request_id.is_empty() {
             return Err(WriteFailure {
                 failure: Failure::permanent("Invalid thread resolution request."),
                 uncertain: false,
             });
         }
-        let query = "mutation($input:ResolveReviewThreadInput!){resolveReviewThread(input:$input){clientMutationId thread{id isResolved}}}";
+        let (field, query) = if resolved {
+            ("resolveReviewThread", "mutation($input:ResolveReviewThreadInput!){resolveReviewThread(input:$input){clientMutationId thread{id isResolved}}}")
+        } else {
+            ("unresolveReviewThread", "mutation($input:UnresolveReviewThreadInput!){unresolveReviewThread(input:$input){clientMutationId thread{id isResolved}}}")
+        };
         let response = self
             .transport
             .mutate(
@@ -607,10 +630,10 @@ impl<T: MutationTransport> GithubClient<T> {
                 uncertain: !definite,
             });
         }
-        let data = &value["data"]["resolveReviewThread"];
+        let data = &value["data"][field];
         if data["clientMutationId"].as_str() != Some(request_id)
             || data["thread"]["id"].as_str() != Some(thread_id)
-            || data["thread"]["isResolved"] != true
+            || data["thread"]["isResolved"] != resolved
         {
             return Err(WriteFailure {
                 failure: ConnectionError::InvalidResponse.into(),

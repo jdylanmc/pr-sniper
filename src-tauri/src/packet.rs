@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 10;
+pub const SCHEMA: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -45,6 +45,8 @@ pub struct CheckFact {
 pub struct CommentFact {
     pub id: String,
     pub author: String,
+    /// Provider account id of the author; absent when the provider did not say.
+    pub author_id: Option<String>,
     pub body: String,
 }
 
@@ -60,6 +62,8 @@ pub struct ThreadFact {
     pub new_since_last_review: bool,
     pub targeted_revision: Option<String>,
     pub comments: Vec<CommentFact>,
+    /// PR Sniper resolved this own finding earlier and nothing it relied on changed.
+    pub carried: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -75,6 +79,20 @@ pub struct ToolFacts {
     pub conversation: Conversation,
     pub checks: Vec<CheckFact>,
     pub corrections: Vec<crate::review::findings::Correction>,
+    pub findings: FindingFacts,
+}
+
+/// Provider identities the finding contract checks author won't-fix replies against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FindingFacts {
+    /// The PR author's provider account id.
+    pub pr_author_id: Option<String>,
+    /// The acting provider account id.
+    pub account_id: String,
+    /// Comment ids PR Sniper wrote on this PR (publication roots and reply receipts).
+    pub own_comments: std::collections::BTreeSet<String>,
+    /// Standing resolution evidence of every carried-forward thread.
+    pub carried: Vec<crate::review::findings::Assessment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
