@@ -54,7 +54,7 @@ Installer artifacts, extracted payloads, upgrade-fixture directories and
 acceptance profiles are outside the cache paths.
 A cache miss still runs the full cold build and every check; it is not a bypass.
 
-Parallel lanes (`windows-checks`, `windows-native-lib`, three
+Parallel lanes (`windows-checks`, `windows-native-lib`, `windows-native-lib-rest`, three
 `windows-browser` shards, `windows-package`, `windows-upgrade-fixture`) have
 45-minute limits and installer acceptance a 15-minute limit, with shorter
 timeouts on individual command steps. The required `windows` check is an

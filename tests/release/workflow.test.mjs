@@ -35,6 +35,7 @@ const aggregators = {
     [
       "windows-checks",
       "windows-native-lib",
+      "windows-native-lib-rest",
       "windows-browser",
       "windows-package",
       "windows-upgrade-fixture",
@@ -57,6 +58,9 @@ const settle = "node scripts/ci-settle-codegen.mjs";
 const windowsCargo =
   "cargo test --manifest-path src-tauri\\Cargo.toml --locked";
 const isolated = "cancelled_or_failed_startup_does_not_leave_a_child";
+const libPartition = ["retention::", "actions::"];
+const libFirst = `${windowsCargo} --lib -- ${libPartition.join(" ")} --nocapture --test-threads=2 --skip ${isolated}`;
+const libRest = `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated} ${libPartition.map((filter) => `--skip ${filter}`).join(" ")}`;
 const runs = (job) => job.steps.filter((step) => step.run).map((s) => s.run);
 const isCargoTest = (run) =>
   run === "npm test" || run.startsWith("cargo test ");
@@ -234,6 +238,7 @@ test("Windows native application checks run on every PR and main push with read-
   assert.deepEqual(Object.keys(windows.jobs), [
     "windows-checks",
     "windows-native-lib",
+    "windows-native-lib-rest",
     "windows-browser",
     "windows-package",
     "windows-upgrade-fixture",
@@ -338,6 +343,7 @@ test("Rust caching retains dependencies, not application artifacts or PR-written
       "browser",
       "windows-checks",
       "windows-native-lib",
+      "windows-native-lib-rest",
       "windows-browser",
       "windows-package",
       "windows-upgrade-fixture",
@@ -479,6 +485,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "Swatinem/rust-cache",
     ],
     "windows-native-lib": [...prepare, "Swatinem/rust-cache"],
+    "windows-native-lib-rest": [...prepare, "Swatinem/rust-cache"],
     "windows-browser": [...prepare, "Swatinem/rust-cache"],
     "windows-package": [
       ...prepare,
@@ -543,9 +550,17 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       `${windowsCargo} --lib --no-run`,
       settle,
       `${windowsCargo} --lib copilot::runtime::tests::${isolated} -- --exact --nocapture --test-threads=1`,
-      `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated}`,
+      libFirst,
       `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
       `${windowsCargo} --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
+    ],
+    "windows-native-lib-rest": [
+      "npm ci",
+      "npm run build",
+      "rustup show active-toolchain",
+      `${windowsCargo} --lib --no-run`,
+      settle,
+      libRest,
     ],
     "windows-browser": [
       "npm ci",
@@ -1359,10 +1374,7 @@ test("Windows native lanes run every Cargo test target once with only the isolat
       "windows-native-lib",
       `${windowsCargo} --lib copilot::runtime::tests::${isolated} -- --exact --nocapture --test-threads=1`,
     ],
-    [
-      "windows-native-lib",
-      `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated}`,
-    ],
+    ["windows-native-lib", libFirst],
     [
       "windows-native-lib",
       `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
@@ -1371,11 +1383,38 @@ test("Windows native lanes run every Cargo test target once with only the isolat
       "windows-native-lib",
       `${windowsCargo} --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
     ],
+    ["windows-native-lib-rest", `${windowsCargo} --lib --no-run`],
+    ["windows-native-lib-rest", libRest],
   ]);
-  for (const [, run] of tests) {
+  for (const [, run] of tests)
     assert.doesNotMatch(run, /--include-ignored|--all-targets|--features/);
-    assert.ok((run.match(/--skip/g) ?? []).length <= 1);
-  }
+  // libtest runs a case when it matches any filter (or none are given) and no
+  // --skip. The two partitions use the same substrings as filters and skips,
+  // so they are disjoint and together cover every non-ignored lib test except
+  // the isolated SDK case, which both skip and which runs once with --exact.
+  const args = (run) => run.split(" -- ")[1].split(" ");
+  const parts = (run) => {
+    const list = args(run);
+    const skips = list.flatMap((arg, index) =>
+      list[index - 1] === "--skip" ? [arg] : [],
+    );
+    const filters = list.filter(
+      (arg, index) => !arg.startsWith("--") && list[index - 1] !== "--skip",
+    );
+    return {
+      filters,
+      skips,
+      flags: list.filter((arg) => arg.startsWith("--") && arg !== "--skip"),
+    };
+  };
+  const first = parts(libFirst);
+  const rest = parts(libRest);
+  assert.deepEqual(first.filters, libPartition);
+  assert.deepEqual(first.skips, [isolated]);
+  assert.deepEqual(rest.filters, []);
+  assert.deepEqual(rest.skips, [isolated, ...first.filters]);
+  assert.deepEqual(first.flags, rest.flags);
+  assert.deepEqual(first.flags, ["--nocapture", "--test-threads=2"]);
   const sources = (directory) =>
     readdirSync(directory, { recursive: true })
       .filter((path) => path.endsWith(".rs"))
@@ -1437,7 +1476,7 @@ test("each job compiles its Cargo test binaries once before reusing them", () =>
       );
     }
   }
-  assert.equal(multiple, 3);
+  assert.equal(multiple, 4);
 });
 
 test("codegen settling backdates only this crate's post-build-script outputs", () => {
