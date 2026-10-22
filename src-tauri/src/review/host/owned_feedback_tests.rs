@@ -837,6 +837,7 @@ fn guarded_reads_revalidate_saved_state_only_after_an_input_changes() {
         );
     }
 
+    crate::storage::file_identity::settle();
     let started = std::time::Instant::now();
     let (reads, outcome) = guarded_reads(&store, &run, 0, |_, _| {});
     let cached = started.elapsed();
@@ -870,6 +871,8 @@ fn guarded_reads_revalidate_saved_state_only_after_an_input_changes() {
             store.save_queue(&snapshot.0).unwrap();
             store.save_settings(&snapshot.1).unwrap();
             store.save_feedback(&snapshot.2).unwrap();
+            drop(store);
+            crate::storage::file_identity::settle();
         };
     let saved = {
         let store = store.lock().unwrap();
@@ -911,6 +914,24 @@ fn guarded_reads_revalidate_saved_state_only_after_an_input_changes() {
         "",
     );
     restore(&store, &saved);
+    // Equal-length foreign rewrites that restore the modification time, by
+    // atomic replace and in place, still refuse at the next read.
+    for atomic in [true, false] {
+        let path = _root.path().join("state/queue.json");
+        let sha = run.job.head_sha.clone();
+        refuse(
+            Box::new(move |_, _| {
+                crate::storage::file_identity::rewrite_foreign(&path, atomic, |bytes| {
+                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    let last = if sha.ends_with('0') { "1" } else { "0" };
+                    let other = format!("{}{last}", &sha[..sha.len() - 1]);
+                    *bytes = text.replace(&sha, &other).into_bytes();
+                })
+            }),
+            "no longer available",
+        );
+        restore(&store, &saved);
+    }
     // Pause and human cancel signal the attempt; no saved input is consulted.
     let (reads, outcome) = guarded_reads(&store, &run, READS / 2, |_, cancelled| {
         cancelled.store(true, Ordering::SeqCst)

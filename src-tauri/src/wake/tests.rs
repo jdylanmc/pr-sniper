@@ -870,6 +870,7 @@ fn concurrent_frozen_copies_share_unchanged_files_and_release_them() {
     store
         .write_state("queue-dismissals.json", &json!([]))
         .unwrap();
+    crate::storage::file_identity::settle();
     let first = store.freeze().unwrap();
     let second = store.freeze().unwrap();
     let held = |view: &Store, name| view.frozen_bytes(name).unwrap();
@@ -879,6 +880,7 @@ fn concurrent_frozen_copies_share_unchanged_files_and_release_them() {
     ));
     // A write is never served from an older copy.
     store.write_state("reviews.json", &vec!["y"]).unwrap();
+    crate::storage::file_identity::settle();
     let third = store.freeze().unwrap();
     assert_eq!(
         &*held(&third, "reviews.json"),
@@ -888,6 +890,23 @@ fn concurrent_frozen_copies_share_unchanged_files_and_release_them() {
         &held(&first, "queue-dismissals.json"),
         &held(&third, "queue-dismissals.json")
     ));
+    // Equal-length foreign rewrites that restore the modification time, by
+    // atomic replace and in place, are never served from a live copy.
+    let path = root.path().join("state/reviews.json");
+    for (atomic, from, to) in [(true, b'y', b'z'), (false, b'z', b'w')] {
+        crate::storage::file_identity::rewrite_foreign(&path, atomic, |bytes| {
+            for byte in bytes.iter_mut().filter(|b| **b == from) {
+                *byte = to;
+            }
+        });
+        let fresh = store.freeze().unwrap();
+        assert_eq!(
+            &*held(&fresh, "reviews.json"),
+            &std::fs::read(&path).unwrap()
+        );
+        assert!(held(&fresh, "reviews.json").contains(&to));
+        assert!(held(&third, "reviews.json").contains(&b'y'));
+    }
     // Dropped copies release their bytes; nothing retains them.
     let weak = std::sync::Arc::downgrade(&held(&first, "reviews.json"));
     drop((first, second));

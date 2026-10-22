@@ -11,6 +11,8 @@ const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
 #[path = "storage/diagnostics.rs"]
 pub mod diagnostics;
+#[path = "storage/file_identity.rs"]
+pub(crate) mod file_identity;
 #[path = "storage/private_fs.rs"]
 pub(crate) mod private_fs;
 
@@ -1389,13 +1391,13 @@ type FrozenFiles = BTreeMap<(String, String), std::sync::Arc<Vec<u8>>>;
 /// Bytes a live frozen copy holds, by file, with the stamp they were read at;
 /// concurrent copies of an unchanged file share them instead of re-reading.
 type SharedFiles = BTreeMap<(String, String), (SharedStamp, std::sync::Weak<Vec<u8>>)>;
-type SharedStamp = (u64, u64, std::time::SystemTime);
+type SharedStamp = (u64, file_identity::Identity);
 
 /// See `Store::stamp_of`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileStamp {
     writes: u64,
-    files: Vec<Option<(u64, std::time::SystemTime)>>,
+    files: Vec<Option<file_identity::Identity>>,
 }
 
 /// Saved-file counters; see `Store::generations`.
@@ -1467,8 +1469,9 @@ impl Store {
     }
 
     /// Identity of the saved `names`: this Store's write count plus each
-    /// file's size and modification time, so a rewrite through this Store or
-    /// out of band changes it. `None` for a frozen copy or an unreadable stamp.
+    /// file's OS identity (see `file_identity`), so a rewrite through this
+    /// Store or out of band changes it. `None` for a frozen copy, an
+    /// unreadable identity, or a file changed too recently to be settled.
     pub(crate) fn stamp_of(&self, names: &[&str]) -> Option<FileStamp> {
         if self.frozen.is_some() {
             return None;
@@ -1481,6 +1484,7 @@ impl Store {
                 .map(|counter| counter.writes)
                 .sum()
         };
+        let now = std::time::SystemTime::now();
         let mut files = Vec::with_capacity(names.len());
         for name in names {
             let directory = if *name == "settings.json" {
@@ -1488,13 +1492,11 @@ impl Store {
             } else {
                 "state"
             };
-            files.push(
-                match std::fs::metadata(self.root.join(directory).join(name)) {
-                    Ok(metadata) => Some((metadata.len(), metadata.modified().ok()?)),
-                    Err(error) if error.kind() == ErrorKind::NotFound => None,
-                    Err(_) => return None,
-                },
-            );
+            let identity = file_identity::identity(&self.root.join(directory).join(name)).ok()?;
+            if identity.as_ref().is_some_and(|id| !id.settled(now)) {
+                return None;
+            }
+            files.push(identity);
         }
         Some(FileStamp { writes, files })
     }
@@ -1589,7 +1591,7 @@ impl Store {
     }
 
     /// `read`, or the bytes a live frozen copy already holds for this unchanged
-    /// file (same write count through this Store, size and modification time).
+    /// file (same write count through this Store and settled OS identity).
     fn shared_read(
         &self,
         shared: &mut SharedFiles,
@@ -1602,13 +1604,16 @@ impl Store {
             .ok()
             .and_then(|counters| counters.get(&key.1).map(|c| c.writes))
             .unwrap_or(0);
-        let stamp = std::fs::metadata(self.root.join(&key.0).join(&key.1))
-            .and_then(|metadata| Ok((writes, metadata.len(), metadata.modified()?)))
-            .ok();
-        if let Some(stamp) = stamp {
+        let now = std::time::SystemTime::now();
+        let stamp = file_identity::identity(&self.root.join(&key.0).join(&key.1))
+            .ok()
+            .flatten()
+            .filter(|identity| identity.settled(now))
+            .map(|identity| (writes, identity));
+        if let Some(stamp) = &stamp {
             if let Some(bytes) = shared
                 .get(key)
-                .filter(|(seen, _)| *seen == stamp)
+                .filter(|(seen, _)| seen == stamp)
                 .and_then(|(_, bytes)| bytes.upgrade())
             {
                 return Ok(bytes);
