@@ -90,6 +90,10 @@ fn bookkeeping_and_progress_writes_do_not_wake_coordinators() {
     bloated(&store, 8);
     let start = transitions(&store);
     store.save_queue_selection(Some("item")).unwrap();
+    // Control request receipts replay responses; they never create work.
+    crate::control::operations::begin_request(&store, "request", NOW, "hash", NOW).unwrap();
+    crate::control::operations::finish_request(&store, "request", Ok(serde_json::json!({})))
+        .unwrap();
     let mut connectivity = crate::connectivity::Connectivity::default();
     store.save_connectivity(&connectivity).unwrap();
     assert_eq!(transitions(&store), start);

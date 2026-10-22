@@ -829,3 +829,60 @@ fn large_profile_has_bounded_inspection_accounts_resources_details_and_native_ed
         true
     );
 }
+
+#[test]
+fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    let now = crate::now_seconds().unwrap();
+    let duck = |ordinal: u32, failure: &str, reason: &str| {
+        json!({"ordinal":ordinal,"input":{"kind":"pr","claim":"c","proposed_body":"b"},
+            "outcome":{"outcome":"failure","failure":failure},"reason":reason,
+            "limits":{"max_calls":8,"call_timeout_seconds":180,"primary_window_minutes":15},
+            "agent":"Duck","model":"duck-model","state_id":"0:hash","duration_ms":5})
+    };
+    let assessment = |thread: &str, disposition: &str| {
+        json!({"thread_id":thread,"disposition":disposition,"head_sha":"a".repeat(40),
+            "base_sha":"b".repeat(40),"rationale":"r"})
+    };
+    {
+        let store = fixture.store.lock().unwrap();
+        let job = store.load_queue().unwrap().remove(0);
+        let mut run =
+            crate::review::host::request(&store, &job.work.unwrap().id, true, now).unwrap();
+        run.operation.fail(
+            &crate::review::Failure::tossed(crate::feedback::OBSERVATION_FAILED).monitoring(),
+            now,
+        );
+        run.error = Some(crate::feedback::OBSERVATION_FAILED.into());
+        run.attempt_ducks = vec![serde_json::from_value(duck(2, "failed", "stream_lost")).unwrap()];
+        run.result = Some(
+            serde_json::from_value(json!({
+                "reviewed_base_sha":"b".repeat(40),"output":{},
+                "session_id":"fixture","model":"fixture-model","runtime_version":"fixture",
+                "input_tokens":1,"output_tokens":1,"tool_calls":1,
+                "ducks":[duck(1, "unverified", "thread_unread")],
+                "finding_dispositions":[assessment("T1","author_wont_fix"),
+                    assessment("T2","fixed"),assessment("T3","author_wont_fix")],
+                "carried_findings":[assessment("T4","fixed")]
+            }))
+            .unwrap(),
+        );
+        store.save_reviews(&[run]).unwrap();
+    }
+    let queue = fixture.call(json!({"operation":"queue"}));
+    let review = &queue["result"]["values"][0]["reviews"][0];
+    assert_eq!(review["error"], crate::feedback::OBSERVATION_FAILED);
+    assert!(review["next_attempt_at"]
+        .as_i64()
+        .is_some_and(|at| at >= now));
+    assert_eq!(
+        review["dispositions"],
+        json!({"author_wont_fix":2,"carried_forward":1,"fixed":1})
+    );
+    assert_eq!(
+        review["duck_failures"],
+        json!([{"ordinal":1,"failure":"unverified","reason":"thread_unread"},
+            {"ordinal":2,"failure":"failed","reason":"stream_lost"}])
+    );
+}

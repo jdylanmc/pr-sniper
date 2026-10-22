@@ -84,7 +84,9 @@
 - `saved`, `queued`, `waiting`, `running`, `completed` are distinct outcomes.
 - `inspect` returns bounded counts and control state. `accounts` carries safe
   identities/generations; `resources` pages configuration; `queue` pages operation
-  identities; `detail` streams one item's evidence as revision-checked JSON text.
+  identities, saved retry times, finding dispositions (`author_wont_fix`,
+  `carried_forward`) and typed Rubber Duck failure reasons; `detail` streams one
+  item's evidence, including exit writes, as revision-checked JSON text.
 - `health` pages repository polling state, causes and exact retry IDs, even
   before any PR is detected. Use its retryable operation ID with `retry`.
 - Ordinary failed/cancelled AI work uses `retry_review` with its candidate key.

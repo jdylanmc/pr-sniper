@@ -13,6 +13,60 @@ use std::{collections::BTreeMap, sync::Mutex};
 #[cfg(test)]
 mod tests;
 
+fn frozen(runtime: &impl Runtime) -> Result<Store, Error> {
+    runtime
+        .store()
+        .lock()
+        .map_err(|_| storage(()))?
+        .freeze()
+        .map_err(storage)
+}
+
+/// Bounded queue view of one review: operation identity and state, the saved
+/// failure text and retry time, how its findings settled (including
+/// `author_wont_fix` and carried-forward resolutions) and failed Rubber Duck
+/// calls with their typed reasons. Full evidence stays in `detail`.
+fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
+    let run = candidate.run.as_ref();
+    let mut dispositions = BTreeMap::<&str, usize>::new();
+    let mut duck_failures = Vec::new();
+    if let Some(run) = run {
+        if let Some(result) = &run.result {
+            for assessment in &result.finding_dispositions {
+                let id = match assessment.disposition {
+                    crate::review::findings::Disposition::StillApplies => "still_applies",
+                    crate::review::findings::Disposition::Fixed => "fixed",
+                    crate::review::findings::Disposition::Withdrawn => "withdrawn",
+                    crate::review::findings::Disposition::Unverifiable => "unverifiable",
+                    crate::review::findings::Disposition::AuthorWontFix => "author_wont_fix",
+                };
+                *dispositions.entry(id).or_default() += 1;
+            }
+            if !result.carried_findings.is_empty() {
+                dispositions.insert("carried_forward", result.carried_findings.len());
+            }
+        }
+        duck_failures = run
+            .result
+            .iter()
+            .flat_map(|result| &result.ducks)
+            .chain(&run.attempt_ducks)
+            .filter_map(|call| match &call.outcome {
+                crate::review::duck::DuckOutcome::Failure { failure } => Some(json!({
+                    "ordinal":call.ordinal,"failure":failure.id(),
+                    "reason":call.reason.map(|reason| reason.id())})),
+                crate::review::duck::DuckOutcome::Verdict { .. } => None,
+            })
+            .take(8)
+            .collect();
+    }
+    json!({"candidate_key":candidate.key,"operation_id":run.map(|r|&r.operation.id),
+        "state":run.map(|r|&r.operation.state),
+        "error":run.and_then(|r|r.error.as_ref()).map(|e|e.chars().take(256).collect::<String>()),
+        "next_attempt_at":run.and_then(|r|r.operation.next_attempt_at),
+        "dispositions":dispositions,"duck_failures":duck_failures})
+}
+
 /// Platform/provider collaborators only. Routing, receipts, validation and
 /// scheduling remain production code in isolated dispatcher tests.
 pub(super) trait Runtime {
@@ -290,17 +344,18 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             )
         }
         Command::Queue { offset, limit } => {
-            let store = runtime.store().lock().map_err(|_| storage(()))?;
-            let snapshot = crate::queue::snapshot(&store, vec![]).map_err(storage)?;
+            // Parse a frozen copy outside the Store lock, like the Queue panel.
+            let view = frozen(runtime)?;
+            let snapshot = crate::queue::snapshot(&view, vec![]).map_err(storage)?;
             let summaries=snapshot.items.iter().map(|item|json!({
                 "id":item.id,"configuration_id":item.job.configuration_id,"number":item.job.number,
                 "title":item.job.title.chars().take(256).collect::<String>(), "state":item.state,
                 "failure_class":item.failure_class,"failure_cause":item.failure_cause,
                 "dismiss_token":item.dismiss_token,
+                "resume_at":item.resume_at,
                 "reviews":snapshot.reviews.iter().filter(|r|item.review_keys.contains(&r.key))
                     .take(25)
-                    .map(|r|json!({"candidate_key":r.key,"operation_id":r.run.as_ref().map(|r|&r.operation.id),
-                        "state":r.run.as_ref().map(|r|&r.operation.state)})).collect::<Vec<_>>(),
+                    .map(review_summary).collect::<Vec<_>>(),
                 "review_count":item.review_keys.len()
             })).collect();
             page(summaries, offset, limit)
@@ -345,8 +400,9 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             offset,
             limit,
         } => {
-            let store = runtime.store().lock().map_err(|_| storage(()))?;
-            let snapshot = crate::queue::snapshot(&store, vec![]).map_err(storage)?;
+            // Parse a frozen copy outside the Store lock, like the Queue panel.
+            let view = frozen(runtime)?;
+            let snapshot = crate::queue::snapshot(&view, vec![]).map_err(storage)?;
             let item = snapshot
                 .items
                 .iter()
@@ -363,7 +419,8 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 .collect();
             let detail = json!({"item":item,"reviews":reviews,
                 "publications":snapshot.publications.iter().filter(|p|operation_ids.contains(&&p.review_operation_id)).collect::<Vec<_>>(),
-                "follow_ups":snapshot.follow_ups.iter().filter(|f|item.follow_up_ids.contains(&f.run.id)).collect::<Vec<_>>()});
+                "follow_ups":snapshot.follow_ups.iter().filter(|f|item.follow_up_ids.contains(&f.run.id)).collect::<Vec<_>>(),
+                "exit_writes":snapshot.exit_writes.iter().filter(|w|operation_ids.contains(&&w.review_operation_id)).collect::<Vec<_>>()});
             let text = serde_json::to_string(&detail).map_err(|_| storage(()))?;
             let limit = limit.unwrap_or(32 * 1024);
             if !(1..=64 * 1024).contains(&limit) {

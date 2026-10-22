@@ -309,6 +309,13 @@ pub(crate) fn result(
             Some("pending_configuration")
         } else if paused && !pending.is_empty() {
             Some("paused")
+        } else if waiting
+            && pending
+                .iter()
+                .any(|w| w.reason.as_deref() == Some(crate::feedback::WAITING_FOR_OBSERVATION))
+        {
+            // Retries automatically after the next clean feedback observation.
+            Some("feedback_observation")
         } else if waiting && !pending.is_empty() {
             Some("execution_gates")
         } else {

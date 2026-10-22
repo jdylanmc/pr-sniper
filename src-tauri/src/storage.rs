@@ -1762,6 +1762,7 @@ impl Store {
                 | "result-index.json"
                 | "result-index-pending.json"
                 | "queue-selection.json"
+                | "control-receipts.json"
         );
         if !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint) {
             counter.transitions += 1;

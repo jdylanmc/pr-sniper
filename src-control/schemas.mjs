@@ -236,12 +236,33 @@ export const queueItem = z
     failure_class: failureClass.nullable(),
     failure_cause: z.string().nullable(),
     dismiss_token: z.string().nullable(),
+    resume_at: z.number().nullable(),
     review_count: z.number().int(),
     reviews: z.array(
       z.strictObject({
         candidate_key: id,
         operation_id: id.nullable(),
         state: operationState.nullable(),
+        error: z.string().nullable(),
+        next_attempt_at: z.number().nullable(),
+        dispositions: z.partialRecord(
+          z.enum([
+            "still_applies",
+            "fixed",
+            "withdrawn",
+            "unverifiable",
+            "author_wont_fix",
+            "carried_forward",
+          ]),
+          z.number().int(),
+        ),
+        duck_failures: z.array(
+          z.strictObject({
+            ordinal: z.number().int(),
+            failure: z.string(),
+            reason: z.string().nullable(),
+          }),
+        ),
       }),
     ),
   })

@@ -8,6 +8,31 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const source = path.resolve("skills/pr-sniper/scripts/mcp-server.mjs");
+const queueItem = {
+  id: "item",
+  configuration_id: "repository",
+  number: 7,
+  title: "Fixture",
+  state: "queued",
+  failure_class: null,
+  failure_cause: null,
+  dismiss_token: null,
+  resume_at: null,
+  review_count: 1,
+  reviews: [
+    {
+      candidate_key: "candidate",
+      operation_id: "operation",
+      state: "queued",
+      error: "Feedback observation failed; no clearance accepted.",
+      next_attempt_at: 1800000000,
+      dispositions: { author_wont_fix: 1, carried_forward: 2 },
+      duck_failures: [
+        { ordinal: 1, failure: "unverified", reason: "thread_unread" },
+      ],
+    },
+  ],
+};
 async function fixture(mode) {
   const base = path.resolve("src-tauri/target");
   await fs.mkdir(base, { recursive: true });
@@ -36,16 +61,22 @@ async function fixture(mode) {
               next_offset: null,
               revision: "a".repeat(64),
             }
-          : request.operation === "watch"
+          : request.operation === "queue"
             ? {
-                state: "waiting",
-                reason: "paused",
-                paused: true,
-                prioritized: 0,
-                item_id: null,
-                replayed: false,
+                values: [queueItem],
+                total: 1,
+                next_offset: null,
               }
-            : null;
+            : request.operation === "watch"
+              ? {
+                  state: "waiting",
+                  reason: "paused",
+                  paused: true,
+                  prioritized: 0,
+                  item_id: null,
+                  replayed: false,
+                }
+              : null;
       const reply = result
         ? { protocol: 1, ok: true, result }
         : {
@@ -152,6 +183,20 @@ for (const mode of ["legacy", "modern"]) {
     }
   });
 }
+
+test("MCP queue reports settled findings, Duck reasons and retry times", async () => {
+  const f = await fixture("modern");
+  try {
+    const response = await f.client.callTool({
+      name: "list_queue",
+      arguments: {},
+    });
+    assert.equal(response.isError, false, JSON.stringify(response));
+    assert.deepEqual(response.structuredContent.result.values, [queueItem]);
+  } finally {
+    await f.close();
+  }
+});
 
 test("MCP preserves native conflicts and retry identity without retrying effects", async () => {
   const f = await fixture("legacy");
