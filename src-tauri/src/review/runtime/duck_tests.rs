@@ -264,7 +264,12 @@ async fn nested_diagnostics_export_outcome_errors_and_cleanup_without_duck_conte
                     && record["event"]["event"]["status_code"] == 429));
         }
         if scenario == "verdict-ok" {
+            // Successful nested tool calls are counted, not itemized.
             assert!(nested
+                .iter()
+                .any(|record| record["event"]["event"]["kind"] == "duck_teardown"
+                    && record["event"]["event"]["tool_calls"].as_u64() > Some(0)));
+            assert!(!nested
                 .iter()
                 .any(|record| record["event"]["event"]["kind"] == "tool_finished"));
         }

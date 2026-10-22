@@ -10,6 +10,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Reviews retry with fresh context when owned-feedback observations change during
   analysis, instead of failing permanently after one attempt. Recovery remains
   bounded, rejects stale results and restores affected failures after upgrade.
+- Attempt diagnostics write about a tenth of their former volume: each file
+  records an attempt header and Duck identity once, unrecognized runtime
+  chatter and successful nested Duck tool calls are counted, and coverage
+  repeats are dropped. Failures stay itemized; older logs still read.
 
 ## 0.4.2 - 2026-10-20
 

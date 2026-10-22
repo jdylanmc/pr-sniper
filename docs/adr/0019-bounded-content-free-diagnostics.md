@@ -7,7 +7,8 @@ Diagnostics help operators but can leak PR content, tokens, or grow forever.
 ## Decision
 
 - Fixed-schema JSONL under `state/` (`src-tauri/src/storage/diagnostics.rs`). `attempts.jsonl` + 3 rotated generations (`attempts.1..3.jsonl`).
-- Caps: 1 MiB per file (`LOG_BYTES`), 128 KiB per record, 128 paths/events, 256-byte text/metadata.
+- Caps: 1 MiB per file (`LOG_BYTES`), 128 KiB per record, 128 paths, 32 routine session events, 256-byte text/metadata.
+- Compact lines (2026-10-21): header and Duck identity once per file, later lines reference the attempt ID; reader expands older full lines too. Routine runtime chatter and successful nested Duck tool calls are counted, not itemized.
 - Over-limit, control-character, or credential-like metadata becomes a SHA-256 opaque label.
 - Fixed events only. No prompt, body, token, or output fields. Privacy by schema.
 - HTTPS credentials go in a sensitive header. Redirects disabled.

@@ -464,6 +464,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             trace.emit(DiagnosticEvent::DuckTeardown {
                 abort,
                 disconnect: shutdown,
+                tool_calls: Some(trace.tool_calls()),
             });
         }
         let read = reads.read.lock().map(|r| r.len()).unwrap_or(0);
