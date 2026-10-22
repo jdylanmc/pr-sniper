@@ -13,8 +13,8 @@ and explicitly deferred by the owner.
 **Status as of 2026-10-01:** The Windows app and private packaging are delivered;
 public distribution remains deferred. The **Windows native application** workflow
 was temporarily disabled to unblock macOS work, not because the code was removed.
-Its hardened configuration retains both `windows` and
-`windows-installer-acceptance` jobs. The operational enable/disable switch lives
+Its hardened configuration retains the required `windows` and
+`windows-installer-acceptance` checks. The operational enable/disable switch lives
 in GitHub; verify its current state rather than inferring it from the YAML.
 macOS CI and signed macOS release workflows are independent and unchanged.
 
@@ -43,16 +43,22 @@ manual `workflow_dispatch` runs. Superseded runs of the same PR are cancelled;
 `main` runs are not automatically cancelled, preserving exact-commit release
 evidence. Queue time is separate from execution time and is not a test hang.
 
-The pinned Rust cache action restores compiler/lockfile-keyed dependencies.
-Only successful `main` pushes save caches; PRs and manual runs only restore.
+The pinned Rust cache action restores compiler/lockfile-keyed dependencies:
+one shared debug key (saved by `windows-native-lib`) and one release key (saved
+by `windows-package`). Only successful `main` pushes save caches; PRs, manual
+runs and the other lanes only restore. CI builds dev/test with
+`CARGO_PROFILE_DEV_DEBUG=line-tables-only`; local profiles are unchanged.
 Workspace crates are rebuilt, and only Cargo's debug/release `.fingerprint`,
 `build` and `deps` directories plus registry/git dependencies are cached.
 Installer artifacts, extracted payloads, upgrade-fixture directories and
 acceptance profiles are outside the cache paths.
 A cache miss still runs the full cold build and every check; it is not a bypass.
 
-The build job retains a 60-minute limit and installer acceptance a 15-minute
-limit, with shorter timeouts on individual command steps. Every actual Chocolatey
+Parallel lanes (`windows-checks`, `windows-native-lib`, `windows-native-lib-rest`, three
+`windows-browser` shards, `windows-package`, `windows-upgrade-fixture`) have
+45-minute limits and installer acceptance a 15-minute limit, with shorter
+timeouts on individual command steps. The required `windows` check is an
+aggregate job that fails unless every lane concluded `success`. Every actual Chocolatey
 test command prints a start message, expectation and elapsed-time result.
 Deliberate faults are labelled as expected nonzero exits; their raw output is
 retained in separate `choco-*.log` files in the installer diagnostics artifact.
@@ -433,14 +439,17 @@ The ordinary acceptance receipt remains success-only. A generic NSIS exit 2
 (`Setup was cancelled` in Chocolatey) alone does not identify which gate failed.
 
 When enabled, the Windows workflow runs **all** full native, offline runtime,
-browser, formatting and frontend checks. It adds the unsigned installer artifact
-after those checks, then builds an explicitly named **test-only** next-patch
-version with a disposable Tauri JSON override. No checked-in release version or
+browser, formatting and frontend checks in parallel lanes. `windows-package`
+builds the unsigned installer artifact while `windows-upgrade-fixture` builds an
+explicitly named **test-only** next-patch version of the same clean commit and
+checked-in version with a disposable Tauri JSON override. No checked-in release version or
 tag changes; that artifact must never be released. Its PE version and hashes
 are independently checked. No installer executes in the build job.
 
-A separate `windows-installer-acceptance` job needs that successful native job
-and runs on a fresh **GitHub-hosted Windows 2022 VM**, never self-hosted. Before
+A separate `windows-installer-acceptance` job needs only those two builds, fails
+unless both concluded `success` (never skipped), and runs on a fresh
+**GitHub-hosted Windows 2022 VM**, never self-hosted. The other checks gate the
+required `windows` check, not installer execution. Before
 any installation, its script requires the hosted environment and absence of a
 running host, application directory, profile, installer keys, startup values
 and notification/Start Menu shortcuts. A different install path alone is not

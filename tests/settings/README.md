@@ -69,9 +69,9 @@ Queue reload forensics (`queue-reload/` inside each test's output):
 - Fixture teardown finalizes failed assertions, aborted steps and timeouts.
   Checkpoints survive worker termination with `in-progress` plus the last phase;
   runner loss or hard job termination can still prevent CI upload.
-- macOS WebKit uploads only these PNG/JSON paths after the suite, even on failure
-  or cancellation when the runner remains available: 5-minute upload budget,
-  14-day retention. Passing runs retain deterministic failure-proof artifacts too.
+- Each macOS browser shard uploads only these PNG/JSON paths after its WebKit
+  run, even on failure or cancellation when the runner remains available:
+  5-minute upload budget, 14-day retention, one artifact per shard. Passing runs retain deterministic failure-proof artifacts too.
 
 `queue-evidence.spec.mjs` runs a child fixture with a deterministic white/black
 PNG mismatch, a thrown step and a timeout. It requires the child runner to exit
@@ -306,22 +306,17 @@ IPC replies do not hold the Store queue. Lifecycle regressions cover queued
 rejections, first notification writes and delayed replies; this does not relax
 production filesystem checks or browser assertions.
 
-Hosted CI reserves 15 minutes for the Windows frontend/Store build and full
-browser suite. The macOS foundation job has 45 minutes for its cold native build,
-all checks and bundle/archive steps. The expanded suite reached the previous
-10-minute Windows step limit, and macOS reached its 30-minute job limit during
-bundling after its checks passed. These are bounded infrastructure budgets, not
-changes to individual test timeouts, application deadlines, assertions or
-fail-fast behavior. WebKit has separate 30-minute cold Store-bridge build and
-40-minute full-suite budgets inside its unchanged 60-minute job limit. A hosted
-run completed 910 of 924 cases with continuous successful progress before the
-previous 30-minute suite budget expired; the extra 10 minutes covers aggregate
-capacity, not individual assertions. Recent hosted suites took 15-30 minutes and
-builds 4-7 minutes, so the worst measured job still has over 10 minutes of
-headroom under 60. The single `webkit` job is a required check, so it is not
-sharded into renamed checks. Hosted WebKit uses two isolated file workers
-to keep that bounded gate from serializing the entire growing suite behind the
-cold build. Cases within each file remain
+Hosted CI shards the full suite by whole spec file (`--shard=N/T --workers=2`):
+four macOS `browser (N/4)` jobs each run their Chromium then WebKit shard, and
+three `windows-browser (N/3)` jobs run Chromium. Each shard builds the frontend
+and Store bridge from restored Rust dependencies (30-minute macOS build budget)
+and has a 20-minute budget per engine. The required `macos`, `webkit` and
+`windows` checks are aggregate jobs that fail unless every shard and lane
+concluded `success`; skipped or cancelled lanes fail them. `workflow.test.mjs`
+lists every shard with Playwright and requires each case and spec file in
+exactly one shard. These are bounded infrastructure budgets, not changes to
+individual test timeouts, application deadlines, assertions or fail-fast
+behavior. Cases within each file remain
 sequential; each test keeps its private native Store root and FIFO operations.
 Local defaults remain one worker, zero retries and unchanged test deadlines.
 No case, assertion, build, credential restriction or CI deadline is removed.
@@ -754,13 +749,14 @@ For an isolated `CARGO_TARGET_DIR`, build the bridge there or copy the compiled
 bridge from the same native source revision into its `debug/examples` directory.
 Install the matching WebKit build only if it is missing. Playwright WebKit is
 browser regression evidence, not native WKWebView/installed-app acceptance.
-The additive [`macos-webkit.yml`](../../.github/workflows/macos-webkit.yml) gate
-runs on fresh hosted `macos-15` runners for every pull request and main push.
-It installs the locked npm dependencies and their matching WebKit build, then
-uses `npm run test:settings -- --browser=webkit` to build the frontend and
-Store bridge and run the **full unchanged browser suite**. It does not filter
+The [`macos.yml`](../../.github/workflows/macos.yml) `browser (N/4)` shards
+run on fresh hosted `macos-15` runners for every pull request and main push.
+They install the locked npm dependencies and matching Chromium/WebKit builds,
+build the frontend and Store bridge, then run their share of the **full
+unchanged browser suite** with `--browser=webkit`. The `webkit` required check
+passes only when all four shards succeed. They do not filter
 tests, relax retries/timeouts, override the user agent or launch a native app.
-Existing macOS and Windows gates remain separate and unchanged. Hosted browser
+Hosted browser
 proof neither establishes native Tart readiness nor replaces isolated guest
 acceptance for installed-app windows, focus, credentials or live providers.
 No developer-host unlock, wake, permission change or local VM setup is required.

@@ -1,21 +1,73 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { parse } from "yaml";
 
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
 const ci = parse(readFileSync(".github/workflows/macos.yml", "utf8"));
 const windows = parse(readFileSync(".github/workflows/windows.yml", "utf8"));
 const { scripts } = JSON.parse(readFileSync("package.json", "utf8"));
+
+const requiredChecks = [
+  "macos",
+  "webkit",
+  "windows",
+  "windows-installer-acceptance",
+];
+const aggregators = {
+  macos: [ci, ["macos-native", "browser"]],
+  webkit: [ci, ["browser"]],
+  windows: [
+    windows,
+    [
+      "windows-checks",
+      "windows-native-lib",
+      "windows-native-lib-rest",
+      "windows-browser",
+      "windows-package",
+      "windows-upgrade-fixture",
+    ],
+  ],
+};
+const aggregateGate =
+  'jq -r \'to_entries[] | "\\(.key): \\(.value.result)"\' <<<"$NEEDS"\n' +
+  'jq -e \'length > 0 and all(.[]; .result == "success")\' <<<"$NEEDS" >/dev/null\n';
+const acceptanceGate = [
+  "$needs = $env:NEEDS | ConvertFrom-Json",
+  "$names = @($needs.PSObject.Properties.Name)",
+  'foreach ($name in $names) { "${name}: $($needs.$name.result)" }',
+  "if ($names.Count -eq 0 -or @($names | Where-Object { $needs.$_.result -cne 'success' }).Count -ne 0) {",
+  "  throw 'Every needed job must succeed.'",
+  "}",
+  "",
+].join("\n");
+const settle = "node scripts/ci-settle-codegen.mjs";
+const windowsCargo =
+  "cargo test --manifest-path src-tauri\\Cargo.toml --locked";
+const isolated = "cancelled_or_failed_startup_does_not_leave_a_child";
+const libPartition = ["retention::", "actions::"];
+const libFirst = `${windowsCargo} --lib -- ${libPartition.join(" ")} --nocapture --test-threads=2 --skip ${isolated}`;
+const libRest = `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated} ${libPartition.map((filter) => `--skip ${filter}`).join(" ")}`;
+const runs = (job) => job.steps.filter((step) => step.run).map((s) => s.run);
+const isCargoTest = (run) =>
+  run === "npm test" || run.startsWith("cargo test ");
+const allJobs = () => [
+  ...Object.entries(ci.jobs).map(([name, job]) => [ci, name, job]),
+  ...Object.entries(windows.jobs).map(([name, job]) => [windows, name, job]),
+];
 
 test("canonical doctrine checkout preserves exact bytes with core.autocrlf=true", () => {
   const directory = join(".agents", "skills", "doctrine", "doctrines");
@@ -170,7 +222,9 @@ test("publication consumes only this run's verified artifact and contract tests 
       "${{ needs.gate.outputs.sha }}",
     );
   }
-  assert.ok(ci.jobs.macos.steps.some((s) => s.run === "npm run test:release"));
+  assert.ok(
+    ci.jobs["macos-native"].steps.some((s) => s.run === "npm run test:release"),
+  );
 });
 
 test("Windows native application checks run on every PR and main push with read-only access", () => {
@@ -182,11 +236,26 @@ test("Windows native application checks run on every PR and main push with read-
   });
   assert.deepEqual(windows.permissions, { contents: "read" });
   assert.deepEqual(Object.keys(windows.jobs), [
-    "windows",
+    "windows-checks",
+    "windows-native-lib",
+    "windows-native-lib-rest",
+    "windows-browser",
+    "windows-package",
+    "windows-upgrade-fixture",
     "windows-installer-acceptance",
+    "windows",
   ]);
-  assert.equal(windows.jobs.windows["runs-on"], "windows-2022");
-  assert.ok(windows.jobs.windows["timeout-minutes"] > 0);
+  for (const [name, job] of Object.entries(windows.jobs)) {
+    if (name === "windows") continue;
+    assert.equal(job["runs-on"], "windows-2022", name);
+    assert.equal(job.defaults.run.shell, "pwsh", name);
+    assert.ok(job["timeout-minutes"] > 0, name);
+    assert.ok(job["timeout-minutes"] <= 45, name);
+  }
+  assert.equal(
+    windows.jobs["windows-installer-acceptance"]["timeout-minutes"],
+    15,
+  );
 });
 
 test("Windows cancels superseded PR runs without cancelling main release evidence", () => {
@@ -237,105 +306,231 @@ test("every PR workflow cancels superseded runs without cancelling non-PR runs",
   assert.ok(names.size > 0, "No PR-triggered workflows inspected");
 });
 
-test("Windows full browser suite has bounded headroom without widening job or installer limits", () => {
-  const job = windows.jobs.windows;
-  const suite = job.steps.filter(
-    (step) => step.run === "npm run test:settings",
+test("Windows browser shards keep the full suite and bounded per-shard headroom", () => {
+  const job = windows.jobs["windows-browser"];
+  assert.equal(job.name, "windows-browser (${{ matrix.shard }}/3)");
+  assert.deepEqual(job.strategy, {
+    "fail-fast": false,
+    matrix: { shard: [1, 2, 3] },
+  });
+  assert.equal(job["timeout-minutes"], 45);
+  const suite = job.steps.filter((step) =>
+    step.run?.startsWith("npm run test:settings"),
   );
   assert.equal(suite.length, 1);
-  assert.equal(suite[0]["timeout-minutes"], 20);
-  assert.equal(job["timeout-minutes"], 60);
   assert.equal(
-    windows.jobs["windows-installer-acceptance"]["timeout-minutes"],
-    15,
+    suite[0].run,
+    "npm run test:settings -- --shard=${{ matrix.shard }}/3 --workers=2",
+  );
+  assert.equal(suite[0]["timeout-minutes"], 20);
+  // npm appends the shard arguments to the final Playwright command.
+  assert.match(
+    scripts["test:settings"],
+    / && playwright test --config tests\/settings\/playwright\.config\.mjs$/,
   );
 });
 
 test("Rust caching retains dependencies, not application artifacts or PR-written cache entries", () => {
-  const steps = windows.jobs.windows.steps;
-  const cache = steps.find((step) =>
-    step.uses?.startsWith("Swatinem/rust-cache@"),
+  const caches = allJobs().flatMap(([, name, job]) =>
+    job.steps
+      .filter((step) => step.uses?.startsWith("Swatinem/rust-cache@"))
+      .map((step) => [name, job, step]),
   );
-  assert.ok(cache);
-  assert.match(cache.uses, /^Swatinem\/rust-cache@[a-f0-9]{40}$/);
+  assert.deepEqual(
+    caches.map(([name]) => name),
+    [
+      "macos-native",
+      "browser",
+      "windows-checks",
+      "windows-native-lib",
+      "windows-native-lib-rest",
+      "windows-browser",
+      "windows-package",
+      "windows-upgrade-fixture",
+    ],
+  );
+  const mainOnly =
+    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
+  const directories = {
+    "macos-15": ["debug", "release"].flatMap((profile) =>
+      [".fingerprint", "build", "deps"].map(
+        (dir) => `src-tauri/target/${profile}/${dir}`,
+      ),
+    ),
+    "windows-2022-debug": [".fingerprint", "build", "deps"].map(
+      (dir) => `src-tauri\\target\\debug\\${dir}`,
+    ),
+    "windows-2022-release": [".fingerprint", "build", "deps"].map(
+      (dir) => `src-tauri\\target\\release\\${dir}`,
+    ),
+  };
+  const savers = {
+    "macos-15": "macos-native",
+    "windows-2022-debug": "windows-native-lib",
+    "windows-2022-release": "windows-package",
+  };
+  for (const [name, job, cache] of caches) {
+    assert.equal(job.steps.filter((s) => s === cache).length, 1);
+    assert.match(cache.uses, /^Swatinem\/rust-cache@[a-f0-9]{40}$/);
+    const index = job.steps.indexOf(cache);
+    assert.equal(
+      job.steps[index - 1].run,
+      "rustup show active-toolchain",
+      `${name} restores after the pinned toolchain is active`,
+    );
+    assert.ok(
+      job.steps
+        .slice(0, index)
+        .every(
+          (step) =>
+            !/cargo|npm (?:test|run (?:lint|bundle|build:windows|test:settings))/.test(
+              step.run ?? "",
+            ),
+        ),
+      `${name} restores before compiling`,
+    );
+    const key = cache.with["shared-key"];
+    assert.ok(Object.hasOwn(directories, key), name);
+    assert.deepEqual(cache.with, {
+      workspaces: "src-tauri -> target",
+      "shared-key": key,
+      "cache-bin": "false",
+      "cache-targets": "false",
+      "cache-directories": `${directories[key].join("\n")}\n`,
+      "cache-workspace-crates": "false",
+      "cache-on-failure": "false",
+      "save-if": savers[key] === name ? mainOnly : "false",
+    });
+    assert.equal(
+      cache.name,
+      savers[key] === name
+        ? "Cache Rust dependencies (main writes only)"
+        : "Restore Rust dependencies (never writes)",
+    );
+  }
+  for (const [key, saver] of Object.entries(savers))
+    assert.ok(
+      caches.some(
+        ([name, , cache]) => name === saver && cache.with["shared-key"] === key,
+      ),
+    );
+  // The single saver of each key compiles a superset of the restoring jobs' dependencies.
   assert.ok(
-    steps.indexOf(cache) >
-      steps.findIndex((step) => step.run === "rustup show active-toolchain"),
+    runs(windows.jobs["windows-native-lib"]).some((run) =>
+      run.startsWith("cargo clippy "),
+    ),
   );
-  assert.equal(cache.with.workspaces, "src-tauri -> target");
-  assert.equal(cache.with["cache-targets"], "false");
-  assert.equal(cache.with["cache-bin"], "false");
-  assert.equal(cache.with["cache-workspace-crates"], "false");
-  assert.equal(cache.with["cache-on-failure"], "false");
-  assert.equal(
-    cache.with["save-if"],
-    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+  assert.ok(
+    runs(windows.jobs["windows-native-lib"]).some((run) =>
+      run.startsWith("cargo test "),
+    ),
   );
-  assert.deepEqual(cache.with["cache-directories"].trim().split("\n"), [
-    "src-tauri\\target\\debug\\.fingerprint",
-    "src-tauri\\target\\debug\\build",
-    "src-tauri\\target\\debug\\deps",
-    "src-tauri\\target\\release\\.fingerprint",
-    "src-tauri\\target\\release\\build",
-    "src-tauri\\target\\release\\deps",
-  ]);
-  assert.equal(cache.with["cache-provider"], undefined);
-  assert.equal(cache.with["add-rust-environment-hash-key"], undefined);
+  assert.ok(
+    ["npm run lint", "npm test", "npm run bundle"].every((run) =>
+      runs(ci.jobs["macos-native"]).includes(run),
+    ),
+  );
 });
 
 test("Windows checks have no release credentials, privileged environment or failure bypass", () => {
-  const job = windows.jobs.windows;
   assert.doesNotMatch(JSON.stringify(windows), /secrets\.|github\.token/);
-  assert.equal(windows.env, undefined);
-  assert.equal(job.env, undefined);
-  assert.equal(job.environment, undefined);
-  assert.equal(job.permissions, undefined);
-  for (const scope of [job, ...job.steps]) {
-    assert.equal(scope.if, undefined);
-    assert.equal(scope["continue-on-error"], undefined);
-    assert.equal(scope.env, undefined);
+  for (const [name, job] of Object.entries(windows.jobs)) {
+    assert.equal(job.env, undefined, name);
+    assert.equal(job.environment, undefined, name);
+    assert.equal(job.permissions, undefined, name);
+    assert.equal(job["continue-on-error"], undefined, name);
+    assert.equal(
+      job.if,
+      ["windows", "windows-installer-acceptance"].includes(name)
+        ? "${{ always() }}"
+        : undefined,
+      name,
+    );
+    for (const step of job.steps) {
+      assert.equal(step["continue-on-error"], undefined, name);
+      assert.equal(
+        step.if,
+        step.name === "Retain native installer diagnostics"
+          ? "${{ always() }}"
+          : undefined,
+        name,
+      );
+      if (step.env !== undefined)
+        assert.deepEqual(step.env, { NEEDS: "${{ toJSON(needs) }}" }, name);
+      if (step.uses?.startsWith("actions/checkout@"))
+        assert.equal(step.with["persist-credentials"], false, name);
+    }
   }
-  const checkout = job.steps.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
-  );
-  assert.equal(checkout.with["persist-credentials"], false);
 });
 
 test("Windows uses pinned Node and real fail-fast frontend and portable release checks", () => {
-  const job = windows.jobs.windows;
-  assert.equal(job.defaults.run.shell, "pwsh");
-  const actions = job.steps.filter((step) => step.uses);
-  assert.deepEqual(
-    actions.map((step) => step.uses.split("@")[0]),
-    [
-      "actions/checkout",
-      "actions/setup-node",
+  const pin =
+    /^(?:actions\/(?:checkout|setup-node|setup-python|upload-artifact|download-artifact)|Swatinem\/rust-cache)@[a-f0-9]{40}$/;
+  const actions = Object.fromEntries(
+    Object.entries(windows.jobs).map(([name, job]) => [
+      name,
+      job.steps
+        .filter((step) => step.uses)
+        .map((step) => {
+          assert.match(step.uses, pin);
+          return step.uses.split("@")[0];
+        }),
+    ]),
+  );
+  const prepare = ["actions/checkout", "actions/setup-node"];
+  assert.deepEqual(actions, {
+    "windows-checks": [
+      ...prepare,
+      "actions/setup-python",
+      "Swatinem/rust-cache",
+    ],
+    "windows-native-lib": [...prepare, "Swatinem/rust-cache"],
+    "windows-native-lib-rest": [...prepare, "Swatinem/rust-cache"],
+    "windows-browser": [...prepare, "Swatinem/rust-cache"],
+    "windows-package": [
+      ...prepare,
       "actions/setup-python",
       "Swatinem/rust-cache",
       "actions/upload-artifact",
       "actions/upload-artifact",
+    ],
+    "windows-upgrade-fixture": [
+      ...prepare,
+      "Swatinem/rust-cache",
       "actions/upload-artifact",
     ],
-  );
-  for (const step of actions) {
-    assert.match(
-      step.uses,
-      /^(?:actions\/[a-z-]+|Swatinem\/rust-cache)@[a-f0-9]{40}$/,
-    );
+    "windows-installer-acceptance": [
+      "actions/checkout",
+      "actions/download-artifact",
+      "actions/download-artifact",
+      "actions/upload-artifact",
+      "actions/upload-artifact",
+    ],
+    windows: [],
+  });
+  for (const job of Object.values(windows.jobs)) {
+    for (const node of job.steps.filter((s) =>
+      s.uses?.startsWith("actions/setup-node@"),
+    )) {
+      assert.deepEqual(node.with, {
+        "node-version-file": ".node-version",
+        cache: "npm",
+      });
+    }
+    for (const python of job.steps.filter((s) =>
+      s.uses?.startsWith("actions/setup-python@"),
+    )) {
+      assert.deepEqual(python.with, { "python-version": "3.13" });
+    }
   }
-  const node = job.steps.find((step) =>
-    step.uses?.startsWith("actions/setup-node@"),
+  const lanes = Object.fromEntries(
+    Object.entries(windows.jobs).map(([name, job]) => [name, runs(job)]),
   );
-  assert.equal(node.with["node-version-file"], ".node-version");
-  assert.equal(node.with["node-version"], undefined);
-  assert.equal(node.with.cache, "npm");
-  const python = job.steps.find((step) =>
-    step.uses?.startsWith("actions/setup-python@"),
-  );
-  assert.equal(python.with["python-version"], "3.13");
-  assert.deepEqual(
-    job.steps.filter((step) => step.run).map((step) => step.run),
-    [
+  const targets = "--bins --examples --test '*'";
+  const clippy =
+    "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings";
+  assert.deepEqual(lanes, {
+    "windows-checks": [
       "npm ci",
       "npm run test:skills",
       "npm run build",
@@ -343,32 +538,97 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm run test:packaging:windows",
       "rustup show active-toolchain",
       "npm run format:check",
-      "cargo check --manifest-path src-tauri\\Cargo.toml --locked --all-targets",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::cancelled_or_failed_startup_does_not_leave_a_child -- --exact --nocapture --test-threads=1",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1",
-      "cargo clippy --manifest-path src-tauri\\Cargo.toml --locked --all-targets -- -D warnings",
+      `${windowsCargo} ${targets} --no-run`,
+      settle,
+      `${windowsCargo} ${targets} -- --nocapture --test-threads=2`,
+    ],
+    "windows-native-lib": [
+      "npm ci",
+      "npm run build",
+      "rustup show active-toolchain",
+      clippy,
+      `${windowsCargo} --lib --no-run`,
+      settle,
+      `${windowsCargo} --lib copilot::runtime::tests::${isolated} -- --exact --nocapture --test-threads=1`,
+      libFirst,
+      `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
+      `${windowsCargo} --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
+    ],
+    "windows-native-lib-rest": [
+      "npm ci",
+      "npm run build",
+      "rustup show active-toolchain",
+      `${windowsCargo} --lib --no-run`,
+      settle,
+      libRest,
+    ],
+    "windows-browser": [
+      "npm ci",
+      "rustup show active-toolchain",
       "npm exec playwright install chromium",
-      "npm run test:settings",
+      "npm run test:settings -- --shard=${{ matrix.shard }}/3 --workers=2",
+    ],
+    "windows-package": [
+      "npm ci",
+      "rustup show active-toolchain",
       "npm run build:windows",
       "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
       ".\\scripts\\windows-installer-artifact.ps1",
+    ],
+    "windows-upgrade-fixture": [
+      "npm ci",
+      "rustup show active-toolchain",
       ".\\scripts\\windows-upgrade-fixture.ps1",
     ],
-  );
+    "windows-installer-acceptance": [
+      acceptanceGate,
+      ".\\scripts\\windows-installer-acceptance.ps1 -Candidate src-tauri\\target\\candidate -Upgrade src-tauri\\target\\upgrade-fixture",
+    ],
+    windows: [aggregateGate],
+  });
+  // Every command of the former single Windows job still runs. Its
+  // `cargo check --all-targets` is subsumed by `cargo clippy --all-targets`,
+  // and its `--all-targets` test run is the lib/targets lane split above.
+  const lanesRun = new Set(Object.values(lanes).flat());
+  for (const run of [
+    "npm ci",
+    "npm run test:skills",
+    "npm run build",
+    "npm run test:release:windows",
+    "npm run test:packaging:windows",
+    "rustup show active-toolchain",
+    "npm run format:check",
+    `${windowsCargo} --lib copilot::runtime::tests::${isolated} -- --exact --nocapture --test-threads=1`,
+    `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
+    `${windowsCargo} --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
+    clippy,
+    "npm exec playwright install chromium",
+    "npm run build:windows",
+    "npm run bundle:windows",
+    ".\\scripts\\windows-artifact.ps1",
+    ".\\scripts\\windows-installer-artifact.ps1",
+    ".\\scripts\\windows-upgrade-fixture.ps1",
+  ])
+    assert.ok(lanesRun.has(run), run);
   assert.equal(scripts.build, "tsc --noEmit && vite build");
 });
 
 test("both native workflows execute exact offline Intelligence acceptance without skip or live tests", () => {
-  for (const [job, platform, manifest, predecessor] of [
-    [ci.jobs.macos, "macOS", "src-tauri/Cargo.toml", "npm test"],
+  for (const [job, platform, manifest, predecessors] of [
     [
-      windows.jobs.windows,
+      ci.jobs["macos-native"],
+      "macOS",
+      "src-tauri/Cargo.toml",
+      ["npm test", settle],
+    ],
+    [
+      windows.jobs["windows-native-lib"],
       "Windows",
       "src-tauri\\Cargo.toml",
-      "cargo test --manifest-path src-tauri\\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture",
+      [
+        `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
+      ],
     ],
   ]) {
     const matches = job.steps.filter(
@@ -388,8 +648,20 @@ test("both native workflows execute exact offline Intelligence acceptance withou
     assert.equal(step.if, undefined);
     assert.equal(step["continue-on-error"], undefined);
     assert.equal(step.env, undefined);
-    assert.equal(job.steps[job.steps.indexOf(step) - 1].run, predecessor);
+    const index = job.steps.indexOf(step);
+    assert.deepEqual(
+      job.steps
+        .slice(index - predecessors.length, index)
+        .map((before) => before.run),
+      predecessors,
+    );
   }
+  assert.equal(
+    allJobs().filter(([, , job]) =>
+      job.steps.some((step) => step.id === "agent-intelligence-offline"),
+    ).length,
+    2,
+  );
 });
 
 test("unsigned installers and disposable upgrade fixtures cannot become public release assets", () => {
@@ -397,7 +669,7 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
     scripts["bundle:windows"],
     "tauri bundle --ci --no-sign --bundles nsis",
   );
-  const steps = windows.jobs.windows.steps;
+  const steps = windows.jobs["windows-package"].steps;
   assert.ok(
     steps.findIndex((s) => s.run === "npm run bundle:windows") <
       steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
@@ -406,6 +678,7 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
   const uploads = steps.filter((s) =>
     s.uses?.startsWith("actions/upload-artifact@"),
   );
+  assert.equal(uploads.length, 2);
   assert.equal(
     uploads[1].with.name,
     "pr-sniper-windows-unsigned-installer-${{ github.sha }}",
@@ -414,10 +687,19 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
     uploads[1].with.path,
     "src-tauri/target/windows-installer-artifact/",
   );
+  const fixture = windows.jobs["windows-upgrade-fixture"].steps.filter((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(fixture.length, 1);
   assert.equal(
-    uploads[2].with.name,
+    fixture[0].with.name,
     "pr-sniper-windows-upgrade-test-only-${{ github.sha }}",
   );
+  assert.equal(
+    fixture[0].with.path,
+    "src-tauri/target/windows-upgrade-fixture/upgrade-test-only.exe\nsrc-tauri/target/windows-upgrade-fixture/fixture.json\n",
+  );
+  assert.equal(fixture[0].with["if-no-files-found"], "error");
   assert.doesNotMatch(JSON.stringify(workflow), /windows|chocolatey/i);
 });
 
@@ -459,12 +741,21 @@ test("base and upgrade metadata hash the extracted payload, not Tauri's restored
   );
 });
 
-test("real installer acceptance depends on native checks and a fresh hosted VM", () => {
+test("real installer acceptance gates on both installer builds and a fresh hosted VM", () => {
   const job = windows.jobs["windows-installer-acceptance"];
-  assert.equal(job.needs, "windows");
+  assert.deepEqual(job.needs, ["windows-package", "windows-upgrade-fixture"]);
+  assert.equal(job.if, "${{ always() }}");
   assert.equal(job["runs-on"], "windows-2022");
   assert.equal(job.environment, undefined);
   assert.equal(job["continue-on-error"], undefined);
+  const [gate] = job.steps;
+  assert.equal(
+    gate.name,
+    "Require successful installer and upgrade fixture builds",
+  );
+  assert.deepEqual(gate.env, { NEEDS: "${{ toJSON(needs) }}" });
+  assert.equal(gate.run, acceptanceGate);
+  assert.ok(gate["timeout-minutes"] < job["timeout-minutes"]);
   const diagnostics = job.steps.find(
     (step) => step.name === "Retain native installer diagnostics",
   );
@@ -484,6 +775,36 @@ test("real installer acceptance depends on native checks and a fresh hosted VM",
       assert.equal(step.with["run-id"], undefined);
     }
   }
+  const produced = job.needs.flatMap((name) =>
+    windows.jobs[name].steps
+      .filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
+      .map((step) => step.with.name),
+  );
+  const downloads = job.steps
+    .filter((step) => step.uses?.startsWith("actions/download-artifact@"))
+    .map((step) => step.with.name);
+  assert.deepEqual(downloads, [
+    "pr-sniper-windows-unsigned-installer-${{ github.sha }}",
+    "pr-sniper-windows-upgrade-test-only-${{ github.sha }}",
+  ]);
+  for (const name of downloads) assert.ok(produced.includes(name), name);
+  // The fixture is built in parallel, so it binds itself to the same clean
+  // commit and checked-in version that acceptance compares with installer.json.
+  const fixture = readFileSync("scripts/windows-upgrade-fixture.ps1", "utf8");
+  assert.doesNotMatch(fixture, /installer\.json/);
+  assert.match(fixture, /\$commit -cne \$env:GITHUB_SHA/);
+  assert.match(fixture, /status --porcelain[\s\S]*npm exec tauri build/);
+  assert.match(
+    fixture,
+    /version = \(Get-Content \(Join-Path \$repository 'package\.json'\) -Raw \| ConvertFrom-Json\)\.version/,
+  );
+  const acceptance = readFileSync(
+    "scripts/windows-installer-acceptance.ps1",
+    "utf8",
+  );
+  assert.match(acceptance, /\$base\.commit -cne \$env:GITHUB_SHA/);
+  assert.match(acceptance, /\$next\.commit -cne \$base\.commit/);
+  assert.match(acceptance, /\$next\.base_version -cne \$base\.version/);
   const config = JSON.parse(
     readFileSync("src-tauri/tauri.windows.conf.json", "utf8"),
   );
@@ -676,7 +997,7 @@ test("immutable completion survives outer rollback and is left for package-owned
 });
 
 test("Windows artifact contains only the standalone app and exact-source provenance", () => {
-  const upload = windows.jobs.windows.steps.find((step) =>
+  const upload = windows.jobs["windows-package"].steps.find((step) =>
     step.uses?.startsWith("actions/upload-artifact@"),
   );
   assert.equal(upload.with.name, "pr-sniper-windows-x64-${{ github.sha }}");
@@ -701,47 +1022,58 @@ test("both repository release runners execute workflow contracts without weakeni
   );
 });
 
-test("hosted macOS WebKit adds a read-only pinned full-engine gate without native operations", () => {
-  const webkit = parse(
-    readFileSync(".github/workflows/macos-webkit.yml", "utf8"),
-  );
-  assert.deepEqual(webkit.on, {
+test("macOS browser shards run the full Chromium and WebKit suites read-only with pinned actions", async () => {
+  assert.equal(existsSync(".github/workflows/macos-webkit.yml"), false);
+  assert.equal(ci.name, "macOS foundation");
+  assert.deepEqual(ci.on, {
     pull_request: null,
-    push: { branches: ["main"] },
+    push: { branches: ["main", "feat/macos-foundation"] },
   });
-  assert.deepEqual(webkit.permissions, { contents: "read" });
-  assert.deepEqual(Object.keys(webkit.jobs), ["webkit"]);
-  const job = webkit.jobs.webkit;
+  assert.deepEqual(ci.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(ci.jobs), [
+    "macos-native",
+    "browser",
+    "macos",
+    "webkit",
+  ]);
+  const job = ci.jobs.browser;
+  assert.equal(job.name, "browser (${{ matrix.shard }}/4)");
   assert.equal(job["runs-on"], "macos-15");
-  assert.equal(job["runs-on"], ci.jobs.macos["runs-on"]);
-  assert.equal(job["timeout-minutes"], 60);
+  assert.equal(job["runs-on"], ci.jobs["macos-native"]["runs-on"]);
+  assert.equal(job["timeout-minutes"], 45);
+  assert.deepEqual(job.strategy, {
+    "fail-fast": false,
+    matrix: { shard: [1, 2, 3, 4] },
+  });
   assert.equal(job.environment, undefined);
   assert.equal(job.permissions, undefined);
   assert.equal(job.needs, undefined);
-  assert.equal(job.strategy, undefined);
   const suite = job.steps.find((step) => step.id === "browser-tests");
   const upload = job.steps.find((step) =>
     step.uses?.startsWith("actions/upload-artifact@"),
   );
-  for (const scope of [webkit, job, ...job.steps]) {
+  for (const scope of [job, ...job.steps]) {
     if (scope !== suite) assert.equal(scope.env, undefined);
     if (scope !== upload) assert.equal(scope.if, undefined);
     assert.equal(scope["continue-on-error"], undefined);
     assert.equal(scope.defaults, undefined);
   }
-  assert.doesNotMatch(JSON.stringify(webkit), /secrets\.|github\.token/);
+  assert.doesNotMatch(JSON.stringify(ci), /secrets\.|github\.token/);
   const actions = job.steps.filter((step) => step.uses);
   assert.deepEqual(
     actions.map((step) => step.uses),
     [
       "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
       "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ],
   );
   for (const action of actions) {
     assert.ok(
-      windows.jobs.windows.steps.some((step) => step.uses === action.uses),
+      Object.values(windows.jobs).some((other) =>
+        other.steps.some((step) => step.uses === action.uses),
+      ),
       "Reuse the trusted Windows workflow's immutable action pins",
     );
   }
@@ -761,27 +1093,39 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
   assert.equal(job.steps.indexOf(upload), job.steps.indexOf(suite) + 1);
   assert.equal(upload["timeout-minutes"], 5);
   assert.deepEqual(upload.with, {
-    name: "queue-reload-${{ github.run_id }}-${{ github.run_attempt }}",
+    name: "queue-reload-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}",
     path: "src-tauri/target/settings-browser/**/queue-reload/*.png\nsrc-tauri/target/settings-browser/**/queue-reload/manifest.json\n",
     "if-no-files-found": "warn",
     "retention-days": 14,
     "include-hidden-files": false,
   });
-  assert.equal(job.steps.length, 8);
-  assert.deepEqual(
-    job.steps.filter((step) => step.run).map((step) => step.run),
-    [
-      "rustup show active-toolchain",
-      "npm ci",
-      "npm exec playwright install webkit",
-      "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge",
-      "npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2",
-    ],
-  );
+  assert.equal(job.steps.length, 10);
+  const build =
+    "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge";
+  const playwright =
+    "npm exec playwright -- test --config tests/settings/playwright.config.mjs";
+  assert.deepEqual(runs(job), [
+    "rustup show active-toolchain",
+    "npm ci",
+    "npm exec playwright install chromium webkit",
+    build,
+    `${playwright} --shard=\${{ matrix.shard }}/4 --workers=2`,
+    `${playwright} --browser=webkit --shard=\${{ matrix.shard }}/4 --workers=2`,
+  ]);
   for (const step of job.steps) {
     assert.ok(step["timeout-minutes"] > 0);
     assert.ok(step["timeout-minutes"] < job["timeout-minutes"]);
   }
+  const buildStep = job.steps.find((step) => step.run === build);
+  const chromium = job.steps.find(
+    (step) => step.name === "Run this Chromium shard of the full suite",
+  );
+  assert.equal(buildStep["timeout-minutes"], 30);
+  assert.equal(chromium["timeout-minutes"], 20);
+  assert.equal(suite.name, "Run this WebKit shard of the full suite");
+  assert.equal(suite["timeout-minutes"], 20);
+  assert.equal(job.steps.indexOf(chromium), job.steps.indexOf(buildStep) + 1);
+  assert.equal(job.steps.indexOf(suite), job.steps.indexOf(chromium) + 1);
   assert.equal(
     scripts["test:settings"],
     "npm run build && cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge && playwright test --config tests/settings/playwright.config.mjs",
@@ -790,30 +1134,406 @@ test("hosted macOS WebKit adds a read-only pinned full-engine gate without nativ
     readFileSync("rust-toolchain.toml", "utf8"),
     /\[toolchain\]\s+channel = "\d+\.\d+\.\d+"/,
   );
-});
-
-test("WebKit build and full suite have separate budgets and isolated file workers", async () => {
-  const webkit = parse(
-    readFileSync(".github/workflows/macos-webkit.yml", "utf8"),
-  );
-  const job = webkit.jobs.webkit;
-  const build = job.steps.find(
-    (step) => step.name === "Build frontend and Store bridge",
-  );
-  const suite = job.steps.find(
-    (step) => step.name === "Run the full WebKit suite",
-  );
-  assert.equal(job["timeout-minutes"], 60);
-  assert.equal(build["timeout-minutes"], 30);
-  assert.equal(suite["timeout-minutes"], 40);
-  assert.equal(job.steps.indexOf(suite), job.steps.indexOf(build) + 1);
-  assert.equal(
-    suite.run,
-    "npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --workers=2",
-  );
   const { default: browser } =
     await import("../settings/playwright.config.mjs");
   assert.equal(browser.fullyParallel, false);
   assert.equal(browser.workers, 1);
   assert.equal(browser.retries, 0);
+  assert.equal(browser.timeout, undefined);
+  assert.equal(browser.use.browserName, "chromium");
+});
+
+test("macOS native checks run every former macOS command except the sharded browser suite", () => {
+  const job = ci.jobs["macos-native"];
+  assert.equal(job["runs-on"], "macos-15");
+  assert.equal(job["timeout-minutes"], 60);
+  assert.equal(job.strategy, undefined);
+  assert.equal(job.if, undefined);
+  assert.deepEqual(runs(job).slice(0, 10), [
+    "rustup show active-toolchain",
+    "npm ci",
+    "npm run test:skills",
+    "npm run format:check",
+    "npm run lint",
+    "npm test",
+    settle,
+    "cargo test --manifest-path src-tauri/Cargo.toml --locked --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1",
+    "npm run test:release",
+    "npm run bundle",
+  ]);
+  assert.deepEqual(
+    job.steps.slice(-4).map((step) => step.name ?? step.uses),
+    [
+      "Verify native notification bundle identity",
+      "Compile native acceptance harness",
+      "Archive bundle with executable permissions",
+      "actions/upload-artifact@v4",
+    ],
+  );
+  assert.ok(!runs(job).some((run) => /playwright|test:settings/.test(run)));
+});
+
+test("required checks are fail-closed aggregators over every CI lane", () => {
+  for (const [name, [file, needs]] of Object.entries(aggregators)) {
+    const job = file.jobs[name];
+    assert.deepEqual(job.needs, needs, name);
+    assert.equal(job.if, "${{ always() }}", name);
+    assert.equal(job["runs-on"], "ubuntu-24.04", name);
+    assert.equal(job.name, undefined, name);
+    assert.equal(job.strategy, undefined, name);
+    assert.equal(job.environment, undefined, name);
+    assert.equal(job.permissions, undefined, name);
+    assert.equal(job["continue-on-error"], undefined, name);
+    assert.equal(job.steps.length, 1, name);
+    const [gate] = job.steps;
+    assert.equal(gate.name, "Require every needed job to succeed");
+    assert.deepEqual(gate.env, { NEEDS: "${{ toJSON(needs) }}" });
+    assert.equal(gate.run, aggregateGate);
+    assert.equal(gate.if, undefined);
+    assert.equal(gate["continue-on-error"], undefined);
+    assert.ok(gate["timeout-minutes"] < job["timeout-minutes"]);
+  }
+  const acceptance = windows.jobs["windows-installer-acceptance"];
+  const covered = new Set([
+    ...Object.values(aggregators).flatMap(([, needs]) => needs),
+    ...acceptance.needs,
+  ]);
+  for (const [, name, job] of allJobs()) {
+    if (requiredChecks.includes(name)) continue;
+    assert.ok(covered.has(name), `${name} must gate a required check`);
+    assert.ok(
+      !requiredChecks.includes(job.name ?? name),
+      `${name} must not report a required check name`,
+    );
+  }
+  assert.deepEqual(
+    allJobs()
+      .map(([, name]) => name)
+      .filter((name) => requiredChecks.includes(name))
+      .sort(),
+    [...requiredChecks].sort(),
+  );
+  const release = readFileSync("scripts/release.py", "utf8");
+  assert.match(release, /^WORKFLOW = "\.github\/workflows\/macos\.yml"$/m);
+  assert.match(release, /job\.get\("name"\) == "macos"/);
+  assert.match(release, /"\.github\/workflows\/windows\.yml"/);
+  assert.match(
+    release,
+    /for name in \("windows", "windows-installer-acceptance"\)/,
+  );
+});
+
+test("aggregate gates pass only when every needed job succeeded", () => {
+  const cases = [
+    [{ a: { result: "success" }, b: { result: "success" } }, true],
+    [{ a: { result: "success" }, b: { result: "failure" } }, false],
+    [{ a: { result: "success" }, b: { result: "skipped" } }, false],
+    [{ a: { result: "cancelled" } }, false],
+    [{ a: { result: "Success" } }, false],
+    [{}, false],
+  ];
+  // Each platform's release runner exercises the gate its own jobs execute.
+  const gate =
+    process.platform === "win32"
+      ? ["pwsh", ["-NoProfile", "-NonInteractive", "-Command", acceptanceGate]]
+      : [
+          "bash",
+          ["--noprofile", "--norc", "-eo", "pipefail", "-c", aggregateGate],
+        ];
+  for (const [needs, passes] of cases) {
+    let passed = true;
+    try {
+      execFileSync(gate[0], gate[1], {
+        env: { ...process.env, NEEDS: JSON.stringify(needs) },
+        stdio: "pipe",
+      });
+    } catch (error) {
+      assert.equal(typeof error.status, "number", "gate interpreter must run");
+      passed = false;
+    }
+    assert.equal(passed, passes, JSON.stringify(needs));
+  }
+});
+
+test("browser shards partition every test file and case exactly once per engine", async () => {
+  const run = promisify(execFile);
+  const list = async (args) => {
+    const { stdout } = await run(
+      process.execPath,
+      [
+        "node_modules/@playwright/test/cli.js",
+        "test",
+        "--config",
+        "tests/settings/playwright.config.mjs",
+        "--list",
+        "--reporter=json",
+        ...args,
+      ],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    const specs = [];
+    const walk = (suite) => {
+      for (const spec of suite.specs ?? [])
+        for (const one of spec.tests)
+          specs.push({ file: spec.file, id: `${spec.id}:${one.projectName}` });
+      for (const child of suite.suites ?? []) walk(child);
+    };
+    for (const suite of JSON.parse(stdout).suites) walk(suite);
+    return specs;
+  };
+  const shardRuns = [];
+  for (const [, name, job] of allJobs()) {
+    for (const step of job.steps) {
+      const match = step.run?.match(/--shard=\$\{\{ matrix\.shard \}\}\/(\d+)/);
+      if (!match) continue;
+      const total = Number(match[1]);
+      assert.deepEqual(
+        job.strategy.matrix.shard,
+        Array.from({ length: total }, (_, index) => index + 1),
+      );
+      assert.equal(job.strategy["fail-fast"], false);
+      assert.doesNotMatch(
+        step.run,
+        /--grep|-g |--project|--last-failed|--only-changed|--max-failures|-x\b|--retries|--repeat-each|--timeout|--pass-with-no-tests|--forbid-only=false/,
+      );
+      assert.match(step.run, / --workers=2$/);
+      shardRuns.push([
+        name,
+        step.run.includes("--browser=webkit") ? "webkit" : "chromium",
+        total,
+      ]);
+    }
+  }
+  assert.deepEqual(shardRuns, [
+    ["browser", "chromium", 4],
+    ["browser", "webkit", 4],
+    ["windows-browser", "chromium", 3],
+  ]);
+  for (const [, browser, total] of shardRuns) {
+    const engine = browser === "webkit" ? ["--browser=webkit"] : [];
+    const [full, ...shards] = await Promise.all([
+      list(engine),
+      ...Array.from({ length: total }, (_, index) =>
+        list([...engine, `--shard=${index + 1}/${total}`]),
+      ),
+    ]);
+    assert.ok(full.length > 900, `${browser} suite unexpectedly small`);
+    const fullIds = full.map((spec) => spec.id);
+    assert.equal(new Set(fullIds).size, fullIds.length);
+    const owner = new Map();
+    const fileOwner = new Map();
+    shards.forEach((specs, index) => {
+      assert.ok(specs.length > 0, `${browser} shard ${index + 1} is empty`);
+      for (const { file, id } of specs) {
+        assert.ok(!owner.has(id), `${id} runs in more than one shard`);
+        owner.set(id, index);
+        assert.equal(
+          fileOwner.get(file) ?? index,
+          index,
+          `${file} is split across shards`,
+        );
+        fileOwner.set(file, index);
+      }
+    });
+    assert.deepEqual([...owner.keys()].sort(), [...fullIds].sort());
+    assert.deepEqual(
+      [...fileOwner.keys()].sort(),
+      [...new Set(full.map((spec) => spec.file))].sort(),
+    );
+    assert.ok(
+      readdirSync("tests/settings").filter((name) => name.endsWith(".spec.mjs"))
+        .length === fileOwner.size,
+      "every settings spec file is listed",
+    );
+  }
+});
+
+test("Windows native lanes run every Cargo test target once with only the isolated SDK exclusion", () => {
+  const manifest = readFileSync("src-tauri/Cargo.toml", "utf8");
+  assert.doesNotMatch(
+    manifest,
+    /\[\[(?:bench|test|example|bin)\]\]|auto(?:benches|tests|examples|bins)|harness\s*=|^test\s*=/m,
+  );
+  assert.equal(existsSync("src-tauri/benches"), false);
+  const tests = Object.entries(windows.jobs).flatMap(([name, job]) =>
+    runs(job)
+      .filter(isCargoTest)
+      .map((run) => [name, run]),
+  );
+  const targets = "--bins --examples --test '*'";
+  // --lib plus bins, examples and every integration test is --all-targets
+  // when the package declares no benches.
+  assert.deepEqual(tests, [
+    ["windows-checks", `${windowsCargo} ${targets} --no-run`],
+    [
+      "windows-checks",
+      `${windowsCargo} ${targets} -- --nocapture --test-threads=2`,
+    ],
+    ["windows-native-lib", `${windowsCargo} --lib --no-run`],
+    [
+      "windows-native-lib",
+      `${windowsCargo} --lib copilot::runtime::tests::${isolated} -- --exact --nocapture --test-threads=1`,
+    ],
+    ["windows-native-lib", libFirst],
+    [
+      "windows-native-lib",
+      `${windowsCargo} --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture`,
+    ],
+    [
+      "windows-native-lib",
+      `${windowsCargo} --lib review::runtime::tests::bundled_runtime_intelligence_offline -- --exact --ignored --nocapture --test-threads=1`,
+    ],
+    ["windows-native-lib-rest", `${windowsCargo} --lib --no-run`],
+    ["windows-native-lib-rest", libRest],
+  ]);
+  for (const [, run] of tests)
+    assert.doesNotMatch(run, /--include-ignored|--all-targets|--features/);
+  // libtest runs a case when it matches any filter (or none are given) and no
+  // --skip. The two partitions use the same substrings as filters and skips,
+  // so they are disjoint and together cover every non-ignored lib test except
+  // the isolated SDK case, which both skip and which runs once with --exact.
+  const args = (run) => run.split(" -- ")[1].split(" ");
+  const parts = (run) => {
+    const list = args(run);
+    const skips = list.flatMap((arg, index) =>
+      list[index - 1] === "--skip" ? [arg] : [],
+    );
+    const filters = list.filter(
+      (arg, index) => !arg.startsWith("--") && list[index - 1] !== "--skip",
+    );
+    return {
+      filters,
+      skips,
+      flags: list.filter((arg) => arg.startsWith("--") && arg !== "--skip"),
+    };
+  };
+  const first = parts(libFirst);
+  const rest = parts(libRest);
+  assert.deepEqual(first.filters, libPartition);
+  assert.deepEqual(first.skips, [isolated]);
+  assert.deepEqual(rest.filters, []);
+  assert.deepEqual(rest.skips, [isolated, ...first.filters]);
+  assert.deepEqual(first.flags, rest.flags);
+  assert.deepEqual(first.flags, ["--nocapture", "--test-threads=2"]);
+  const sources = (directory) =>
+    readdirSync(directory, { recursive: true })
+      .filter((path) => path.endsWith(".rs"))
+      .map((path) => [
+        join(directory, path),
+        readFileSync(join(directory, path), "utf8"),
+      ]);
+  const named = [
+    ...sources("src-tauri/src"),
+    ...sources("src-tauri/tests"),
+    ...sources("src-tauri/examples"),
+  ].flatMap(([path, source]) =>
+    (source.match(new RegExp(`fn \\w*${isolated}\\w*`, "g")) ?? []).map(
+      (name) => [path.replaceAll("\\", "/"), name],
+    ),
+  );
+  assert.deepEqual(named, [
+    ["src-tauri/src/copilot/runtime.rs", `fn ${isolated}`],
+  ]);
+  assert.equal(
+    scripts.test,
+    "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+  );
+  assert.equal(
+    runs(ci.jobs["macos-native"]).filter((r) => r === "npm test").length,
+    1,
+  );
+});
+
+test("each job compiles its Cargo test binaries once before reusing them", () => {
+  const selection = (run) =>
+    run === "npm test"
+      ? "default"
+      : run.match(/--lib|--bins --examples --test '\*'/)[0];
+  let multiple = 0;
+  for (const [, name, job] of allJobs()) {
+    const commands = runs(job);
+    const tests = commands.filter(isCargoTest);
+    const settled = commands.filter((run) => run === settle);
+    if (tests.length <= 1) {
+      assert.equal(settled.length, 0, name);
+      continue;
+    }
+    multiple += 1;
+    assert.equal(settled.length, 1, name);
+    assert.equal(
+      commands.indexOf(settle),
+      commands.indexOf(tests[0]) + 1,
+      `${name} settles generated assets right after its first compile`,
+    );
+    const first = selection(tests[0]);
+    if (first !== "default") assert.match(tests[0], / --no-run$/);
+    for (const run of tests.slice(1)) {
+      assert.ok(
+        first === "default"
+          ? selection(run) === "--lib"
+          : selection(run) === first,
+        `${name}: ${run} reuses the binaries compiled by ${tests[0]}`,
+      );
+    }
+  }
+  assert.equal(multiple, 4);
+});
+
+test("codegen settling backdates only this crate's post-build-script outputs", () => {
+  const root = join(process.cwd(), `.pr-sniper-settle-${randomUUID()}`);
+  const finished = new Date("2026-01-01T00:00:00Z");
+  const before = new Date("2025-12-31T00:00:00Z");
+  const during = new Date("2026-01-01T00:00:05Z");
+  const write = (path, time) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "x");
+    utimesSync(path, time, time);
+  };
+  const settleIn = () =>
+    execFileSync(process.execPath, ["scripts/ci-settle-codegen.mjs"], {
+      env: { ...process.env, CARGO_TARGET_DIR: root },
+      stdio: "pipe",
+    }).toString();
+  const mtime = (path) => statSync(path).mtime.getTime();
+  try {
+    const own = join(root, "debug", "build", "pr-sniper-0123");
+    const other = join(root, "debug", "build", "serde-0123");
+    write(join(own, "output"), finished);
+    write(join(own, "out", "acl-manifests.json"), before);
+    write(join(own, "out", "4e5fe447"), during);
+    write(join(other, "output"), finished);
+    write(join(other, "out", "generated"), during);
+    assert.match(
+      settleIn(),
+      /^Settled 1 generated file\(s\) in 1 build script run\(s\)\.$/m,
+    );
+    assert.equal(mtime(join(own, "out", "4e5fe447")), finished.getTime());
+    assert.equal(
+      mtime(join(own, "out", "acl-manifests.json")),
+      before.getTime(),
+    );
+    assert.equal(mtime(join(other, "out", "generated")), during.getTime());
+    assert.equal(readFileSync(join(own, "out", "4e5fe447"), "utf8"), "x");
+    rmSync(own, { recursive: true });
+    assert.throws(settleIn);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CI keeps line tables but drops full debuginfo without changing local profiles", () => {
+  for (const file of [ci, windows])
+    assert.deepEqual(file.env, { CARGO_PROFILE_DEV_DEBUG: "line-tables-only" });
+  for (const [, name, job] of allJobs()) {
+    for (const scope of [job, ...job.steps]) {
+      for (const key of Object.keys(scope.env ?? {}))
+        assert.doesNotMatch(key, /^(?:CARGO|RUST)/, name);
+    }
+  }
+  assert.doesNotMatch(
+    readFileSync("src-tauri/Cargo.toml", "utf8"),
+    /^\[profile/m,
+  );
+  assert.equal(existsSync(".cargo/config.toml"), false);
+  assert.equal(existsSync("src-tauri/.cargo/config.toml"), false);
 });
