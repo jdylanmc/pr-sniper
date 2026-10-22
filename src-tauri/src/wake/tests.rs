@@ -858,3 +858,38 @@ fn snapshot_reads_do_not_scale_with_retired_history() {
     };
     assert_eq!(reads(1), reads(400));
 }
+
+#[test]
+fn concurrent_frozen_copies_share_unchanged_files_and_release_them() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    store.save_settings(&settings()).unwrap();
+    store
+        .write_state("reviews.json", &vec!["x".repeat(1 << 20)])
+        .unwrap();
+    store
+        .write_state("queue-dismissals.json", &json!([]))
+        .unwrap();
+    let first = store.freeze().unwrap();
+    let second = store.freeze().unwrap();
+    let held = |view: &Store, name| view.frozen_bytes(name).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &held(&first, "reviews.json"),
+        &held(&second, "reviews.json")
+    ));
+    // A write is never served from an older copy.
+    store.write_state("reviews.json", &vec!["y"]).unwrap();
+    let third = store.freeze().unwrap();
+    assert_eq!(
+        &*held(&third, "reviews.json"),
+        &store.read_state("reviews.json").unwrap()
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &held(&first, "queue-dismissals.json"),
+        &held(&third, "queue-dismissals.json")
+    ));
+    // Dropped copies release their bytes; nothing retains them.
+    let weak = std::sync::Arc::downgrade(&held(&first, "reviews.json"));
+    drop((first, second));
+    assert!(weak.upgrade().is_none());
+}

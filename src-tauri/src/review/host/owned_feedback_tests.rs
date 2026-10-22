@@ -737,3 +737,184 @@ fn feedback_change_after_preparation_is_tossed_at_ready_and_wait_finalization() 
         assert!(store.load_feedback().unwrap().exit_writes.is_empty());
     }
 }
+
+struct UserWire(Box<dyn Fn() + Send + Sync>);
+
+impl crate::github::provider::Transport for UserWire {
+    fn get(
+        &self,
+        _: &str,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        (self.0)();
+        Ok(crate::github::provider::Response {
+            status: 200,
+            headers: Default::default(),
+            body: br#"{"id":22,"login":"owner"}"#.to_vec(),
+        })
+    }
+}
+
+impl crate::github::threads::QueryTransport for UserWire {
+    fn query(
+        &self,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+        crate::github::provider::Transport::get(self, "graphql")
+    }
+}
+
+const READS: usize = 500;
+
+type Change = Box<dyn Fn(&Store, &AtomicBool) + Send + Sync>;
+
+/// A guarded preparation of `READS` provider reads under the native gate shape
+/// (cancellation, then cached validation of saved state on the shared Store).
+/// `change` runs once before read `at`; returns completed reads and outcome.
+fn guarded_reads(
+    store: &Arc<std::sync::Mutex<Store>>,
+    run: &ReviewRun,
+    at: usize,
+    change: impl Fn(&Store, &AtomicBool) + Send + Sync + 'static,
+) -> (usize, Result<(), Failure>) {
+    use std::sync::atomic::AtomicUsize;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let validated = Arc::new(crate::review::ValidatedSelection::default());
+    let (gate_store, gate_run, gate_cancelled) = (store.clone(), run.clone(), cancelled.clone());
+    let gate: runtime::Gate = Arc::new(move || {
+        if gate_cancelled.load(Ordering::SeqCst) {
+            return Err(Failure::cancelled());
+        }
+        let store = gate_store.lock().unwrap();
+        crate::review::validate_execution_selection_cached(&store, &gate_run, &validated)
+    });
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (wire_reads, wire_store) = (reads.clone(), store.clone());
+    let client = crate::github::provider::GithubClient::new(UserWire(Box::new(move || {
+        if wire_reads.fetch_add(1, Ordering::SeqCst) + 1 == at {
+            change(&wire_store.lock().unwrap(), &cancelled);
+        }
+    })));
+    let outcome = AttemptGuard::new(gate).prepare(client, |client| {
+        for _ in 0..READS {
+            client.current_identity().map_err(Failure::from)?;
+        }
+        Ok(())
+    });
+    (reads.load(Ordering::SeqCst), outcome)
+}
+
+/// Live-size Queue: the running PR plus 1,400 retired passes (~2 MB).
+fn live_size_queue(store: &Store) {
+    let mut jobs = store.load_queue().unwrap();
+    let template = jobs[0].clone();
+    for n in 0..1_400 {
+        let mut job = template.clone();
+        job.pull_request_id = format!("retired-{n}");
+        job.number = 10_000 + n;
+        job.title = "x".repeat(1_200);
+        job.waiting = monitoring::WAITING_MERGED.into();
+        jobs.push(job);
+    }
+    store.save_queue(&jobs).unwrap();
+}
+
+#[test]
+fn guarded_reads_revalidate_saved_state_only_after_an_input_changes() {
+    let (_root, store, template) = feedback_fixture(false);
+    live_size_queue(&store);
+    let run = running_packet(&store, &template, 100);
+    let store = Arc::new(std::sync::Mutex::new(store));
+
+    // Every file the full validation reads is a cache input.
+    store.lock().unwrap().take_state_reads();
+    crate::review::validate_execution_selection(&store.lock().unwrap(), &run).unwrap();
+    let full = store.lock().unwrap().take_state_reads();
+    for name in full.keys() {
+        assert!(
+            crate::review::EXECUTION_INPUTS.contains(&name.as_str()),
+            "{name} is read but does not invalidate the cache"
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let (reads, outcome) = guarded_reads(&store, &run, 0, |_, _| {});
+    let cached = started.elapsed();
+    outcome.unwrap();
+    assert_eq!(reads, READS);
+    // One validation for the whole preparation, not one per guarded read.
+    let loads = store.lock().unwrap().take_state_reads();
+    for (name, count) in &full {
+        assert_eq!(loads.get(name), Some(count), "{name}: {loads:?}");
+    }
+    // The former gate validated on both sides of every read.
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        crate::review::validate_execution_selection(&store.lock().unwrap(), &run).unwrap();
+    }
+    eprintln!(
+        "{READS} guarded reads: cached gate {cached:?}; former gate ~{:?}",
+        started.elapsed() / 10 * (2 * READS as u32)
+    );
+
+    let refuse = |change: Change, expected: &str| {
+        let (reads, outcome) = guarded_reads(&store, &run, READS / 2, change);
+        assert_eq!(reads, READS / 2, "{expected}: refused at the next gate");
+        let failure = outcome.unwrap_err();
+        assert!(failure.message.contains(expected), "{}", failure.message);
+    };
+    let restore =
+        |store: &Arc<std::sync::Mutex<Store>>,
+         snapshot: &(Vec<QueueJob>, Settings, crate::feedback::Ledger)| {
+            let store = store.lock().unwrap();
+            store.save_queue(&snapshot.0).unwrap();
+            store.save_settings(&snapshot.1).unwrap();
+            store.save_feedback(&snapshot.2).unwrap();
+        };
+    let saved = {
+        let store = store.lock().unwrap();
+        (
+            store.load_queue().unwrap(),
+            store.load_settings().unwrap(),
+            store.load_feedback().unwrap(),
+        )
+    };
+    refuse(
+        Box::new(|store, _| {
+            let mut jobs = store.load_queue().unwrap();
+            jobs[0].waiting = monitoring::WAITING_MERGED.into();
+            store.save_queue(&jobs).unwrap();
+        }),
+        "",
+    );
+    restore(&store, &saved);
+    refuse(
+        Box::new(|store, _| {
+            let mut settings = store.load_settings().unwrap();
+            settings.agents[0].prompt = "Review security.".into();
+            store.save_settings(&settings).unwrap();
+        }),
+        "Agent configuration changed",
+    );
+    restore(&store, &saved);
+    refuse(Box::new(|store, _| change_feedback(store)), CHANGED);
+    restore(&store, &saved);
+    // A change written outside this Store is still seen at the next read.
+    let elsewhere = _root.path().to_path_buf();
+    refuse(
+        Box::new(move |_, _| {
+            let other = Store::new(elsewhere.clone());
+            let mut jobs = other.load_queue().unwrap();
+            jobs[0].waiting = monitoring::WAITING_MERGED.into();
+            other.save_queue(&jobs).unwrap();
+        }),
+        "",
+    );
+    restore(&store, &saved);
+    // Pause and human cancel signal the attempt; no saved input is consulted.
+    let (reads, outcome) = guarded_reads(&store, &run, READS / 2, |_, cancelled| {
+        cancelled.store(true, Ordering::SeqCst)
+    });
+    assert_eq!(reads, READS / 2);
+    assert!(outcome.unwrap_err().cancelled);
+}

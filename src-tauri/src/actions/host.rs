@@ -407,7 +407,21 @@ pub(crate) fn next_target(store: &Store, now: i64) -> Result<Option<queue::Item>
                 .observations
                 .iter()
                 .find(|o| o.item_id == item.id)
-                .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
+                .is_none_or(|o| match &o.error {
+                    Some(_) => o.retry_at.is_some_and(|at| at <= now),
+                    // Each observation saves, which wakes this coordinator: an
+                    // item merely waiting on the provider is re-read once per
+                    // heartbeat, not every tick. Effects in flight stay prompt.
+                    None => {
+                        now.saturating_sub(o.at) >= crate::wake::HEARTBEAT_SECONDS
+                            || ledger.effects.iter().any(|e| {
+                                e.item_id == item.id
+                                    && (e.state == EffectState::Prepared
+                                        || e.reconcile_requested
+                                        || e.needs_reconciliation())
+                            })
+                    }
+                })
         })
         .filter(|i| observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id))
         .min_by_key(|i| {

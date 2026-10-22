@@ -489,7 +489,11 @@ fn replace_run(reviews: &mut Vec<ReviewRun>, run: &ReviewRun) {
     }
 }
 
-fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
+fn local_gate(
+    app: &tauri::AppHandle,
+    run: &ReviewRun,
+    validated: Option<&super::ValidatedSelection>,
+) -> Result<(), Failure> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
         return Err(Failure::cancelled());
@@ -503,14 +507,17 @@ fn local_gate(app: &tauri::AppHandle, run: &ReviewRun) -> Result<(), Failure> {
         .store
         .lock()
         .map_err(|_| Failure::permanent("Review storage is unavailable."))?;
-    super::validate_execution_selection(&store, run)
+    match validated {
+        Some(validated) => super::validate_execution_selection_cached(&store, run, validated),
+        None => super::validate_execution_selection(&store, run),
+    }
 }
 
 fn remote_gate(
     app: &tauri::AppHandle,
     run: &ReviewRun,
 ) -> Result<crate::github::metadata::PullRequest, Failure> {
-    local_gate(app, run)?;
+    local_gate(app, run, None)?;
     let host = app.state::<Host>();
     let (_, client) = crate::github_session(&host, &run.job.account_id).map_err(Failure::from)?;
     let repo = RemoteRepository {
@@ -636,6 +643,9 @@ async fn execute_attempt(
     let gate_app = app.clone();
     let gate_run = run.clone();
     let gate_cancelled = cancelled.clone();
+    // Every guarded provider read runs this gate; re-validate saved state
+    // only after its inputs were rewritten, not hundreds of times per attempt.
+    let validated = super::ValidatedSelection::default();
     let gate: runtime::Gate = Arc::new(move || {
         if Instant::now() >= deadline {
             return Err(Failure::timeout());
@@ -657,7 +667,7 @@ async fn execute_attempt(
                 "GitHub account connection changed during review.",
             ));
         }
-        local_gate(&gate_app, &gate_run)
+        local_gate(&gate_app, &gate_run, Some(&validated))
     });
     let attempt = AttemptGuard::new(gate);
     let gate = attempt.gate();

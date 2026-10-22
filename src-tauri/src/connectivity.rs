@@ -192,6 +192,8 @@ pub(crate) async fn confirm_failure(
     record(&store, scope, observation, crate::now_seconds()?)
 }
 
+static WANTED: std::sync::LazyLock<Wanted> = std::sync::LazyLock::new(Wanted::default);
+
 /// One bounded probe per service per interval, not per repository. Wall-clock
 /// scheduling collapses sleep/wake and network changes into a single fresh check.
 pub(crate) async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
@@ -203,8 +205,7 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
             .lock()
             .map_err(|_| "GitHub connection state unavailable.")?
             .monitoring_accounts();
-        let store = host.store.lock().map_err(|_| "Storage unavailable.")?;
-        due_scopes(&store, &accounts, now)?
+        WANTED.scopes(&host.store, accounts, now)?
     };
     for origin in [Origin::Github, Origin::Copilot] {
         let selected: Vec<_> = scopes
@@ -238,10 +239,34 @@ pub fn due_scopes(
     accounts: &std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
     now: i64,
 ) -> Result<Vec<Scope>, String> {
+    Ok(due(
+        &store.load_connectivity()?,
+        wanted_scopes(store, accounts)?,
+        now,
+    ))
+}
+
+fn due(state: &Connectivity, wanted: Vec<Scope>, now: i64) -> Vec<Scope> {
+    wanted
+        .into_iter()
+        .filter(|scope| {
+            state
+                .services
+                .iter()
+                .find(|s| &s.scope == scope)
+                .is_none_or(|s| now >= s.next_check_at)
+        })
+        .collect()
+}
+
+/// Services saved work needs reachable, whether or not a probe is due.
+fn wanted_scopes(
+    store: &Store,
+    accounts: &std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
+) -> Result<Vec<Scope>, String> {
     if store.load_automation()?.paused {
         return Ok(Vec::new());
     }
-    let state = store.load_connectivity()?;
     let settings = store.load_settings()?;
     let mut scopes = std::collections::BTreeSet::new();
     for repository in settings.repositories.iter().filter(|r| r.enabled) {
@@ -278,16 +303,66 @@ pub fn due_scopes(
     }) {
         scopes.extend(self::scopes(run));
     }
-    Ok(scopes
-        .into_iter()
-        .filter(|scope| {
-            state
-                .services
+    Ok(scopes.into_iter().collect())
+}
+
+type WantedKey = (
+    u64,
+    i64,
+    std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
+);
+
+/// Wanted scopes depend only on saved transitions (not probe results) and
+/// connected accounts; recomputed off-lock only when either changed, and at
+/// least once per coordinator heartbeat.
+#[derive(Default)]
+pub(crate) struct Wanted(std::sync::Mutex<Option<(WantedKey, Vec<Scope>)>>);
+
+impl Wanted {
+    fn scopes(
+        &self,
+        store: &std::sync::Mutex<Store>,
+        accounts: std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
+        now: i64,
+    ) -> Result<Vec<Scope>, String> {
+        let unavailable = |_| "Storage unavailable.".to_string();
+        let (generation, state) = {
+            let store = store.lock().map_err(unavailable)?;
+            let generation: u64 = store
+                .generations()
                 .iter()
-                .find(|s| &s.scope == scope)
-                .is_none_or(|s| now >= s.next_check_at)
-        })
-        .collect())
+                .filter(|(name, _)| name.as_str() != "connectivity.json")
+                .map(|(_, counter)| counter.transitions)
+                .sum();
+            (generation, store.load_connectivity()?)
+        };
+        let key = (
+            generation,
+            now.div_euclid(crate::wake::HEARTBEAT_SECONDS),
+            accounts,
+        );
+        let cached = self
+            .0
+            .lock()
+            .map_err(|_| "Connectivity scheduling unavailable.")?
+            .as_ref()
+            .filter(|(seen, _)| *seen == key)
+            .map(|(_, wanted)| wanted.clone());
+        let wanted = match cached {
+            Some(wanted) => wanted,
+            None => {
+                let view = store.lock().map_err(unavailable)?.freeze()?;
+                let wanted = wanted_scopes(&view, &key.2)?;
+                *self
+                    .0
+                    .lock()
+                    .map_err(|_| "Connectivity scheduling unavailable.")? =
+                    Some((key, wanted.clone()));
+                wanted
+            }
+        };
+        Ok(due(&state, wanted, now))
+    }
 }
 
 #[cfg(test)]

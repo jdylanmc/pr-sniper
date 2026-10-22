@@ -357,6 +357,43 @@ impl ReviewRun {
     }
 }
 
+/// Every saved file `validate_execution_selection` reads (tests check this).
+pub(crate) const EXECUTION_INPUTS: &[&str] = &[
+    "settings.json",
+    "queue.json",
+    "feedback.json",
+    "publications.json",
+    "follow-ups.json",
+    "monitoring.json",
+    "retention.json",
+];
+
+/// One run's last successful validation, keyed by the stamp of its inputs.
+/// Guarded provider reads re-check only after one of them changed.
+#[derive(Debug, Default)]
+pub(crate) struct ValidatedSelection(std::sync::Mutex<Option<crate::storage::FileStamp>>);
+
+/// `validate_execution_selection`, skipped while none of its inputs was
+/// rewritten since it last passed for this run. Refusals are never cached.
+pub(crate) fn validate_execution_selection_cached(
+    store: &Store,
+    run: &ReviewRun,
+    validated: &ValidatedSelection,
+) -> Result<(), Failure> {
+    let key = store.stamp_of(EXECUTION_INPUTS);
+    let mut last = validated
+        .0
+        .lock()
+        .map_err(|_| Failure::permanent("Review attempt gate unavailable."))?;
+    if key.is_some() && *last == key {
+        return Ok(());
+    }
+    *last = None;
+    validate_execution_selection(store, run)?;
+    *last = key;
+    Ok(())
+}
+
 pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<(), Failure> {
     let settings = store.load_settings().map_err(Failure::permanent)?;
     let jobs = store.load_queue().map_err(Failure::permanent)?;
