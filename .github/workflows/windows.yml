@@ -121,8 +121,8 @@ jobs:
       - name: Verify SDK startup cancellation in isolation
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::cancelled_or_failed_startup_does_not_leave_a_child -- --exact --nocapture --test-threads=1
         timeout-minutes: 5
-      - name: Test retention and actions library tests with bounded concurrency
-        run: 'cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- retention:: actions:: --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child'
+      - name: Test retention, actions and control installer library tests with bounded concurrency
+        run: 'cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- retention:: actions:: control::installer:: --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child'
         timeout-minutes: 12
       - name: Handshake with bundled Windows runtime (offline, no credentials or inference)
         run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib copilot::runtime::tests::bundled_runtime_handshakes_offline_without_credentials -- --exact --ignored --nocapture
@@ -174,7 +174,7 @@ jobs:
         run: node scripts/ci-settle-codegen.mjs
         timeout-minutes: 2
       - name: Test remaining native library tests with bounded concurrency
-        run: 'cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child --skip retention:: --skip actions::'
+        run: 'cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- --nocapture --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child --skip retention:: --skip actions:: --skip control::installer::'
         timeout-minutes: 12
   windows-browser:
     name: windows-browser (${{ matrix.shard }}/3)
@@ -286,6 +286,14 @@ jobs:
           name: pr-sniper-windows-unsigned-installer-${{ github.sha }}
           path: src-tauri/target/windows-installer-artifact/
           if-no-files-found: error
+      - name: Retain native control acceptance receipts
+        id: control-native-artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-control-windows-${{ github.sha }}
+          path: src-tauri/target/control-native-acceptance/**/receipt.json
+          if-no-files-found: warn
   windows-upgrade-fixture:
     runs-on: windows-2022
     timeout-minutes: 45
@@ -330,14 +338,6 @@ jobs:
             src-tauri/target/windows-upgrade-fixture/upgrade-test-only.exe
             src-tauri/target/windows-upgrade-fixture/fixture.json
           if-no-files-found: error
-      - name: Retain native control acceptance receipts
-        id: control-native-artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: pr-sniper-control-windows-${{ github.sha }}
-          path: src-tauri/target/control-native-acceptance/**/receipt.json
-          if-no-files-found: warn
   windows-installer-acceptance:
     needs: [windows-package, windows-upgrade-fixture]
     if: ${{ always() }}

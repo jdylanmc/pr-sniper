@@ -55,10 +55,12 @@ const acceptanceGate = [
   "",
 ].join("\n");
 const settle = "node scripts/ci-settle-codegen.mjs";
+const controlAcceptance =
+  "node tests/control/native-acceptance.mjs --executable src-tauri/target/release/pr-sniper.exe";
 const windowsCargo =
   "cargo test --manifest-path src-tauri\\Cargo.toml --locked";
 const isolated = "cancelled_or_failed_startup_does_not_leave_a_child";
-const libPartition = ["retention::", "actions::"];
+const libPartition = ["retention::", "actions::", "control::installer::"];
 const libFirst = `${windowsCargo} --lib -- ${libPartition.join(" ")} --nocapture --test-threads=2 --skip ${isolated}`;
 const libRest = `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated} ${libPartition.map((filter) => `--skip ${filter}`).join(" ")}`;
 const runs = (job) => job.steps.filter((step) => step.run).map((s) => s.run);
@@ -462,7 +464,10 @@ test("Windows checks have no release credentials, privileged environment or fail
       assert.equal(step["continue-on-error"], undefined, name);
       assert.equal(
         step.if,
-        step.name === "Retain native installer diagnostics"
+        [
+          "Retain native installer diagnostics",
+          "Retain native control acceptance receipts",
+        ].includes(step.name)
           ? "${{ always() }}"
           : undefined,
         name,
@@ -503,6 +508,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       ...prepare,
       "actions/setup-python",
       "Swatinem/rust-cache",
+      "actions/upload-artifact",
       "actions/upload-artifact",
       "actions/upload-artifact",
     ],
@@ -584,6 +590,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "npm ci",
       "rustup show active-toolchain",
       "npm run build:windows",
+      controlAcceptance,
       "npm run bundle:windows",
       ".\\scripts\\windows-artifact.ps1",
       ".\\scripts\\windows-installer-artifact.ps1",
@@ -623,7 +630,14 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
     ".\\scripts\\windows-upgrade-fixture.ps1",
   ])
     assert.ok(lanesRun.has(run), run);
-  assert.equal(scripts.build, "tsc --noEmit && vite build");
+  assert.equal(
+    scripts.build,
+    "npm run build:control-mcp && tsc --noEmit && vite build",
+  );
+  assert.equal(
+    scripts["build:control-mcp"],
+    "node scripts/build-control-mcp.mjs",
+  );
 });
 
 test("both native workflows execute exact offline Intelligence acceptance without skip or live tests", () => {
@@ -687,8 +701,11 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
       steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
     "Create the installer before recording separate standalone and payload provenance",
   );
-  const uploads = steps.filter((s) =>
-    s.uses?.startsWith("actions/upload-artifact@"),
+  // Control acceptance receipts are diagnostics, never installer assets.
+  const uploads = steps.filter(
+    (s) =>
+      s.uses?.startsWith("actions/upload-artifact@") &&
+      s.id !== "control-native-artifacts",
   );
   assert.equal(uploads.length, 2);
   assert.equal(
@@ -1174,12 +1191,15 @@ test("macOS native checks run every former macOS command except the sharded brow
     "npm run bundle",
   ]);
   assert.deepEqual(
-    job.steps.slice(-4).map((step) => step.name ?? step.uses),
+    job.steps.slice(-7).map((step) => step.name ?? step.uses),
     [
       "Verify native notification bundle identity",
       "Compile native acceptance harness",
       "Archive bundle with executable permissions",
       "actions/upload-artifact@v4",
+      "Build separate-identifier native control acceptance app",
+      "Exercise installed MCP and CLI against the real isolated native app",
+      "Retain native control acceptance receipts",
     ],
   );
   assert.ok(!runs(job).some((run) => /playwright|test:settings/.test(run)));
@@ -1548,4 +1568,53 @@ test("CI keeps line tables but drops full debuginfo without changing local profi
   );
   assert.equal(existsSync(".cargo/config.toml"), false);
   assert.equal(existsSync("src-tauri/.cargo/config.toml"), false);
+});
+
+test("both native lanes run bounded real-app MCP acceptance and retain only safe receipts", () => {
+  const lanes = [ci.jobs["macos-native"], windows.jobs["windows-package"]];
+  for (const job of lanes) {
+    const check = job.steps.find(
+      (step) => step.id === "control-native-acceptance",
+    );
+    assert.match(
+      check.run,
+      /^node tests\/control\/native-acceptance\.mjs --executable /,
+    );
+    assert.equal(check.if, undefined);
+    assert.equal(check["continue-on-error"], undefined);
+    assert.equal(check["timeout-minutes"], 4);
+    const artifacts = job.steps.find(
+      (step) => step.id === "control-native-artifacts",
+    );
+    assert.equal(artifacts.if, "${{ always() }}");
+    assert.equal(
+      artifacts.with.path,
+      "src-tauri/target/control-native-acceptance/**/receipt.json",
+    );
+    assert.equal(artifacts.with["if-no-files-found"], "warn");
+    assert(job.steps.indexOf(artifacts) > job.steps.indexOf(check));
+  }
+  // Both lanes gate their required checks.
+  assert(aggregators.macos[1].includes("macos-native"));
+  assert(aggregators.windows[1].includes("windows-package"));
+  const steps = windows.jobs["windows-package"].steps;
+  assert(
+    steps.findIndex((step) => step.run === "npm run build:windows") <
+      steps.findIndex((step) => step.id === "control-native-acceptance"),
+  );
+  const mac = ci.jobs["macos-native"].steps;
+  const macBuild = mac.find((step) =>
+    step.run?.includes("--config tests/control/tauri.acceptance.conf.json"),
+  );
+  assert(macBuild.run.includes("--debug --bundles app"));
+  assert.equal(macBuild["timeout-minutes"], 10);
+  assert(
+    mac.indexOf(macBuild) <
+      mac.findIndex((step) => step.id === "control-native-acceptance"),
+  );
+  assert.equal(
+    JSON.parse(readFileSync("tests/control/tauri.acceptance.conf.json"))
+      .identifier,
+    "com.jdylanmc.pr-sniper.tests.control-ci",
+  );
 });

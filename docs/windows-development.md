@@ -45,16 +45,6 @@ npm run build:windows
 
 `windows.yml` runs frontend/shared checks, full native application checks,
 the offline runtime handshake, browser regressions and the standalone build.
-
-- SDK startup cancellation runs alone first; its exact test is the only
-  exclusion from the remaining library run.
-- Native execution is split into `--lib` (15 minutes) and
-  `--bins --examples --test '*'` (10 minutes). Together these cover the current
-  `--all-targets` set; adding benchmarks requires extending the CI selectors.
-- Each group has an immediately preceding matching `--no-run` compile step
-  (10 minutes). No intervening target-selector switch invalidates its warm graph.
-  Verbose Cargo diagnostics expose any unexpected rebuild. The job remains 60 minutes.
-
 Tests use disposable profiles and exact owned native fixtures. They never open
 the real application's data or credential stores. Tests cover settings/policy
 round trips, queue-selection state, invalid input, separate profiles and spaces
