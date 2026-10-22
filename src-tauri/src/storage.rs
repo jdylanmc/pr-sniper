@@ -11,6 +11,8 @@ const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
 #[path = "storage/diagnostics.rs"]
 pub mod diagnostics;
+#[path = "storage/file_identity.rs"]
+pub(crate) mod file_identity;
 #[path = "storage/private_fs.rs"]
 pub(crate) mod private_fs;
 
@@ -1383,9 +1385,40 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
     }
 }
 
+/// Saved bytes by (directory, file name) in a frozen copy.
+type FrozenFiles = BTreeMap<(String, String), std::sync::Arc<Vec<u8>>>;
+
+/// Bytes a live frozen copy holds, by file, with the stamp they were read at;
+/// concurrent copies of an unchanged file share them instead of re-reading.
+type SharedFiles = BTreeMap<(String, String), (SharedStamp, std::sync::Weak<Vec<u8>>)>;
+type SharedStamp = (u64, file_identity::Identity);
+
+/// See `Store::stamp_of`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    writes: u64,
+    files: Vec<Option<file_identity::Identity>>,
+}
+
+/// Saved-file counters; see `Store::generations`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Counter {
+    pub(crate) writes: u64,
+    pub(crate) transitions: u64,
+    fingerprint: Option<u64>,
+}
+
 pub struct Store {
     root: PathBuf,
     initial_time_zone: String,
+    /// Per saved file: every write, and the writes that can give a
+    /// coordinator work (transitions, not progress or bookkeeping).
+    counters: std::sync::Mutex<BTreeMap<String, Counter>>,
+    /// Read-only point-in-time copy for scans outside the Store lock.
+    frozen: Option<std::sync::Arc<FrozenFiles>>,
+    shared: std::sync::Mutex<SharedFiles>,
+    #[cfg(test)]
+    state_writes: std::sync::Mutex<BTreeMap<String, usize>>,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
     #[cfg(test)]
@@ -1397,6 +1430,11 @@ impl Store {
         Self {
             root,
             initial_time_zone: "UTC".into(),
+            counters: std::sync::Mutex::new(BTreeMap::new()),
+            frozen: None,
+            shared: std::sync::Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            state_writes: std::sync::Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             failed_state_write: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -1414,6 +1452,208 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn take_state_reads(&self) -> BTreeMap<String, usize> {
         std::mem::take(&mut *self.state_reads.lock().unwrap())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_state_writes(&self) -> BTreeMap<String, usize> {
+        std::mem::take(&mut *self.state_writes.lock().unwrap())
+    }
+
+    /// Per-file write and transition counters since this Store opened. Idle
+    /// scheduler ticks compare them instead of rebuilding derived snapshots.
+    pub(crate) fn generations(&self) -> BTreeMap<String, Counter> {
+        self.counters
+            .lock()
+            .map(|counters| counters.clone())
+            .unwrap_or_default()
+    }
+
+    /// Identity of the saved `names`: this Store's write count plus each
+    /// file's OS identity (see `file_identity`), so a rewrite through this
+    /// Store or out of band changes it. `None` for a frozen copy, an
+    /// unreadable identity, or a file changed too recently to be settled.
+    pub(crate) fn stamp_of(&self, names: &[&str]) -> Option<FileStamp> {
+        if self.frozen.is_some() {
+            return None;
+        }
+        let writes = {
+            let counters = self.counters.lock().ok()?;
+            names
+                .iter()
+                .filter_map(|name| counters.get(*name))
+                .map(|counter| counter.writes)
+                .sum()
+        };
+        let now = std::time::SystemTime::now();
+        let mut files = Vec::with_capacity(names.len());
+        for name in names {
+            let directory = if *name == "settings.json" {
+                "config"
+            } else {
+                "state"
+            };
+            let identity = file_identity::identity(&self.root.join(directory).join(name)).ok()?;
+            if identity.as_ref().is_some_and(|id| !id.settled(now)) {
+                return None;
+            }
+            files.push(identity);
+        }
+        Some(FileStamp { writes, files })
+    }
+
+    /// Records a transition in `name` that its write alone did not signal.
+    pub(crate) fn wake_file(&self, name: &str) {
+        if let Ok(mut counters) = self.counters.lock() {
+            counters.entry(name.into()).or_default().transitions += 1;
+        }
+    }
+
+    /// Whether `fingerprint` equals the transition fingerprint of the last
+    /// write to `name`, i.e. a new write would only record progress.
+    pub(crate) fn same_transition(&self, name: &str, fingerprint: u64) -> bool {
+        self.counters.lock().is_ok_and(|counters| {
+            counters.get(name).and_then(|c| c.fingerprint) == Some(fingerprint)
+        })
+    }
+
+    fn record_write(&self, name: &str, fingerprint: Option<u64>) {
+        let Ok(mut counters) = self.counters.lock() else {
+            return;
+        };
+        let counter = counters.entry(name.into()).or_default();
+        counter.writes += 1;
+        // Liveness probes and derived indexes are bookkeeping; they never
+        // create work, so they must not wake the coordinators that wrote them.
+        let bookkeeping = matches!(
+            name,
+            "connectivity.json"
+                | "result-index.json"
+                | "result-index-pending.json"
+                | "queue-selection.json"
+        );
+        if !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint) {
+            counter.transitions += 1;
+        }
+        counter.fingerprint = fingerprint;
+    }
+
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen.is_some()
+    }
+
+    /// A consistent read-only copy of saved state. Take it under the Store
+    /// lock (cheap byte copies), then parse and project without holding it.
+    pub(crate) fn freeze(&self) -> Result<Store, String> {
+        if let Some(frozen) = &self.frozen {
+            return Ok(self.frozen_with(frozen.clone()));
+        }
+        // Creates default settings first, as an ordinary read would.
+        self.load_settings()?;
+        let mut files = BTreeMap::new();
+        let unreadable = |_| "Cannot snapshot local state.".to_string();
+        let mut shared = self
+            .shared
+            .lock()
+            .map_err(|_| "Cannot snapshot local state.".to_string())?;
+        shared.retain(|_, (_, bytes)| bytes.strong_count() > 0);
+        let key = ("config".to_string(), "settings.json".to_string());
+        let settings = self
+            .shared_read(&mut shared, &key, || {
+                self.read_file("config", "settings.json")
+            })
+            .map_err(unreadable)?;
+        files.insert(key, settings);
+        let directory = self.root.join("state");
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>().map_err(unreadable)?,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(unreadable(error)),
+        };
+        for entry in entries {
+            let Some(name) = entry.file_name().to_str().map(String::from) else {
+                continue;
+            };
+            if !name.ends_with(".json") || name.contains(".pr-sniper-write-") {
+                continue;
+            }
+            let key = ("state".to_string(), name);
+            match self.shared_read(&mut shared, &key, || {
+                private_fs::read(&directory.join(&key.1))
+            }) {
+                Ok(bytes) => {
+                    files.insert(key, bytes);
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(unreadable(error)),
+            }
+        }
+        Ok(self.frozen_with(std::sync::Arc::new(files)))
+    }
+
+    /// `read`, or the bytes a live frozen copy already holds for this unchanged
+    /// file (same write count through this Store and settled OS identity).
+    fn shared_read(
+        &self,
+        shared: &mut SharedFiles,
+        key: &(String, String),
+        read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    ) -> std::io::Result<std::sync::Arc<Vec<u8>>> {
+        let writes = self
+            .counters
+            .lock()
+            .ok()
+            .and_then(|counters| counters.get(&key.1).map(|c| c.writes))
+            .unwrap_or(0);
+        let now = std::time::SystemTime::now();
+        let stamp = file_identity::identity(&self.root.join(&key.0).join(&key.1))
+            .ok()
+            .flatten()
+            .filter(|identity| identity.settled(now))
+            .map(|identity| (writes, identity));
+        if let Some(stamp) = &stamp {
+            if let Some(bytes) = shared
+                .get(key)
+                .filter(|(seen, _)| seen == stamp)
+                .and_then(|(_, bytes)| bytes.upgrade())
+            {
+                return Ok(bytes);
+            }
+        }
+        let bytes = std::sync::Arc::new(read()?);
+        match stamp {
+            Some(stamp) => {
+                shared.insert(key.clone(), (stamp, std::sync::Arc::downgrade(&bytes)));
+            }
+            None => {
+                shared.remove(key);
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn frozen_with(&self, files: std::sync::Arc<FrozenFiles>) -> Store {
+        let mut view =
+            Store::new(self.root.clone()).with_initial_time_zone(self.initial_time_zone.clone());
+        view.frozen = Some(files);
+        view
+    }
+
+    #[cfg(test)]
+    pub(crate) fn frozen_bytes(&self, name: &str) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.frozen
+            .as_ref()?
+            .get(&("state".to_string(), name.to_string()))
+            .cloned()
+    }
+
+    /// Names of saved state files in this frozen copy.
+    pub(crate) fn frozen_state_files(&self) -> Vec<&str> {
+        self.frozen
+            .iter()
+            .flat_map(|files| files.keys())
+            .filter(|(directory, _)| directory == "state")
+            .map(|(_, name)| name.as_str())
+            .collect()
     }
 
     #[cfg(test)]
@@ -1456,12 +1696,37 @@ impl Store {
                 }
             }
         }
+        self.write_state_as(name, value, None)
+    }
+
+    /// `write_state` carrying a transition fingerprint: an unchanged
+    /// fingerprint records progress without waking coordinators.
+    pub(crate) fn write_state_as<T: Serialize + ?Sized>(
+        &self,
+        name: &str,
+        value: &T,
+        fingerprint: Option<u64>,
+    ) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Err("A read-only state snapshot cannot be saved.".into());
+        }
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
         let bytes =
             serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
-        private_fs::replace(&directory.join(name), &bytes, "monitoring state")
+        #[cfg(test)]
+        {
+            *self
+                .state_writes
+                .lock()
+                .unwrap()
+                .entry(name.to_string())
+                .or_default() += 1;
+        }
+        let result = private_fs::replace(&directory.join(name), &bytes, "monitoring state");
+        self.record_write(name, fingerprint);
+        result
     }
 
     fn directory(&self, name: &str) -> std::io::Result<PathBuf> {
@@ -1498,6 +1763,12 @@ impl Store {
     }
 
     fn read_file(&self, directory: &str, name: &str) -> std::io::Result<Vec<u8>> {
+        if let Some(files) = &self.frozen {
+            return files
+                .get(&(directory.to_string(), name.to_string()))
+                .map(|bytes| bytes.as_ref().clone())
+                .ok_or_else(|| ErrorKind::NotFound.into());
+        }
         private_fs::existing_directory(&self.root)?;
         let directory = self.root.join(directory);
         private_fs::existing_directory(&directory)?;
@@ -1994,12 +2265,17 @@ impl Store {
     }
 
     fn write_settings(&self, settings: &Settings) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Err("A read-only state snapshot cannot be saved.".into());
+        }
         let directory = self
             .directory("config")
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
-        private_fs::replace(&directory.join("settings.json"), &bytes, "settings")
+        let result = private_fs::replace(&directory.join("settings.json"), &bytes, "settings");
+        self.record_write("settings.json", None);
+        result
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {

@@ -14,6 +14,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   records an attempt header and Duck identity once, unrecognized runtime
   chatter and successful nested Duck tool calls are counted, and coverage
   repeats are dropped. Failures stay itemized; older logs still read.
+- Large profiles no longer pin a CPU core or starve the panel. Coordinators
+  run on saved transitions and saved retry times (60 s heartbeat), not on
+  running-review progress; scans parse a frozen copy outside the storage lock;
+  unchanged passes write nothing; Queue projection and publication scans stay
+  linear in history; unneeded retired Queue entries are compacted.
+- Backlog catch-up no longer pins a core or grows memory. Review attempts
+  revalidate saved state only after its files change, not on every GitHub
+  read; idle provider-action items are re-read once per heartbeat; probe
+  planning reuses its last result until state changes; concurrent state
+  snapshots share unchanged file bytes.
 
 ## 0.4.2 - 2026-10-20
 

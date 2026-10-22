@@ -383,6 +383,32 @@ impl Coordinator {
         })
     }
 
+    /// Read-only probe of `dispatch` over a frozen copy: true when it would
+    /// change nothing (no reservation, retired run, suspension or candidate).
+    pub fn dispatch_idle(&self, store: &Store, now: i64) -> Result<bool, String> {
+        if !self
+            .active
+            .lock()
+            .map_err(|_| "AI capacity unavailable.")?
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        let jobs = store.load_queue()?;
+        let mut reviews = store.load_reviews()?;
+        let connectivity = store.load_connectivity()?;
+        if reviews.iter().any(|run| {
+            let offline = connectivity
+                .offline(&crate::connectivity::scopes(run))
+                .and_then(|s| s.offline_since);
+            crate::connectivity::would_sync(&run.operation, offline, now)
+        }) || review::end_retired_runs(&mut reviews, &jobs)
+        {
+            return Ok(false);
+        }
+        Ok(store.load_automation()?.paused || candidates(store, now)?.is_empty())
+    }
+
     /// Called under the Host Store lock, including by deterministic worker tests.
     pub fn dispatch(&self, store: &Store, now: i64) -> Result<Batch, String> {
         review::end_retired(store)?;
@@ -553,6 +579,23 @@ impl Coordinator {
     pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
         let host = app.state::<crate::Host>();
         if host.quitting.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let dispatches = {
+            let store = host.store.lock().map_err(|_| "AI storage unavailable.")?;
+            host.ai.dispatch(&store, crate::now_seconds()?)?
+        };
+        launch_batch(app, dispatches);
+        Ok(())
+    }
+
+    /// Scheduler pass: probes `view`, a frozen copy, and takes the Store lock
+    /// only when dispatch has something to do.
+    pub(crate) fn pump_scheduled(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
+        let host = app.state::<crate::Host>();
+        if host.quitting.load(Ordering::SeqCst)
+            || host.ai.dispatch_idle(view, crate::now_seconds()?)?
+        {
             return Ok(());
         }
         let dispatches = {

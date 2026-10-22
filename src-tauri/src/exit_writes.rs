@@ -676,10 +676,22 @@ pub fn for_review(store: &Store, review_operation_id: &str) -> Result<Option<Exi
 /// Why the publication batch must wait for this review, if it must. Replies and
 /// resolutions are verified before the first effect so the exit stays all-or-nothing.
 pub fn holds_publication(store: &Store, review: &ReviewRun) -> Result<Option<String>, String> {
-    let Some(planned) = plan(review, 0) else {
+    if plan(review, 0).is_none() {
         return Ok(None);
-    };
-    Ok(match for_review(store, &review.operation.id)? {
+    }
+    Ok(holds_publication_with(
+        &store.load_feedback()?.exit_writes,
+        review,
+    ))
+}
+
+/// `holds_publication` over already-loaded exit writes.
+pub(crate) fn holds_publication_with(writes: &[ExitWrite], review: &ReviewRun) -> Option<String> {
+    let planned = plan(review, 0)?;
+    match writes
+        .iter()
+        .find(|w| w.review_operation_id == review.operation.id)
+    {
         None if planned.comments_first => {
             Some("Replies and resolutions are not verified yet.".into())
         }
@@ -689,11 +701,24 @@ pub fn holds_publication(store: &Store, review: &ReviewRun) -> Result<Option<Str
             Phase::Tossed => Some("The exit was discarded; nothing is published.".into()),
             _ => None,
         },
-    })
+    }
 }
 
 /// Admit writes for completed runs that have none yet. Returns how many were added.
 pub fn admit(store: &Store, now: i64) -> Result<usize, String> {
+    let (ledger, added) = with_admissions(store, now)?;
+    if added > 0 {
+        store.save_feedback(&ledger)?;
+    }
+    Ok(added)
+}
+
+/// How many writes `admit` would add; read-only.
+pub(crate) fn admissions(store: &Store, now: i64) -> Result<usize, String> {
+    Ok(with_admissions(store, now)?.1)
+}
+
+fn with_admissions(store: &Store, now: i64) -> Result<(crate::feedback::Ledger, usize), String> {
     let reviews = store.review_evidence()?;
     let mut ledger = store.load_feedback()?;
     let latest: std::collections::BTreeMap<_, _> = reviews
@@ -715,10 +740,31 @@ pub fn admit(store: &Store, now: i64) -> Result<usize, String> {
             added += 1;
         }
     }
-    if added > 0 {
-        store.save_feedback(&ledger)?;
+    Ok((ledger, added))
+}
+
+/// Whether `next_write` could admit or start anything; read-only.
+pub(crate) fn write_pending(store: &Store, now: i64) -> Result<bool, String> {
+    if store.load_automation()?.paused {
+        return Ok(false);
     }
-    Ok(added)
+    Ok(admissions(store, now)? > 0 || next_due(store, now)?.is_some())
+}
+
+/// Admits new exits, then returns the next due write unless automation is paused.
+pub(crate) fn next_write(store: &Store, now: i64) -> Result<Option<ExitWrite>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
+    admit(store, now)?;
+    Ok(match next_due(store, now)? {
+        Some(id) => store
+            .load_feedback()?
+            .exit_writes
+            .into_iter()
+            .find(|w| w.id == id),
+        None => None,
+    })
 }
 
 /// Due write with the oldest retry time, so one write cannot hold back the rest.

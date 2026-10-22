@@ -76,3 +76,10 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 - Receipts survive cleanup: iteration, work, operation, publication and action receipts; provider ownership IDs; root-body SHA-256 fingerprints; sticky human-closed concerns.
 - Not retained: full prompts, config snapshots, findings, guides, thread bodies, provider observations.
 - Cleanup trigger and results API: [active-results.md](active-results.md).
+
+## Queue compaction and idle scheduling
+
+- Startup and an hourly maintenance pass drop retired `queue.json` entries (`monitoring::retired`) that nothing reads again. Kept: live, `repository_disabled` and legacy entries; entries matched by saved reviews, publications or follow-ups; each PR assignment's newest pass; one entry per revision; PRs with unresolved legacy mentions. Saved via the atomic queue write; idempotent; never lowers enqueue order.
+- The 5 s scheduler always runs connectivity and poll checks. Each coordinator (maintenance, resume, capacity, publication, exit writes, follow-ups, actions, notifications) runs only when a saved file it reads records a transition, when a saved instant in those files (`*_at`, `*until`, `*deadline`) arrives, or after the 60 s heartbeat (`src-tauri/src/wake.rs`).
+- Not transitions: liveness probes (unless reachability changes), the result index, the queue selection, and running-review progress (phase label, duck calls). An unchanged pass writes nothing.
+- Scans parse a frozen byte copy of saved state taken under the Store lock (`Store::freeze`); only writes take the lock.

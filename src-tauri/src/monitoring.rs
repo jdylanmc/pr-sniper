@@ -9,7 +9,7 @@ use crate::storage::{ProviderId, SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 // Old queue records remain actionable without requiring per-revision consent.
 pub const WAITING_TRUST_CONFIRMATION: &str = "trust_confirmation";
@@ -371,10 +371,36 @@ impl QueueState {
                 None => self.tracked.push(receipt.scope),
             }
         }
+        // Indexed by the (assignment, review key) every match requires; a
+        // linear scan per run made each poll quadratic in saved history.
+        let mut index: HashMap<(String, String), Vec<usize>> = HashMap::new();
+        for (i, job) in self.jobs.iter().enumerate() {
+            if let Some(assignment_id) = &job.assignment_id {
+                index
+                    .entry((
+                        assignment_id.clone(),
+                        crate::review::key(job, assignment_id),
+                    ))
+                    .or_default()
+                    .push(i);
+            }
+        }
         for run in store.review_evidence()? {
-            if run.job.assignment_id.as_deref() == Some(&run.assignment_id)
-                && !self.jobs.iter().any(|job| run.matches_job(job))
+            if run.job.assignment_id.as_deref() != Some(&run.assignment_id) {
+                continue;
+            }
+            let slot = (run.assignment_id.clone(), run.key.clone());
+            if !index
+                .get(&slot)
+                .is_some_and(|jobs| jobs.iter().any(|&i| run.matches_job(&self.jobs[i])))
             {
+                index
+                    .entry((
+                        run.assignment_id.clone(),
+                        crate::review::key(&run.job, &run.assignment_id),
+                    ))
+                    .or_default()
+                    .push(self.jobs.len());
                 self.jobs.push(run.job.clone());
             }
         }
@@ -421,6 +447,148 @@ impl QueueState {
             .ok_or("The durable queue order is exhausted.")?;
         Ok(self.next_enqueue_order)
     }
+}
+
+type Group<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+);
+
+/// A PR assignment's pass and its rank among that assignment's entries.
+fn group(job: &QueueJob) -> Option<(Group<'_>, (u64, u64, u64))> {
+    let work = job.work.as_ref()?;
+    Some((
+        (
+            job.provider.as_str(),
+            job.account_id.as_str(),
+            job.configuration_id.as_str(),
+            job.repository_id.as_str(),
+            job.pull_request_id.as_str(),
+            job.assignment_id.as_deref()?,
+            work.agent_id.as_str(),
+        ),
+        (work.pass_ordinal, work.state_seq, work.enqueue_order),
+    ))
+}
+
+/// Whether any account a run uses connected since the last resume pass.
+fn run_reconnected(run: &crate::review::ReviewRun, reconnected: &BTreeSet<String>) -> bool {
+    reconnected.contains(&run.job.account_id)
+        || run
+            .selection
+            .agent
+            .ai_account
+            .as_ref()
+            .is_some_and(|ai| reconnected.contains(&ai.account_id))
+        || run
+            .selection
+            .configuration
+            .as_ref()
+            .and_then(|c| c.rubber_duck.as_ref())
+            .and_then(|duck| duck.agent.ai_account.as_ref())
+            .is_some_and(|ai| reconnected.contains(&ai.account_id))
+}
+
+/// Drops retired history entries nothing can read again. Kept: every live or
+/// legacy entry, any entry a saved review, publication or follow-up matches
+/// (evidence would restore it anyway), the newest entry per PR assignment
+/// (dedupe and pass ordinals), one entry per reviewed revision, and every
+/// entry of a PR with a legacy mention that still resolves through jobs.
+/// Returns how many entries were removed; idempotent.
+pub(crate) fn compact_retired(
+    queue: &mut QueueState,
+    reviews: &[crate::review::ReviewRun],
+    follow_ups: &[crate::follow_up::FollowUp],
+    mentions: &[crate::feedback::Mention],
+) -> usize {
+    let mut newest: HashMap<Group<'_>, (u64, u64, u64)> = HashMap::new();
+    for (key, rank) in queue.jobs.iter().filter_map(group) {
+        let entry = newest.entry(key).or_insert(rank);
+        *entry = (*entry).max(rank);
+    }
+    let mut evidence: HashMap<(&str, String), Vec<&crate::review::ReviewRun>> = HashMap::new();
+    for run in reviews {
+        evidence
+            .entry((run.assignment_id.as_str(), run.key.clone()))
+            .or_default()
+            .push(run);
+    }
+    let candidate = |job: &QueueJob| -> bool {
+        let Some(work) = &job.work else {
+            return false;
+        };
+        let Some(assignment_id) = job.assignment_id.as_deref() else {
+            return false;
+        };
+        retired(job)
+            && work.legacy_item_id.is_none()
+            && group(job).is_some_and(|(key, rank)| newest.get(&key) != Some(&rank))
+            && !evidence
+                .get(&(assignment_id, crate::review::key(job, assignment_id)))
+                .is_some_and(|runs| runs.iter().any(|run| run.matches_job(job)))
+            && !follow_ups.iter().any(|f| f.matches_job(job))
+            && !mentions
+                .iter()
+                .any(|m| m.item_id.is_none() && m.binding.matches(job))
+    };
+    let drop: Vec<bool> = queue.jobs.iter().map(candidate).collect();
+    if !drop.contains(&true) {
+        return 0;
+    }
+    let revision = |job: &QueueJob| {
+        (
+            job.repository_id.clone(),
+            job.pull_request_id.clone(),
+            job.head_sha.clone(),
+            job.work.as_ref().map(|w| w.iteration),
+        )
+    };
+    let mut revisions: HashSet<_> = queue
+        .jobs
+        .iter()
+        .zip(&drop)
+        .filter(|(_, dropped)| !**dropped)
+        .map(|(job, _)| revision(job))
+        .collect();
+    let keep: Vec<bool> = queue
+        .jobs
+        .iter()
+        .zip(&drop)
+        .map(|(job, dropped)| !dropped || revisions.insert(revision(job)))
+        .collect();
+    let before = queue.jobs.len();
+    // Removing entries must never lower the durable enqueue order.
+    queue.next_enqueue_order = queue.next_enqueue_order.max(
+        queue
+            .jobs
+            .iter()
+            .filter_map(|j| j.work.as_ref().map(|w| w.enqueue_order))
+            .max()
+            .unwrap_or(0),
+    );
+    let mut keep = keep.into_iter();
+    queue.jobs.retain(|_| keep.next().unwrap_or(true));
+    before - queue.jobs.len()
+}
+
+/// Compacts the saved queue through the normal atomic queue save.
+pub(crate) fn compact_saved_queue(store: &Store) -> Result<usize, String> {
+    let mut queue = store.load_queue_state()?;
+    let removed = compact_retired(
+        &mut queue,
+        &store.review_evidence()?,
+        &store.load_follow_ups()?,
+        &store.load_feedback()?.mentions,
+    );
+    if removed > 0 {
+        store.save_queue_state(&queue)?;
+    }
+    Ok(removed)
 }
 
 /// Legacy single global scan, read once and folded into per-repository health.
@@ -1254,10 +1422,33 @@ impl Monitor {
             self.leases = previous_leases;
             return Err(error);
         }
-        let mut queue = store.load_queue_state()?;
-        queue.recover_evidence(store)?;
         let gates = store.load_backpressure()?;
-        let tickets = self.begin(&configured, &queue, &gates, &connectivity, now, check_now);
+        let mut tickets = self.begin(&configured, &gates, &connectivity, now, check_now);
+        // Tracked PRs come from the full queue plus review evidence. Most ticks
+        // start no poll, so read that history only for tickets that start.
+        if !tickets.is_empty() {
+            let queue = store.load_queue_state().and_then(|mut queue| {
+                queue.recover_evidence(store)?;
+                Ok(queue)
+            });
+            match queue {
+                Ok(queue) => {
+                    for ticket in &mut tickets {
+                        ticket.tracked = tracked_for(
+                            &queue,
+                            &ticket.repository_id,
+                            &ticket.provider_account_id,
+                            &ticket.provider_repository_id,
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.state = previous;
+                    self.leases = previous_leases;
+                    return Err(error);
+                }
+            }
+        }
         if self.state != previous {
             if let Err(error) = store.save_monitoring_state(&self.state) {
                 self.state = previous;
@@ -2031,7 +2222,6 @@ impl Monitor {
     fn begin(
         &mut self,
         configured: &[ConfiguredSchedule],
-        queue: &QueueState,
         gates: &crate::backpressure::Backpressure,
         connectivity: &crate::connectivity::Connectivity,
         now: i64,
@@ -2177,32 +2367,7 @@ impl Monitor {
                 activation_version: activation.version.clone(),
                 account_generation: 0,
                 assignments: health.scan_assignments.clone(),
-                tracked: queue
-                    .tracked
-                    .iter()
-                    .filter(|p| {
-                        (p.lifecycle == Lifecycle::Open || !p.terminal_observed)
-                            && p.configuration_id == configuration.repository_id
-                            && p.account_id == *account_id
-                            && p.repository_id == *repository_id
-                    })
-                    .map(|p| (p.pull_request_id.clone(), p.number))
-                    .chain(
-                        queue
-                            .jobs
-                            .iter()
-                            .filter(|j| {
-                                (j.configuration_id == configuration.repository_id
-                                    || j.configuration_id.is_empty() && j.work.is_none())
-                                    && j.account_id == *account_id
-                                    && j.repository_id == *repository_id
-                                    && !queue.tracked.iter().any(|p| p.matches(j))
-                            })
-                            .map(|j| (j.pull_request_id.clone(), j.number)),
-                    )
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
+                tracked: Vec::new(),
                 prepared_at: now,
             });
         }
@@ -3010,6 +3175,40 @@ pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
 
 /// True when path rules decide this pull request but its changed files have
 /// not been loaded; the polling listing does not include them.
+fn tracked_for(
+    queue: &QueueState,
+    configuration_id: &str,
+    account_id: &str,
+    repository_id: &str,
+) -> Vec<(String, u64)> {
+    queue
+        .tracked
+        .iter()
+        .filter(|p| {
+            (p.lifecycle == Lifecycle::Open || !p.terminal_observed)
+                && p.configuration_id == configuration_id
+                && p.account_id == account_id
+                && p.repository_id == repository_id
+        })
+        .map(|p| (p.pull_request_id.clone(), p.number))
+        .chain(
+            queue
+                .jobs
+                .iter()
+                .filter(|j| {
+                    (j.configuration_id == configuration_id
+                        || j.configuration_id.is_empty() && j.work.is_none())
+                        && j.account_id == account_id
+                        && j.repository_id == repository_id
+                        && !queue.tracked.iter().any(|p| p.matches(j))
+                })
+                .map(|j| (j.pull_request_id.clone(), j.number)),
+        )
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub fn needs_changed_files(ticket: &PollTicket, pull: &PullRequest) -> bool {
     ticket
         .admission
@@ -4095,22 +4294,91 @@ impl Monitor {
     /// Requeues parked failures that earned another attempt: after their
     /// cooldown, or (credentials) once a relevant GitHub or Copilot account is
     /// connected again. Superseded and terminal work is never resumed.
+    fn reconnections(
+        &self,
+        accounts: &BTreeMap<String, AccountAvailability>,
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        let connected: BTreeSet<String> = accounts
+            .iter()
+            .filter(|(_, account)| account.connected)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // The first tick cannot see a transition, so connected accounts count.
+        let reconnected = match &self.connected_seen {
+            Some(seen) => connected.difference(seen).cloned().collect(),
+            None => connected.clone(),
+        };
+        (connected, reconnected)
+    }
+
+    /// Read-only probe of `auto_resume` over a frozen copy: true when it
+    /// would resume or re-suspend anything. When false, records the seen
+    /// accounts exactly as `auto_resume` would, so no reconnection is lost.
+    pub fn auto_resume_due(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+    ) -> Result<bool, String> {
+        let (connected, reconnected) = self.reconnections(accounts);
+        if !self.state.admission_upgrade_done {
+            return Ok(true);
+        }
+        let connectivity = store.load_connectivity()?;
+        let jobs = store.load_queue()?;
+        let finished = |waiting: &str| {
+            matches!(
+                waiting,
+                WAITING_SUPERSEDED | WAITING_CLOSED | WAITING_MERGED
+            )
+        };
+        for run in store.load_reviews()? {
+            let offline = connectivity
+                .offline(&crate::connectivity::scopes(&run))
+                .and_then(|s| s.offline_since);
+            if crate::connectivity::would_sync(&run.operation, offline, now) {
+                return Ok(true);
+            }
+            if finished(&run.job.waiting)
+                || jobs
+                    .iter()
+                    .any(|job| run.matches_job(job) && finished(&job.waiting))
+            {
+                continue;
+            }
+            let account = run_reconnected(&run, &reconnected);
+            if run.operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        for publication in store.load_publications()? {
+            let account = reconnected.contains(&publication.review.job.account_id);
+            if publication.operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        for operation in self
+            .state
+            .health
+            .values()
+            .filter_map(|h| h.operation.as_ref())
+        {
+            let account = reconnected.contains(&operation.account_id);
+            if operation.clone().auto_resume(account, now) {
+                return Ok(true);
+            }
+        }
+        self.connected_seen = Some(connected);
+        Ok(false)
+    }
+
     pub fn auto_resume(
         &mut self,
         store: &Store,
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
     ) -> Result<usize, String> {
-        let connected: std::collections::BTreeSet<String> = accounts
-            .iter()
-            .filter(|(_, account)| account.connected)
-            .map(|(id, _)| id.clone())
-            .collect();
-        // The first tick cannot see a transition, so connected accounts count.
-        let reconnected: std::collections::BTreeSet<String> = match &self.connected_seen {
-            Some(seen) => connected.difference(seen).cloned().collect(),
-            None => connected.clone(),
-        };
+        let (connected, reconnected) = self.reconnections(accounts);
         self.connected_seen = Some(connected);
         let mut resumed = 0;
         let mut reviews = store.load_reviews()?;
@@ -4137,20 +4405,7 @@ impl Monitor {
             {
                 continue;
             }
-            let account = reconnected.contains(&run.job.account_id)
-                || run
-                    .selection
-                    .agent
-                    .ai_account
-                    .as_ref()
-                    .is_some_and(|ai| reconnected.contains(&ai.account_id))
-                || run
-                    .selection
-                    .configuration
-                    .as_ref()
-                    .and_then(|c| c.rubber_duck.as_ref())
-                    .and_then(|duck| duck.agent.ai_account.as_ref())
-                    .is_some_and(|ai| reconnected.contains(&ai.account_id));
+            let account = run_reconnected(run, &reconnected);
             if run.operation.auto_resume(account, now) {
                 run.error = None;
                 run.phase = "Waiting for shared AI capacity".into();

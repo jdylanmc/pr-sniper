@@ -466,49 +466,50 @@ impl Coordinator {
             }
         }
     }
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+    /// Scans `view`, a frozen copy of saved state; launch revalidates.
+    pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) || !host.follow_ups.finished() {
             return Ok(());
         }
-        let next = {
-            let store = host
-                .store
-                .lock()
-                .map_err(|_| "Thread storage unavailable.")?;
-            let now = now_seconds()?;
-            if store.load_automation()?.paused {
-                return Ok(());
-            }
-            candidates(&store)?.into_iter().find_map(|candidate| {
-                let run = &candidate.run;
-                let due = |op: &JobOperation| {
-                    matches!(
-                        op.state,
-                        OperationState::Queued | OperationState::Interrupted
-                    ) && op.next_attempt_at.is_some_and(|n| n <= now)
-                };
-                if run.publication.as_ref().is_some_and(due) {
-                    return Some(run.id.clone());
-                }
-                if candidate.blocked.is_some() || run.cancelled {
-                    return None;
-                }
-                if run.phase == Phase::WaitingPublication
-                    && run.publication.is_none()
-                    && candidate.automatic_publication
-                {
-                    return Some(run.id.clone());
-                }
-                None
-            })
-        };
+        let next = next_due(view, now_seconds()?)?;
         if let Some(id) = next {
             Self::launch(app, &id, false)?;
         }
         Ok(())
     }
+}
 
+/// The follow-up whose analysis or publication should run next, if any.
+pub(crate) fn next_due(store: &Store, now: i64) -> Result<Option<String>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
+    Ok(candidates(store)?.into_iter().find_map(|candidate| {
+        let run = &candidate.run;
+        let due = |op: &JobOperation| {
+            matches!(
+                op.state,
+                OperationState::Queued | OperationState::Interrupted
+            ) && op.next_attempt_at.is_some_and(|n| n <= now)
+        };
+        if run.publication.as_ref().is_some_and(due) {
+            return Some(run.id.clone());
+        }
+        if candidate.blocked.is_some() || run.cancelled {
+            return None;
+        }
+        if run.phase == Phase::WaitingPublication
+            && run.publication.is_none()
+            && candidate.automatic_publication
+        {
+            return Some(run.id.clone());
+        }
+        None
+    }))
+}
+
+impl Coordinator {
     /// Publish an already-analyzed legacy reply. Analysis itself is retired.
     fn launch(app: &tauri::AppHandle, id: &str, manual: bool) -> Result<(), String> {
         let host = app.state::<Host>();

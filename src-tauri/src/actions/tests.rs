@@ -1639,3 +1639,17 @@ fn legacy_inert_flags_and_expired_unattempted_intents_never_become_provider_gran
     assert!(expired.operation.attempted_mutation.is_none());
     assert!(mark_intent(&store, &expired.id, NOW + 1000).is_err());
 }
+
+#[test]
+fn an_item_waiting_on_the_provider_is_reobserved_per_heartbeat_not_per_tick() {
+    let (_root, store, item) = fixture(1, true, false);
+    let target = |now| host::next_target(&store, now).unwrap().map(|i| i.id);
+    assert_eq!(target(NOW), Some(item.clone()));
+    // The observation's own save wakes the coordinator on the next tick.
+    synchronize(&store, &item, Ok(observed()), NOW).unwrap();
+    assert!(store.load_actions().unwrap().observations[0]
+        .error
+        .is_none());
+    assert_eq!(target(NOW + 5), None);
+    assert_eq!(target(NOW + crate::wake::HEARTBEAT_SECONDS), Some(item));
+}

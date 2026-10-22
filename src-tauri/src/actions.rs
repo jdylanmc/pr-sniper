@@ -443,6 +443,15 @@ pub fn cancel_effect(store: &Store, id: &str) -> Result<(), String> {
     store.save_actions(&ledger)
 }
 
+/// Whether `expire_prepared` would change anything; read-only.
+pub fn prepared_expired(store: &Store, now: i64) -> Result<bool, String> {
+    Ok(store
+        .load_actions()?
+        .effects
+        .iter()
+        .any(|e| e.state == EffectState::Prepared && now >= e.operation.retry_deadline))
+}
+
 pub fn expire_prepared(store: &Store, now: i64) -> Result<(), String> {
     let mut ledger = store.load_actions()?;
     let mut changed = false;

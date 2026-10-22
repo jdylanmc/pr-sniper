@@ -536,6 +536,27 @@ fn contexts_excluding_checked(
     use crate::publication::GateError;
     let ledger = store.load_feedback().map_err(GateError::Storage)?;
     let publications = store.load_publications().map_err(GateError::Storage)?;
+    contexts_excluding_with(
+        store,
+        &ledger,
+        &publications,
+        job,
+        agent,
+        own_operation,
+        include_current_peers,
+    )
+}
+
+fn contexts_excluding_with(
+    store: &Store,
+    ledger: &Ledger,
+    publications: &[crate::publication::Publication],
+    job: &QueueJob,
+    agent: &str,
+    own_operation: Option<&str>,
+    include_current_peers: bool,
+) -> Result<Vec<Context>, crate::publication::GateError> {
+    use crate::publication::GateError;
     let mut contexts = Vec::new();
     for origin in publications.iter().filter(|p| same_pr(&p.review.job, job)) {
         if own_operation == Some(origin.review.operation.id.as_str()) {
@@ -679,9 +700,30 @@ pub(crate) fn publication_gate_checked(
     }
     let ledger = store.load_feedback().map_err(GateError::Storage)?;
     let publications = store.load_publications().map_err(GateError::Storage)?;
+    publication_gate_with(store, review, &ledger, &publications)
+}
+
+/// `publication_gate_checked` over already-loaded state, so a scan over every
+/// saved review parses the feedback and publication stores once, not per review.
+pub(crate) fn publication_gate_with(
+    store: &Store,
+    review: &crate::review::ReviewRun,
+    ledger: &Ledger,
+    publications: &[crate::publication::Publication],
+) -> Result<(), crate::publication::GateError> {
+    use crate::publication::GateError;
+    if review
+        .result
+        .as_ref()
+        .is_some_and(|r| r.output.feedback_conflict)
+    {
+        return Err(GateError::Policy("Possible reintroduction of human-closed feedback requires human judgment; no automatic or manual machine batch is created.".into()));
+    }
     if let Some(captured) = &review.feedback_context {
-        let current = contexts_excluding_checked(
+        let current = contexts_excluding_with(
             store,
+            ledger,
+            publications,
             &review.job,
             &review.selection.agent.id,
             Some(&review.operation.id),

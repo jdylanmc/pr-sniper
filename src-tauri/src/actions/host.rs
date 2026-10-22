@@ -389,11 +389,69 @@ pub(crate) fn prepare_next_effect(
     Ok(None)
 }
 
+/// The item whose provider state should be observed next, if any.
+/// Read-only: selection never writes, so it can scan a frozen copy.
+pub(crate) fn next_target(store: &Store, now: i64) -> Result<Option<queue::Item>, String> {
+    if store.load_automation()?.paused {
+        return Ok(None);
+    }
+    let snapshot = queue::normal_snapshot(store, vec![])?;
+    let ledger = store.load_actions()?;
+    let unadopted = packet::unadopted(store, &ledger)?;
+    let settings = store.load_settings()?;
+    Ok(snapshot
+        .items
+        .into_iter()
+        .filter(|item| {
+            ledger
+                .observations
+                .iter()
+                .find(|o| o.item_id == item.id)
+                .is_none_or(|o| match &o.error {
+                    Some(_) => o.retry_at.is_some_and(|at| at <= now),
+                    // Each observation saves, which wakes this coordinator: an
+                    // item merely waiting on the provider is re-read once per
+                    // heartbeat, not every tick. Effects in flight stay prompt.
+                    None => {
+                        now.saturating_sub(o.at) >= crate::wake::HEARTBEAT_SECONDS
+                            || ledger.effects.iter().any(|e| {
+                                e.item_id == item.id
+                                    && (e.state == EffectState::Prepared
+                                        || e.reconcile_requested
+                                        || e.needs_reconciliation())
+                            })
+                    }
+                })
+        })
+        .filter(|i| observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id))
+        .min_by_key(|i| {
+            ledger
+                .observations
+                .iter()
+                .find(|o| o.item_id == i.id)
+                .map(|o| o.at)
+                .unwrap_or(0)
+        }))
+}
+
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|v| !*v)
     }
-    pub(crate) fn pump(app: &tauri::AppHandle) -> Result<(), String> {
+    /// `pump` against a copy of saved state taken now.
+    pub(crate) fn pump_fresh(app: &tauri::AppHandle) -> Result<(), String> {
+        let view = app
+            .state::<Host>()
+            .store
+            .lock()
+            .map_err(|_| "Action storage unavailable.")?
+            .freeze()?;
+        Self::pump(app, &view)
+    }
+
+    /// Selects on `view`, a frozen copy of saved state; the worker
+    /// revalidates under the Store lock before any provider effect.
+    pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Ok(());
@@ -406,42 +464,18 @@ impl Coordinator {
         if *active {
             return Ok(());
         }
-        let target = {
+        let now = now_seconds()?;
+        if view.load_automation()?.paused {
+            return Ok(());
+        }
+        if prepared_expired(view, now)? {
             let store = host
                 .store
                 .lock()
                 .map_err(|_| "Action storage unavailable.")?;
-            if store.load_automation()?.paused {
-                return Ok(());
-            }
-            expire_prepared(&store, now_seconds()?)?;
-            let snapshot = queue::normal_snapshot(&store, vec![])?;
-            let ledger = store.load_actions()?;
-            let unadopted = packet::unadopted(&store, &ledger)?;
-            let settings = store.load_settings()?;
-            let now = now_seconds()?;
-            snapshot
-                .items
-                .into_iter()
-                .filter(|item| {
-                    ledger
-                        .observations
-                        .iter()
-                        .find(|o| o.item_id == item.id)
-                        .is_none_or(|o| o.error.is_none() || o.retry_at.is_some_and(|at| at <= now))
-                })
-                .filter(|i| {
-                    observation_pending(i, &settings, &ledger, now) || unadopted.contains(&i.id)
-                })
-                .min_by_key(|i| {
-                    ledger
-                        .observations
-                        .iter()
-                        .find(|o| o.item_id == i.id)
-                        .map(|o| o.at)
-                        .unwrap_or(0)
-                })
-        };
+            expire_prepared(&store, now)?;
+        }
+        let target = next_target(view, now)?;
         let Some(target) = target else {
             return Ok(());
         };
@@ -465,6 +499,7 @@ impl Coordinator {
                         .lock()
                         .map_err(|_| "Action storage unavailable.")?;
                     let mut ledger = store.load_actions()?;
+                    let mut reconciling = false;
                     for effect in ledger
                         .effects
                         .iter_mut()
@@ -472,8 +507,12 @@ impl Coordinator {
                     {
                         effect.reconcile_attempts = effect.reconcile_attempts.saturating_add(1);
                         effect.reconcile_requested = false;
+                        reconciling = true;
                     }
-                    store.save_actions(&ledger)?;
+                    // An unchanged ledger is not rewritten (or re-indexed).
+                    if reconciling {
+                        store.save_actions(&ledger)?;
+                    }
                 }
                 let observed = observation(&app, &target.job);
                 let effect = {
@@ -579,7 +618,7 @@ pub(crate) fn reconcile_provider_action(app: tauri::AppHandle, id: String) -> Re
         request_reconciliation(&store, &id, now_seconds()?)?;
     }
 
-    Coordinator::pump(&app)
+    Coordinator::pump_fresh(&app)
 }
 
 #[tauri::command]
@@ -595,5 +634,5 @@ pub(crate) fn retry_action_observation(
             .map_err(|_| "Action storage unavailable.")?;
         request_observation_retry(&store, &item_id, now_seconds()?)?;
     }
-    Coordinator::pump(&app)
+    Coordinator::pump_fresh(&app)
 }
