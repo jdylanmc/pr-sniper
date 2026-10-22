@@ -1,0 +1,148 @@
+# EXPERIMENT ONLY - measures CI parallelization hypotheses. Never merge.
+name: CI timing experiment
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-browser-shard:
+    name: macos-browser-shard (${{ matrix.shard }}/4)
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: rustup show active-toolchain
+      - run: npm ci
+      - run: npm exec playwright install chromium webkit
+      - run: npm run build
+      - name: Build Store bridge (cold, no Rust cache on macOS today)
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --example settings_bridge
+      - name: Chromium shard, 2 workers
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --shard=${{ matrix.shard }}/4 --workers=2
+      - name: WebKit shard, 2 workers
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --browser=webkit --shard=${{ matrix.shard }}/4 --workers=2
+
+  windows-browser-shard:
+    name: windows-browser-shard (${{ matrix.shard }}/3)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-windows
+          add-job-id-key: "false"
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          save-if: "false"
+      - run: npm ci
+      - run: npm exec playwright install chromium
+      - run: npm run build
+      - name: Build Store bridge
+        run: cargo build --manifest-path src-tauri\Cargo.toml --locked --example settings_bridge
+      - name: Chromium shard, 2 workers
+        run: npm exec playwright -- test --config tests/settings/playwright.config.mjs --shard=${{ matrix.shard }}/3 --workers=2
+
+  windows-native-timing:
+    name: windows-native-timing (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, line-tables-only, rust-lld]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-2022-windows
+          add-job-id-key: "false"
+          cache-bin: "false"
+          cache-targets: "false"
+          cache-directories: |
+            src-tauri\target\debug\.fingerprint
+            src-tauri\target\debug\build
+            src-tauri\target\debug\deps
+            src-tauri\target\release\.fingerprint
+            src-tauri\target\release\build
+            src-tauri\target\release\deps
+          cache-workspace-crates: "false"
+          save-if: "false"
+      - run: npm ci
+      - run: npm run build
+      - name: Configure variant
+        run: |
+          if ('${{ matrix.variant }}' -eq 'line-tables-only') { "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> $env:GITHUB_ENV }
+          if ('${{ matrix.variant }}' -eq 'rust-lld') {
+            $lld = Join-Path (rustc --print sysroot) 'lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe'
+            Test-Path $lld
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$lld" >> $env:GITHUB_ENV
+          }
+      - name: First all-targets test compile (after cache restore)
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets --no-run -v
+      - name: Second all-targets test compile (fingerprint stability)
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets --no-run -v
+      - name: Crate-only rebuild after touching lib.rs
+        run: |
+          (Get-Item src-tauri\src\lib.rs).LastWriteTime = Get-Date
+          cargo test --manifest-path src-tauri\Cargo.toml --locked --all-targets --no-run
+      - name: Lib tests with per-test timings (test-threads=2, as CI)
+        if: ${{ matrix.variant == 'baseline' }}
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- --test-threads=2 --skip cancelled_or_failed_startup_does_not_leave_a_child -Z unstable-options --report-time
+      - name: Lib tests with default test-threads (4 vCPU) for comparison
+        if: ${{ matrix.variant == 'baseline' }}
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --lib -- --skip cancelled_or_failed_startup_does_not_leave_a_child
+      - name: Integration targets with per-test timings
+        if: ${{ matrix.variant == 'baseline' }}
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: cargo test --manifest-path src-tauri\Cargo.toml --locked --bins --examples --test '*' -- --test-threads=2 -Z unstable-options --report-time
