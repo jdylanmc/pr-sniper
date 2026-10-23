@@ -44,6 +44,8 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 - Unreferenced segments are deleted after the commit, once no frozen copy that may read them is alive. The first save of a process also removes leftovers of interrupted saves.
 - A legacy `reviews.json` array stays readable and becomes a manifest on the next save. Older builds reject the manifest (invalid review state) rather than treat it as empty.
 - Saved state is decoded once per change (Store write count + OS file identity) and shared with frozen copies.
+- Running-review progress (phase, duck calls) is written at most every 30 s or with the next transition; the panel receives each repeated selection and feedback snapshot once.
+- Cost harness (live-size profile, 3 running reviews, panel polling; macOS): `cargo test --manifest-path src-tauri/Cargo.toml --release --lib storage::cost_bench -- --ignored --nocapture` (`PR_SNIPER_BENCH_SECONDS`, default 60).
 
 ## Config rules
 
