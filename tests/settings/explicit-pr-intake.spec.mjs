@@ -373,9 +373,18 @@ for (const genie of [false, true]) {
     await held.arrived;
     try {
       editor = await replaceUrl(page, editor, 303);
+      // Release only once the replacement intent owns the open editor; an
+      // earlier failure arriving with no current editor uses #error instead.
+      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+        "PR #303",
+      );
       held.release();
       await page.evaluate(() => window.__settingsIdle());
-      await expect(page.locator("#error")).toContainText("PR #302");
+      await expect(editor.locator("[data-earlier-intake-error]")).toContainText(
+        "PR #302",
+      );
+      await expect(editor.locator("[data-earlier-intake-error]")).toBeVisible();
+      await expect(page.locator("#error")).toBeHidden();
       await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
         "PR #303",
       );
