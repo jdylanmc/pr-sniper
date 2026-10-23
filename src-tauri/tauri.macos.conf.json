@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/mcp/mcp-server.mjs": "mcp/mcp-server.mjs",
+      "resources/mcp/mcp-server.mjs.LEGAL.txt": "mcp/mcp-server.mjs.LEGAL.txt",
+      "resources/mcp/THIRD_PARTY_NOTICES.txt": "mcp/THIRD_PARTY_NOTICES.txt"
+    }
+  }
+}

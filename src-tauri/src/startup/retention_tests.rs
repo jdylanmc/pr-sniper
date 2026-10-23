@@ -5,15 +5,17 @@ use crate::storage::{
 };
 use std::fs;
 
-struct RegistrationFixture {
-    root: tempfile::TempDir,
-    registration: LoginRegistration,
+pub(super) struct RegistrationFixture {
+    pub(super) root: tempfile::TempDir,
+    pub(super) registration: LoginRegistration,
     #[cfg(windows)]
     key: Vec<u16>,
+    #[cfg(windows)]
+    name: String,
 }
 
 impl RegistrationFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("fixture-executable");
         fs::write(&executable, b"isolated file; never executed").unwrap();
@@ -61,15 +63,31 @@ impl RegistrationFixture {
             );
             assert_eq!(unsafe { RegCloseKey(handle) }, ERROR_SUCCESS);
             (
-                LoginRegistration::new(name, "owned".into(), executable),
-                key,
+                LoginRegistration::new(name.clone(), "owned".into(), executable),
+                (key, name),
             )
         };
+        #[cfg(windows)]
+        let (key, name) = key;
         Self {
             root,
             registration,
             #[cfg(windows)]
             key,
+            #[cfg(windows)]
+            name,
+        }
+    }
+
+    /// The same owned location registered for a different executable.
+    pub(super) fn for_executable(&self, executable: std::path::PathBuf) -> LoginRegistration {
+        #[cfg(target_os = "macos")]
+        {
+            LoginRegistration::new(self.root.path().join("fixture.plist"), executable)
+        }
+        #[cfg(windows)]
+        {
+            LoginRegistration::new(self.name.clone(), "owned".into(), executable)
         }
     }
 }

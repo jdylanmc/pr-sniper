@@ -1,6 +1,7 @@
 use pr_sniper_lib::storage::{Settings, Store, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -430,18 +431,32 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
         "control_installation" | "control_install" | "control_uninstall" => {
             let root = PathBuf::from(std::env::args().nth(1).unwrap()).join("skill-host");
             // This bridge receives only the isolated browser fixture root.
+            let resources = root.join("fixture-app-resources");
+            fs::create_dir_all(&resources).map_err(|_| "Cannot create fixture app.")?;
+            let script = resources.join("mcp-server.mjs");
+            if !script.exists() {
+                fs::write(&script, "// fixture").map_err(|_| "Cannot create fixture app.")?;
+            }
+            let server = pr_sniper_lib::control::Server {
+                script: request.args["script"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .unwrap_or(script),
+                executable: request.args["executable"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| root.join("fixture-app")),
+            };
             let result = match request.command.as_str() {
-                "control_installation" => pr_sniper_lib::control::integration_at(&root),
+                "control_installation" => pr_sniper_lib::control::integration_at(&root, &server),
                 "control_install" => pr_sniper_lib::control::install_integration_at(
                     &root,
-                    &request.args["executable"]
-                        .as_str()
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| root.join("fixture-app")),
+                    &server,
                     request.args["expected"].as_str(),
                 ),
                 _ => pr_sniper_lib::control::remove_integration_at(
                     &root,
+                    &server,
                     request.args["expected"]
                         .as_str()
                         .ok_or("Installation revision required.")?,

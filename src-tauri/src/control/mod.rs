@@ -9,8 +9,8 @@ mod transport;
 pub(crate) mod work;
 
 pub use installer::{
-    install_at, install_integration_at, installation_at, integration_at, remove_at,
-    remove_integration_at, Installation,
+    install_integration_at, integration_at, remove_integration_at, repair_integration_at,
+    Installation, Server, SKILL_COMMAND,
 };
 pub use transport::{serve_connection, Endpoint, MAX_FRAME, PROTOCOL};
 pub use work::{prioritize, request_again, RequestOverride, WatchResult};

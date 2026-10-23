@@ -4,7 +4,7 @@ import path from "node:path";
 import { builtinModules } from "node:module";
 
 const pkg = JSON.parse(await fs.readFile("package.json", "utf8"));
-const output = "skills/pr-sniper/scripts/mcp-server.mjs";
+const output = "src-tauri/resources/mcp/mcp-server.mjs";
 const check = process.argv.includes("--check");
 const result = await build({
   entryPoints: ["src-control/mcp-server.mjs"],
@@ -79,7 +79,7 @@ for (const [name, { directory, version }] of [...packages].sort()) {
 }
 for (const file of result.outputFiles) await emit(file.path, file.contents);
 await emit(
-  "skills/pr-sniper/THIRD_PARTY_NOTICES.txt",
+  "src-tauri/resources/mcp/THIRD_PARTY_NOTICES.txt",
   Buffer.from(notices.join("\n\n---\n\n") + "\n"),
 );
 console.log(

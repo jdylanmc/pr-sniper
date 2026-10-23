@@ -534,48 +534,6 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
 }
 
 #[test]
-fn installer_detects_edits_and_removes_only_its_unchanged_package() {
-    let root = tempfile::tempdir().unwrap();
-    let physical_root = root.path().canonicalize().unwrap();
-    let directory = physical_root.join("skills/pr-sniper");
-    let executable = physical_root.join("app");
-    let installed = install_at(&directory, &executable, None).unwrap();
-    assert_eq!(installed.state, "installed");
-    assert!(install_at(&directory, &executable, None).is_err());
-    std::fs::write(directory.join("SKILL.md"), "customized").unwrap();
-    assert!(remove_at(&directory, installed.revision.as_deref().unwrap()).is_err());
-    assert_eq!(
-        std::fs::read_to_string(directory.join("SKILL.md")).unwrap(),
-        "customized"
-    );
-    let other = physical_root.join("other/pr-sniper");
-    let installed = install_at(&other, &executable, None).unwrap();
-    let updated = install_at(&other, &executable, installed.revision.as_deref()).unwrap();
-    assert_eq!(
-        remove_at(&other, updated.revision.as_deref().unwrap())
-            .unwrap()
-            .state,
-        "absent"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn installer_refuses_deliberate_linked_ancestry() {
-    let root = tempfile::tempdir().unwrap();
-    let root_path = root.path().canonicalize().unwrap();
-    let actual = root_path.join("actual");
-    std::fs::create_dir(&actual).unwrap();
-    let link = root_path.join("linked");
-    std::os::unix::fs::symlink(&actual, &link).unwrap();
-    assert!(
-        matches!(install_at(&link.join("pr-sniper"), &root_path.join("app"), None),
-        Err(Error { code, .. }) if code == "installation_conflict")
-    );
-    assert_eq!(std::fs::read_dir(&actual).unwrap().count(), 0);
-}
-
-#[test]
 fn unauthenticated_and_http_clients_never_reach_app_operations() {
     for valid_magic in [true, false] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -652,7 +610,7 @@ fn bundled_cli_crosses_framed_transport_to_real_validated_store_save() {
     let mut cli = Command::new("node")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../skills/pr-sniper/scripts/pr-sniper.mjs"
+            "/../src-control/pr-sniper.mjs"
         ))
         .env("PR_SNIPER_DATA_DIR", root.path())
         .stdin(Stdio::piped())

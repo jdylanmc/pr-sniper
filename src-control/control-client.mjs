@@ -4,12 +4,10 @@ import os from "node:os";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 export const protocol = 1;
 const maxFrame = 1024 * 1024;
 const magic = Buffer.from("SNIPER1\n");
-const directory = path.dirname(fileURLToPath(import.meta.url));
 
 function failure(code, detail = null) {
   return Object.assign(new Error(code), { code, detail });
@@ -146,19 +144,17 @@ export function exchange(address, request, timeout = 120_000) {
   });
 }
 
+let configured;
+
+/** The app registers its own absolute executable; never read it from a package. */
+export function useExecutable(file) {
+  if (typeof file !== "string" || !path.isAbsolute(file))
+    throw failure("invalid_executable");
+  configured = file;
+}
+
 async function executable() {
-  try {
-    const file = path.join(directory, "..", "launcher.json");
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16384)
-      throw failure("unsafe_launcher");
-    const launch = JSON.parse(await fs.readFile(file, "utf8"));
-    if (launch.protocol !== protocol || !path.isAbsolute(launch.executable))
-      throw failure("incompatible_launcher");
-    return launch.executable;
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
+  if (configured) return configured;
   const candidates =
     process.platform === "darwin"
       ? [

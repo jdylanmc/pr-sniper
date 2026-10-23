@@ -4,7 +4,7 @@ import {
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import { randomUUID } from "node:crypto";
-import { invoke } from "../skills/pr-sniper/scripts/control-client.mjs";
+import { invoke, useExecutable } from "./control-client.mjs";
 import * as s from "./schemas.mjs";
 
 const { z } = s;
@@ -468,6 +468,10 @@ export function createServer() {
   );
   return server;
 }
+
+// The app registers `node <app resources>/mcp/mcp-server.mjs --app <executable>`.
+const app = process.argv.indexOf("--app");
+if (app !== -1) useExecutable(process.argv[app + 1]);
 
 serveStdio(createServer, {
   legacy: "serve",

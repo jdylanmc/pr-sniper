@@ -4,7 +4,7 @@ import net from "node:net";
 import {
   exchange,
   dataRoot,
-} from "../../skills/pr-sniper/scripts/pr-sniper.mjs";
+} from "../../src-control/pr-sniper.mjs";
 
 async function server(handler) {
   const listener = net.createServer(handler);

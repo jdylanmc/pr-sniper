@@ -93,37 +93,45 @@ impl LoginRegistration {
         Ok(())
     }
 
+    fn registration(&self) -> Result<Vec<u8>, String> {
+        let metadata = fs::metadata(&self.executable)
+            .map_err(|_| "Cannot inspect the application executable.")?;
+        if !self.executable.is_absolute()
+            || !metadata.is_file()
+            || metadata.permissions().mode() & 0o111 == 0
+        {
+            return Err("Launch at login requires an absolute, executable application path.".into());
+        }
+        let mut values = Dictionary::new();
+        values.insert("Label".into(), Value::String(LABEL.into()));
+        values.insert("RunAtLoad".into(), Value::Boolean(true));
+        values.insert(
+            "ProgramArguments".into(),
+            Value::Array(vec![Value::String(
+                self.executable
+                    .to_str()
+                    .ok_or("The application path is not valid Unicode.")?
+                    .into(),
+            )]),
+        );
+        let mut bytes = Vec::new();
+        Value::Dictionary(values)
+            .to_writer_xml(&mut bytes)
+            .map_err(|_| "Cannot encode the launch-at-login registration.")?;
+        Ok(bytes)
+    }
+
+    /// Point the registration at this executable, with the same validation as
+    /// an explicit save; the saved preference is unchanged.
+    pub(super) fn register(&self) -> Result<(), String> {
+        self.replace(Some(&self.registration()?))
+    }
+
     pub fn set_enabled(&self, store: &Store, enabled: bool) -> Result<(), String> {
         let mut settings = store.load_settings()?;
         let previous = self.read()?;
         let registration = if enabled {
-            let metadata = fs::metadata(&self.executable)
-                .map_err(|_| "Cannot inspect the application executable.")?;
-            if !self.executable.is_absolute()
-                || !metadata.is_file()
-                || metadata.permissions().mode() & 0o111 == 0
-            {
-                return Err(
-                    "Launch at login requires an absolute, executable application path.".into(),
-                );
-            }
-            let mut values = Dictionary::new();
-            values.insert("Label".into(), Value::String(LABEL.into()));
-            values.insert("RunAtLoad".into(), Value::Boolean(true));
-            values.insert(
-                "ProgramArguments".into(),
-                Value::Array(vec![Value::String(
-                    self.executable
-                        .to_str()
-                        .ok_or("The application path is not valid Unicode.")?
-                        .into(),
-                )]),
-            );
-            let mut bytes = Vec::new();
-            Value::Dictionary(values)
-                .to_writer_xml(&mut bytes)
-                .map_err(|_| "Cannot encode the launch-at-login registration.")?;
-            Some(bytes)
+            Some(self.registration()?)
         } else {
             None
         };

@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
-const source = path.resolve("skills/pr-sniper/scripts/mcp-server.mjs");
+const source = path.resolve("src-tauri/resources/mcp/mcp-server.mjs");
 const queueItem = {
   id: "item",
   configuration_id: "repository",
