@@ -708,3 +708,77 @@ fn a_settled_thread_changed_after_the_merge_intent_is_saved_blocks_the_merge() {
         );
     }
 }
+
+fn sign_off(threads: &[&str], action: crate::exits::LgtmAction) -> ExitOutcome {
+    ExitOutcome::Lgtm {
+        comment: "Signed off: every finding is settled.".into(),
+        resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
+        action,
+    }
+}
+
+#[test]
+fn lgtm_applies_the_assignments_authority() {
+    use crate::exits::LgtmAction;
+    let (_root, store, item) = setup(false, false, sign_off(&[], LgtmAction::Ready), false);
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(
+        store.load_actions().unwrap().finals.is_empty(),
+        "no authority: a local hand-off, nothing to send"
+    );
+    for (action, merge) in [(LgtmAction::Approve, false), (LgtmAction::Merge, true)] {
+        let (_root, store, item) = setup(true, merge, sign_off(&[], action), false);
+        let run = adopted(&store, &item, observed());
+        let approval = run.packet.as_ref().unwrap();
+        assert_eq!(approval.comment, "Signed off: every finding is settled.");
+        assert_eq!(approval.merge, merge);
+        let effect = host::prepare_next_effect(&store, &item, NOW + 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(effect.action, Action::Approve);
+        assert!(effect
+            .body
+            .starts_with("Signed off: every finding is settled."));
+    }
+}
+
+#[test]
+fn lgtm_acts_only_after_its_own_thread_resolutions_complete() {
+    use crate::exit_writes::Phase;
+    let (_root, store, item) = setup(
+        true,
+        true,
+        sign_off(&["T1"], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    let review = store.load_reviews().unwrap().remove(0);
+    let mut write = crate::exit_writes::plan(&review, NOW).unwrap();
+    let save = |write: &crate::exit_writes::ExitWrite| {
+        let mut ledger = store.load_feedback().unwrap();
+        ledger.exit_writes = vec![write.clone()];
+        store.save_feedback(&ledger).unwrap();
+    };
+    save(&write);
+    let run = adopted(&store, &item, observed());
+    assert_eq!(
+        packet::ready(&store, &run, &observed(), Action::Approve).unwrap_err(),
+        packet::PENDING_SIGN_OFF
+    );
+    // Threads resolved, then the merge gate still applies: a partial outcome.
+    write.phase = Phase::Completed;
+    write.consumed = true;
+    save(&write);
+    assert!(packet::ready(&store, &run, &observed(), Action::Approve).is_ok());
+    let mut red = observed();
+    red.checks = Some("FAILURE".into());
+    assert!(packet::ready(&store, &run, &red, Action::Merge)
+        .unwrap_err()
+        .contains("CI"));
+    // Stopped resolutions never send the approval or merge.
+    write.phase = Phase::Tossed;
+    save(&write);
+    assert!(packet::ready(&store, &run, &observed(), Action::Approve)
+        .unwrap_err()
+        .contains("stopped"));
+}

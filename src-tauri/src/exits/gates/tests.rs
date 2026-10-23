@@ -270,13 +270,125 @@ fn roles_and_assignment_tools_intersect_with_the_gates() {
             "ready_for_human",
             "approve_pull_request",
             "approve_and_merge",
-            "panic_exit"
+            "panic_exit",
+            "lgtm"
         ]
     );
     let mut narrow = base();
     narrow.tools = vec!["ready_for_human".into(), "read_changes".into()];
     let ids: Vec<_> = offered(&narrow).iter().map(|(e, _)| e.id()).collect();
-    assert_eq!(ids, ["ready_for_human"]);
+    assert_eq!(ids, ["ready_for_human", "lgtm"]);
+    assert_eq!(lgtm_action(&narrow), LgtmAction::Ready);
+}
+
+#[test]
+fn lgtm_acts_on_the_strongest_configured_authority() {
+    assert_eq!(lgtm_action(&base()), LgtmAction::Merge);
+    let mut approve = base();
+    approve.grants.merge = false;
+    assert_eq!(lgtm_action(&approve), LgtmAction::Approve);
+    let mut no_merge_tool = base();
+    no_merge_tool.tools.retain(|t| t != "approve_and_merge");
+    assert_eq!(lgtm_action(&no_merge_tool), LgtmAction::Approve);
+    let mut none = base();
+    none.grants.approve = false;
+    none.grants.merge = false;
+    assert_eq!(lgtm_action(&none), LgtmAction::Ready);
+    assert_eq!(lgtm_denial(&none), None);
+}
+
+#[test]
+fn lgtm_is_primary_only_and_refused_on_every_hard_gate() {
+    let mut teammate = base();
+    teammate.primary = false;
+    assert_eq!(offer(&teammate, Exit::Lgtm), None);
+    assert!(lgtm_denial(&teammate).unwrap().contains("primary-only"));
+    // Own open threads are the sign-off's to resolve: judged on the state after them.
+    let mut own_open = base();
+    own_open.facts.unresolved_threads = true;
+    own_open.facts.merge_blocker = Some("Unresolved provider discussions remain.".into());
+    assert!(lgtm_denial(&own_open)
+        .unwrap()
+        .contains("not rooted in your own findings"));
+    assert!(
+        !is_offered(&own_open, Exit::Lgtm),
+        "unknown ownership: as is"
+    );
+    own_open.facts.sign_off = Some(Box::new(Facts::default()));
+    assert!(is_offered(&own_open, Exit::Lgtm));
+    type Edit = fn(&mut GateInput);
+    let cases: [(Edit, &str); 9] = [
+        (|i| i.facts.open = false, "closed"),
+        (|i| i.facts.draft = true, "draft"),
+        (|i| i.facts.conflicts = true, "conflicts"),
+        (|i| i.facts.ci = Ci::Red, "CI is red"),
+        (|i| i.facts.ci = Ci::Pending, "CI is pending"),
+        (|i| i.facts.changes_requested = true, "Changes requested"),
+        (|i| i.facts.ci = Ci::Unknown, "CI not verified green"),
+        (
+            |i| i.facts.merge_blocker = Some("Branch is out of date.".into()),
+            "out of date",
+        ),
+        (
+            |i| i.facts.required_reviews_unmet = true,
+            "Required reviews",
+        ),
+    ];
+    for (edit, expected) in cases {
+        let mut input = base();
+        edit(&mut input);
+        match offer(&input, Exit::Lgtm).unwrap() {
+            Offer::Denied(reason) => assert!(reason.contains(expected), "{reason}"),
+            Offer::Offered => panic!("lgtm offered: {expected}"),
+        }
+    }
+}
+
+#[test]
+fn sign_off_facts_resolve_only_own_threads_and_their_provider_block() {
+    let thread = |id: &str| HumanThread {
+        id: id.into(),
+        resolved: false,
+        outdated: false,
+        resolved_by: None,
+        comments: vec![],
+    };
+    let mut o = observation();
+    o.merge_state = "BLOCKED".into();
+    o.threads = vec![thread("own"), thread("theirs")];
+    let mixed = sign_off_facts(&o, &["own".into()]);
+    assert!(
+        mixed.unresolved_threads,
+        "another reviewer's thread stays open"
+    );
+    assert!(mixed.merge_blocker.is_some());
+    o.threads.pop();
+    let after = sign_off_facts(&o, &["own".into()]);
+    assert!(!after.unresolved_threads);
+    assert_eq!(after.merge_blocker, None);
+    // Behind or dirty is never read as clean.
+    o.merge_state = "BEHIND".into();
+    assert!(sign_off_facts(&o, &["own".into()])
+        .merge_blocker
+        .unwrap()
+        .contains("BEHIND"));
+    // Nothing of its own open: the provider block stands.
+    o.merge_state = "BLOCKED".into();
+    assert!(sign_off_facts(&o, &[]).merge_blocker.is_some());
+}
+
+#[test]
+fn lgtm_on_an_own_pr_follows_include_self() {
+    let mut own = base();
+    own.facts.author_is_acting = true;
+    assert!(lgtm_denial(&own).unwrap().contains("Include self is off"));
+    own.grants.include_self = true;
+    assert_eq!(lgtm_denial(&own), None);
+    let mut approve_only = own.clone();
+    approve_only.grants.merge = false;
+    assert!(lgtm_denial(&approve_only)
+        .unwrap()
+        .contains("self-approval"));
 }
 
 #[test]

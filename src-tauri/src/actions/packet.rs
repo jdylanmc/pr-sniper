@@ -67,14 +67,17 @@ fn exit_comment(run: &ReviewRun) -> Option<(String, bool)> {
 fn sign_off_written(store: &Store, run: &FinalReview) -> Result<Option<String>, String> {
     use crate::exit_writes::Phase;
     if !matches!(
-        run.execution.result.as_ref().and_then(|r| r.output.exit.as_ref()),
+        run.execution
+            .result
+            .as_ref()
+            .and_then(|r| r.output.exit.as_ref()),
         Some(ExitOutcome::Lgtm { .. })
     ) {
         return Ok(None);
     }
-    let Some(write) = crate::exit_writes::plan(&run.execution, 0).map(|_| {
-        crate::exit_writes::for_review(store, &run.execution.operation.id)
-    }) else {
+    let Some(write) = crate::exit_writes::plan(&run.execution, 0)
+        .map(|_| crate::exit_writes::for_review(store, &run.execution.operation.id))
+    else {
         return Ok(None);
     };
     Ok(match write?.map(|w| w.phase) {
@@ -90,7 +93,11 @@ pub const PENDING_SIGN_OFF: &str = "The sign-off's own thread resolutions are no
 
 /// The exit's state is still the newest and unconsumed, or consumed only by this
 /// sign-off's own completed thread resolutions (which baseline just those writes).
-fn live(states: &crate::pr_state::PrStates, writes: &[crate::exit_writes::ExitWrite], run: &ReviewRun) -> bool {
+fn live(
+    states: &crate::pr_state::PrStates,
+    writes: &[crate::exit_writes::ExitWrite],
+    run: &ReviewRun,
+) -> bool {
     let seq = consume::state_seq(&run.job);
     states.get(&Binding::job(&run.job)).is_some_and(|r| {
         r.state_seq == seq

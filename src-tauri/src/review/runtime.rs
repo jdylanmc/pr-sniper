@@ -1,5 +1,5 @@
-use super::{tools, Events, Failure, ReviewResult, Selection};
 use super::duck::Unserved;
+use super::{tools, Events, Failure, ReviewResult, Selection};
 use crate::storage::diagnostics::{
     Event as DiagnosticEvent, FailureKind, Outcome, Paths, ToolName,
 };
@@ -416,13 +416,15 @@ impl<T: Transport> ReadTools<T> {
             .ok_or(Unserved::NotRead)?;
         let served = |start: usize, end: usize| {
             self.served.lock().is_ok_and(|served| {
-                served.get(&key).is_some_and(|span| {
-                    span.ranges.iter().any(|(a, b)| *a <= start && *b >= end)
-                })
+                served
+                    .get(&key)
+                    .is_some_and(|span| span.ranges.iter().any(|(a, b)| *a <= start && *b >= end))
             })
         };
         let Some(line) = evidence.line else {
-            return if served(0, blob.text.len()) {
+            return if evidence.end_line.is_some() {
+                Err(Unserved::BadRange)
+            } else if served(0, blob.text.len()) {
                 Ok(())
             } else {
                 Err(Unserved::NoLine)
@@ -443,13 +445,14 @@ impl<T: Transport> ReadTools<T> {
             }
             offset += text.len();
             if number == end_line {
-                if let Some((start, _)) = range {
-                    range = Some((start, offset));
-                }
                 break;
             }
         }
-        let Some((start, end)) = range.filter(|(start, end)| end > start) else {
+        // An end past the last line means "through the end of the file".
+        let Some((start, end)) = range
+            .map(|(start, _)| (start, offset))
+            .filter(|(start, end)| end > start)
+        else {
             return Err(Unserved::PastEnd(lines));
         };
         if served(start, end) {

@@ -103,7 +103,23 @@ where
                 .after(super::Resume::NextPoll),
         );
     }
-    let base = gate_input(run, Facts::from_observation(&observation))?;
+    let mut facts = Facts::from_observation(&observation);
+    let own_open = {
+        let mut threads = reads::conversation(&observation).threads;
+        super::findings::stamp_ownership(
+            &mut threads,
+            &ownership,
+            &run.assignment_id,
+            &run.job.account_id,
+        );
+        threads
+            .into_iter()
+            .filter(|t| t.mine && !t.resolved)
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+    };
+    facts.sign_off = Some(Box::new(gates::sign_off_facts(&observation, &own_open)));
+    let base = gate_input(run, facts)?;
     let exits = gates::offered(&base);
     let offered: Vec<_> = exits
         .iter()
@@ -318,13 +334,12 @@ where
         if observation.state != "OPEN" {
             return Err(Refusal::Moved("PR is no longer open. Stop.".into()));
         }
-        let input = GateInput {
+        let mut input = GateInput {
             facts: Facts::from_observation(&observation),
             ..base.clone()
         };
-        gates::check_call(&input, call).map_err(Refusal::Denied)?;
-        // Sign-off: only this assignment's verified own threads are resolved; any
-        // other open thread, and every hard gate of its authority, refuses it.
+        // Sign-off: only this assignment's verified own threads are resolved; it is
+        // judged on the state after them, so any other open thread refuses it.
         if let crate::exits::ExitCall::Lgtm {
             resolve_own_threads,
             action,
@@ -333,7 +348,7 @@ where
         {
             if *action != gates::lgtm_action(&base) {
                 return Err(Refusal::Denied(
-                    "Sign-off authority unavailable now. Try again.".into(),
+                    "Sign-off authority changed. Try again.".into(),
                 ));
             }
             if !resolve_own_threads.is_empty() && !base.grants.reply {
@@ -355,15 +370,12 @@ where
                     ));
                 }
             }
-            let mut fresh = input.clone();
-            fresh.facts.unresolved_threads = observation
-                .threads
-                .iter()
-                .any(|t| !t.resolved && !resolve_own_threads.contains(&t.id));
-            if let Some(reason) = gates::lgtm_denial(&fresh) {
-                return Err(Refusal::Denied(reason));
-            }
+            input.facts.sign_off = Some(Box::new(gates::sign_off_facts(
+                &observation,
+                resolve_own_threads,
+            )));
         }
+        gates::check_call(&input, call).map_err(Refusal::Denied)?;
         // A reply or resolve must name a thread of this PR now. Caught here, the agent
         // fixes the id in the loop instead of the host tossing the whole exit later.
         if let crate::exits::ExitCall::LeaveComments {

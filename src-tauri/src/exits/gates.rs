@@ -42,6 +42,9 @@ pub struct Facts {
     /// Gates remaining after only observable external prerequisites are satisfied.
     pub wait_approve_blocker: Option<String>,
     pub wait_merge_blocker: Option<String>,
+    /// The facts once a sign-off resolved its own open threads ([`sign_off_facts`]).
+    /// `None`: unknown, so a sign-off is judged on the facts as they are.
+    pub sign_off: Option<Box<Facts>>,
 }
 
 impl Default for Facts {
@@ -60,6 +63,7 @@ impl Default for Facts {
             merge_blocker: None,
             wait_approve_blocker: None,
             wait_merge_blocker: None,
+            sign_off: None,
         }
     }
 }
@@ -130,8 +134,30 @@ impl Facts {
             merge_blocker: o.blocker(Action::Merge),
             wait_approve_blocker: actionable.blocker(Action::Approve),
             wait_merge_blocker: actionable.blocker(Action::Merge),
+            sign_off: None,
         }
     }
+}
+
+/// The facts as they will be once a sign-off resolved `own` (this assignment's open
+/// threads): those threads resolved, and a provider merge state `BLOCKED` while they
+/// were open read as clean, since resolving them may be what unblocks it. Every other
+/// gate is unchanged; the action re-reads the real state before approving or merging.
+pub fn sign_off_facts(o: &Observation, own: &[String]) -> Facts {
+    let mut after = o.clone();
+    let mut resolved = false;
+    for thread in after
+        .threads
+        .iter_mut()
+        .filter(|t| !t.resolved && own.contains(&t.id))
+    {
+        thread.resolved = true;
+        resolved = true;
+    }
+    if resolved && after.merge_state == "BLOCKED" && after.threads.iter().all(|t| t.resolved) {
+        after.merge_state = "CLEAN".into();
+    }
+    Facts::from_observation(&after)
 }
 
 fn ci(o: &Observation) -> Ci {
@@ -186,12 +212,14 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     approve_denial(input).map_or(Offer::Offered, Offer::Denied)
                 }
                 Exit::ApproveAndMerge => merge_denial(input).map_or(Offer::Offered, Offer::Denied),
-                // Own open threads are the sign-off's to resolve; others' are checked
-                // against fresh ownership when it is called.
+                // Judged on the state after its own resolutions; ownership is
+                // re-verified on a fresh read when it is called.
                 Exit::Lgtm => {
-                    let mut own = input.clone();
-                    own.facts.unresolved_threads = false;
-                    lgtm_denial(&own).map_or(Offer::Offered, Offer::Denied)
+                    let mut after = input.clone();
+                    if let Some(facts) = &f.sign_off {
+                        after.facts = (**facts).clone();
+                    }
+                    lgtm_denial(&after).map_or(Offer::Offered, Offer::Denied)
                 }
                 Exit::Wait => {
                     if wait_reasons(input).is_empty() {
@@ -313,8 +341,7 @@ pub fn lgtm_action(input: &GateInput) -> LgtmAction {
     }
 }
 
-/// Why a sign-off is refused on these facts. `facts.unresolved_threads` must
-/// already exclude the own threads the sign-off resolves.
+/// Why a sign-off is refused on these facts: the facts after its own resolutions.
 pub fn lgtm_denial(input: &GateInput) -> Option<String> {
     let f = &input.facts;
     Some(if !input.primary {

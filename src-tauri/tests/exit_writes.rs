@@ -1151,3 +1151,74 @@ fn a_change_while_the_resolve_lands_is_undone_and_not_completed() {
     assert_eq!(resolve.state, StepState::Planned);
     assert!(w.error.as_deref().unwrap().contains("undone"));
 }
+
+/// The primary's `lgtm` on `threads`, each anchored to its current snapshot.
+fn sign_off_write(threads: &[&str]) -> ExitWrite {
+    let mut review = fake::review(json!([]), json!([]), json!([]), &fake::settings());
+    let result = review.result.as_mut().unwrap();
+    result.output.exit = Some(pr_sniper_lib::exits::ExitOutcome::Lgtm {
+        comment: "Signed off: every finding is settled.".into(),
+        resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
+        action: pr_sniper_lib::exits::LgtmAction::Merge,
+    });
+    result.finding_dispositions = threads
+        .iter()
+        .map(|id| {
+            let comments = match *id {
+                "T2" => json!({"300":hash("Please rename")}),
+                _ => json!({"100":hash("Root finding"),"101":hash("Why?")}),
+            };
+            serde_json::from_value(json!({
+                "thread_id":id,"disposition":"signed_off","head_sha":HEAD,"base_sha":"b".repeat(40),
+                "rationale":"Signed off: every finding is settled.","evidence":[],
+                "anchor":{"base_sha":"b".repeat(40),"blobs":{},"manifests":"m","comments":comments}
+            }))
+            .unwrap()
+        })
+        .collect();
+    exit_writes::plan(&review, 100).unwrap()
+}
+
+#[test]
+fn a_sign_off_replies_on_and_resolves_only_its_own_threads_without_fixed_evidence() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = sign_off_write(&["T1"]);
+    assert_eq!(w.sign_off, Some(pr_sniper_lib::exits::LgtmAction::Merge));
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+    assert!(wire.thread("T1").resolved);
+
+    // Another reviewer's thread is never the sign-off's to resolve.
+    let wire = self::wire();
+    let mut env = Env::new(&wire);
+    let mut w = sign_off_write(&["T1", "T2"]);
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+    assert!(!wire.thread("T1").resolved);
+}
+
+#[test]
+fn a_sign_off_is_refused_when_its_thread_changed_since_the_review() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    wire.0.lock().unwrap().threads[0]
+        .comments
+        .push(human_concern());
+    let mut w = sign_off_write(&["T1"]);
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+
+    // A concern landing after the audit reply stops the resolve.
+    let wire = self::wire();
+    let mut env = Env::new(&wire);
+    env.on_attempted = Some(human_concern());
+    let mut w = sign_off_write(&["T1"]);
+    drive(&mut env, &mut w);
+    assert_eq!(wire.log(), ["reply:100"]);
+    assert!(!wire.thread("T1").resolved);
+    assert_ne!(w.phase, Phase::Completed);
+}

@@ -579,8 +579,10 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
             && a.evidence.iter().all(|e| {
                 !e.path.trim().is_empty()
                     && e.side.as_deref().unwrap_or("head") == "head"
-                    && e.line
-                        .is_some_and(|line| line > 0 && e.end_line.unwrap_or(line) >= line)
+                    // No line: the whole head file was served (see `evidence_served`).
+                    && e.line.map_or(e.end_line.is_none(), |line| {
+                        line > 0 && e.end_line.unwrap_or(line) >= line
+                    })
             })
     });
     if valid {

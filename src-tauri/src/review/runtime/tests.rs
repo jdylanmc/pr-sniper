@@ -1079,12 +1079,104 @@ fn fixed_evidence_must_reference_head_lines_actually_served_not_merely_cached() 
         .execute("read_source", json!({"side":"head","path":"source.rs"}))
         .unwrap();
     assert!(tools.served_evidence(&evidence));
+    // An end past the last line reads as "through the end of the file".
+    let mut past_end = evidence.clone();
+    past_end.end_line = Some(2);
+    assert!(tools.served_evidence(&past_end));
     let mut invalid = evidence.clone();
-    invalid.end_line = Some(2);
-    assert!(!tools.served_evidence(&invalid));
+    invalid.line = Some(2);
+    invalid.end_line = None;
+    assert_eq!(
+        tools.evidence_served(&invalid),
+        Err(crate::review::duck::Unserved::PastEnd(1))
+    );
     invalid = evidence;
     invalid.side = Some("base".into());
     assert!(!tools.served_evidence(&invalid));
+}
+
+/// A head file larger than one default page.
+struct LongSource;
+const LONG_LINES: usize = 784;
+fn long_text() -> String {
+    (1..=LONG_LINES)
+        .map(|n| format!("// line {n:04} of the long head source file.\n"))
+        .collect()
+}
+impl Transport for LongSource {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        let text = long_text();
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&json!({
+                "sha":path.rsplit('/').next().unwrap(),"size":text.len(),"encoding":"base64","content":STANDARD.encode(&text)
+            }))
+            .unwrap(),
+        })
+    }
+}
+
+/// Live PR #207: the primary paged a whole head file with read_source, then cited it
+/// as the Rubber Duck had (a ref with no line) and cited lines through a range ending
+/// past the file's last line. Both were refused as "not read in this attempt".
+#[test]
+fn whole_file_and_past_end_refs_count_once_the_head_file_was_served() {
+    let request = request(true);
+    let tools = ReadTools::new(
+        None,
+        request.context,
+        Arc::new(GithubClient::new(LongSource)),
+        request.repository_name,
+        Arc::new(|| Ok(())),
+    );
+    let whole = crate::review::duck::EvidenceRef {
+        path: "source.rs".into(),
+        side: Some("head".into()),
+        line: None,
+        end_line: None,
+    };
+    let tail = crate::review::duck::EvidenceRef {
+        line: Some(700),
+        end_line: Some(800),
+        ..whole.clone()
+    };
+    let first = tools
+        .execute("read_source", json!({"side":"head","path":"source.rs"}))
+        .unwrap();
+    assert_eq!(first["complete"], false, "the file spans two pages");
+    assert_eq!(
+        tools.evidence_served(&whole),
+        Err(crate::review::duck::Unserved::NoLine)
+    );
+    tools
+        .execute(
+            "read_source",
+            json!({"side":"head","path":"source.rs","offset":first["next_offset"]}),
+        )
+        .unwrap();
+    assert_eq!(tools.evidence_served(&whole), Ok(()));
+    assert_eq!(tools.evidence_served(&tail), Ok(()));
+    let reason = crate::review::duck::unserved(
+        &[
+            tail.clone(),
+            crate::review::duck::EvidenceRef {
+                line: Some(LONG_LINES as u64 + 1),
+                end_line: None,
+                ..whole.clone()
+            },
+        ],
+        |e| tools.evidence_served(e),
+    )
+    .unwrap();
+    assert!(
+        reason.contains(&format!(
+            "source.rs:{} (past end of file ({LONG_LINES} lines))",
+            LONG_LINES + 1
+        )),
+        "{reason}"
+    );
+    assert!(!reason.contains("source.rs:700"), "{reason}");
 }
 
 #[tokio::test]

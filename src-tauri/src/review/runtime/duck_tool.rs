@@ -404,12 +404,16 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
 
     /// A verify_fixed claim whose evidence `fixed` would refuse: no call is spent.
     fn unusable_claim(&self, input: &DuckInput) -> Option<String> {
-        let check = self.claim_evidence.as_ref().filter(|_| input.verify_fixed)?;
+        let check = self
+            .claim_evidence
+            .as_ref()
+            .filter(|_| input.verify_fixed)?;
         if input.evidence.is_empty() {
             return Some("verify_fixed needs the current-head evidence you read; fixed is refused without it. No duck call was spent.".into());
         }
-        duck::unserved(&input.evidence, |e| check(e))
-            .map(|reason| format!("{reason} fixed would be refused with this evidence. No duck call was spent."))
+        duck::unserved(&input.evidence, |e| check(e)).map(|reason| {
+            format!("{reason} fixed would be refused with this evidence. No duck call was spent.")
+        })
     }
 
     fn refused(&self, failure: DuckFailure) {

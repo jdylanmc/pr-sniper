@@ -416,7 +416,7 @@ impl Unserved {
             Self::NotHead => "side must be head".into(),
             Self::UnknownPath => "path not in head".into(),
             Self::NoLine => "no line and the whole head file was not read".into(),
-            Self::BadRange => "line must be >= 1 and end_line >= line".into(),
+            Self::BadRange => "line must be >= 1, end_line >= line, and end_line needs line".into(),
             Self::PastEnd(lines) => format!("past end of file ({lines} lines)"),
             Self::NotRead => "those head lines were not served".into(),
         }
@@ -439,7 +439,11 @@ pub(crate) fn unserved(
 ) -> Option<String> {
     let failed: Vec<String> = refs
         .iter()
-        .filter_map(|e| served(e).err().map(|r| format!("{} ({})", cite(e), r.text())))
+        .filter_map(|e| {
+            served(e)
+                .err()
+                .map(|r| format!("{} ({})", cite(e), r.text()))
+        })
         .collect();
     (!failed.is_empty()).then(|| format!(
         "Evidence not served in this attempt: {}. Read those head lines with read_source side=head or read_changes part=after (patch does not count), or cite lines you read; a ref without line needs the whole head file read.",

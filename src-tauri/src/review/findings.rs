@@ -632,14 +632,19 @@ impl Contract {
         if !assessments.is_empty() {
             return Err("lgtm takes no finding_dispositions; the host records your sign-off on every own finding.".into());
         }
-        if self
-            .corrections
-            .iter()
-            .any(|c| !self.threads.iter().any(|t| t.id == c.thread_id && c.confirmed_in(t)))
-        {
+        if self.corrections.iter().any(|c| {
+            !self
+                .threads
+                .iter()
+                .any(|t| t.id == c.thread_id && c.confirmed_in(t))
+        }) {
             return Err("An earlier correction outcome is unresolved; lgtm cannot proceed. Use ready_for_human.".into());
         }
-        let own: Vec<_> = self.threads.iter().filter(|t| t.mine && !t.carried).collect();
+        let own: Vec<_> = self
+            .threads
+            .iter()
+            .filter(|t| t.mine && !t.carried)
+            .collect();
         *assessments = own
             .iter()
             .map(|t| Assessment {
