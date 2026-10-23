@@ -23,8 +23,25 @@ Review detail grows without bound. Wrong deletion loses evidence. A database add
 
 ## Amendment ([ADR 0021](0021-review-packet.md))
 
-- Cleanup is human-triggered: Reviewed **Clean** per PR and **Clean all**. No timer deletes terminal detail. Terminal PRs only.
+- Cleanup is human-triggered: Reviewed **Clean** per PR and **Clean all**. No timer deletes terminal detail. Terminal PRs only. (Superseded for closed and merged PRs: see Automatic terminal pruning below.)
 - Also deletes the PR's `pr-state.json` record. Uncertain publication and action records stay (ADR 0015 reconciliation). Ad hoc scope, owner review requested.
+
+## Review segments (2026-10-22)
+
+- `reviews.json` becomes a manifest of content-addressed run files under `state/reviews/`; repeated `selection` and `feedback_context` snapshots are stored once. Still typed JSON; not a database, per-PR store or archive.
+- Saving one run's progress writes that run and the manifest. Cleanup removes the same runs, then their files.
+
+## Automatic terminal pruning (2026-10-22)
+
+Supersedes the ADR 0021 amendment's "human-triggered only; no timer" for closed and merged PRs (owner decision: old reviews are dropped once the PR is no longer open).
+
+- Scheduled maintenance and each finished poll run the cleanup above for PRs observed closed or merged, at most a few per pass, once their workers settle. Same receipts, journal, fences and reopen rules; uncertain publication and action records still stay.
+- A PR needing provenance repair is skipped, not reported each pass. **Clean** / **Clean all** remain for on-demand cleanup and report it.
+- Open PRs are never pruned. Reopen = new iteration with fresh state.
+- Pruning waits for the provider-mutation owner and for exit writes that are planned, verified, uncertain or have an attempted step; feedback saves reject cleaned exit writes. Poll and lifecycle reads carry their prepared second plus a process-monotonic sequence; a read older than a PR's latest accepted observation is ignored, so a stale Closed never undoes a reopen.
+- A receipt has two lifetimes. Detail (work and operation IDs, completions, publication and effect receipts, notice IDs) is kept for 30 days and for at most the 500 newest receipts. The safety tombstone (scope and iteration watermark, enqueue watermark, ordinals, item IDs, mention keys, own-comment proofs) is never evicted by count and is kept for a year. Notifications stay fenced by their destination item after notice IDs go. About 0.8–1.6 KB per PR; 10,000 PRs ≈ 8–16 MB.
+- Approve is idempotent at the provider: an approval this account already gave on the head is the receipt, never posted twice.
+- `monitoring.json` keeps only the 64 most recent retired poll operations (never read back).
 
 ## Local stale-queue dismissal (2026-10-19)
 

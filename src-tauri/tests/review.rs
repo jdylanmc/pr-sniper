@@ -190,7 +190,9 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         feedback_context: None,
         key: review::key(&job, "assignment"),
         assignment_id: "assignment".into(),
-        selection: Selection::resolve(&settings(), &job, "assignment").unwrap(),
+        selection: Selection::resolve(&settings(), &job, "assignment")
+            .unwrap()
+            .into(),
         operation: JobOperation::review(&job, 100),
         job,
         manual_start: true,

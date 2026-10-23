@@ -1,3 +1,4 @@
+import { restoreShared } from "./interned";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mountSettings } from "./settings";
@@ -1186,7 +1187,7 @@ export async function mountPanel(app: HTMLElement) {
     try {
       const [initialSetup, initialWork] = await Promise.all([
         invoke<SetupReview>("monitoring_setup_review"),
-        invoke<MonitoringSnapshot>("monitoring_snapshot"),
+        invoke("monitoring_snapshot").then(restoreShared<MonitoringSnapshot>),
       ]);
       if (!current()) return;
       snapshot = initialWork;

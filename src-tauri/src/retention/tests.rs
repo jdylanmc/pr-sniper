@@ -89,6 +89,16 @@ fn pull(number: u64, state: Lifecycle) -> PullRequest {
 
 fn scan(store: &Store, monitor: &mut Monitor, pulls: Vec<PullRequest>, now: i64) {
     let ticket = monitor.prepare_checks(store, now, true).unwrap().remove(0);
+    finish_scan(store, monitor, ticket, pulls, now);
+}
+
+fn finish_scan(
+    store: &Store,
+    monitor: &mut Monitor,
+    ticket: crate::monitoring::PollTicket,
+    pulls: Vec<PullRequest>,
+    now: i64,
+) {
     monitor
         .finish(
             store,
@@ -125,7 +135,7 @@ fn completed(store: &Store, job: &QueueJob) -> ReviewRun {
         failed_duck: None,
         attempt_ducks: Vec::new(),
         feedback_context: None, key: crate::review::key(job, ASSIGNMENT), assignment_id: ASSIGNMENT.into(),
-        job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap(),
+        job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap().into(),
         operation, manual_start: true, trust_confirmed: true, phase: "Complete".into(), error: None,
         result: Some(serde_json::from_value(json!({
             "reviewed_base_sha":"b".repeat(40),
@@ -448,8 +458,8 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
     assert!(store.load_queue().unwrap().is_empty());
     assert!(store.load_follow_ups().unwrap().is_empty());
     assert!(store.load_feedback().unwrap().records.is_empty());
-    for entry in std::fs::read_dir(root.path().join("state")).unwrap() {
-        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+    for file in Store::saved_files(&root.path().join("state")) {
+        let bytes = std::fs::read(file).unwrap();
         assert!(!String::from_utf8(bytes).unwrap().contains("BULKY-"));
     }
     assert_eq!(
@@ -463,9 +473,8 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
     );
     assert!(receipts.receipts[0].follow_up_keys.contains(&follow.key));
     assert!(receipts.receipts[0]
-        .operations
-        .iter()
-        .any(|o| o.id == review.operation.id));
+        .operation_ids
+        .contains(&review.operation.id));
     assert!(matches!(
         detail(
             &store,
@@ -922,4 +931,425 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
     coordinator.release(&key, &old_operation).unwrap();
     assert!(coordinator.settle_terminal(&store).unwrap());
     assert_eq!(maintain(&store, true).unwrap(), 1);
+}
+
+#[test]
+fn automatic_prune_drops_closed_and_merged_prs_only_and_reopen_starts_fresh() {
+    for lifecycle in [Lifecycle::Closed, Lifecycle::Merged] {
+        let (_root, store, mut monitor) = fixture();
+        let (review, publication, follow) = evidence(&store);
+        // Open: never pruned.
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+        assert_eq!(store.load_reviews().unwrap(), vec![review.clone()]);
+        assert_eq!(store.load_publications().unwrap(), vec![publication]);
+        assert_eq!(store.load_follow_ups().unwrap(), vec![follow]);
+        scan(
+            &store,
+            &mut monitor,
+            vec![pull(1, lifecycle.clone())],
+            NOW + 5,
+        );
+        // Workers not settled: nothing yet; a zero budget defers it.
+        assert_eq!(prune_terminal(&store, false, PRUNE_PER_PASS).unwrap(), 0);
+        assert_eq!(prune_terminal(&store, true, 0).unwrap(), 0);
+        assert!(!store.review_evidence().unwrap().is_empty());
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+        assert!(store.review_evidence().unwrap().is_empty());
+        assert!(store.load_queue().unwrap().is_empty());
+        assert!(store.load_follow_ups().unwrap().is_empty());
+        assert_eq!(load(&store).unwrap().receipts.len(), 1);
+        // A reopened PR is a new iteration with fresh state.
+        scan(
+            &store,
+            &mut monitor,
+            vec![pull(1, Lifecycle::Open)],
+            NOW + 10,
+        );
+        let latest = store.load_queue().unwrap().last().unwrap().clone();
+        assert_eq!(latest.work.as_ref().unwrap().iteration, 2);
+        assert_ne!(crate::review::key(&latest, ASSIGNMENT), review.key);
+    }
+}
+
+#[test]
+fn automatic_prune_keeps_detail_needing_repair_without_failing_the_pass() {
+    let (root, store, mut monitor) = fixture();
+    evidence(&store);
+    std::fs::remove_file(root.path().join("state/publications.json")).unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.load_follow_ups().unwrap().is_empty());
+    assert!(!store.review_evidence().unwrap().is_empty());
+    assert!(load(&store).unwrap().pending.is_none());
+}
+
+#[test]
+fn an_older_closed_read_finishing_after_a_newer_reopen_is_ignored() {
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
+    // Overlapping reads: the older still sees Closed, the newer the reopen.
+    let older = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = older.clone();
+    newer.prepared_at = NOW + 20;
+    finish_scan(
+        &store,
+        &mut monitor,
+        newer,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 20,
+    );
+    finish_scan(
+        &store,
+        &mut monitor,
+        older,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 30,
+    );
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert!(!tracked.terminal_observed);
+    assert_eq!(tracked.iteration, 2);
+    assert_eq!(tracked.observed_at, NOW + 20);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(store
+        .review_evidence()
+        .unwrap()
+        .iter()
+        .any(|run| run.operation.id == review.operation.id));
+}
+
+fn exit_write(
+    job: &QueueJob,
+    phase: crate::exit_writes::Phase,
+    step: crate::exit_writes::StepState,
+) -> crate::exit_writes::ExitWrite {
+    crate::exit_writes::ExitWrite {
+        id: "exit-1".into(),
+        review_operation_id: "operation".into(),
+        job: job.clone(),
+        assignment_id: ASSIGNMENT.into(),
+        comments_first: false,
+        published: false,
+        steps: vec![crate::exit_writes::Step {
+            kind: crate::exit_writes::StepKind::Reply,
+            thread_id: "thread".into(),
+            body: "Reply".into(),
+            root_id: Some("root".into()),
+            revision: None,
+            state: step,
+            receipt: (step == crate::exit_writes::StepState::Done).then(|| "comment".into()),
+            resolution_evidence: None,
+        }],
+        phase,
+        operation: JobOperation::review(job, NOW),
+        uncertain: false,
+        error: None,
+        consumed: false,
+        reviewed_base_sha: None,
+        sign_off: None,
+    }
+}
+
+fn save_exit_write(store: &Store, write: &crate::exit_writes::ExitWrite) -> Result<(), String> {
+    // As the exit-write worker saves: load, replace by id, save.
+    let mut ledger = store.load_feedback()?;
+    ledger.exit_writes.retain(|w| w.id != write.id);
+    ledger.exit_writes.push(write.clone());
+    store.save_feedback(&ledger)
+}
+
+#[test]
+fn pruning_waits_for_exit_writes_and_a_late_save_cannot_restore_them() {
+    use crate::exit_writes::{Phase, StepState};
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    save_exit_write(
+        &store,
+        &exit_write(&review.job, Phase::Planned, StepState::Planned),
+    )
+    .unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    // Before the provider mutation, and after its intent was saved.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    save_exit_write(
+        &store,
+        &exit_write(&review.job, Phase::Verified, StepState::Attempted),
+    )
+    .unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    let mut uncertain = exit_write(&review.job, Phase::Failed, StepState::Done);
+    uncertain.uncertain = true;
+    save_exit_write(&store, &uncertain).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.review_evidence().unwrap().is_empty());
+    // Every effect confirmed but not yet consumed: still owed locally.
+    let mut done = exit_write(&review.job, Phase::Completed, StepState::Done);
+    save_exit_write(&store, &done).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    // Consumed: settled, pruned once, receipt retained.
+    done.consumed = true;
+    save_exit_write(&store, &done).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert_eq!(load(&store).unwrap().receipts.len(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+    // A worker finishing late cannot resurrect the cleaned write.
+    assert!(save_exit_write(&store, &done).is_err());
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
+fn pruning_waits_for_an_lgtm_sign_off_resolving_its_threads() {
+    use crate::exit_writes::{Phase, Step, StepKind, StepState};
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let mut write = exit_write(&review.job, Phase::Verified, StepState::Done);
+    write.sign_off = Some(crate::exits::LgtmAction::Approve);
+    write.steps.push(Step {
+        kind: StepKind::Resolve,
+        body: String::new(),
+        root_id: None,
+        state: StepState::Attempted,
+        receipt: None,
+        ..write.steps[0].clone()
+    });
+    save_exit_write(&store, &write).unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    // A resolution may be landing; its approve final has not been adopted yet.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    write.phase = Phase::Completed;
+    write.steps[1].state = StepState::Done;
+    write.steps[1].receipt = Some("resolved".into());
+    save_exit_write(&store, &write).unwrap();
+    // Resolved but unconsumed: its approve/merge final is not adopted yet.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    write.consumed = true;
+    save_exit_write(&store, &write).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
+fn a_completed_unconsumed_sign_off_survives_a_restart_before_its_consume() {
+    use crate::exit_writes::{Phase, StepState};
+    let (root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let mut write = exit_write(&review.job, Phase::Completed, StepState::Done);
+    write.sign_off = Some(crate::exits::LgtmAction::Merge);
+    save_exit_write(&store, &write).unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    drop(store);
+    // Restart: maintenance runs before the exit-write coordinator consumes it.
+    let store = Store::new(root.path().into());
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.review_evidence().unwrap().is_empty());
+    let saved = store.load_feedback().unwrap().exit_writes;
+    assert!(saved.iter().any(|w| w.id == write.id && !w.consumed));
+    // The consume is durable: now the PR is settled and pruned.
+    write.consumed = true;
+    save_exit_write(&store, &write).unwrap();
+    let store = Store::new(root.path().into());
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
+fn evicted_detail_keeps_the_safety_tombstone_of_a_reopened_pr() {
+    let (_root, store, mut monitor) = fixture();
+    let (review, publication, follow) = evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    let mut ledger = load(&store).unwrap();
+    let pruned = ledger.receipts[0].clone();
+    assert!(pruned.operations.is_empty() && !pruned.operation_ids.is_empty());
+    // 600 newer cleanups push this PR's detail out of the detail window.
+    for n in 0..600 {
+        let mut receipt = pruned.clone();
+        receipt.scope.pull_request_id = format!("newer-{n}");
+        receipt.scope.iteration_id = format!("iteration-newer-{n}");
+        receipt.cleaned_at = pruned.cleaned_at + 1 + n;
+        ledger.receipts.push(receipt);
+    }
+    save(&store, &ledger).unwrap();
+    let saved = load(&store).unwrap();
+    assert_eq!(
+        saved.receipts.len(),
+        601,
+        "no tombstone is evicted by count"
+    );
+    let tombstone = saved
+        .receipts
+        .iter()
+        .find(|r| r.scope.pull_request_id == review.job.pull_request_id)
+        .unwrap();
+    assert!(!tombstone.has_detail());
+    assert_eq!(tombstone.scope, pruned.scope);
+    assert_eq!(tombstone.owned, pruned.owned);
+    assert_eq!(tombstone.items, pruned.items);
+    assert!(tombstone.follow_up_keys.contains(&follow.key));
+    assert_eq!(
+        saved.receipts.iter().filter(|r| r.has_detail()).count(),
+        DETAIL_RECEIPTS
+    );
+    // A late save for the old iteration is still refused.
+    assert!(store.save_reviews(std::slice::from_ref(&review)).is_err());
+    // Reopened: a new iteration whose review still recognizes PR Sniper's
+    // earlier comments as its own (no re-posting them as new findings).
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 10,
+    );
+    let reopened = store.load_queue().unwrap().last().unwrap().clone();
+    assert_eq!(reopened.work.as_ref().unwrap().iteration, 2);
+    let proofs = crate::review::findings::proofs(&store, &reopened, ASSIGNMENT).unwrap();
+    assert!(proofs
+        .iter()
+        .any(|proof| proof.publication_id == publication.id && proof.root_ids == ["100"]));
+}
+
+#[test]
+fn ten_thousand_tombstones_stay_small() {
+    let (root, store, mut monitor) = fixture();
+    evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    let mut ledger = load(&store).unwrap();
+    let mut tombstone = ledger.receipts[0].clone();
+    tombstone.drop_detail();
+    // A PR with one published batch: scope, watermarks, ordinals, item and
+    // mention identities and the own-comment proof.
+    let bytes = serde_json::to_vec(&tombstone).unwrap().len();
+    assert!(bytes <= 1_600, "{bytes}");
+    ledger.receipts = (0..10_000)
+        .map(|n| {
+            let mut receipt = tombstone.clone();
+            receipt.scope.pull_request_id = format!("{n}");
+            receipt
+        })
+        .collect();
+    save(&store, &ledger).unwrap();
+    let file = std::fs::metadata(root.path().join("state/retention.json"))
+        .unwrap()
+        .len();
+    assert!(file <= 16_000_000, "{file}");
+    assert_eq!(load(&store).unwrap().receipts.len(), 10_000);
+    eprintln!("tombstone {bytes} B; 10,000 PRs {file} B");
+}
+
+#[test]
+fn reads_prepared_in_the_same_second_keep_their_order() {
+    // Poll variant: both reads prepared at the same second.
+    let (_root, store, mut monitor) = fixture();
+    evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
+    let older = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = older.clone();
+    newer.sequence = crate::monitoring::next_observation();
+    assert_eq!(newer.prepared_at, older.prepared_at);
+    finish_scan(
+        &store,
+        &mut monitor,
+        newer,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 10,
+    );
+    finish_scan(
+        &store,
+        &mut monitor,
+        older,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 10,
+    );
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert_eq!(tracked.iteration, 2);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+
+    // Lifecycle-read variant: prepared before a same-second poll that saw
+    // the PR still open, finishing after it.
+    let (_root, store, mut monitor) = fixture();
+    evidence(&store);
+    let current = store.load_queue_state().unwrap().tracked.remove(0);
+    let lifecycle = crate::monitoring::LifecycleTicket {
+        configuration_id: current.configuration_id.clone(),
+        name: "example/repo".into(),
+        provider_account_id: current.account_id.clone(),
+        provider_repository_id: current.repository_id.clone(),
+        tracked: vec![(current.pull_request_id.clone(), current.number)],
+        iterations: [(current.pull_request_id.clone(), current.iteration)].into(),
+        prepared_at: NOW + 10,
+        sequence: crate::monitoring::next_observation(),
+    };
+    let poll = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    finish_scan(
+        &store,
+        &mut monitor,
+        poll,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 10,
+    );
+    monitor
+        .apply_lifecycle(
+            &store,
+            &lifecycle,
+            Ok(vec![(current.pull_request_id.clone(), Lifecycle::Closed)]),
+            NOW + 11,
+        )
+        .unwrap();
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert!(!tracked.terminal_observed);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
 }

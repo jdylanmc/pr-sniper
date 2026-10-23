@@ -89,7 +89,7 @@ pub const CAUSE_PANIC: &str = "panic";
 pub const CAUSE_TOSSED: &str = "tossed";
 pub const CAUSE_EXIT_FAILED: &str = "exit_failed";
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Item {
     pub dismiss_token: Option<String>,
     pub dismissed: bool,
@@ -124,7 +124,7 @@ pub struct Item {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Snapshot {
     pub feedback: BTreeMap<String, Vec<crate::feedback::View>>,
     pub mentions: Vec<crate::feedback::Mention>,
@@ -167,10 +167,25 @@ pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, 
     Ok(snapshot)
 }
 
+/// Computed once per version of saved state and `health`, then shared: the
+/// panel, notifications and scheduler all read the same projection.
 pub(crate) fn normal_snapshot(
     store: &Store,
     health: Vec<ScheduleHealth>,
 ) -> Result<Snapshot, String> {
+    let key = serde_json::to_vec(&health)
+        .map(|bytes| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        })
+        .map_err(|_| "Cannot read schedule health.")?;
+    let shared = store.cached_state("normal-snapshot", key, || project_saved(store, health))?;
+    Ok(shared.as_ref().clone())
+}
+
+fn project_saved(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let settings = store.load_settings()?;
     let monitoring = store.load_monitoring_state()?;
     let health = if health.is_empty() {
@@ -182,7 +197,7 @@ pub(crate) fn normal_snapshot(
     let jobs = store.load_queue()?;
     let mut feedback = BTreeMap::new();
     if !jobs.is_empty() {
-        let reviews = store.review_evidence()?;
+        let reviews = store.shared_evidence()?;
         let replies = store.load_follow_ups()?;
         let publications = store.load_publications()?;
         for job in &jobs {

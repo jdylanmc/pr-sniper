@@ -32,7 +32,16 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - A host marker or signature counts as PR Sniper's only from the acting
   account; a marked comment from anyone else is no longer skipped when checking
   the PR author's latest reply.
-
+- Saving a running review's progress no longer rewrites every saved review:
+  `reviews.json` is a manifest of per-run files that store repeated agent and
+  feedback snapshots once (the live 72 MB profile saves about 13 MB). Saved
+  state is decoded once per change and shared by the panel's snapshots, and
+  the automation snapshot no longer holds the storage lock. Older review files
+  migrate on the next save.
+- Closed and merged PRs are pruned automatically (reviews, publications,
+  conversations, actions, notices, queue entries), a few per pass once their
+  work settles; **Clean** still prunes on demand. Retired poll operations are
+  capped at 64 instead of growing with every poll.
 - The primary may resolve its own finding when the PR author replied won't-fix and
   the primary accepts that rationale (`author_wont_fix`). The host verifies the
   reply is the PR author's latest by provider identity, that no one else spoke

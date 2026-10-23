@@ -237,7 +237,9 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
-        selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
+        selection: Selection::resolve(&settings(), &job, ASSIGNMENT)
+            .unwrap()
+            .into(),
         job,
         assignment_id: ASSIGNMENT.into(),
         operation,

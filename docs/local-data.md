@@ -26,6 +26,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 | `state/automation.json`                                                             | Pause + capacity gate                                                                          |
 | `state/notifications.json`                                                          | Request identities, observed transitions, send intent, outcomes                                |
 | `state/actions.json`                                                                | Approve/Merge: immutable basis, FIFO identity, attempts, result                                |
+| `state/reviews.json`, `state/reviews/`                                              | Review runs: manifest of content-addressed `run-*.json`; repeated snapshots in `part-*.json`   |
 | `state/publications.json`                                                           | Comment publication ledger                                                                     |
 | `state/follow-ups.json`                                                             | Frozen reply input/output, operation budgets, attempted mutation, reply receipt                |
 | `state/feedback.json`                                                               | Owned roots, current-head observations, missing-root errors, closure tombstones                |
@@ -35,6 +36,16 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 - Legacy arrays and older shapes stay readable. Review/publication keys, receipts and old queue destinations survive adoption. Embedded originating reviews prevent replay when an older queue or review file is missing.
 - Legacy follow-ups load into typed `target` and `context` without writes on read. Retained original review supplies provenance. Legacy `trust_confirmed` is historical evidence only; never a gate.
+
+## Review segments
+
+- `reviews.json` lists run files in order (`{"format": 2, "runs": [...]}`). Each `run-<hash>.json` holds one run; its `selection` and `feedback_context` live in `part-<hash>.json`, shared by every run with the same value. `<hash>`: first 128 bits of the SHA-256 of the file.
+- Segment files are immutable and named by content. A save writes only new files (flushed, renamed into place), then replaces the manifest: the commit point.
+- Unreferenced segments are deleted after the commit, once no frozen copy that may read them is alive. The first save of a process also removes leftovers of interrupted saves.
+- A legacy `reviews.json` array stays readable and becomes a manifest on the next save. Older builds reject the manifest (invalid review state) rather than treat it as empty.
+- Saved state is decoded once per change (Store write count + OS file identity) and shared with frozen copies.
+- Running-review progress (phase, duck calls) is written at most every 30 s or with the next transition; the panel receives each repeated selection and feedback snapshot once.
+- Cost harness (live-size profile, 3 running reviews, panel polling; macOS): `cargo test --manifest-path src-tauri/Cargo.toml --release --lib storage::cost_bench -- --ignored --nocapture` (`PR_SNIPER_BENCH_SECONDS`, default 60).
 
 ## Config rules
 
@@ -70,6 +81,9 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 - Cleanup uses typed JSON collections. No database, per-PR store or archive ([ADR-0015](adr/0015-local-only-results-and-retention-journal.md)).
 - `state/retention.json` records safety receipts first, then fences access, then removes terminal detail from reviews, publications, conversations, final-review, action state, feedback, notifications, queue jobs and the result index.
+- Runs automatically for PRs observed closed or merged (bounded per pass), and on Reviewed **Clean** ([active-results.md](active-results.md)).
+- Receipts: detail (work and operation IDs, publication and effect receipts, notice IDs) for 30 days and the newest 500; the per-PR safety tombstone for a year, never evicted by count.
+- `monitoring.json` keeps the 64 most recent retired poll operations.
 - Cross-file interruption rolls forward at startup or maintenance. Failure is visible, never success. Settings and account resources are untouched.
 - Reopening before the destructive cutover cancels cleanup. Cutover holds the Store lock (local serialization, not GitHub atomicity).
 - Reopen after cutover: new iteration, even at the same SHA. No restore.

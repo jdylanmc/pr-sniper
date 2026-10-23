@@ -1221,10 +1221,10 @@ fn apply_staged_monitoring_activation(
 }
 
 #[tauri::command]
-async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<queue::Snapshot, String> {
+async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
-        queue_snapshot(&host)
+        review::interned(&queue_snapshot(&host)?)
     })
     .await
     .map_err(|_| "Monitoring state could not be read.".to_string())?
@@ -1287,8 +1287,8 @@ async fn result_detail(
     .map_err(|_| "Result detail query failed.".to_string())?
 }
 
-/// Journal roll-forward runs on every tick. Deleting terminal PR detail
-/// happens only when a human asks (`clean`): Reviewed keeps those PRs until then.
+/// Journal roll-forward, queue compaction and automatic pruning of closed and
+/// merged PRs (bounded per pass); `clean` is the human-selected Clean.
 fn retention_maintenance(
     app: &tauri::AppHandle,
     clean: Option<&dyn Fn(&monitoring::TrackedPullRequest) -> bool>,
@@ -1318,6 +1318,10 @@ fn retention_maintenance(
         Arc<AtomicBool>
     )>| p.is_some());
     let _actions = idle!(host.actions.active, |active: &bool| *active);
+    // Exit writes hold only this owner while their provider effects land.
+    let Some(_mutations) = host.mutations.idle()? else {
+        return Ok(0);
+    };
     let store = host
         .store
         .lock()
@@ -1330,11 +1334,14 @@ fn retention_maintenance(
     if compact && clean.is_none() {
         monitoring::compact_saved_queue(&store)?;
     }
+    // Scheduled passes prune closed and merged PRs automatically; Clean
+    // selects them explicitly. Active work on them is stopped first.
+    if !host.ai.settle_terminal(&store)? {
+        return Ok(0);
+    }
     match clean {
-        Some(select) if host.ai.settle_terminal(&store)? => {
-            retention::maintain_where(&store, true, select)
-        }
-        _ => Ok(0),
+        Some(select) => retention::maintain_where(&store, true, select),
+        None => retention::prune_terminal(&store, true, retention::PRUNE_PER_PASS),
     }
 }
 
@@ -4532,7 +4539,12 @@ pub fn run() {
                     // Sample before the gated passes: their own writes wake
                     // the next tick once, then an unchanged store settles.
                     let generations = match host.store.lock() {
-                        Ok(store) => store.generations(),
+                        Ok(store) => {
+                            if let Err(error) = store.flush_progress(false) {
+                                report(&scheduler_app, error);
+                            }
+                            store.generations()
+                        }
                         Err(_) => continue,
                     };
                     let mut due = gates.due(&generations, now);
@@ -4659,6 +4671,9 @@ pub fn run() {
                         host.copilot.request_shutdown();
                         if let Ok(store) = host.store.lock() {
                             if let Err(error) = host.ai.shutdown(&store) {
+                                report(app, error);
+                            }
+                            if let Err(error) = store.flush_progress(true) {
                                 report(app, error);
                             }
                         }

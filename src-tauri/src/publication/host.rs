@@ -17,7 +17,7 @@ pub(crate) struct Coordinator {
     pub(crate) active: Mutex<Option<String>>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct Candidate {
     pub(crate) local_only: bool,
     pub(crate) review_operation_id: String,
@@ -30,7 +30,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
     let publications = store.load_publications()?;
-    let reviews = store.review_evidence()?;
+    let reviews = store.shared_evidence()?;
     // Loaded once per scan; per-review loads made this quadratic in history.
     let feedback = store.load_feedback();
     let latest: std::collections::BTreeMap<_, _> = reviews

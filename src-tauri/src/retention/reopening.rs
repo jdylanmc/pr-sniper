@@ -36,7 +36,7 @@ pub(crate) fn scan_origins(
 }
 
 pub(crate) fn known_key(store: &Store, key: &str) -> Result<bool, String> {
-    Ok(load(store)?
+    Ok(super::shared(store)?
         .receipts
         .iter()
         .any(|r| r.follow_up_keys.contains(key)))

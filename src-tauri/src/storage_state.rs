@@ -24,13 +24,13 @@ pub(crate) fn decode_queue(bytes: &[u8]) -> Result<crate::monitoring::QueueState
 impl Store {
     pub fn load_actions(&self) -> Result<crate::actions::Ledger, String> {
         crate::retention::guard(self)?;
-        match self.read_state("actions.json") {
+        self.decoded("actions.json", || match self.read_state("actions.json") {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
                 "Final review/action state is invalid; no provider action allowed.".into()
             }),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
             Err(_) => Err("Cannot read final review/action state.".into()),
-        }
+        })
     }
     pub fn save_actions(&self, ledger: &crate::actions::Ledger) -> Result<(), String> {
         crate::retention::reject_cleaned(self, ledger.finals.iter().map(|f| f.basis.job.clone()))?;
@@ -46,12 +46,14 @@ impl Store {
     }
     pub fn load_feedback(&self) -> Result<crate::feedback::Ledger, String> {
         crate::retention::guard(self)?;
-        let mut ledger: crate::feedback::Ledger = match self.read_state("feedback.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Owned feedback state is invalid; no clearance may be inferred.")?,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Default::default()),
-            Err(_) => return Err("Cannot read owned feedback state.".into()),
-        };
+        let mut ledger: crate::feedback::Ledger =
+            self.decoded("feedback.json", || match self.read_state("feedback.json") {
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                    "Owned feedback state is invalid; no clearance may be inferred.".into()
+                }),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
+                Err(_) => Err("Cannot read owned feedback state.".into()),
+            })?;
         if ledger.mentions.iter().any(|m| m.item_id.is_none()) {
             let queue = self.load_queue_state()?;
             let runs = self.load_follow_ups()?;
@@ -73,7 +75,14 @@ impl Store {
         Ok(ledger)
     }
     pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
-        crate::retention::reject_cleaned(self, ledger.records.iter().map(|r| r.job.clone()))?;
+        crate::retention::reject_cleaned(
+            self,
+            ledger
+                .records
+                .iter()
+                .map(|r| r.job.clone())
+                .chain(ledger.exit_writes.iter().map(|w| w.job.clone())),
+        )?;
         for mention in &ledger.mentions {
             if crate::retention::known_key(self, &mention.key)? {
                 return Err(
@@ -85,12 +94,12 @@ impl Store {
     }
     pub fn load_pr_states(&self) -> Result<crate::pr_state::PrStates, String> {
         crate::retention::guard(self)?;
-        match self.read_state("pr-state.json") {
+        self.decoded("pr-state.json", || match self.read_state("pr-state.json") {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "PR state is invalid; no state change can be detected.".into()),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(Default::default()),
             Err(_) => Err("Cannot read PR state. Check local file permissions.".into()),
-        }
+        })
     }
 
     pub fn save_pr_states(&self, states: &crate::pr_state::PrStates) -> Result<(), String> {
@@ -166,11 +175,11 @@ impl Store {
 
     pub fn load_queue_state(&self) -> Result<crate::monitoring::QueueState, String> {
         crate::retention::guard(self)?;
-        match self.read_state("queue.json") {
+        self.decoded("queue.json", || match self.read_state("queue.json") {
             Ok(bytes) => decode_queue(&bytes),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Default::default()),
             Err(_) => Err("Cannot read the review queue. Check local file permissions.".into()),
-        }
+        })
     }
 
     pub fn save_queue(&self, jobs: &[crate::monitoring::QueueJob]) -> Result<(), String> {
@@ -210,58 +219,112 @@ impl Store {
 
     pub fn load_notifications(&self) -> Result<crate::notifications::Ledger, String> {
         crate::retention::guard(self)?;
-        let ledger = match self.read_state("notifications.json") {
-            Ok(bytes) => serde_json::from_slice::<crate::notifications::Ledger>(&bytes)
-                .map_err(|_| "Notification history is invalid; no notices can be sent.")?,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                crate::notifications::Ledger::default()
-            }
-            Err(_) => {
-                return Err(
-                    "Cannot read notification history. Check local storage permissions.".into(),
-                )
-            }
-        };
-        ledger.validate()?;
-        Ok(ledger)
+        self.decoded("notifications.json", || {
+            let ledger = match self.read_state("notifications.json") {
+                Ok(bytes) => serde_json::from_slice::<crate::notifications::Ledger>(&bytes)
+                    .map_err(|_| "Notification history is invalid; no notices can be sent.")?,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    crate::notifications::Ledger::default()
+                }
+                Err(_) => {
+                    return Err(
+                        "Cannot read notification history. Check local storage permissions.".into(),
+                    )
+                }
+            };
+            ledger.validate()?;
+            Ok(ledger)
+        })
     }
 
     pub fn save_notifications(&self, ledger: &crate::notifications::Ledger) -> Result<(), String> {
         crate::retention::guard(self)?;
-        crate::retention::reject_items(self, ledger.notices.iter().map(|n| n.id.as_str()))?;
+        // Notice IDs are receipt detail; their destinations stay fenced.
+        crate::retention::reject_items(
+            self,
+            ledger.notices.iter().flat_map(|n| {
+                let destination = match &n.event.destination {
+                    crate::notifications::Destination::QueueItem { item_id } => {
+                        Some(item_id.as_str())
+                    }
+                    _ => None,
+                };
+                std::iter::once(n.id.as_str()).chain(destination)
+            }),
+        )?;
         ledger.validate()?;
         self.write_state("notifications.json", ledger)
     }
 
     pub fn load_reviews(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
         crate::retention::guard(self)?;
-        match self.read_state("reviews.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Review state is invalid; execution cannot resume.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => Err("Cannot read review state. Check local storage permissions.".into()),
+        Ok(self.stored_reviews()?)
+    }
+
+    /// Saved reviews without the retention guard (cleanup recovery).
+    pub(crate) fn stored_reviews(
+        &self,
+    ) -> Result<Vec<crate::review::ReviewRun>, crate::storage::review_store::ReadError> {
+        Ok(self
+            .review_runs()?
+            .iter()
+            .map(|run| run.as_ref().clone())
+            .collect())
+    }
+
+    /// Replaces saved reviews without retention checks (cleanup recovery).
+    /// A legacy file stays legacy: pruning an upgrade backlog shrinks it,
+    /// and the next ordinary save migrates only what is left.
+    pub(crate) fn replace_reviews(
+        &self,
+        reviews: &[crate::review::ReviewRun],
+    ) -> Result<(), String> {
+        if self.saved_is_legacy() {
+            let bytes =
+                serde_json::to_vec(reviews).map_err(|_| "Cannot encode monitoring state.")?;
+            return self.write_legacy_reviews(&bytes);
         }
+        self.write_reviews(reviews, None)
     }
 
     pub fn save_reviews(&self, reviews: &[crate::review::ReviewRun]) -> Result<(), String> {
         crate::retention::reject_cleaned(self, reviews.iter().map(|r| r.job.clone()))?;
         let fingerprint = review_transitions(reviews);
         if self.same_transition("reviews.json", fingerprint) {
-            // Progress of a running review: saved and marked for the result
-            // index (rebuilt when read), but it wakes no coordinator.
+            // Progress of a running review wakes no coordinator. Kept in
+            // memory and written at most every `PROGRESS_FLUSH`.
             crate::retention::guard(self)?;
+            if self.defer_progress(reviews, fingerprint) {
+                return Ok(());
+            }
             crate::retention::mark_activity_pending(self)?;
-            return self.write_state_as("reviews.json", reviews, Some(fingerprint));
+            return self.write_reviews(reviews, Some(fingerprint));
         }
         crate::retention::guard(self)?;
         crate::retention::mark_activity_pending(self)?;
-        self.write_state_as("reviews.json", reviews, Some(fingerprint))?;
+        self.write_reviews(reviews, Some(fingerprint))?;
         crate::retention::refresh(self)
     }
 
     /// Publication records retain their immutable originating review even if an
     /// older queue/review file is absent. Reading evidence never rewrites history.
     pub fn review_evidence(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
+        Ok(self.shared_evidence()?.as_ref().clone())
+    }
+
+    /// `review_evidence`, built once per version of its files and shared.
+    pub(crate) fn shared_evidence(
+        &self,
+    ) -> Result<std::sync::Arc<Vec<crate::review::ReviewRun>>, String> {
+        crate::retention::guard(self)?;
+        self.cached(
+            "review-evidence",
+            &["reviews.json", "publications.json", "follow-ups.json"],
+            || self.build_evidence(),
+        )
+    }
+
+    fn build_evidence(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
         let reviews = self.load_reviews()?;
         let mut ids: std::collections::HashSet<_> =
             reviews.iter().map(|r| r.operation.id.clone()).collect();
@@ -285,12 +348,17 @@ impl Store {
 
     pub fn load_publications(&self) -> Result<Vec<crate::publication::Publication>, String> {
         crate::retention::guard(self)?;
-        match self.read_state("publications.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Publication state is invalid; no GitHub mutation is allowed.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => Err("Cannot read publication state. Check local storage permissions.".into()),
-        }
+        self.decoded("publications.json", || {
+            match self.read_state("publications.json") {
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                    "Publication state is invalid; no GitHub mutation is allowed.".into()
+                }),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+                Err(_) => {
+                    Err("Cannot read publication state. Check local storage permissions.".into())
+                }
+            }
+        })
     }
 
     pub fn save_publications(
@@ -303,14 +371,25 @@ impl Store {
 
     pub fn load_follow_ups(&self) -> Result<Vec<crate::follow_up::FollowUp>, String> {
         crate::retention::guard(self)?;
-        match self.read_state("follow-ups.json") {
-            Ok(bytes) => crate::follow_up::decode_with_origins(&bytes, &self.load_publications()?)
-                .map_err(|_| "Thread follow-up state is invalid; automation is blocked.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-            Err(_) => {
-                Err("Cannot read thread follow-up state. Check local storage permissions.".into())
-            }
-        }
+        let decoded = self.cached(
+            "follow-ups.json",
+            &["follow-ups.json", "publications.json"],
+            || match self.read_state("follow-ups.json") {
+                Ok(bytes) => {
+                    crate::follow_up::decode_with_origins(&bytes, &self.load_publications()?)
+                        .map_err(|_| {
+                            String::from(
+                                "Thread follow-up state is invalid; automation is blocked.",
+                            )
+                        })
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+                Err(_) => Err(
+                    "Cannot read thread follow-up state. Check local storage permissions.".into(),
+                ),
+            },
+        )?;
+        Ok(decoded.as_ref().clone())
     }
 
     pub fn save_follow_ups(&self, runs: &[crate::follow_up::FollowUp]) -> Result<(), String> {
@@ -320,14 +399,16 @@ impl Store {
 
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
         crate::retention::guard(self)?;
-        match self.read_state("monitoring.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                Ok(crate::monitoring::MonitoringState::default())
+        self.decoded("monitoring.json", || {
+            match self.read_state("monitoring.json") {
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    Ok(crate::monitoring::MonitoringState::default())
+                }
+                Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
             }
-            Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
-        }
+        })
     }
 
     pub fn save_monitoring_state(
@@ -336,6 +417,15 @@ impl Store {
     ) -> Result<(), String> {
         crate::retention::guard(self)?;
         self.write_state("monitoring.json", state)
+    }
+
+    /// `load`'s value for the saved `name`, decoded once per version.
+    fn decoded<T: Clone + Send + Sync + 'static>(
+        &self,
+        name: &'static str,
+        load: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        Ok(self.cached(name, &[name], load)?.as_ref().clone())
     }
 
     fn commit_operational<T: serde::Serialize + ?Sized>(

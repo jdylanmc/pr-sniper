@@ -76,13 +76,14 @@ fn r1_abrupt_replacement_interruption_recovers_terminal_cleanup() {
             let root = tempfile::tempdir_in(&parent).unwrap();
             for directory in ["state", "config"] {
                 fs::create_dir(root.path().join(directory)).unwrap();
-                for entry in fs::read_dir(source.path().join(directory)).unwrap() {
-                    let entry = entry.unwrap();
-                    fs::copy(
-                        entry.path(),
-                        root.path().join(directory).join(entry.file_name()),
-                    )
-                    .unwrap();
+                let from = source.path().join(directory);
+                for file in Store::saved_files(&from) {
+                    let to = root
+                        .path()
+                        .join(directory)
+                        .join(file.strip_prefix(&from).unwrap());
+                    fs::create_dir_all(to.parent().unwrap()).unwrap();
+                    fs::copy(&file, to).unwrap();
                 }
             }
             let settings = fs::read(root.path().join("config/settings.json")).unwrap();
@@ -385,7 +386,7 @@ fn r2_missing_closed_compact_root_blocks_unreferenced_republication() {
         );
         assert!(crate::feedback::contexts(&fresh, &job, AGENT).is_err());
         let mut attempted = completed(&fresh, &job);
-        attempted.feedback_context = Some(vec![]);
+        attempted.feedback_context = Some(vec![].into());
         let finding = &mut attempted.result.as_mut().unwrap().output.findings[0];
         finding.path = path.into();
         finding.title = title.into();

@@ -438,7 +438,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         context,
         client: live.client.clone(),
         repository_name: run.job.repository_name.clone(),
-        selection: run.selection.clone(),
+        selection: (*run.selection).clone(),
         before_send: allow.clone(),
         local_gate: allow,
         duck: None,

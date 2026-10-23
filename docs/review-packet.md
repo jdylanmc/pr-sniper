@@ -42,7 +42,7 @@ Normalized snapshot. Noise removed (timestamps, per-run ids).
 
 Our own writes (comments, approval, resolved threads) are absorbed by the post-exit baseline. They never trigger a review.
 
-Persisted. Parked PRs sit in Reviewed. Reviewed has **Clean** per PR and **Clean all**: delete persisted PR-state, packet and result files of terminal PRs (merged or closed) only. Uncertain publication and action records stay ([ADR 0015](adr/0015-local-only-results-and-retention-journal.md) reconciliation). Ad hoc decision, owner review requested.
+Persisted. Parked PRs sit in Reviewed. Reviewed has **Clean** per PR and **Clean all**: delete persisted PR-state, packet and result files of terminal PRs (merged or closed) only. Uncertain publication and action records stay ([ADR 0015](adr/0015-local-only-results-and-retention-journal.md) reconciliation). Closed and merged PRs are also pruned automatically.
 
 ## Packet
 

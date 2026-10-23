@@ -45,7 +45,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: crate::review::key(&job,&assignment_id),
-        selection: Selection::resolve(&settings,&job,&assignment_id).unwrap(),
+        selection: Selection::resolve(&settings,&job,&assignment_id).unwrap().into(),
         job, assignment_id, operation, manual_start:true,
         trust_confirmed:true, phase:"Complete".into(), error:None,
         result:Some(serde_json::from_value(json!({
@@ -102,7 +102,7 @@ fn normal_publication_gate_refusals_remain_item_local() {
                 });
                 store.save_feedback(&ledger).unwrap();
             }
-            "stale_feedback" => run.review.feedback_context = Some(vec![context]),
+            "stale_feedback" => run.review.feedback_context = Some(vec![context].into()),
             _ => unreachable!(),
         }
         let error = if policy == "pause" {
@@ -218,7 +218,7 @@ fn nested_gate_storage_failures_keep_host_warning_after_successful_item_save() {
     ] {
         let (root, store, review) = fixture();
         let mut run = Publication::new(review, true, false, 100).unwrap();
-        run.review.feedback_context = Some(vec![]);
+        run.review.feedback_context = Some(vec![].into());
         run.batch = Some(
             Batch::prepare(
                 &run,

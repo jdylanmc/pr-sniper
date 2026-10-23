@@ -168,7 +168,9 @@ pub fn review(
         packet: None,
         feedback_context: None,
         key: pr_sniper_lib::review::key(&job, ASSIGNMENT),
-        selection: Selection::resolve(selection, &job, ASSIGNMENT).unwrap(),
+        selection: Selection::resolve(selection, &job, ASSIGNMENT)
+            .unwrap()
+            .into(),
         job,
         assignment_id: ASSIGNMENT.into(),
         operation,

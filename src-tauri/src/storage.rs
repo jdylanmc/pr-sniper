@@ -9,12 +9,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "storage/cost_bench.rs"]
+mod cost_bench;
 #[path = "storage/diagnostics.rs"]
 pub mod diagnostics;
 #[path = "storage/file_identity.rs"]
 pub(crate) mod file_identity;
+#[path = "storage/parsed.rs"]
+pub(crate) mod parsed;
 #[path = "storage/private_fs.rs"]
 pub(crate) mod private_fs;
+#[path = "storage/review_store.rs"]
+pub(crate) mod review_store;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1385,8 +1392,14 @@ fn canonical_provider_repository(provider: &ProviderId, input: &str) -> Result<S
     }
 }
 
-/// Saved bytes by (directory, file name) in a frozen copy.
-type FrozenFiles = BTreeMap<(String, String), std::sync::Arc<Vec<u8>>>;
+/// Saved bytes by (directory, file name) in a frozen copy, with the stamp
+/// they were read at when it was trustworthy.
+type FrozenFiles = BTreeMap<(String, String), FrozenFile>;
+
+struct FrozenFile {
+    stamp: Option<parsed::Stamp>,
+    bytes: std::sync::Arc<Vec<u8>>,
+}
 
 /// Bytes a live frozen copy holds, by file, with the stamp they were read at;
 /// concurrent copies of an unchanged file share them instead of re-reading.
@@ -1413,10 +1426,21 @@ pub struct Store {
     initial_time_zone: String,
     /// Per saved file: every write, and the writes that can give a
     /// coordinator work (transitions, not progress or bookkeeping).
-    counters: std::sync::Mutex<BTreeMap<String, Counter>>,
+    counters: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Counter>>>,
     /// Read-only point-in-time copy for scans outside the Store lock.
     frozen: Option<std::sync::Arc<FrozenFiles>>,
     shared: std::sync::Mutex<SharedFiles>,
+    /// Decoded files, shared with frozen copies.
+    cache: std::sync::Arc<parsed::Cache>,
+    /// Keeps the review segments this frozen copy may read.
+    reader: Option<std::sync::Arc<parsed::Reader>>,
+    /// Running-review progress not yet written (see `save_reviews`); a
+    /// frozen copy holds the progress it was taken with.
+    progress: std::sync::Mutex<review_store::Progress>,
+    #[cfg(test)]
+    bytes_written: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    caching: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     state_writes: std::sync::Mutex<BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -1430,9 +1454,16 @@ impl Store {
         Self {
             root,
             initial_time_zone: "UTC".into(),
-            counters: std::sync::Mutex::new(BTreeMap::new()),
+            counters: Default::default(),
             frozen: None,
             shared: std::sync::Mutex::new(BTreeMap::new()),
+            cache: Default::default(),
+            reader: None,
+            progress: Default::default(),
+            #[cfg(test)]
+            bytes_written: Default::default(),
+            #[cfg(test)]
+            caching: std::sync::atomic::AtomicBool::new(true),
             #[cfg(test)]
             state_writes: std::sync::Mutex::new(BTreeMap::new()),
             #[cfg(test)]
@@ -1459,6 +1490,183 @@ impl Store {
         std::mem::take(&mut *self.state_writes.lock().unwrap())
     }
 
+    /// Decodes per cache key since the last call (test instrumentation).
+    #[cfg(test)]
+    pub(crate) fn take_parses(&self) -> BTreeMap<String, usize> {
+        self.cache.take_parses()
+    }
+
+    /// Bytes this Store wrote to saved state since the last call.
+    #[cfg(test)]
+    pub(crate) fn take_bytes_written(&self) -> usize {
+        self.bytes_written
+            .swap(0, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test support: every saved file under `root`, including review segments.
+    #[cfg(test)]
+    pub(crate) fn saved_files(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// Test support: decode on every load, as before the decode cache.
+    #[cfg(test)]
+    pub(crate) fn set_caching(&self, on: bool) {
+        self.caching.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn record_bytes(&self, _bytes: usize) {
+        #[cfg(test)]
+        self.bytes_written
+            .fetch_add(_bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Version of the saved `name` (see `parsed::Stamp`); `None` when it
+    /// cannot be trusted.
+    fn file_stamp(&self, name: &str) -> Option<parsed::Stamp> {
+        let directory = if name == "settings.json" {
+            "config"
+        } else {
+            "state"
+        };
+        if let Some(files) = &self.frozen {
+            return match files.get(&(directory.to_string(), name.to_string())) {
+                Some(file) => file.stamp.clone(),
+                // Absent when frozen; the copy holds the writes it saw.
+                None => {
+                    let writes = self.counters.lock().ok()?.get(name).map(|c| c.writes);
+                    Some((writes.unwrap_or(0), None))
+                }
+            };
+        }
+        let writes = self
+            .counters
+            .lock()
+            .ok()?
+            .get(name)
+            .map_or(0, |counter| counter.writes);
+        let identity = file_identity::identity(&self.root.join(directory).join(name)).ok()?;
+        if identity
+            .as_ref()
+            .is_some_and(|id| !id.settled(std::time::SystemTime::now()))
+        {
+            return None;
+        }
+        Some((writes, identity))
+    }
+
+    /// `load`'s value, decoded at most once per version of `files`. Stamps
+    /// are taken before `load` reads, so a concurrent change is never
+    /// cached under an older version.
+    pub(crate) fn cached<T: Send + Sync + 'static, E>(
+        &self,
+        key: &'static str,
+        files: &[&str],
+        load: impl FnOnce() -> Result<T, E>,
+    ) -> Result<std::sync::Arc<T>, E> {
+        #[cfg(test)]
+        if !self.caching.load(std::sync::atomic::Ordering::SeqCst) {
+            return load().map(std::sync::Arc::new);
+        }
+        let stamps: Option<Vec<_>> = files.iter().map(|name| self.file_stamp(name)).collect();
+        if let Some(hit) = stamps
+            .as_deref()
+            .and_then(|stamps| self.cache.get::<T>(key, stamps))
+        {
+            // Read counters record loads; `take_parses` records decodes.
+            #[cfg(test)]
+            for name in files {
+                *self
+                    .state_reads
+                    .lock()
+                    .unwrap()
+                    .entry(name.to_string())
+                    .or_default() += 1;
+            }
+            return Ok(hit);
+        }
+        self.cache.counted(key);
+        let value = std::sync::Arc::new(load()?);
+        if let Some(stamps) = stamps {
+            self.cache.put(key, stamps, value.clone());
+        }
+        Ok(value)
+    }
+
+    /// `load`'s value, computed at most once per version of every saved
+    /// file except bookkeeping (result index, queue selection) and `extra`.
+    pub(crate) fn cached_state<T: Send + Sync + 'static, E>(
+        &self,
+        key: &'static str,
+        extra: u64,
+        load: impl FnOnce() -> Result<T, E>,
+    ) -> Result<std::sync::Arc<T>, E> {
+        let names: Vec<String> = match &self.frozen {
+            Some(files) => files
+                .keys()
+                .filter(|(directory, _)| directory == "state")
+                .map(|(_, name)| name.clone())
+                .collect(),
+            None => match fs::read_dir(self.root.join("state")) {
+                Ok(entries) => entries
+                    .filter_map(|entry| entry.ok()?.file_name().to_str().map(String::from))
+                    .filter(|name| name.ends_with(".json") && !name.contains(".pr-sniper-write-"))
+                    .collect(),
+                Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+                Err(_) => return load().map(std::sync::Arc::new),
+            },
+        };
+        let mut names: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                !matches!(
+                    *name,
+                    "result-index.json" | "result-index-pending.json" | "queue-selection.json"
+                )
+            })
+            .collect();
+        names.sort_unstable();
+        names.push("settings.json");
+        let set = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            names.hash(&mut hasher);
+            extra.hash(&mut hasher);
+            hasher.finish()
+        };
+        let stamps: Option<Vec<_>> = std::iter::once(Some((set, None)))
+            .chain(names.iter().map(|name| self.file_stamp(name)))
+            .collect();
+        #[cfg(test)]
+        let stamps = stamps.filter(|_| self.caching.load(std::sync::atomic::Ordering::SeqCst));
+        if let Some(hit) = stamps
+            .as_deref()
+            .and_then(|stamps| self.cache.get::<T>(key, stamps))
+        {
+            return Ok(hit);
+        }
+        self.cache.counted(key);
+        let value = std::sync::Arc::new(load()?);
+        if let Some(stamps) = stamps {
+            self.cache.put(key, stamps, value.clone());
+        }
+        Ok(value)
+    }
+
     /// Per-file write and transition counters since this Store opened. Idle
     /// scheduler ticks compare them instead of rebuilding derived snapshots.
     pub(crate) fn generations(&self) -> BTreeMap<String, Counter> {
@@ -1476,6 +1684,28 @@ impl Store {
         if self.frozen.is_some() {
             return None;
         }
+        self.probe()?.stamp_of(names)
+    }
+
+    /// `stamp_of` without the Store: for checks that must not wait on the
+    /// Store lock. `None` for a frozen copy.
+    pub(crate) fn probe(&self) -> Option<StampProbe> {
+        self.frozen.is_none().then(|| StampProbe {
+            root: self.root.clone(),
+            counters: self.counters.clone(),
+        })
+    }
+}
+
+/// See `Store::probe`.
+#[derive(Debug, Clone)]
+pub(crate) struct StampProbe {
+    root: PathBuf,
+    counters: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Counter>>>,
+}
+
+impl StampProbe {
+    pub(crate) fn stamp_of(&self, names: &[&str]) -> Option<FileStamp> {
         let writes = {
             let counters = self.counters.lock().ok()?;
             names
@@ -1500,7 +1730,9 @@ impl Store {
         }
         Some(FileStamp { writes, files })
     }
+}
 
+impl Store {
     /// Records a transition in `name` that its write alone did not signal.
     pub(crate) fn wake_file(&self, name: &str) {
         if let Ok(mut counters) = self.counters.lock() {
@@ -1545,10 +1777,12 @@ impl Store {
     /// lock (cheap byte copies), then parse and project without holding it.
     pub(crate) fn freeze(&self) -> Result<Store, String> {
         if let Some(frozen) = &self.frozen {
-            return Ok(self.frozen_with(frozen.clone()));
+            return Ok(self.frozen_with(frozen.clone(), self.reader.clone()));
         }
         // Creates default settings first, as an ordinary read would.
         self.load_settings()?;
+        let epoch = self.cache.epoch.load(std::sync::atomic::Ordering::SeqCst);
+        let reader = self.cache.reader(epoch);
         let mut files = BTreeMap::new();
         let unreadable = |_| "Cannot snapshot local state.".to_string();
         let mut shared = self
@@ -1587,7 +1821,7 @@ impl Store {
                 Err(error) => return Err(unreadable(error)),
             }
         }
-        Ok(self.frozen_with(std::sync::Arc::new(files)))
+        Ok(self.frozen_with(std::sync::Arc::new(files), Some(reader)))
     }
 
     /// `read`, or the bytes a live frozen copy already holds for this unchanged
@@ -1597,7 +1831,7 @@ impl Store {
         shared: &mut SharedFiles,
         key: &(String, String),
         read: impl FnOnce() -> std::io::Result<Vec<u8>>,
-    ) -> std::io::Result<std::sync::Arc<Vec<u8>>> {
+    ) -> std::io::Result<FrozenFile> {
         let writes = self
             .counters
             .lock()
@@ -1616,25 +1850,46 @@ impl Store {
                 .filter(|(seen, _)| seen == stamp)
                 .and_then(|(_, bytes)| bytes.upgrade())
             {
-                return Ok(bytes);
+                return Ok(FrozenFile {
+                    stamp: Some((stamp.0, Some(stamp.1.clone()))),
+                    bytes,
+                });
             }
         }
         let bytes = std::sync::Arc::new(read()?);
-        match stamp {
+        match &stamp {
             Some(stamp) => {
-                shared.insert(key.clone(), (stamp, std::sync::Arc::downgrade(&bytes)));
+                shared.insert(
+                    key.clone(),
+                    (stamp.clone(), std::sync::Arc::downgrade(&bytes)),
+                );
             }
             None => {
                 shared.remove(key);
             }
         }
-        Ok(bytes)
+        Ok(FrozenFile {
+            stamp: stamp.map(|(writes, identity)| (writes, Some(identity))),
+            bytes,
+        })
     }
 
-    fn frozen_with(&self, files: std::sync::Arc<FrozenFiles>) -> Store {
+    fn frozen_with(
+        &self,
+        files: std::sync::Arc<FrozenFiles>,
+        reader: Option<std::sync::Arc<parsed::Reader>>,
+    ) -> Store {
         let mut view =
             Store::new(self.root.clone()).with_initial_time_zone(self.initial_time_zone.clone());
         view.frozen = Some(files);
+        view.cache = self.cache.clone();
+        if let (Ok(seen), Ok(mut progress)) = (self.progress.lock(), view.progress.lock()) {
+            progress.pending = seen.pending.clone();
+        }
+        if let (Ok(seen), Ok(mut counters)) = (self.counters.lock(), view.counters.lock()) {
+            *counters = seen.clone();
+        }
+        view.reader = reader;
         view
     }
 
@@ -1643,7 +1898,7 @@ impl Store {
         self.frozen
             .as_ref()?
             .get(&("state".to_string(), name.to_string()))
-            .cloned()
+            .map(|file| file.bytes.clone())
     }
 
     /// Names of saved state files in this frozen copy.
@@ -1683,6 +1938,32 @@ impl Store {
         name: &str,
         value: &T,
     ) -> Result<(), String> {
+        self.write_state_as(name, value, None)
+    }
+
+    /// `write_state` carrying a transition fingerprint: an unchanged
+    /// fingerprint records progress without waking coordinators.
+    pub(crate) fn write_state_as<T: Serialize + ?Sized>(
+        &self,
+        name: &str,
+        value: &T,
+        fingerprint: Option<u64>,
+    ) -> Result<(), String> {
+        let bytes =
+            serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
+        self.write_state_bytes(name, &bytes, fingerprint)
+    }
+
+    /// `write_state_as` for already encoded bytes.
+    pub(crate) fn write_state_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        fingerprint: Option<u64>,
+    ) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Err("A read-only state snapshot cannot be saved.".into());
+        }
         #[cfg(test)]
         {
             let mut fault = self.failed_state_write.lock().unwrap();
@@ -1696,25 +1977,9 @@ impl Store {
                 }
             }
         }
-        self.write_state_as(name, value, None)
-    }
-
-    /// `write_state` carrying a transition fingerprint: an unchanged
-    /// fingerprint records progress without waking coordinators.
-    pub(crate) fn write_state_as<T: Serialize + ?Sized>(
-        &self,
-        name: &str,
-        value: &T,
-        fingerprint: Option<u64>,
-    ) -> Result<(), String> {
-        if self.frozen.is_some() {
-            return Err("A read-only state snapshot cannot be saved.".into());
-        }
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
-        let bytes =
-            serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
         #[cfg(test)]
         {
             *self
@@ -1724,9 +1989,12 @@ impl Store {
                 .entry(name.to_string())
                 .or_default() += 1;
         }
-        let result = private_fs::replace(&directory.join(name), &bytes, "monitoring state");
+        private_fs::replace(&directory.join(name), bytes, "monitoring state")?;
+        // Only a committed write changes versions and transition fingerprints:
+        // a failed one must not let its retry pass as progress.
+        self.record_bytes(bytes.len());
         self.record_write(name, fingerprint);
-        result
+        Ok(())
     }
 
     fn directory(&self, name: &str) -> std::io::Result<PathBuf> {
@@ -1766,7 +2034,7 @@ impl Store {
         if let Some(files) = &self.frozen {
             return files
                 .get(&(directory.to_string(), name.to_string()))
-                .map(|bytes| bytes.as_ref().clone())
+                .map(|file| file.bytes.as_ref().clone())
                 .ok_or_else(|| ErrorKind::NotFound.into());
         }
         private_fs::existing_directory(&self.root)?;
@@ -2273,9 +2541,9 @@ impl Store {
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
-        let result = private_fs::replace(&directory.join("settings.json"), &bytes, "settings");
+        private_fs::replace(&directory.join("settings.json"), &bytes, "settings")?;
         self.record_write("settings.json", None);
-        result
+        Ok(())
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {

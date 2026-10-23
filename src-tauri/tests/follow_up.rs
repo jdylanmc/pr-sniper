@@ -50,7 +50,7 @@ fn origin() -> Publication {
         failed_duck: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
-        key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap(),
+        key:pr_sniper_lib::review::key(&job,ASSIGNMENT),selection:Selection::resolve(&settings(),&job,ASSIGNMENT).unwrap().into(),
         job,assignment_id:ASSIGNMENT.into(),operation:op,manual_start:true,trust_confirmed:true,phase:"Complete".into(),error:None,
         result:Some(serde_json::from_value(json!({"reviewed_base_sha":"b".repeat(40),
             "output":{"synopsis":"Review completed.","files":[],"findings":[],"decision":"machine_sign_off"},

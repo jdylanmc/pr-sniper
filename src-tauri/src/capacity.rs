@@ -265,7 +265,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             candidate
                 .run
                 .as_ref()
-                .map(|run| &run.selection)
+                .map(|run| &*run.selection)
                 .or(candidate.planned_selection.as_ref()),
         );
         let delayed_until = reason.is_none().then(|| {
@@ -282,7 +282,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 candidate
                     .run
                     .as_ref()
-                    .map(|run| &run.selection)
+                    .map(|run| &*run.selection)
                     .or(candidate.planned_selection.as_ref()),
             ))
             .cloned();
@@ -702,11 +702,13 @@ pub(crate) fn set_automation_paused(app: tauri::AppHandle, paused: bool) -> Resu
 pub(crate) async fn automation_snapshot(app: tauri::AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<crate::Host>();
-        let store = host
+        let view = host
             .store
             .lock()
-            .map_err(|_| "Automation storage unavailable.")?;
-        host.ai.snapshot(&store, crate::now_seconds()?)
+            .map_err(|_| "Automation storage unavailable.")?
+            .freeze()?;
+        // Candidates parse saved reviews; never hold the Store lock for it.
+        host.ai.snapshot(&view, crate::now_seconds()?)
     })
     .await
     .map_err(|_| "Automation state could not be read.".to_string())?

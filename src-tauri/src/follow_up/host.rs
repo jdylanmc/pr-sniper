@@ -359,7 +359,7 @@ fn observe_threads(
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct Candidate {
     #[serde(serialize_with = "serialize_run")]
     pub(crate) run: FollowUp,

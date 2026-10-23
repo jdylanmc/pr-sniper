@@ -140,7 +140,9 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
                 key: crate::review::key(job, assignment),
                 assignment_id: assignment.clone(),
                 job: job.clone(),
-                selection: Selection::resolve(&settings, job, assignment).unwrap(),
+                selection: Selection::resolve(&settings, job, assignment)
+                    .unwrap()
+                    .into(),
                 operation,
                 manual_start: false,
                 trust_confirmed: false,
@@ -198,7 +200,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         assignment_id: assignment,
         operation: JobOperation::review(&job, NOW),
         job: job.clone(),
-        selection,
+        selection: selection.into(),
         manual_start: false,
         trust_confirmed: false,
         phase: String::new(),
@@ -628,12 +630,10 @@ fn retention_waits_for_uncertain_actions_then_discards_all_final_detail_copies()
         retained.receipts[0].effects[0].receipt.as_ref(),
         Some(&receipt)
     );
-    for file in std::fs::read_dir(root.path().join("state")).unwrap() {
-        assert!(
-            !String::from_utf8(std::fs::read(file.unwrap().path()).unwrap())
-                .unwrap()
-                .contains("RETENTION-BULK-ONLY")
-        );
+    for file in Store::saved_files(&root.path().join("state")) {
+        assert!(!String::from_utf8(std::fs::read(file).unwrap())
+            .unwrap()
+            .contains("RETENTION-BULK-ONLY"));
     }
     assert!(finish_effect(&store, &effect.id, &effect.operation.id, Ok(receipt)).is_err());
     assert!(crate::actions::prepare_effect(
@@ -1760,4 +1760,51 @@ fn merge_rejects_a_settled_thread_that_differs_from_its_accepted_snapshot() {
     observation.threads = vec![thread(base)];
     observation.author_id = "44".into();
     assert!(packet::settled_hold(&[won_t], &[], &observation).is_err());
+}
+
+#[test]
+fn retention_holds_provider_mutations_off_only_while_none_runs() {
+    let owner = crate::actions::host::MutationOwner::default();
+    assert!(owner.acquire("exit:1").unwrap());
+    assert!(owner.idle().unwrap().is_none());
+    owner.release("exit:1").unwrap();
+    let held = owner.idle().unwrap().expect("idle");
+    assert!(held.is_none());
+    drop(held);
+    assert!(owner.acquire("exit:2").unwrap());
+}
+
+#[test]
+fn approval_already_given_on_the_head_is_never_posted_again() {
+    let mut observation = observed();
+    observation.reviews.push(ProviderReview {
+        id: "77".into(),
+        actor_id: "22".into(),
+        head: observation.head.clone(),
+        state: "APPROVED".into(),
+        body: "Earlier approval".into(),
+        submitted_at: Some("2026-09-30T00:00:00Z".into()),
+    });
+    let head = observation.head.clone();
+    let wire = Wire(Arc::new(Mutex::new(Server {
+        observation,
+        writes: vec![],
+        lost: false,
+        reject: false,
+    })));
+    let repo = RemoteRepository {
+        id: "100".into(),
+        name: "example/repo".into(),
+    };
+    let Ok(receipt) =
+        GithubClient::new(wire.clone()).approve_exact(&repo, 1, "22", &head, "Approve")
+    else {
+        panic!("existing approval is the receipt");
+    };
+    assert_eq!(receipt.id, "77");
+    assert_eq!(receipt.action, Action::Approve);
+    assert!(wire.0.lock().unwrap().writes.is_empty());
+    // Another account's approval does not count as this account's.
+    let _ = GithubClient::new(wire.clone()).approve_exact(&repo, 1, "23", &head, "Approve");
+    assert_eq!(wire.0.lock().unwrap().writes.len(), 1);
 }

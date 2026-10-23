@@ -14,7 +14,7 @@ use std::{
 };
 use tauri::Manager;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct Candidate {
     pub key: String,
     pub assignment_id: String,
@@ -28,7 +28,7 @@ pub(crate) struct Candidate {
 pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
-    let reviews = store.review_evidence()?;
+    let reviews = store.shared_evidence()?;
     let states = store.load_pr_states()?;
     let mut result = Vec::new();
     for job in &jobs {
@@ -86,7 +86,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
             });
         }
     }
-    for run in reviews.into_iter().rev() {
+    for run in reviews.iter().rev() {
         if !result.iter().any(|c| c.key == run.key) {
             result.push(Candidate {
                 key: run.key.clone(),
@@ -100,7 +100,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 blocked: Some(
                     "Historical review; assignment or repository is no longer available.".into(),
                 ),
-                run: Some(run),
+                run: Some(run.clone()),
                 planned_selection: None,
             });
         }
@@ -177,7 +177,7 @@ pub(crate) fn request(
             assignment_id: candidate.assignment_id,
             operation: monitoring::JobOperation::review(&candidate.job, now),
             job: candidate.job,
-            selection: selection.clone(),
+            selection: selection.clone().into(),
             manual_start: manual,
             trust_confirmed: false,
             phase: "Waiting for shared AI capacity".into(),
@@ -211,7 +211,8 @@ pub(crate) fn prepare_dispatch(
     let mut run = request(store, key, false, now)?;
     run.feedback_context = Some(
         crate::feedback::contexts(store, &run.job, &run.selection.agent.id)
-            .map_err(|e| e.message)?,
+            .map_err(|e| e.message)?
+            .into(),
     );
     let mut reviews = store.load_reviews()?;
     if let Err(error) = run.operation.begin_ai_attempt(now) {
@@ -508,6 +509,9 @@ fn local_gate(
         .map_err(|_| Failure::permanent("GitHub account state unavailable."))?
         .account_session_allowed(&run.job.account_id)
         .map_err(Failure::from)?;
+    if validated.is_some_and(|validated| validated.unchanged()) {
+        return Ok(());
+    }
     let store = host
         .store
         .lock()
@@ -885,7 +889,7 @@ async fn execute_attempt(
             context,
             client,
             repository_name: run.job.repository_name.clone(),
-            selection: run.selection.clone(),
+            selection: (*run.selection).clone(),
             before_send,
             local_gate: gate.clone(),
             failure_commit: Some(attempt.committer()),

@@ -9,6 +9,7 @@ use crate::{
     review::{Failure, ReviewRun, Selection},
     storage::{ActionPermissions, Repository, Store},
 };
+pub(crate) use packet::adoptable_runs;
 pub use packet::{adopt as adopt_packet, PacketApproval, Ready};
 use serde::{Deserialize, Serialize};
 
@@ -679,6 +680,7 @@ fn record_terminal(
         };
         tracked.head_sha = observation.head.clone();
         tracked.observed_at = now;
+        tracked.observed_sequence = crate::monitoring::next_observation();
     }
     for job in queue.jobs.iter_mut().filter(|j| binding.matches(j)) {
         if !matches!(

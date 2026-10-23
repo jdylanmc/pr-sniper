@@ -44,7 +44,9 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
         feedback_context: None,
         key: key(&job, &assignment_id),
         assignment_id: assignment_id.clone(),
-        selection: Selection::resolve(&settings, &job, &assignment_id).unwrap(),
+        selection: Selection::resolve(&settings, &job, &assignment_id)
+            .unwrap()
+            .into(),
         operation: monitoring::JobOperation::review(&job, 100),
         job,
         manual_start: true,
@@ -480,7 +482,9 @@ fn duck_fixture(window: u32) -> (tempfile::TempDir, Store, ReviewRun) {
     settings.repositories[0].assignments[0].rubber_duck = Some(duck_id);
     settings.rubber_duck.primary_window_minutes = window;
     store.save_settings(&settings).unwrap();
-    run.selection = Selection::resolve(&settings, &run.job, &run.assignment_id).unwrap();
+    run.selection = Selection::resolve(&settings, &run.job, &run.assignment_id)
+        .unwrap()
+        .into();
     (root, store, run)
 }
 
@@ -518,7 +522,12 @@ fn the_job_snapshot_captures_the_duck_and_a_duck_edit_changes_the_execution() {
     assert!(crate::review::validate_execution_selection(&store, &run).is_err());
     // The captured evidence is never rewritten by the edit.
     assert_eq!(
-        run.selection.configuration.unwrap().rubber_duck.unwrap(),
+        run.selection
+            .configuration
+            .clone()
+            .unwrap()
+            .rubber_duck
+            .unwrap(),
         snapshot
     );
 }

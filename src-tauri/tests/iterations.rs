@@ -150,6 +150,17 @@ fn explicit(
     store: &Store,
     pull: PullRequest,
 ) -> Result<monitoring::ExplicitAdmission, String> {
+    explicit_at(monitor, store, pull, NOW)
+}
+
+/// Explicit intake read at `now`; reads older than the PR's latest accepted
+/// observation are stale and change nothing.
+fn explicit_at(
+    monitor: &mut Monitor,
+    store: &Store,
+    pull: PullRequest,
+    now: i64,
+) -> Result<monitoring::ExplicitAdmission, String> {
     let expected = store.load_settings().unwrap().repositories.remove(0);
     let resolved = result(vec![]);
     monitor.admit_explicit_pull_request(
@@ -166,8 +177,8 @@ fn explicit(
             connection: resolved.connection,
             pull_request: Some(pull),
         },
-        NOW,
-        NOW,
+        now,
+        now,
     )
 }
 
@@ -277,7 +288,7 @@ fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration()
         "completed iteration must not run twice"
     );
     requested.head_sha = "b".repeat(40);
-    explicit(&mut restored, &store, requested).unwrap();
+    explicit_at(&mut restored, &store, requested, NOW + 4).unwrap();
     assert_eq!(store.load_queue_state().unwrap().tracked[0].iteration, 2);
     assert_eq!(store.load_queue().unwrap().len(), 2);
 }
@@ -423,7 +434,9 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
         job: job.clone(),
-        selection: Selection::resolve(settings, job, assignment).unwrap(),
+        selection: Selection::resolve(settings, job, assignment)
+            .unwrap()
+            .into(),
         operation,
         manual_start: true,
         trust_confirmed: false,
@@ -555,7 +568,7 @@ fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
             current.configuration.as_ref().unwrap().doctrines,
             original.configuration.as_ref().unwrap().doctrines
         );
-        assert_ne!(current, original, "{change}: archive must remain exact");
+        assert_ne!(current, *original, "{change}: archive must remain exact");
         review::validate_execution_selection(&store, &run)
             .unwrap_or_else(|error| panic!("{change}: {}", error.message));
         assert_eq!(store.load_reviews().unwrap()[0], run);

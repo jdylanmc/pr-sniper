@@ -78,7 +78,7 @@ fn review() -> ReviewRun {
         packet: None,
         feedback_context: None,
         key: pr_sniper_lib::review::key(&job, "assignment"),
-        selection: Selection::resolve(&settings(), &job, "assignment").unwrap(),
+        selection: Selection::resolve(&settings(), &job, "assignment").unwrap().into(),
         job,
         assignment_id: "assignment".into(),
         operation,
@@ -1320,8 +1320,9 @@ fn reviewer_only_eligibility_and_binding_loss_stop_publication_without_requeue()
         let mut review = review();
         review.job = fixture.job.clone();
         review.key = pr_sniper_lib::review::key(&review.job, "assignment");
-        review.selection =
-            Selection::resolve(&fixture.settings, &review.job, "assignment").unwrap();
+        review.selection = Selection::resolve(&fixture.settings, &review.job, "assignment")
+            .unwrap()
+            .into();
         let mut run = Publication::new(review, false, true, 100).unwrap();
         assert!(fixture.inspect(&run).unwrap().stop.is_none());
         match change {

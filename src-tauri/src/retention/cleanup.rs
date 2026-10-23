@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::review_store::ReadError;
 use crate::{
     actions::{EffectState, Ledger as Actions},
     follow_up::FollowUp,
@@ -20,13 +21,18 @@ struct State {
     pr_states: crate::pr_state::PrStates,
 }
 
-fn read<T: serde::de::DeserializeOwned + Default>(store: &Store, name: &str) -> Result<T, String> {
-    match store.read_state(name) {
+/// Shares the decode cache entry of the typed loader for `name`.
+fn read<T: serde::de::DeserializeOwned + Default + Clone + Send + Sync + 'static>(
+    store: &Store,
+    name: &'static str,
+) -> Result<T, String> {
+    let decoded = store.cached(name, &[name], || match store.read_state(name) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| format!("Cannot recover cleanup: invalid {name}.")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(_) => Err(format!("Cannot recover cleanup: unreadable {name}.")),
-    }
+    })?;
+    Ok(decoded.as_ref().clone())
 }
 
 impl State {
@@ -42,11 +48,20 @@ impl State {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => QueueState::default(),
             Err(_) => return Err("Cannot recover cleanup: unreadable queue.json.".into()),
         };
-        let notifications: Notifications = read(store, "notifications.json")?;
+        // Validated below; never share an unvalidated ledger with the loader.
+        let notifications: Notifications = match store.read_state("notifications.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Cannot recover cleanup: invalid notifications.json.".to_string())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Notifications::default(),
+            Err(_) => return Err("Cannot recover cleanup: unreadable notifications.json.".into()),
+        };
         notifications.validate()?;
         Ok(Self {
             queue,
-            reviews: read(store, "reviews.json")?,
+            reviews: store.stored_reviews().map_err(|error| match error {
+                ReadError::Unreadable => "Cannot recover cleanup: unreadable reviews.json.",
+                ReadError::Invalid => "Cannot recover cleanup: invalid reviews.json.",
+            })?,
             publications,
             follow_ups,
             actions: read(store, "actions.json")?,
@@ -56,7 +71,13 @@ impl State {
         })
     }
 
-    fn receipt(&self, scope: &TrackedPullRequest) -> Result<Option<Receipt>, String> {
+    /// `adoptable`: operation ids of approve/sign-off runs still owed a packet
+    /// final (`actions::adoptable_runs`).
+    fn receipt(
+        &self,
+        scope: &TrackedPullRequest,
+        adoptable: &std::collections::HashSet<String>,
+    ) -> Result<Option<Receipt>, String> {
         let binding = Binding::tracked(scope);
         let matches = |job: &QueueJob| binding.matches(job);
         let running = |op: &JobOperation| op.state == OperationState::Running;
@@ -159,6 +180,18 @@ impl State {
             || self.notifications.notices.iter().any(|n|
                 matches!(&n.event.destination, Destination::QueueItem { item_id } if items.contains(item_id))
                     && n.phase == NoticePhase::Submitting)
+            // An exit write not yet terminal may still land (or be landing) on
+            // the provider, or, completed but unconsumed, still owes its
+            // consume (a sign-off's approve/merge final is adopted from it);
+            // an uncertain or attempted step may have landed.
+            || self.feedback.exit_writes.iter().filter(|w| matches(&w.job)).any(|w|
+                !w.terminal()
+                    || w.uncertain
+                    || running(&w.operation)
+                    || w.steps.iter().any(|s| s.state == crate::exit_writes::StepState::Attempted))
+            // A completed approve or sign-off whose final is not adopted yet:
+            // pruning would erase the approval or merge-pending outcome.
+            || reviews.iter().any(|r| adoptable.contains(&r.operation.id))
         {
             return Ok(None);
         }
@@ -254,14 +287,16 @@ impl State {
             }))
             .chain(effects.iter().map(|e| &e.operation))
         {
-            operations.insert(op.id.clone(), op.clone());
+            operations.insert(op.id.clone(), ());
         }
         Ok(Some(Receipt {
             scope: scope.clone(),
             enqueue_watermark: self.queue.next_enqueue_order,
             items,
             work,
-            operations: operations.into_values().collect(),
+            operations: Vec::new(),
+            operation_ids: operations.into_keys().collect(),
+            cleaned_at: crate::now_seconds()?,
             publications: publications
                 .iter()
                 .map(|p| (p.id.clone(), p.review.key.clone(), p.receipts.clone()))
@@ -379,7 +414,7 @@ impl State {
         store.write_state("feedback.json", &self.feedback)?;
         store.write_state("follow-ups.json", &self.follow_ups)?;
         store.write_state("publications.json", &self.publications)?;
-        store.write_state("reviews.json", &self.reviews)?;
+        store.replace_reviews(&self.reviews)?;
         store.write_state("actions.json", &self.actions)?;
         store.write_state("notifications.json", &self.notifications)?;
         store.write_state("queue.json", &self.queue)?;
@@ -419,6 +454,28 @@ pub fn maintain_where(
     workers_quiescent: bool,
     select: impl Fn(&TrackedPullRequest) -> bool,
 ) -> Result<usize, String> {
+    clean(store, workers_quiescent, select, true, usize::MAX)
+}
+
+/// Automatic retention: drops detail of PRs observed closed or merged, at
+/// most `limit` per pass so a large backlog is spread over passes. A PR whose
+/// provenance needs repair is skipped (kept), not reported every pass; human
+/// **Clean** still reports it.
+pub fn prune_terminal(
+    store: &Store,
+    workers_quiescent: bool,
+    limit: usize,
+) -> Result<usize, String> {
+    clean(store, workers_quiescent, |_| true, false, limit)
+}
+
+fn clean(
+    store: &Store,
+    workers_quiescent: bool,
+    select: impl Fn(&TrackedPullRequest) -> bool,
+    strict: bool,
+    limit: usize,
+) -> Result<usize, String> {
     if !workers_quiescent {
         return Ok(0);
     }
@@ -434,6 +491,9 @@ pub fn maintain_where(
     let scopes = store.load_queue_state()?.tracked;
     let mut count = 0;
     for scope in scopes {
+        if count >= limit {
+            break;
+        }
         if !scope.terminal_observed || scope.lifecycle == Lifecycle::Open || !select(&scope) {
             continue;
         }
@@ -474,9 +534,13 @@ pub fn maintain_where(
                     _ => false,
                 })
         {
+            if !strict {
+                continue;
+            }
             return Err("Terminal cleanup needs the missing owned-publication provenance. Detail was retained; repair the original receipt.".into());
         }
-        let Some(mut receipt) = state.receipt(&scope)? else {
+        let adoptable = crate::actions::adoptable_runs(store, &state.actions)?;
+        let Some(mut receipt) = state.receipt(&scope, &adoptable)? else {
             continue;
         };
         for notice in &state.notifications.notices {

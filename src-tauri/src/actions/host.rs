@@ -21,6 +21,15 @@ impl MutationOwner {
         *active = Some(id.into());
         Ok(true)
     }
+    /// Holds new provider mutations off for as long as the guard lives;
+    /// `None` while one is running or being acquired.
+    pub(crate) fn idle(&self) -> Result<Option<std::sync::MutexGuard<'_, Option<String>>>, String> {
+        match self.0.try_lock() {
+            Ok(guard) if guard.is_none() => Ok(Some(guard)),
+            Ok(_) | Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(_) => Err("Provider mutation coordination unavailable.".into()),
+        }
+    }
     pub(crate) fn release(&self, id: &str) -> Result<(), String> {
         let mut active = self
             .0

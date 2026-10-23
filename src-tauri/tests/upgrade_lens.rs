@@ -107,7 +107,7 @@ fn run(state: OperationState, result: bool) -> ReviewRun {
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
-        selection: pre_id_selection(),
+        selection: pre_id_selection().into(),
         job,
         assignment_id: ASSIGNMENT.into(),
         operation,

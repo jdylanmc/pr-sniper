@@ -313,15 +313,111 @@ pub fn key(job: &QueueJob, assignment_id: &str) -> String {
     .to_string()
 }
 
+/// A large snapshot that many runs repeat verbatim (the captured selection,
+/// prior feedback). Clones share one decoded value; serialized as `T`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Shared<T>(pub std::sync::Arc<T>);
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+}
+
+impl<T: Serialize> Serialize for Shared<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match intern(&self.0) {
+            Some(id) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("$shared", &id)?;
+                map.end()
+            }
+            None => self.0.serialize(serializer),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Interner {
+    by_address: std::collections::HashMap<usize, String>,
+    by_content: std::collections::HashMap<Vec<u8>, String>,
+    values: serde_json::Map<String, Value>,
+}
+
+thread_local! {
+    static INTERNER: std::cell::RefCell<Option<Interner>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Id of `value` in the active `interned` table, adding it once.
+fn intern<T: Serialize>(value: &std::sync::Arc<T>) -> Option<String> {
+    let address = std::sync::Arc::as_ptr(value) as usize;
+    let known = INTERNER.with_borrow(|interner| {
+        interner
+            .as_ref()
+            .map(|interner| interner.by_address.get(&address).cloned())
+    })?;
+    if known.is_some() {
+        return known;
+    }
+    // Serialized with the table released: a value may hold shared values.
+    let json = serde_json::to_value(value.as_ref()).ok()?;
+    let content = serde_json::to_vec(&json).ok()?;
+    INTERNER.with_borrow_mut(|interner| {
+        let interner = interner.as_mut()?;
+        let next = interner.values.len().to_string();
+        let id = interner
+            .by_content
+            .entry(content)
+            .or_insert_with(|| next.clone())
+            .clone();
+        if id == next {
+            interner.values.insert(id.clone(), json);
+        }
+        interner.by_address.insert(address, id.clone());
+        Some(id)
+    })
+}
+
+/// `value` for the panel with each distinct shared snapshot sent once:
+/// `{"interned": value, "shared": {id: snapshot}}`, where the value holds
+/// `{"$shared": id}` in place of every repeat (`src/interned.ts` restores it).
+pub fn interned<T: Serialize>(value: &T) -> Result<Value, String> {
+    INTERNER.with_borrow_mut(|interner| *interner = Some(Interner::default()));
+    let body = serde_json::to_value(value);
+    let table = INTERNER.with_borrow_mut(Option::take).unwrap_or_default();
+    let body = body.map_err(|_| "Cannot encode the review queue.".to_string())?;
+    Ok(serde_json::json!({"interned": body, "shared": table.values}))
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::from)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feedback_context: Option<Vec<crate::feedback::Context>>,
+    pub feedback_context: Option<Shared<Vec<crate::feedback::Context>>>,
     pub key: String,
     pub assignment_id: String,
     pub job: QueueJob,
-    pub selection: Selection,
+    pub selection: Shared<Selection>,
     pub operation: JobOperation,
     pub manual_start: bool,
     /// Legacy evidence only; assignment and scope activation now authorize review.
@@ -371,7 +467,22 @@ pub(crate) const EXECUTION_INPUTS: &[&str] = &[
 /// One run's last successful validation, keyed by the stamp of its inputs.
 /// Guarded provider reads re-check only after one of them changed.
 #[derive(Debug, Default)]
-pub(crate) struct ValidatedSelection(std::sync::Mutex<Option<crate::storage::FileStamp>>);
+pub(crate) struct ValidatedSelection(
+    std::sync::Mutex<Option<crate::storage::FileStamp>>,
+    std::sync::OnceLock<crate::storage::StampProbe>,
+);
+
+impl ValidatedSelection {
+    /// Whether the last validation still holds, checked without the Store
+    /// lock: attempt gates run every 100 ms per review.
+    pub(crate) fn unchanged(&self) -> bool {
+        let Some(probe) = self.1.get() else {
+            return false;
+        };
+        let key = probe.stamp_of(EXECUTION_INPUTS);
+        key.is_some() && self.0.lock().is_ok_and(|last| *last == key)
+    }
+}
 
 /// `validate_execution_selection`, skipped while none of its inputs was
 /// rewritten since it last passed for this run. Refusals are never cached.
@@ -380,6 +491,9 @@ pub(crate) fn validate_execution_selection_cached(
     run: &ReviewRun,
     validated: &ValidatedSelection,
 ) -> Result<(), Failure> {
+    if let Some(probe) = store.probe() {
+        let _ = validated.1.set(probe);
+    }
     let key = store.stamp_of(EXECUTION_INPUTS);
     let mut last = validated
         .0
