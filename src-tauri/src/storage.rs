@@ -1539,9 +1539,14 @@ impl Store {
             "state"
         };
         if let Some(files) = &self.frozen {
-            return files
-                .get(&(directory.to_string(), name.to_string()))
-                .and_then(|file| file.stamp.clone());
+            return match files.get(&(directory.to_string(), name.to_string())) {
+                Some(file) => file.stamp.clone(),
+                // Absent when frozen; the copy holds the writes it saw.
+                None => {
+                    let writes = self.counters.lock().ok()?.get(name).map(|c| c.writes);
+                    Some((writes.unwrap_or(0), None))
+                }
+            };
         }
         let writes = self
             .counters
@@ -1794,6 +1799,9 @@ impl Store {
             Store::new(self.root.clone()).with_initial_time_zone(self.initial_time_zone.clone());
         view.frozen = Some(files);
         view.cache = self.cache.clone();
+        if let (Ok(seen), Ok(mut counters)) = (self.counters.lock(), view.counters.lock()) {
+            *counters = seen.clone();
+        }
         view.reader = reader;
         view
     }

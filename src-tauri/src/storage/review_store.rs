@@ -345,8 +345,10 @@ impl Store {
             };
             let bytes = serde_json::to_vec(&value).map_err(encode)?;
             let part = name("part-", &bytes);
-            wrote |= private_fs::create_immutable(directory, &part, &bytes).map_err(write)?;
-            self.record_bytes(bytes.len());
+            if private_fs::create_immutable(directory, &part, &bytes).map_err(write)? {
+                wrote = true;
+                self.record_bytes(bytes.len());
+            }
             let part_instants = instants(&bytes);
             all.extend(part_instants.iter().copied());
             if let Ok(mut segments) = self.cache.reviews.lock() {
@@ -363,8 +365,10 @@ impl Store {
         })
         .map_err(encode)?;
         let segment = name("run-", &bytes);
-        wrote |= private_fs::create_immutable(directory, &segment, &bytes).map_err(write)?;
-        self.record_bytes(bytes.len());
+        if private_fs::create_immutable(directory, &segment, &bytes).map_err(write)? {
+            wrote = true;
+            self.record_bytes(bytes.len());
+        }
         all.extend(instants(&bytes));
         all.sort_unstable();
         all.dedup();
@@ -444,6 +448,10 @@ impl Store {
         segments.parts.retain(|name, _| keep.contains(name));
     }
 }
+
+#[cfg(test)]
+#[path = "review_store_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 pub(super) fn segment_files(store: &Store) -> Vec<String> {
