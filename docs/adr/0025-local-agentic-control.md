@@ -91,8 +91,9 @@
   once; every resolved ancestor must be owned by the user or root and not
   group/world writable (sticky excepted). The intent records the real file; a
   retargeted link conflicts. Windows refuses reparse points explicitly.
-- A pre-release app-installed skill package is detected as a skill and never
-  deleted; its legacy owner receipt migrates on Repair.
+- A pre-release app-installed skill package is removed only while its legacy
+  owner receipt exists and every file matches its install receipt; otherwise it
+  is preserved. The legacy receipt migrates on Repair.
 - Node 22+ runs the bundled server without npm installation. Restart Copilot CLI
   for MCP registration changes; `/skills reload` discovers skill changes.
 

@@ -38,9 +38,10 @@
   **Retry** only reads status; it never repeats the failed mutation.
 - A durable intent joins the entry change and the ownership receipt. Reopen
   completes only an already-authorized intent; an external edit conflicts.
-- Pre-release app-installed `~/.copilot/skills/pr-sniper` packages are left
-  untouched (detected as a skill). Delete the folder, then run the skills
-  command, to switch. Its legacy MCP receipt migrates on Repair.
+- A pre-release app-installed `~/.copilot/skills/pr-sniper` package is removed
+  when its legacy receipt migrates (Repair or an owned-entry update), only if
+  every file still matches its install receipt. Customized, extended or linked
+  packages stay; delete them yourself, then run the skills command.
 - Native isolated profiles cannot read or change the real registration.
 - Human login remains in Settings → Accounts. The skill binds existing GitHub
   and Copilot accounts; it neither reads tokens nor performs authentication.

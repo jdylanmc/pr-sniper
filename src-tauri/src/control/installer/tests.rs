@@ -401,6 +401,81 @@ fn legacy_owned_entry_is_migrated_and_legacy_package_preserved() {
     );
 }
 
+fn legacy_package(home: &Path, extra: Option<&str>) -> (PathBuf, PathBuf) {
+    let package = home.join(".copilot/skills/pr-sniper");
+    fs::create_dir_all(package.join("scripts")).unwrap();
+    let files = [
+        ("SKILL.md", "---\nname: pr-sniper\n---\n"),
+        ("scripts/pr-sniper.mjs", "old"),
+    ];
+    let mut hashes = serde_json::Map::new();
+    for (name, text) in files {
+        fs::write(package.join(name), text).unwrap();
+        hashes.insert(name.into(), json!(revision(&text.as_bytes().to_vec())));
+    }
+    fs::write(
+        package.join(".pr-sniper-install.json"),
+        serde_json::to_vec(&json!({"format":2,"protocol":1,"version":"0.5.0","files":hashes}))
+            .unwrap(),
+    )
+    .unwrap();
+    if let Some(name) = extra {
+        fs::write(package.join(name), "mine").unwrap();
+    }
+    let entry = json!({"type":"local","command":"node",
+        "args":[package.join("scripts/mcp-server.mjs")],"tools":["*"],"timeout":180000});
+    write_config(home, &json!({"mcpServers":{"pr-sniper":entry}}));
+    let work = home.join(".copilot/.pr-sniper-installer");
+    crate::control::transport::private_directory(&work).unwrap();
+    fs::write(
+        work.join(LEGACY_OWNER),
+        serde_json::to_vec(&json!({"target":package,"entry":entry})).unwrap(),
+    )
+    .unwrap();
+    (package, work)
+}
+
+#[test]
+fn unmodified_legacy_package_is_retired_on_repair() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let (package, work) = legacy_package(&home, None);
+    let server = app(&home, "app");
+    let status = integration_at(&home, &server).unwrap();
+    assert!(package.exists());
+    install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
+    assert!(!package.exists());
+    assert!(home.join(".copilot/skills").is_dir());
+    assert!(!work.join(LEGACY_OWNER).exists());
+}
+
+#[test]
+fn customized_legacy_package_is_preserved_on_repair() {
+    for extra in ["notes.md", "scripts/local.mjs"] {
+        let root = root();
+        let home = root.path().canonicalize().unwrap();
+        let (package, work) = legacy_package(&home, Some(extra));
+        let server = app(&home, "app");
+        let status = integration_at(&home, &server).unwrap();
+        install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
+        assert_eq!(fs::read_to_string(package.join(extra)).unwrap(), "mine");
+        assert!(package.join("SKILL.md").exists());
+        assert!(package.join(".pr-sniper-install.json").exists());
+        assert!(!work.join(LEGACY_OWNER).exists());
+    }
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let (package, _) = legacy_package(&home, None);
+    fs::write(package.join("SKILL.md"), "edited").unwrap();
+    let server = app(&home, "app");
+    let status = integration_at(&home, &server).unwrap();
+    install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
+    assert_eq!(
+        fs::read_to_string(package.join("SKILL.md")).unwrap(),
+        "edited"
+    );
+}
+
 #[cfg(unix)]
 mod linked {
     use super::*;

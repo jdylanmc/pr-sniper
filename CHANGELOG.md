@@ -87,6 +87,9 @@ performance fixes.
   - A symlinked `~/.copilot` or `mcp-config.json` (for example, dotfiles) no
     longer shows Unavailable/Conflict on macOS: the real file is updated, the
     link is kept, and a retargeted link conflicts instead of writing blindly.
+  - The `/pr-sniper` skill installs and updates through the skills CLI
+    (`~/.agents/skills` or `~/.copilot/skills`) instead of being written by the
+    app, so Settings never overwrites or deletes a customized skill.
 
 ## 0.4.2 - 2026-10-20
 

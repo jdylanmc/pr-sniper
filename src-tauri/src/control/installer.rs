@@ -5,6 +5,7 @@ use crate::storage::private_fs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -57,9 +58,91 @@ struct Owner {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyOwner {
-    #[serde(rename = "target")]
-    _target: PathBuf,
+    target: PathBuf,
     entry: Value,
+}
+
+/// Receipt the retired installer wrote inside its skill package.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyManifest {
+    #[serde(rename = "format", default)]
+    _format: Option<u32>,
+    #[serde(rename = "protocol")]
+    _protocol: u32,
+    #[serde(rename = "version")]
+    _version: String,
+    files: BTreeMap<String, String>,
+}
+
+const LEGACY_MANIFEST: &str = ".pr-sniper-install.json";
+const LEGACY_DIRECTORIES: [&str; 2] = ["references", "scripts"];
+
+/// Hashes of a real, link-free legacy package, or `None` when it has any
+/// member the retired installer could not have written.
+fn legacy_hashes(package: &Path) -> Option<BTreeMap<String, String>> {
+    let mut found = BTreeMap::new();
+    for directory in std::iter::once(None).chain(LEGACY_DIRECTORIES.map(Some)) {
+        let path = directory.map_or_else(|| package.to_path_buf(), |name| package.join(name));
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Err(error) if error.kind() == ErrorKind::NotFound && directory.is_some() => continue,
+            _ => return None,
+        }
+        for entry in fs::read_dir(&path).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            let metadata = entry.metadata().ok()?;
+            if metadata.is_dir()
+                && directory.is_none()
+                && LEGACY_DIRECTORIES.contains(&name.as_str())
+            {
+                continue;
+            }
+            if !metadata.is_file() || metadata.len() > MAX_SKILL {
+                return None;
+            }
+            let relative = directory.map_or(name.clone(), |parent| format!("{parent}/{name}"));
+            found.insert(relative, revision(&fs::read(entry.path()).ok()?));
+        }
+    }
+    Some(found)
+}
+
+/// Removes the retired app-installed skill package only while it is exactly
+/// what that installer recorded. Customized, extended or linked packages stay.
+fn retire_legacy_package(home: &Path, target: &Path) {
+    let package = home.join(".copilot").join("skills").join(NAME);
+    if target != package
+        || [home.join(".copilot"), home.join(".copilot").join("skills")]
+            .iter()
+            .any(|parent| !fs::symlink_metadata(parent).is_ok_and(|m| m.is_dir()))
+    {
+        return;
+    }
+    let manifest_path = package.join(LEGACY_MANIFEST);
+    let Some(manifest) = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LegacyManifest>(&bytes).ok())
+    else {
+        return;
+    };
+    let Some(mut found) = legacy_hashes(&package) else {
+        return;
+    };
+    if found.remove(LEGACY_MANIFEST).is_none() || found != manifest.files {
+        return;
+    }
+    for name in manifest.files.keys() {
+        if fs::remove_file(package.join(name)).is_err() {
+            return;
+        }
+    }
+    let _ = fs::remove_file(&manifest_path);
+    for directory in LEGACY_DIRECTORIES {
+        let _ = fs::remove_dir(package.join(directory));
+    }
+    let _ = fs::remove_dir(&package);
 }
 
 /// A durable, already-authorized registration change. Recovery completes it
@@ -396,7 +479,10 @@ impl Scope {
             Some(entry) => self.write(OWNER, &Owner { entry })?,
             None => self.clear(OWNER)?,
         }
-        self.clear(LEGACY_OWNER)?;
+        if let Some(legacy) = self.read::<LegacyOwner>(LEGACY_OWNER)? {
+            retire_legacy_package(&self.home, &legacy.target);
+            self.clear(LEGACY_OWNER)?;
+        }
         checkpoint("mcp-owner-written")?;
         self.clear(INTENT)
     }
