@@ -78,7 +78,10 @@ fn r1_abrupt_replacement_interruption_recovers_terminal_cleanup() {
                 fs::create_dir(root.path().join(directory)).unwrap();
                 let from = source.path().join(directory);
                 for file in Store::saved_files(&from) {
-                    let to = root.path().join(directory).join(file.strip_prefix(&from).unwrap());
+                    let to = root
+                        .path()
+                        .join(directory)
+                        .join(file.strip_prefix(&from).unwrap());
                     fs::create_dir_all(to.parent().unwrap()).unwrap();
                     fs::copy(&file, to).unwrap();
                 }

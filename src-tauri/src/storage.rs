@@ -9,6 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_DIAGNOSTICS_BYTES: u64 = 256 * 1024;
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "storage/cost_bench.rs"]
+mod cost_bench;
 #[path = "storage/diagnostics.rs"]
 pub mod diagnostics;
 #[path = "storage/file_identity.rs"]
@@ -19,9 +22,6 @@ pub(crate) mod parsed;
 pub(crate) mod private_fs;
 #[path = "storage/review_store.rs"]
 pub(crate) mod review_store;
-#[cfg(all(test, target_os = "macos"))]
-#[path = "storage/cost_bench.rs"]
-mod cost_bench;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1692,12 +1692,7 @@ impl Store {
         }
         // Creates default settings first, as an ordinary read would.
         self.load_settings()?;
-        let epoch = self
-            .cache
-            .reviews
-            .lock()
-            .map_err(|_| "Cannot snapshot local state.".to_string())?
-            .epoch;
+        let epoch = self.cache.epoch.load(std::sync::atomic::Ordering::SeqCst);
         let reader = self.cache.reader(epoch);
         let mut files = BTreeMap::new();
         let unreadable = |_| "Cannot snapshot local state.".to_string();

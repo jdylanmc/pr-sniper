@@ -83,8 +83,6 @@ struct Part {
 pub(crate) struct Segments {
     runs: HashMap<String, Run>,
     parts: HashMap<String, Part>,
-    /// Bumped by every manifest commit through this Store.
-    pub(super) epoch: u64,
     /// Names unreferenced since the epoch they were recorded at.
     garbage: Vec<(u64, String, Vec<String>)>,
     swept: bool,
@@ -94,8 +92,7 @@ fn decode(bytes: &[u8]) -> Result<Saved, ReadError> {
     let first = bytes.iter().find(|b| !b.is_ascii_whitespace());
     if first == Some(&b'{') {
         let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| INVALID)?;
-        if manifest.format != FORMAT || !manifest.runs.iter().all(|name| valid_name(name, "run-"))
-        {
+        if manifest.format != FORMAT || !manifest.runs.iter().all(|name| valid_name(name, "run-")) {
             return Err(INVALID);
         }
         return Ok(Saved::Segmented(manifest.runs));
@@ -282,7 +279,10 @@ impl Store {
         };
         let mut by_id: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, (_, run)) in previous.iter().enumerate() {
-            by_id.entry(run.operation.id.as_str()).or_default().push(index);
+            by_id
+                .entry(run.operation.id.as_str())
+                .or_default()
+                .push(index);
         }
         let directory = self.segment_directory();
         let mut wrote = false;
@@ -390,8 +390,11 @@ impl Store {
         let Ok(mut segments) = self.cache.reviews.lock() else {
             return;
         };
-        segments.epoch += 1;
-        let epoch = segments.epoch;
+        let epoch = self
+            .cache
+            .epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         for name in unreferenced {
             let parts = segments
                 .runs

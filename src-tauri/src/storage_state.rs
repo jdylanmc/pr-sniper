@@ -221,8 +221,7 @@ impl Store {
                 }
                 Err(_) => {
                     return Err(
-                        "Cannot read notification history. Check local storage permissions."
-                            .into(),
+                        "Cannot read notification history. Check local storage permissions.".into(),
                     )
                 }
             };
@@ -334,7 +333,9 @@ impl Store {
                 Ok(bytes) => {
                     crate::follow_up::decode_with_origins(&bytes, &self.load_publications()?)
                         .map_err(|_| {
-                            String::from("Thread follow-up state is invalid; automation is blocked.")
+                            String::from(
+                                "Thread follow-up state is invalid; automation is blocked.",
+                            )
                         })
                 }
                 Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
@@ -353,13 +354,15 @@ impl Store {
 
     pub fn load_monitoring_state(&self) -> Result<crate::monitoring::MonitoringState, String> {
         crate::retention::guard(self)?;
-        self.decoded("monitoring.json", || match self.read_state("monitoring.json") {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                Ok(crate::monitoring::MonitoringState::default())
+        self.decoded("monitoring.json", || {
+            match self.read_state("monitoring.json") {
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|_| "Monitoring state is invalid; polling cannot resume.".into()),
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    Ok(crate::monitoring::MonitoringState::default())
+                }
+                Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
             }
-            Err(_) => Err("Cannot read monitoring state. Check local file permissions.".into()),
         })
     }
 

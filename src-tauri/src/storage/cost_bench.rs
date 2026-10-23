@@ -101,7 +101,8 @@ pub(crate) fn live_profile(store: &Store) {
             let index = reviews.len();
             if index < 1376 {
                 let mut run = review(&settings, &job(number, pass, WAITING_HUMAN_START), "p");
-                run.selection.doctrine = Some(format!("{}{}", index % SELECTIONS, "d".repeat(9800)));
+                run.selection.doctrine =
+                    Some(format!("{}{}", index % SELECTIONS, "d".repeat(9800)));
                 run.selection.agent.prompt =
                     format!("{}{}", index % SELECTIONS, "q".repeat(12_000));
                 run.feedback_context =
@@ -130,7 +131,9 @@ pub(crate) fn live_profile(store: &Store) {
     for n in 0..OPERATIONS {
         let mut operation = reviews[n % reviews.len()].operation.clone();
         operation.id = format!("operation-{n}");
-        monitoring.operations.insert(operation.id.clone(), operation);
+        monitoring
+            .operations
+            .insert(operation.id.clone(), operation);
     }
     store.write_state("queue.json", &queue).unwrap();
     store.write_state("reviews.json", &reviews).unwrap();
@@ -193,11 +196,10 @@ fn live_size_progress_and_polling_cost() {
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(1));
                 let now = usage::sample();
-                samples.lock().unwrap().push((
-                    (now.0 - last.0) as f64 / 1e9 * 100.0,
-                    now.1,
-                    now.2,
-                ));
+                samples
+                    .lock()
+                    .unwrap()
+                    .push(((now.0 - last.0) as f64 / 1e9 * 100.0, now.1, now.2));
                 last = now;
             }
         });

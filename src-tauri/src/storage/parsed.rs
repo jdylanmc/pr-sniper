@@ -19,6 +19,8 @@ type Entry = (Vec<Stamp>, Arc<dyn Any + Send + Sync>);
 pub(crate) struct Cache {
     values: Mutex<HashMap<&'static str, Entry>>,
     pub(super) reviews: Mutex<super::review_store::Segments>,
+    /// Bumped by every review manifest commit through this Store.
+    pub(super) epoch: std::sync::atomic::AtomicU64,
     /// Live frozen copies by the review-store epoch they were taken at.
     readers: Mutex<BTreeMap<u64, usize>>,
     #[cfg(test)]

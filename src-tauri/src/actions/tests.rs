@@ -629,11 +629,9 @@ fn retention_waits_for_uncertain_actions_then_discards_all_final_detail_copies()
         Some(&receipt)
     );
     for file in Store::saved_files(&root.path().join("state")) {
-        assert!(
-            !String::from_utf8(std::fs::read(file).unwrap())
-                .unwrap()
-                .contains("RETENTION-BULK-ONLY")
-        );
+        assert!(!String::from_utf8(std::fs::read(file).unwrap())
+            .unwrap()
+            .contains("RETENTION-BULK-ONLY"));
     }
     assert!(finish_effect(&store, &effect.id, &effect.operation.id, Ok(receipt)).is_err());
     assert!(crate::actions::prepare_effect(
