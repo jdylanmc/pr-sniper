@@ -1114,6 +1114,38 @@ fn pruning_waits_for_exit_writes_and_a_late_save_cannot_restore_them() {
 }
 
 #[test]
+fn pruning_waits_for_an_lgtm_sign_off_resolving_its_threads() {
+    use crate::exit_writes::{Phase, Step, StepKind, StepState};
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let mut write = exit_write(&review.job, Phase::Verified, StepState::Done);
+    write.sign_off = Some(crate::exits::LgtmAction::Approve);
+    write.steps.push(Step {
+        kind: StepKind::Resolve,
+        body: String::new(),
+        root_id: None,
+        state: StepState::Attempted,
+        receipt: None,
+        ..write.steps[0].clone()
+    });
+    save_exit_write(&store, &write).unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    // A resolution may be landing; its approve final has not been adopted yet.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    write.phase = Phase::Completed;
+    write.steps[1].state = StepState::Done;
+    write.steps[1].receipt = Some("resolved".into());
+    save_exit_write(&store, &write).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
 fn evicted_detail_keeps_the_safety_tombstone_of_a_reopened_pr() {
     let (_root, store, mut monitor) = fixture();
     let (review, publication, follow) = evidence(&store);
