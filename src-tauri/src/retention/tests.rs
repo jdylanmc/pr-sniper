@@ -1102,8 +1102,12 @@ fn pruning_waits_for_exit_writes_and_a_late_save_cannot_restore_them() {
     save_exit_write(&store, &uncertain).unwrap();
     assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
     assert!(!store.review_evidence().unwrap().is_empty());
-    // Every effect confirmed: settled, pruned once, receipt retained.
-    let done = exit_write(&review.job, Phase::Completed, StepState::Done);
+    // Every effect confirmed but not yet consumed: still owed locally.
+    let mut done = exit_write(&review.job, Phase::Completed, StepState::Done);
+    save_exit_write(&store, &done).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    // Consumed: settled, pruned once, receipt retained.
+    done.consumed = true;
     save_exit_write(&store, &done).unwrap();
     assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
     assert_eq!(load(&store).unwrap().receipts.len(), 1);
@@ -1141,6 +1145,39 @@ fn pruning_waits_for_an_lgtm_sign_off_resolving_its_threads() {
     write.steps[1].state = StepState::Done;
     write.steps[1].receipt = Some("resolved".into());
     save_exit_write(&store, &write).unwrap();
+    // Resolved but unconsumed: its approve/merge final is not adopted yet.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    write.consumed = true;
+    save_exit_write(&store, &write).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
+fn a_completed_unconsumed_sign_off_survives_a_restart_before_its_consume() {
+    use crate::exit_writes::{Phase, StepState};
+    let (root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    let mut write = exit_write(&review.job, Phase::Completed, StepState::Done);
+    write.sign_off = Some(crate::exits::LgtmAction::Merge);
+    save_exit_write(&store, &write).unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    drop(store);
+    // Restart: maintenance runs before the exit-write coordinator consumes it.
+    let store = Store::new(root.path().into());
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.review_evidence().unwrap().is_empty());
+    let saved = store.load_feedback().unwrap().exit_writes;
+    assert!(saved.iter().any(|w| w.id == write.id && !w.consumed));
+    // The consume is durable: now the PR is settled and pruned.
+    write.consumed = true;
+    save_exit_write(&store, &write).unwrap();
+    let store = Store::new(root.path().into());
     assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
     assert!(store.load_feedback().unwrap().exit_writes.is_empty());
 }

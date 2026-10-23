@@ -174,11 +174,12 @@ impl State {
             || self.notifications.notices.iter().any(|n|
                 matches!(&n.event.destination, Destination::QueueItem { item_id } if items.contains(item_id))
                     && n.phase == NoticePhase::Submitting)
-            // An exit write still planned or verified, uncertain, or with an
-            // attempted step may still land (or be landing) on the provider.
-            // Completed (every effect confirmed) needs no local consume.
+            // An exit write not yet terminal may still land (or be landing) on
+            // the provider, or, completed but unconsumed, still owes its
+            // consume (a sign-off's approve/merge final is adopted from it);
+            // an uncertain or attempted step may have landed.
             || self.feedback.exit_writes.iter().filter(|w| matches(&w.job)).any(|w|
-                matches!(w.phase, crate::exit_writes::Phase::Planned | crate::exit_writes::Phase::Verified)
+                !w.terminal()
                     || w.uncertain
                     || running(&w.operation)
                     || w.steps.iter().any(|s| s.state == crate::exit_writes::StepState::Attempted))
