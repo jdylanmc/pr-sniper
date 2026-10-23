@@ -879,6 +879,14 @@ fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries
         store.save_reviews(&[run]).unwrap();
     }
     let queue = fixture.call(json!({"operation":"queue"}));
+    let mut native = queue["result"].clone();
+    for item in native["values"].as_array_mut().unwrap() {
+        for review in item["reviews"].as_array_mut().unwrap() {
+            review["operation_id"] = json!("operation");
+            review["next_attempt_at"] = json!(1_800_000_000);
+        }
+    }
+    contract("native-queue.json", &native);
     let review = &queue["result"]["values"][0]["reviews"][0];
     assert_eq!(review["error"], crate::feedback::OBSERVATION_FAILED);
     assert!(review["next_attempt_at"]
@@ -932,4 +940,89 @@ fn detail_of_an_automatically_pruned_pr_reads_its_tombstone() {
     assert_eq!(text["reviews"], json!([]));
     let missing = fixture.call(json!({"operation":"detail","item_id":"never-seen"}));
     assert_eq!(missing["ok"], false);
+}
+
+/// Native MCP output the JS adapter's schemas must accept
+/// (`tests/control/contract.test.mjs`). `UPDATE_GOLDEN=1` rewrites it.
+fn contract(name: &str, value: &Value) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/control/fixtures")
+        .join(name);
+    let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &text).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap_or_default(),
+        text,
+        "{name} differs from native output; rerun with UPDATE_GOLDEN=1, then npm run test:skills"
+    );
+}
+
+#[test]
+fn native_enum_ids_match_the_mcp_contract() {
+    use crate::{
+        actions::packet::MergePending, exits::gates::MergeBlock, queue::Progress,
+        review::findings::Disposition,
+    };
+    let progress = [
+        Progress::Approving,
+        Progress::Merging,
+        Progress::MergePendingBehindBase,
+        Progress::MergePendingConflicts,
+        Progress::Publishing,
+    ];
+    // Exhaustive: a new variant fails to compile until listed above.
+    for p in progress {
+        match p {
+            Progress::Approving
+            | Progress::Merging
+            | Progress::MergePendingBehindBase
+            | Progress::MergePendingConflicts
+            | Progress::Publishing => {}
+        }
+    }
+    let dispositions = [
+        Disposition::StillApplies,
+        Disposition::Fixed,
+        Disposition::Withdrawn,
+        Disposition::Unverifiable,
+        Disposition::AuthorWontFix,
+        Disposition::SignedOff,
+        Disposition::NoLongerApplies,
+    ];
+    for d in dispositions {
+        match d {
+            Disposition::StillApplies
+            | Disposition::Fixed
+            | Disposition::Withdrawn
+            | Disposition::Unverifiable
+            | Disposition::AuthorWontFix
+            | Disposition::SignedOff
+            | Disposition::NoLongerApplies => {}
+        }
+        assert_eq!(serde_json::to_value(d).unwrap(), d.id());
+    }
+    let blocks = [MergeBlock::BehindBase, MergeBlock::Conflicts];
+    for b in blocks {
+        match b {
+            MergeBlock::BehindBase | MergeBlock::Conflicts => {}
+        }
+    }
+    let exits: Vec<_> = crate::exits::Exit::ALL.iter().map(|e| e.id()).collect();
+    for exit in crate::exits::Exit::ALL {
+        assert_eq!(serde_json::to_value(exit).unwrap(), exit.id());
+    }
+    contract(
+        "native-enums.json",
+        &json!({
+            "exit": exits,
+            "progress": progress,
+            "merge_block": blocks,
+            "disposition": dispositions.iter().map(|d| d.id()).chain(["carried_forward"])
+                .collect::<Vec<_>>(),
+            "merge_pending": MergePending { reason: MergeBlock::Conflicts, ci_not_run: true },
+        }),
+    );
 }

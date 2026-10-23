@@ -8,31 +8,13 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const source = path.resolve("src-tauri/resources/mcp/mcp-server.mjs");
-const queueItem = {
-  id: "item",
-  configuration_id: "repository",
-  number: 7,
-  title: "Fixture",
-  state: "queued",
-  failure_class: null,
-  failure_cause: null,
-  dismiss_token: null,
-  resume_at: null,
-  review_count: 1,
-  reviews: [
-    {
-      candidate_key: "candidate",
-      operation_id: "operation",
-      state: "queued",
-      error: "Feedback observation failed; no clearance accepted.",
-      next_attempt_at: 1800000000,
-      dispositions: { author_wont_fix: 1, carried_forward: 2 },
-      duck_failures: [
-        { ordinal: 1, failure: "unverified", reason: "thread_unread" },
-      ],
-    },
-  ],
-};
+// The exact native queue shape, pinned by the app's dispatcher tests.
+const [queueItem] = JSON.parse(
+  await fs.readFile(
+    path.resolve("tests/control/fixtures/native-queue.json"),
+    "utf8",
+  ),
+).values;
 async function fixture(mode) {
   const base = path.resolve("src-tauri/target");
   await fs.mkdir(base, { recursive: true });
@@ -184,19 +166,21 @@ for (const mode of ["legacy", "modern"]) {
   });
 }
 
-test("MCP queue reports settled findings, Duck reasons and retry times", async () => {
-  const f = await fixture("modern");
-  try {
-    const response = await f.client.callTool({
-      name: "list_queue",
-      arguments: {},
-    });
-    assert.equal(response.isError, false, JSON.stringify(response));
-    assert.deepEqual(response.structuredContent.result.values, [queueItem]);
-  } finally {
-    await f.close();
-  }
-});
+for (const mode of ["modern", "legacy"]) {
+  test(`MCP queue reports exits, settled findings, Duck reasons and retry times (${mode})`, async () => {
+    const f = await fixture(mode);
+    try {
+      const response = await f.client.callTool({
+        name: "list_queue",
+        arguments: {},
+      });
+      assert.equal(response.isError, false, JSON.stringify(response));
+      assert.deepEqual(response.structuredContent.result.values, [queueItem]);
+    } finally {
+      await f.close();
+    }
+  });
+}
 
 test("MCP preserves native conflicts and retry identity without retrying effects", async () => {
   const f = await fixture("legacy");

@@ -226,6 +226,36 @@ export const health = z
     next_attempt_at: z.number().nullable(),
   })
   .passthrough();
+// Native ids; tests/control/fixtures/native-enums.json pins them to the app.
+export const exitName = z.enum([
+  "leave_comments",
+  "ready_for_human",
+  "wait",
+  "approve_pull_request",
+  "approve_and_merge",
+  "panic_exit",
+  "submit_report",
+  "submit_verdict",
+  "lgtm",
+]);
+export const progress = z.enum([
+  "approving",
+  "merging",
+  "merge_pending_behind_base",
+  "merge_pending_conflicts",
+  "publishing",
+]);
+export const mergeBlock = z.enum(["behind_base", "conflicts"]);
+export const disposition = z.enum([
+  "still_applies",
+  "fixed",
+  "withdrawn",
+  "unverifiable",
+  "author_wont_fix",
+  "signed_off",
+  "no_longer_applies",
+  "carried_forward",
+]);
 export const queueItem = z
   .object({
     id,
@@ -237,6 +267,11 @@ export const queueItem = z
     failure_cause: z.string().nullable(),
     dismiss_token: z.string().nullable(),
     resume_at: z.number().nullable(),
+    exit: exitName.nullable(),
+    progress: progress.nullable(),
+    merge_pending: z
+      .strictObject({ reason: mergeBlock, ci_not_run: z.boolean() })
+      .nullable(),
     review_count: z.number().int(),
     reviews: z.array(
       z.strictObject({
@@ -245,17 +280,11 @@ export const queueItem = z
         state: operationState.nullable(),
         error: z.string().nullable(),
         next_attempt_at: z.number().nullable(),
-        dispositions: z.partialRecord(
-          z.enum([
-            "still_applies",
-            "fixed",
-            "withdrawn",
-            "unverifiable",
-            "author_wont_fix",
-            "carried_forward",
-          ]),
-          z.number().int(),
+        exit: exitName.nullable(),
+        exits_denied: z.array(
+          z.strictObject({ exit: exitName, reason: z.string() }),
         ),
+        dispositions: z.partialRecord(disposition, z.number().int()),
         duck_failures: z.array(
           z.strictObject({
             ordinal: z.number().int(),
