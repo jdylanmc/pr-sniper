@@ -1598,10 +1598,22 @@ async fn failure_during_abort(signal: &str, scenario: &str) {
             .dispatched
             .is_empty());
         assert!(operation.cancelled.load(Ordering::SeqCst));
-        // Cross the production monitor's 100 ms poll while abort is still held.
+        // The abort is held until released below (its timeout is scoped long), so
+        // nothing here races wall-clock load. Observe the coordinator's stopping
+        // transition, then cross the production monitor's 100 ms poll, still held.
+        let snapshot = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let snapshot = coordinator.snapshot(&store, 202).unwrap();
+                if snapshot.stopping >= 1 {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("coordinator never reported the attempt stopping");
         tokio::time::sleep(Duration::from_millis(250)).await;
         let pending = !finished.load(Ordering::SeqCst);
-        let snapshot = coordinator.snapshot(&store, 202).unwrap();
         let blocked = coordinator
             .dispatch(&store, 202)
             .unwrap()
@@ -1610,7 +1622,12 @@ async fn failure_during_abort(signal: &str, scenario: &str) {
         std::fs::write(root.path().join("release-abort"), b"release").unwrap();
         (pending, snapshot, blocked)
     };
-    let ((error, saved), (pending, snapshot, blocked)) = tokio::join!(inference, interrupt);
+    let ((error, saved), (pending, snapshot, blocked)) = super::ABORT_TIMEOUT_OVERRIDE
+        .scope(
+            Duration::from_secs(60),
+            Box::pin(async { tokio::join!(Box::pin(inference), Box::pin(interrupt)) }),
+        )
+        .await;
     assert_eq!(coordinator.snapshot(&store, 203).unwrap().active, 1);
     assert_eq!(store.load_publications().unwrap(), archived);
     assert!(

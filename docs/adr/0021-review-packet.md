@@ -13,8 +13,8 @@ Status: accepted, implemented. Legacy path removed: every run is packet mode. Su
 
 - The primary may end on `lgtm` (comment only). It settles PR Sniper's own findings on the primary's judgment: no per-thread fixed evidence or Rubber Duck. It never touches another reviewer's thread. Contract: [sign-off](../review-packet.md#sign-off).
 - Own = rooted in this assignment's saved publication, verified on a fresh read. Not markers, logins or the acting account: PR Sniper may publish as the PR author.
-- Hard gates on the fresh state as it will be after the own resolutions: head and base, open, not draft, no conflicts, CI green (not pending), no changes requested, no other unresolved thread, and the action's gates including Include self on own PRs.
-- Authority decides the action: none = local Ready, Approve = approve, Approve & Merge = approve then merge (`expectedHeadOid`). Resolutions run first through the exit write (fresh re-read of each thread before and after); approve/merge waits for them and re-runs its own fresh gates. Refusal after resolutions is a recorded partial outcome.
+- Hard gates on the fresh state as it will be after the own resolutions: head and base, open, not draft, no conflicts, CI verified green (unknown, absent or pending refuses every action), no changes requested, no other unresolved thread, and the action's gates including Include self on own PRs.
+- Granted authority alone decides the action (the tool list never downgrades it): none = local Ready, Approve = approve, Approve & Merge = approve then merge (`expectedHeadOid`). Resolutions run first through the exit write (fresh re-read of each thread before and after); approve/merge waits for them and re-runs its own fresh gates. Refusal after resolutions is a recorded partial outcome.
 - Fixed evidence also accepts a ref without line (whole head file served) and an `end_line` past the last line. #207 evidence: every `fixed` was refused for line-less or past-end refs the Rubber Duck had accepted, and the error never named which.
 
 ## Context

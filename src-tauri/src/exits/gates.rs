@@ -329,12 +329,12 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     })
 }
 
-/// The sign-off's action: the assignment's strongest configured authority.
+/// The sign-off's action: the assignment's strongest granted authority. Grants alone
+/// decide it; the tool list only gates the legacy explicit approve exits.
 pub fn lgtm_action(input: &GateInput) -> LgtmAction {
-    let has = |exit: Exit| input.tools.iter().any(|tool| tool == exit.id());
-    if input.grants.merge && has(Exit::ApproveAndMerge) {
+    if input.grants.merge {
         LgtmAction::Merge
-    } else if (input.grants.approve || input.grants.merge) && has(Exit::ApprovePullRequest) {
+    } else if input.grants.approve {
         LgtmAction::Approve
     } else {
         LgtmAction::Ready
@@ -356,6 +356,8 @@ pub fn lgtm_denial(input: &GateInput) -> Option<String> {
         "CI is red. Do not sign off.".into()
     } else if f.ci == Ci::Pending {
         "CI is pending. Do not sign off until it is green.".into()
+    } else if f.ci != Ci::Green {
+        "CI not verified green. Do not sign off.".into()
     } else if f.changes_requested {
         "Changes requested by a reviewer. Do not sign off.".into()
     } else if f.unresolved_threads {

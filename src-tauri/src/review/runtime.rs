@@ -50,6 +50,23 @@ const DEFAULT_CHUNK_BYTES: usize = 24 * 1024;
 const MAX_CHUNK_BYTES: usize = 30_000;
 const RUNTIME_OUTPUT_THRESHOLD_BYTES: u64 = 256 * 1024;
 const CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// How long a failed attempt waits for its session abort before shutdown.
+const ABORT_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Test-only override, scoped to one test's task, so a held abort is never
+    /// raced against wall-clock load.
+    pub(crate) static ABORT_TIMEOUT_OVERRIDE: Duration;
+}
+
+fn abort_timeout() -> Duration {
+    #[cfg(test)]
+    if let Ok(timeout) = ABORT_TIMEOUT_OVERRIDE.try_with(|t| *t) {
+        return timeout;
+    }
+    ABORT_TIMEOUT
+}
 
 pub(crate) type Gate = Arc<dyn Fn() -> Result<(), Failure> + Send + Sync>;
 
@@ -1513,7 +1530,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
     let abort = if let Some(session) = session {
         if result.is_err() {
             if matches!(
-                tokio::time::timeout(Duration::from_secs(2), session.abort()).await,
+                tokio::time::timeout(abort_timeout(), session.abort()).await,
                 Ok(Ok(()))
             ) {
                 Outcome::Success

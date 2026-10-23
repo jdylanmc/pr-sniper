@@ -278,23 +278,73 @@ fn roles_and_assignment_tools_intersect_with_the_gates() {
     narrow.tools = vec!["ready_for_human".into(), "read_changes".into()];
     let ids: Vec<_> = offered(&narrow).iter().map(|(e, _)| e.id()).collect();
     assert_eq!(ids, ["ready_for_human", "lgtm"]);
-    assert_eq!(lgtm_action(&narrow), LgtmAction::Ready);
 }
 
 #[test]
-fn lgtm_acts_on_the_strongest_configured_authority() {
-    assert_eq!(lgtm_action(&base()), LgtmAction::Merge);
-    let mut approve = base();
-    approve.grants.merge = false;
-    assert_eq!(lgtm_action(&approve), LgtmAction::Approve);
-    let mut no_merge_tool = base();
-    no_merge_tool.tools.retain(|t| t != "approve_and_merge");
-    assert_eq!(lgtm_action(&no_merge_tool), LgtmAction::Approve);
-    let mut none = base();
-    none.grants.approve = false;
-    none.grants.merge = false;
-    assert_eq!(lgtm_action(&none), LgtmAction::Ready);
-    assert_eq!(lgtm_denial(&none), None);
+fn lgtm_acts_on_the_granted_authority_whatever_the_tool_list() {
+    let narrow_tool_sets: [&[&str]; 4] = [
+        &ALL_TOOLS,
+        &["ready_for_human", "read_changes"],
+        &["leave_comments", "approve_pull_request"],
+        &["read_changes"],
+    ];
+    for tools in narrow_tool_sets {
+        let with = |approve: bool, merge: bool| {
+            let mut input = base();
+            input.tools = tools.iter().map(|t| t.to_string()).collect();
+            input.grants.approve = approve;
+            input.grants.merge = merge;
+            input
+        };
+        assert_eq!(
+            lgtm_action(&with(true, true)),
+            LgtmAction::Merge,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(false, true)),
+            LgtmAction::Merge,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(true, false)),
+            LgtmAction::Approve,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(false, false)),
+            LgtmAction::Ready,
+            "{tools:?}"
+        );
+        assert_eq!(lgtm_denial(&with(false, false)), None, "{tools:?}");
+        assert!(is_offered(&with(true, true), Exit::Lgtm), "{tools:?}");
+    }
+}
+
+#[test]
+fn lgtm_needs_verified_green_ci_for_every_action() {
+    let mut no_rollup = observation();
+    no_rollup.checks = None;
+    let mut empty_rollup = observation();
+    empty_rollup.checks = Some(String::new());
+    empty_rollup.check_contexts = vec![];
+    for (name, ci) in [
+        ("unknown", Ci::Unknown),
+        ("absent rollup", Facts::from_observation(&no_rollup).ci),
+        ("empty rollup", Facts::from_observation(&empty_rollup).ci),
+    ] {
+        assert_ne!(ci, Ci::Green, "{name}");
+        for (approve, merge) in [(false, false), (true, false), (true, true)] {
+            let mut input = base();
+            input.grants.approve = approve;
+            input.grants.merge = merge;
+            input.facts.ci = ci;
+            let reason = lgtm_denial(&input)
+                .unwrap_or_else(|| panic!("{name}: {:?} signed off", lgtm_action(&input)));
+            assert!(reason.contains("CI"), "{name}: {reason}");
+            assert!(!is_offered(&input, Exit::Lgtm), "{name}");
+        }
+    }
 }
 
 #[test]
