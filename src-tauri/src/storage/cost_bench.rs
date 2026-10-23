@@ -152,6 +152,7 @@ pub(crate) fn live_profile(store: &Store) {
             },
             admitted_at: NOW,
             observed_at: NOW,
+            observed_sequence: 0,
         });
     }
     queue.next_enqueue_order = (PRS + 1) * 1000;

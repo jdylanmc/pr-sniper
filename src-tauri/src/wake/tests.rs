@@ -805,6 +805,7 @@ pub(crate) fn bloated(store: &Store, scale: usize) {
             },
             admitted_at: NOW,
             observed_at: NOW,
+            observed_sequence: 0,
         });
         if merged {
             observations.push(observed(number, &pad));

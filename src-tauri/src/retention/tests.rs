@@ -1174,3 +1174,80 @@ fn receipts_stay_bounded_and_still_reject_stale_workers() {
     assert_eq!(aged.owned, template.owned);
     assert_eq!(aged.pass_ordinals, template.pass_ordinals);
 }
+
+#[test]
+fn reads_prepared_in_the_same_second_keep_their_order() {
+    // Poll variant: both reads prepared at the same second.
+    let (_root, store, mut monitor) = fixture();
+    evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
+    let older = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = older.clone();
+    newer.sequence = crate::monitoring::next_observation();
+    assert_eq!(newer.prepared_at, older.prepared_at);
+    finish_scan(
+        &store,
+        &mut monitor,
+        newer,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 10,
+    );
+    finish_scan(
+        &store,
+        &mut monitor,
+        older,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 10,
+    );
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert_eq!(tracked.iteration, 2);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+
+    // Lifecycle-read variant: prepared before a same-second poll that saw
+    // the PR still open, finishing after it.
+    let (_root, store, mut monitor) = fixture();
+    evidence(&store);
+    let current = store.load_queue_state().unwrap().tracked.remove(0);
+    let lifecycle = crate::monitoring::LifecycleTicket {
+        configuration_id: current.configuration_id.clone(),
+        name: "example/repo".into(),
+        provider_account_id: current.account_id.clone(),
+        provider_repository_id: current.repository_id.clone(),
+        tracked: vec![(current.pull_request_id.clone(), current.number)],
+        iterations: [(current.pull_request_id.clone(), current.iteration)].into(),
+        prepared_at: NOW + 10,
+        sequence: crate::monitoring::next_observation(),
+    };
+    let poll = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    finish_scan(
+        &store,
+        &mut monitor,
+        poll,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 10,
+    );
+    monitor
+        .apply_lifecycle(
+            &store,
+            &lifecycle,
+            Ok(vec![(current.pull_request_id.clone(), Lifecycle::Closed)]),
+            NOW + 11,
+        )
+        .unwrap();
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert!(!tracked.terminal_observed);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+}

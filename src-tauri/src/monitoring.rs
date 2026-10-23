@@ -334,9 +334,29 @@ pub struct TrackedPullRequest {
     pub admission: Admission,
     pub admitted_at: i64,
     pub observed_at: i64,
+    /// Orders reads prepared in the same second as `observed_at`.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub observed_sequence: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+static OBSERVATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Process-monotonic order of read preparation. Paired with the prepared
+/// second it orders reads across restarts, which always cross a second.
+pub(crate) fn next_observation() -> u64 {
+    OBSERVATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
 impl TrackedPullRequest {
+    /// Whether a read prepared at `(at, sequence)` is older than the latest
+    /// accepted observation of this PR.
+    pub(crate) fn observed_after(&self, at: i64, sequence: u64) -> bool {
+        (at, sequence) < (self.observed_at, self.observed_sequence)
+    }
     fn matches(&self, job: &QueueJob) -> bool {
         self.provider == job.provider
             && self.configuration_id == job.configuration_id
@@ -802,6 +822,8 @@ pub struct PollTicket {
     /// When the ticket was prepared, before any fetch: what it observes is no
     /// newer than this, so tracked observations are stamped with it.
     pub prepared_at: i64,
+    /// Orders tickets prepared in the same second (`next_observation`).
+    pub sequence: u64,
 }
 
 pub struct PollResult {
@@ -1581,6 +1603,7 @@ impl Monitor {
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
             prepared_at: read_at,
+            sequence: next_observation(),
         };
         let number = pull.number;
         let pull_id = pull.id.clone();
@@ -2380,6 +2403,7 @@ impl Monitor {
                 assignments: health.scan_assignments.clone(),
                 tracked: Vec::new(),
                 prepared_at: now,
+                sequence: next_observation(),
             });
         }
         tickets
@@ -2758,7 +2782,9 @@ impl Monitor {
             // A read prepared before the latest accepted observation of this
             // PR is stale: overlapping reads finish out of order, and an older
             // Closed must not undo a newer reopen (and so admit pruning).
-            if index.is_some_and(|i| ticket.prepared_at < queue.tracked[i].observed_at) {
+            if index.is_some_and(|i| {
+                queue.tracked[i].observed_after(ticket.prepared_at, ticket.sequence)
+            }) {
                 continue;
             }
             let mut trigger = WorkTrigger::AssignmentAdded;
@@ -2831,6 +2857,7 @@ impl Monitor {
                     admission,
                     admitted_at: legacy.map(|j| j.detected_at).unwrap_or(now),
                     observed_at: ticket.prepared_at,
+                    observed_sequence: ticket.sequence,
                 });
                 index = Some(queue.tracked.len() - 1);
                 mark_activation_admitted(&mut activation, &pull);
@@ -2856,6 +2883,7 @@ impl Monitor {
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
             tracked.observed_at = ticket.prepared_at;
+            tracked.observed_sequence = ticket.sequence;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -4181,6 +4209,8 @@ pub struct LifecycleTicket {
     pub iterations: BTreeMap<String, u64>,
     /// Before any read: what the ticket observes is no newer than this.
     pub prepared_at: i64,
+    /// Orders tickets prepared in the same second (`next_observation`).
+    pub sequence: u64,
 }
 
 impl Monitor {
@@ -4255,6 +4285,7 @@ impl Monitor {
                 tracked: tracked.into_iter().collect(),
                 iterations,
                 prepared_at: now,
+                sequence: next_observation(),
             });
         }
         Ok(tickets)
@@ -4289,13 +4320,14 @@ impl Monitor {
             // Reopened, or observed by a newer read, since this read was
             // prepared: its terminal state is old.
             if ticket.iterations.get(&id) != Some(&tracked.iteration)
-                || ticket.prepared_at < tracked.observed_at
+                || tracked.observed_after(ticket.prepared_at, ticket.sequence)
             {
                 continue;
             }
             tracked.lifecycle = state.clone();
             tracked.terminal_observed = true;
             tracked.observed_at = ticket.prepared_at;
+            tracked.observed_sequence = ticket.sequence;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| tracked.matches(j)) {
                 if !matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -4761,6 +4793,7 @@ mod admission_tests {
             assignments: Vec::new(),
             tracked: Vec::new(),
             prepared_at: 0,
+            sequence: 0,
         }
     }
 
