@@ -30,9 +30,8 @@
   launch; dev builds never rewrite it. A removed entry is never re-added implicitly.
 - Install, Update, Repair and Remove require an installed app; any other build
   fails with `app_not_installed` (**App not installed**) and writes nothing.
-- A link retargeted during a write is a conflict, never reported as registered.
-  Legacy package members are re-verified (no links, same file identity and
-  hash) immediately before each unlink; any change stops deletion.
+- A link retargeted, or a `.copilot` folder swapped (macOS inode, Windows
+  volume + file ID), around a write is a conflict, never reported as registered.
 - Linked folders (macOS): a symlinked `~/.copilot` or `mcp-config.json` is
   written at its real target; the link stays. Each resolved ancestor must be
   owned by you or root and not group/world writable (sticky excepted). Dangling
@@ -43,10 +42,15 @@
   **Retry** only reads status; it never repeats the failed mutation.
 - A durable intent joins the entry change and the ownership receipt. Reopen
   completes only an already-authorized intent; an external edit conflicts.
-- A pre-release app-installed `~/.copilot/skills/pr-sniper` package is removed
+- A pre-release app-installed `~/.copilot/skills/pr-sniper` package is retired
   when its legacy receipt migrates (Repair or an owned-entry update), only if
   every file still matches its install receipt. Customized, extended or linked
   packages stay; delete them yourself, then run the skills command.
+- Retirement moves the whole package into
+  `~/.copilot/.pr-sniper-installer/legacy-skill-*`, re-verifies every member
+  there (no links, same file identity and hash), then deletes it. A mismatch
+  keeps it there and the legacy receipt; Settings shows **Moved aside:**
+  `<path>` until you move or delete that folder.
 - Native isolated profiles cannot read or change the real registration.
 - Human login remains in Settings → Accounts. The skill binds existing GitHub
   and Copilot accounts; it neither reads tokens nor performs authentication.

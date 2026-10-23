@@ -80,17 +80,23 @@ export function mountControlInstallation(container: HTMLElement) {
           : error && typeof error === "object" && "code" in error
             ? error.code
             : "";
+      const moved =
+        error && typeof error === "object" && "detail" in error
+          ? (error.detail as { path?: unknown } | null)?.path
+          : undefined;
       if (command !== "control_installation" || alert.hidden)
         alert.textContent =
-          code === "installation_conflict"
-            ? "Conflict"
-            : code === "installation_linked_unsupported"
-              ? "Linked folder"
-              : code === "conflict"
-                ? "Changed"
-                : code === "app_not_installed"
-                  ? "App not installed"
-                  : "Unavailable";
+          code === "legacy_skill_quarantined" && typeof moved === "string"
+            ? `Moved aside: ${moved}`
+            : code === "installation_conflict"
+              ? "Conflict"
+              : code === "installation_linked_unsupported"
+                ? "Linked folder"
+                : code === "conflict"
+                  ? "Changed"
+                  : code === "app_not_installed"
+                    ? "App not installed"
+                    : "Unavailable";
       alert.hidden = false;
       current = undefined;
       if (command !== "control_installation") {

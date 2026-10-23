@@ -103,6 +103,56 @@ fn platform(path: &Path) -> io::Result<Identity> {
     })
 }
 
+/// Stable identity (volume, file ID) of a real directory. Unlike [`identity`],
+/// it ignores times, which change whenever an entry inside is written.
+pub(crate) fn directory_identity(path: &Path) -> io::Result<(u64, u128)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_dir() {
+            return Err(io::Error::from(io::ErrorKind::NotADirectory));
+        }
+        Ok((metadata.dev(), u128::from(metadata.ino())))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileIdInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let directory = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::from(io::ErrorKind::NotADirectory));
+        }
+        // SAFETY: FILE_ID_INFO is plain data sized exactly for its class, and
+        // the handle stays open for the call.
+        let id = unsafe {
+            let mut id: FILE_ID_INFO = std::mem::zeroed();
+            if GetFileInformationByHandleEx(
+                directory.as_raw_handle(),
+                FileIdInfo,
+                (&mut id as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            id
+        };
+        Ok((
+            id.VolumeSerialNumber,
+            u128::from_le_bytes(id.FileId.Identifier),
+        ))
+    }
+}
+
 /// Test support: rewrite `path` as another process might, keeping its length
 /// and restoring its modification time, then wait until the change settles.
 #[cfg(test)]

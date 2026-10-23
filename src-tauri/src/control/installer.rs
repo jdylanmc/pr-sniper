@@ -150,66 +150,81 @@ fn legacy_members(package: &Path) -> Option<BTreeMap<String, Member>> {
     Some(found)
 }
 
-/// Removes the retired app-installed skill package only while it is exactly
-/// what that installer recorded. Customized, extended or linked packages stay;
-/// a member that changes after the scan stops all further deletion.
-fn retire_legacy_package(home: &Path, target: &Path) {
+const QUARANTINE: &str = "legacy-skill-";
+
+/// A quarantined legacy package that did not verify, kept intact for the user.
+fn quarantined(path: &Path) -> Error {
+    Error::new("legacy_skill_quarantined", json!({ "path": path }))
+}
+
+/// Retires the old app-installed skill package only while it is exactly what
+/// that installer recorded. Customized, extended or linked packages stay in
+/// place. A verified package is moved whole into the installer's private area,
+/// re-verified there by identity and hash, and only then deleted; anything
+/// that changed is kept there and reported.
+fn retire_legacy_package(home: &Path, target: &Path, work: &Path) -> Result<(), Error> {
     let package = home.join(".copilot").join("skills").join(NAME);
     if target != package
         || [home.join(".copilot"), home.join(".copilot").join("skills")]
             .iter()
             .any(|parent| !fs::symlink_metadata(parent).is_ok_and(|m| plain(&m) && m.is_dir()))
     {
-        return;
+        return Ok(());
     }
-    let Some(mut found) = legacy_members(&package) else {
-        return;
+    let Some(found) = legacy_members(&package) else {
+        return Ok(());
     };
-    let Some(receipt) = found.remove(LEGACY_MANIFEST) else {
-        return;
+    let Some(receipt) = found.get(LEGACY_MANIFEST) else {
+        return Ok(());
     };
     let Some(manifest) = fs::read(package.join(LEGACY_MANIFEST))
         .ok()
         .filter(|bytes| revision(bytes) == receipt.hash)
         .and_then(|bytes| serde_json::from_slice::<LegacyManifest>(&bytes).ok())
     else {
-        return;
+        return Ok(());
     };
-    if found.len() != manifest.files.len()
-        || found
+    if found.len() != manifest.files.len() + 1
+        || manifest
+            .files
             .iter()
-            .any(|(name, member)| manifest.files.get(name) != Some(&member.hash))
+            .any(|(name, hash)| found.get(name).map(|member| &member.hash) != Some(hash))
     {
-        return;
+        return Ok(());
     }
-    if checkpoint("legacy-package-scanned").is_err() {
-        return;
+    checkpoint("legacy-package-scanned")?;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let quarantine = work.join(format!("{QUARANTINE}{}-{unique}", std::process::id()));
+    if fs::symlink_metadata(&quarantine).is_ok() || fs::rename(&package, &quarantine).is_err() {
+        // Nothing moved; the package stays where the user can see it.
+        return Ok(());
     }
-    let unchanged = |name: &str, scanned: &Member| {
-        member(&package.join(name))
-            .is_some_and(|now| now.identity == scanned.identity && now.hash == scanned.hash)
-    };
-    // Revalidate everything before the first unlink, then each member again
-    // immediately before its own unlink.
-    if !found.iter().all(|(name, scanned)| unchanged(name, scanned))
-        || !unchanged(LEGACY_MANIFEST, &receipt)
-    {
-        return;
+    checkpoint("legacy-package-quarantined").map_err(|_| quarantined(&quarantine))?;
+    let verified = legacy_members(&quarantine).is_some_and(|now| {
+        now.len() == found.len()
+            && found.iter().all(|(name, scanned)| {
+                now.get(name).is_some_and(|member| {
+                    member.identity == scanned.identity && member.hash == scanned.hash
+                })
+            })
+    });
+    if !verified {
+        return Err(quarantined(&quarantine));
     }
-    for (name, scanned) in &found {
-        if !unchanged(name, scanned) || fs::remove_file(package.join(name)).is_err() {
-            return;
-        }
-    }
-    if !unchanged(LEGACY_MANIFEST, &receipt)
-        || fs::remove_file(package.join(LEGACY_MANIFEST)).is_err()
-    {
-        return;
+    for name in found.keys() {
+        fs::remove_file(quarantine.join(name)).map_err(|_| quarantined(&quarantine))?;
     }
     for directory in LEGACY_DIRECTORIES {
-        let _ = fs::remove_dir(package.join(directory));
+        match fs::remove_dir(quarantine.join(directory)) {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                return Err(quarantined(&quarantine))
+            }
+            _ => {}
+        }
     }
-    let _ = fs::remove_dir(&package);
+    fs::remove_dir(&quarantine).map_err(|_| quarantined(&quarantine))
 }
 
 /// A durable, already-authorized registration change. Recovery completes it
@@ -375,25 +390,13 @@ struct Scope {
     home: PathBuf,
     paths: Resolved,
     work: PathBuf,
-    parent: Option<(u64, u64)>,
+    parent: (u64, u128),
 }
 
 /// Stable identity of the real directory holding the configuration file.
-fn directory_identity(path: &Path) -> Option<(u64, u64)> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        fs::symlink_metadata(path)
-            .ok()
-            .filter(fs::Metadata::is_dir)
-            .map(|metadata| (metadata.dev(), metadata.ino()))
-    }
-    // Windows refuses every reparse point on the path, so it cannot move.
-    #[cfg(windows)]
-    {
-        let _ = path;
-        None
-    }
+/// Failing to read it is a conflict, never a match.
+fn parent_identity(config: &Path) -> Result<(u64, u128), Error> {
+    file_identity::directory_identity(config.parent().ok_or_else(conflict)?).map_err(|_| conflict())
 }
 
 impl Scope {
@@ -409,7 +412,7 @@ impl Scope {
             private_fs::recover(parent, config.file_name().and_then(|name| name.to_str()))
                 .map_err(io_error)?;
         }
-        let parent = config.parent().and_then(directory_identity);
+        let parent = parent_identity(config)?;
         Ok(Self {
             home: home.into(),
             paths,
@@ -420,8 +423,7 @@ impl Scope {
     /// A link retargeted, or a real directory replaced, since this scope
     /// resolved is a conflict.
     fn check(&self) -> Result<(), Error> {
-        if resolve(&self.home)? != self.paths
-            || self.paths.config.parent().and_then(directory_identity) != self.parent
+        if resolve(&self.home)? != self.paths || parent_identity(&self.paths.config)? != self.parent
         {
             return Err(conflict());
         }
@@ -545,6 +547,11 @@ impl Scope {
             return Err(conflict());
         }
         checkpoint("mcp-config-checked")?;
+        // Bind the write to the directory that was checked: a swapped folder
+        // (including on Windows, where links are refused) is a conflict.
+        if parent_identity(&self.paths.config)? != self.parent {
+            return Err(conflict());
+        }
         let path = &self.paths.config;
         let parent = path.parent().ok_or_else(conflict)?;
         private_fs::replace(
@@ -562,7 +569,18 @@ impl Scope {
         }
         checkpoint("mcp-config-written")
     }
+    /// A kept legacy quarantine is reported on every read and write.
+    fn quarantine(&self) -> Result<(), Error> {
+        for entry in fs::read_dir(&self.work).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            if entry.file_name().to_string_lossy().starts_with(QUARANTINE) {
+                return Err(quarantined(&entry.path()));
+            }
+        }
+        Ok(())
+    }
     fn recover(&self) -> Result<(), Error> {
+        self.quarantine()?;
         let Some(intent) = self.read::<Intent>(INTENT)? else {
             return Ok(());
         };
@@ -575,7 +593,9 @@ impl Scope {
             None => self.clear(OWNER)?,
         }
         if let Some(legacy) = self.read::<LegacyOwner>(LEGACY_OWNER)? {
-            retire_legacy_package(&self.home, &legacy.target);
+            // An unverified quarantine keeps the legacy receipt and the intent
+            // so nothing is forgotten; it is reported until the user resolves it.
+            retire_legacy_package(&self.home, &legacy.target, &self.work)?;
             self.clear(LEGACY_OWNER)?;
         }
         checkpoint("mcp-owner-written")?;

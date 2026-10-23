@@ -477,27 +477,95 @@ fn customized_legacy_package_is_preserved_on_repair() {
     );
 }
 
+fn quarantines(work: &Path) -> Vec<PathBuf> {
+    fs::read_dir(work)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("legacy-skill-")
+        })
+        .collect()
+}
+
+/// A legacy package that changed during retirement is kept whole in one
+/// reported quarantine, with its legacy receipt, until the user resolves it.
+fn assert_kept(home: &Path, server: &Server, work: &Path, name: &str, text: &str) {
+    let [quarantine] = quarantines(work).try_into().unwrap();
+    assert_eq!(fs::read_to_string(quarantine.join(name)).unwrap(), text);
+    for member in [
+        "SKILL.md",
+        "scripts/pr-sniper.mjs",
+        ".pr-sniper-install.json",
+    ] {
+        assert!(quarantine.join(member).is_file(), "{member}");
+    }
+    assert!(work.join(LEGACY_OWNER).exists());
+    let error = integration_at(home, server).unwrap_err();
+    assert_eq!(error.code, "legacy_skill_quarantined");
+    assert_eq!(error.detail["path"], json!(quarantine));
+    // Resolving it (here: the user removes it) lets the receipt migrate.
+    fs::remove_dir_all(&quarantine).unwrap();
+    let status = integration_at(home, server).unwrap();
+    assert_eq!(status.state, "installed");
+    assert!(!work.join(LEGACY_OWNER).exists());
+}
+
 #[test]
-fn legacy_member_edited_after_the_scan_stops_every_deletion() {
-    for name in ["SKILL.md", "scripts/pr-sniper.mjs"] {
+fn legacy_member_replaced_after_validation_is_kept_in_quarantine() {
+    for atomic in [false, true] {
         let root = root();
         let home = root.path().canonicalize().unwrap();
-        let (package, _) = legacy_package(&home, None);
+        let (package, work) = legacy_package(&home, None);
         let server = app(&home, "app");
         let status = integration_at(&home, &server).unwrap();
-        let edited = package.join(name);
+        let edited = package.join("scripts/pr-sniper.mjs");
         during("legacy-package-scanned", move || {
-            fs::write(&edited, "edited after scan").unwrap()
+            if atomic {
+                let staged = edited.with_extension("user");
+                fs::write(&staged, "old").unwrap();
+                fs::rename(&staged, &edited).unwrap();
+            } else {
+                fs::write(&edited, "mine").unwrap();
+            }
         });
-        install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
         assert_eq!(
-            fs::read_to_string(package.join(name)).unwrap(),
-            "edited after scan"
+            conflict_code(install_integration_at(
+                &home,
+                &server,
+                status.revision.as_deref()
+            )),
+            "legacy_skill_quarantined"
         );
-        assert!(package.join("SKILL.md").exists());
-        assert!(package.join("scripts/pr-sniper.mjs").exists());
-        assert!(package.join(".pr-sniper-install.json").exists());
+        assert!(!package.exists());
+        let text = if atomic { "old" } else { "mine" };
+        assert_kept(&home, &server, &work, "scripts/pr-sniper.mjs", text);
     }
+}
+
+#[test]
+fn legacy_quarantine_that_does_not_verify_keeps_everything() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let (_, work) = legacy_package(&home, None);
+    let server = app(&home, "app");
+    let status = integration_at(&home, &server).unwrap();
+    let inside = work.clone();
+    during("legacy-package-quarantined", move || {
+        let [quarantine] = quarantines(&inside).try_into().unwrap();
+        fs::write(quarantine.join("SKILL.md"), "edited in quarantine").unwrap();
+    });
+    assert_eq!(
+        conflict_code(install_integration_at(
+            &home,
+            &server,
+            status.revision.as_deref()
+        )),
+        "legacy_skill_quarantined"
+    );
+    assert_kept(&home, &server, &work, "SKILL.md", "edited in quarantine");
 }
 
 #[test]
@@ -532,6 +600,62 @@ fn an_uninstalled_build_never_rewrites_the_registration() {
         integration_at(&home, &transient).unwrap().state,
         "incomplete"
     );
+}
+
+#[test]
+fn a_replaced_directory_has_a_new_identity() {
+    let root = root();
+    let directory = root.path().join("copilot");
+    fs::create_dir(&directory).unwrap();
+    let before = file_identity::directory_identity(&directory).unwrap();
+    assert_eq!(
+        file_identity::directory_identity(&directory).unwrap(),
+        before
+    );
+    fs::rename(&directory, root.path().join("moved")).unwrap();
+    fs::create_dir(&directory).unwrap();
+    assert_ne!(
+        file_identity::directory_identity(&directory).unwrap(),
+        before
+    );
+    assert!(file_identity::directory_identity(&root.path().join("missing")).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn copilot_folder_swapped_before_replacement_is_a_conflict() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    write_config(&home, &json!({"mcpServers":{}}));
+    let server = app(&home, "app");
+    let copilot = home.join(".copilot");
+    let moved = home.join(".copilot-moved");
+    let swapped = Arc::new(AtomicBool::new(false));
+    let (from, to, flag) = (copilot.clone(), moved.clone(), swapped.clone());
+    during("mcp-config-checked", move || {
+        // Windows may refuse to move a folder holding the open installer
+        // lock; then the swap cannot happen at all.
+        if fs::rename(&from, &to).is_ok() {
+            fs::create_dir(&from).unwrap();
+            fs::copy(to.join("mcp-config.json"), from.join("mcp-config.json")).unwrap();
+            flag.store(true, Ordering::SeqCst);
+        }
+    });
+    let result = install_integration_at(&home, &server, None);
+    if swapped.load(Ordering::SeqCst) {
+        assert_eq!(conflict_code(result), "installation_conflict");
+        assert_eq!(config(&home), json!({"mcpServers":{}}));
+        let old: Value =
+            serde_json::from_slice(&fs::read(moved.join("mcp-config.json")).unwrap()).unwrap();
+        assert_eq!(old, json!({"mcpServers":{}}));
+    } else {
+        eprintln!("Windows refused to move the locked .copilot folder");
+        assert_eq!(result.unwrap().state, "installed");
+    }
 }
 
 #[cfg(unix)]

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.mjs";
 import { section } from "./navigation.mjs";
@@ -111,6 +111,31 @@ test("a build that is not an installed app cannot write the registration", async
   await expect(
     readFile(join(dataRoot, "skill-host", ".copilot", "mcp-config.json")),
   ).rejects.toThrow();
+});
+
+test("a kept legacy skill quarantine is reported with its path", async ({
+  page,
+  store,
+  dataRoot,
+}) => {
+  await store("snapshot");
+  const work = join(dataRoot, "skill-host", ".copilot", ".pr-sniper-installer");
+  await mkdir(join(work, "legacy-skill-1-2", "scripts"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await chmod(work, 0o700);
+  await page.goto("/?view=settings");
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Preferences");
+  const controls = page.getByRole("group", {
+    name: "Copilot CLI",
+    exact: true,
+  });
+  await expect(controls.getByRole("alert")).toHaveText(
+    /^Moved aside: .*[\\/]\.pr-sniper-installer[\\/]legacy-skill-1-2$/,
+  );
+  await expect(controls.getByLabel("MCP status")).toHaveText("Unavailable");
 });
 
 test("an installed pr-sniper skill is detected read-only", async ({

@@ -94,9 +94,14 @@
   once; every resolved ancestor must be owned by the user or root and not
   group/world writable (sticky excepted). The intent records the real file; a
   retargeted link conflicts. Windows refuses reparse points explicitly.
-- A pre-release app-installed skill package is removed only while its legacy
+- A pre-release app-installed skill package is retired only while its legacy
   owner receipt exists and every file matches its install receipt; otherwise it
-  is preserved. The legacy receipt migrates on Repair.
+  is preserved. Retirement is whole-package: move into the installer's private
+  area, re-verify identities and hashes, then delete. A mismatch keeps the
+  quarantine and the receipt and is reported (`legacy_skill_quarantined`).
+- The configuration's real parent directory is bound by stable identity
+  (Unix dev/inode; Windows volume serial + file ID) and compared immediately
+  before and after replacement; an unreadable identity is a conflict.
 - Node 22+ runs the bundled server without npm installation. Restart Copilot CLI
   for MCP registration changes; `/skills reload` discovers skill changes.
 
