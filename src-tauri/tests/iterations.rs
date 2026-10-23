@@ -150,6 +150,17 @@ fn explicit(
     store: &Store,
     pull: PullRequest,
 ) -> Result<monitoring::ExplicitAdmission, String> {
+    explicit_at(monitor, store, pull, NOW)
+}
+
+/// Explicit intake read at `now`; reads older than the PR's latest accepted
+/// observation are stale and change nothing.
+fn explicit_at(
+    monitor: &mut Monitor,
+    store: &Store,
+    pull: PullRequest,
+    now: i64,
+) -> Result<monitoring::ExplicitAdmission, String> {
     let expected = store.load_settings().unwrap().repositories.remove(0);
     let resolved = result(vec![]);
     monitor.admit_explicit_pull_request(
@@ -166,8 +177,8 @@ fn explicit(
             connection: resolved.connection,
             pull_request: Some(pull),
         },
-        NOW,
-        NOW,
+        now,
+        now,
     )
 }
 
@@ -277,7 +288,7 @@ fn explicit_out_of_filter_pr_queues_immediately_and_reuses_completed_iteration()
         "completed iteration must not run twice"
     );
     requested.head_sha = "b".repeat(40);
-    explicit(&mut restored, &store, requested).unwrap();
+    explicit_at(&mut restored, &store, requested, NOW + 4).unwrap();
     assert_eq!(store.load_queue_state().unwrap().tracked[0].iteration, 2);
     assert_eq!(store.load_queue().unwrap().len(), 2);
 }

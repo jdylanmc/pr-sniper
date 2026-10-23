@@ -277,14 +277,16 @@ impl State {
             }))
             .chain(effects.iter().map(|e| &e.operation))
         {
-            operations.insert(op.id.clone(), op.clone());
+            operations.insert(op.id.clone(), ());
         }
         Ok(Some(Receipt {
             scope: scope.clone(),
             enqueue_watermark: self.queue.next_enqueue_order,
             items,
             work,
-            operations: operations.into_values().collect(),
+            operations: Vec::new(),
+            operation_ids: operations.into_keys().collect(),
+            cleaned_at: crate::now_seconds()?,
             publications: publications
                 .iter()
                 .map(|p| (p.id.clone(), p.review.key.clone(), p.receipts.clone()))

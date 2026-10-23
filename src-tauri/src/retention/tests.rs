@@ -473,9 +473,8 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
     );
     assert!(receipts.receipts[0].follow_up_keys.contains(&follow.key));
     assert!(receipts.receipts[0]
-        .operations
-        .iter()
-        .any(|o| o.id == review.operation.id));
+        .operation_ids
+        .contains(&review.operation.id));
     assert!(matches!(
         detail(
             &store,
@@ -1112,4 +1111,66 @@ fn pruning_waits_for_exit_writes_and_a_late_save_cannot_restore_them() {
     // A worker finishing late cannot resurrect the cleaned write.
     assert!(save_exit_write(&store, &done).is_err());
     assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+}
+
+#[test]
+fn receipts_stay_bounded_and_still_reject_stale_workers() {
+    let (root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    let mut ledger = load(&store).unwrap();
+    let template = ledger.receipts[0].clone();
+    assert!(template.operations.is_empty() && !template.operation_ids.is_empty());
+    let now = crate::now_seconds().unwrap();
+    // Thousands of pruned PRs, half cleaned long ago.
+    for n in 0..3000u64 {
+        let mut receipt = template.clone();
+        receipt.scope.pull_request_id = format!("synthetic-{n}");
+        receipt.scope.iteration_id = format!("iteration-synthetic-{n}");
+        receipt.items = [format!("item-{n}")].into();
+        receipt.cleaned_at = if n % 2 == 0 {
+            now - RECEIPT_DETAIL_SECONDS - 1 - n as i64
+        } else {
+            now - n as i64
+        };
+        ledger.receipts.push(receipt);
+    }
+    save(&store, &ledger).unwrap();
+    let saved = load(&store).unwrap();
+    assert_eq!(saved.receipts.len(), MAX_RECEIPTS);
+    let bytes = std::fs::metadata(root.path().join("state/retention.json"))
+        .unwrap()
+        .len();
+    assert!(bytes < 4 << 20, "{bytes}");
+    // Newest kept, with detail; the original PR's receipt is among them.
+    assert!(saved.receipts.iter().all(|r| !r.items.is_empty()));
+    assert!(saved
+        .receipts
+        .iter()
+        .any(|r| r.scope.pull_request_id == review.job.pull_request_id));
+    // A stale worker restoring the pruned review is still refused, and
+    // checks parse the ledger once, not per save.
+    crate::storage::file_identity::settle();
+    store.take_parses();
+    for _ in 0..50 {
+        assert!(store.save_reviews(std::slice::from_ref(&review)).is_err());
+    }
+    assert!(store
+        .take_parses()
+        .get("retention.json")
+        .is_none_or(|&count| count <= 1));
+    // Old detail is dropped; the PR tombstone stays.
+    let mut aged = template.clone();
+    aged.cleaned_at = now - RECEIPT_DETAIL_SECONDS - 1;
+    aged.compact(now);
+    assert!(aged.items.is_empty() && aged.work.is_empty() && aged.operation_ids.is_empty());
+    assert_eq!(aged.scope, template.scope);
+    assert_eq!(aged.owned, template.owned);
+    assert_eq!(aged.pass_ordinals, template.pass_ordinals);
 }

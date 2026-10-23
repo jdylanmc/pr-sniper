@@ -129,7 +129,14 @@ pub struct Receipt {
     pub completions: Vec<(WorkId, String)>,
     pub pass_ordinals: BTreeMap<String, u64>,
     pub reply_ordinals: BTreeMap<String, u64>,
+    /// Legacy full operation records; saved receipts keep `operation_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<JobOperation>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub operation_ids: BTreeSet<String>,
+    /// When the cleanup was journaled (0 on older receipts).
+    #[serde(default)]
+    pub cleaned_at: i64,
     pub publications: Vec<(String, String, Vec<crate::publication::Receipt>)>,
     pub effects: Vec<EffectReceipt>,
     pub follow_up_keys: BTreeSet<String>,
@@ -189,13 +196,53 @@ pub(crate) fn hash(value: &str) -> String {
 }
 
 pub fn load(store: &Store) -> Result<Ledger, String> {
-    Ok(shared(store)?.as_ref().clone())
+    Ok(shared(store)?.ledger.clone())
 }
 
-/// The saved ledger, decoded once per version and shared; every guarded
-/// read checks it.
-pub(crate) fn shared(store: &Store) -> Result<std::sync::Arc<Ledger>, String> {
-    store.cached("retention.json", &["retention.json"], || decode(store))
+/// The saved ledger with its receipts indexed by PR, built once per version.
+pub(crate) struct Retained {
+    ledger: Ledger,
+    by_pr: std::collections::HashMap<(String, String), Vec<usize>>,
+}
+
+impl std::ops::Deref for Retained {
+    type Target = Ledger;
+    fn deref(&self) -> &Ledger {
+        &self.ledger
+    }
+}
+
+impl Retained {
+    fn new(ledger: Ledger) -> Self {
+        let mut by_pr: std::collections::HashMap<_, Vec<usize>> = Default::default();
+        for (index, receipt) in ledger.receipts.iter().enumerate() {
+            by_pr
+                .entry((
+                    receipt.scope.repository_id.clone(),
+                    receipt.scope.pull_request_id.clone(),
+                ))
+                .or_default()
+                .push(index);
+        }
+        Self { ledger, by_pr }
+    }
+
+    /// Receipts of the PR `job` belongs to; every binding match is among them.
+    fn for_job<'a>(&'a self, job: &QueueJob) -> impl Iterator<Item = &'a Receipt> {
+        self.by_pr
+            .get(&(job.repository_id.clone(), job.pull_request_id.clone()))
+            .into_iter()
+            .flatten()
+            .map(|&index| &self.ledger.receipts[index])
+    }
+}
+
+/// The saved ledger, decoded and indexed once per version and shared; every
+/// guarded read checks it.
+pub(crate) fn shared(store: &Store) -> Result<std::sync::Arc<Retained>, String> {
+    store.cached("retention.json", &["retention.json"], || {
+        decode(store).map(Retained::new)
+    })
 }
 
 fn decode(store: &Store) -> Result<Ledger, String> {
@@ -223,8 +270,54 @@ fn decode(store: &Store) -> Result<Ledger, String> {
     }
 }
 
+/// Receipts newer than this keep every identity a stale worker or a saved
+/// destination may still present; older ones keep only the PR tombstone.
+pub(crate) const RECEIPT_DETAIL_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// Most PR tombstones kept; the oldest go first. A PR reopened after its
+/// tombstone went starts again at iteration 1 with fresh identities.
+pub(crate) const MAX_RECEIPTS: usize = 500;
+
+impl Receipt {
+    fn age_reference(&self) -> i64 {
+        if self.cleaned_at > 0 {
+            self.cleaned_at
+        } else {
+            self.scope.observed_at
+        }
+    }
+
+    /// Keeps what stale-worker rejection and reopen semantics need: the
+    /// tracked scope (iteration watermark), enqueue watermark, ordinals and
+    /// owned-comment proofs; per-run detail only while recent.
+    fn compact(&mut self, now: i64) {
+        let legacy = std::mem::take(&mut self.operations);
+        self.operation_ids.extend(legacy.into_iter().map(|o| o.id));
+        if now.saturating_sub(self.age_reference()) > RECEIPT_DETAIL_SECONDS {
+            self.items.clear();
+            self.work.clear();
+            self.completions.clear();
+            self.operation_ids.clear();
+            self.publications.clear();
+            self.effects.clear();
+            self.follow_up_keys.clear();
+            self.notices.clear();
+        }
+    }
+}
+
 pub(crate) fn save(store: &Store, ledger: &Ledger) -> Result<(), String> {
-    store.write_state("retention.json", ledger)
+    let now = crate::now_seconds()?;
+    let mut ledger = ledger.clone();
+    for receipt in &mut ledger.receipts {
+        receipt.compact(now);
+    }
+    if ledger.receipts.len() > MAX_RECEIPTS {
+        ledger
+            .receipts
+            .sort_by_key(|r| std::cmp::Reverse(r.age_reference()));
+        ledger.receipts.truncate(MAX_RECEIPTS);
+    }
+    store.write_state("retention.json", &ledger)
 }
 
 pub(crate) fn guard(store: &Store) -> Result<(), String> {
@@ -239,25 +332,10 @@ pub(crate) fn reject_cleaned(
     store: &Store,
     jobs: impl IntoIterator<Item = QueueJob>,
 ) -> Result<(), String> {
-    let ledger = shared(store)?;
-    // Every match shares the PR's repository and number; index by them so a
-    // save is linear in its jobs, not jobs x receipts.
-    let mut receipts: std::collections::HashMap<(&str, &str), Vec<&Receipt>> =
-        std::collections::HashMap::new();
-    for receipt in &ledger.receipts {
-        receipts
-            .entry((
-                receipt.scope.repository_id.as_str(),
-                receipt.scope.pull_request_id.as_str(),
-            ))
-            .or_default()
-            .push(receipt);
-    }
+    let retained = shared(store)?;
+    // Linear in the saved jobs: only the PR's own receipts can match.
     for job in jobs {
-        let candidates = receipts
-            .get(&(job.repository_id.as_str(), job.pull_request_id.as_str()))
-            .map_or(&[][..], Vec::as_slice);
-        if candidates.iter().any(|r| {
+        if retained.for_job(&job).any(|r| {
             Binding::tracked(&r.scope).matches(&job)
                 && (r.items.contains(&crate::queue::item_id(&job))
                     || job

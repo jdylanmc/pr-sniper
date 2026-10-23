@@ -82,6 +82,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 - Cleanup uses typed JSON collections. No database, per-PR store or archive ([ADR-0015](adr/0015-local-only-results-and-retention-journal.md)).
 - `state/retention.json` records safety receipts first, then fences access, then removes terminal detail from reviews, publications, conversations, final-review, action state, feedback, notifications, queue jobs and the result index.
 - Runs automatically for PRs observed closed or merged (bounded per pass), and on Reviewed **Clean** ([active-results.md](active-results.md)).
+- Receipts: operation IDs, not records; per-run detail for 30 days, then only the PR tombstone; at most 500 (oldest first).
 - `monitoring.json` keeps the 64 most recent retired poll operations.
 - Cross-file interruption rolls forward at startup or maintenance. Failure is visible, never success. Settings and account resources are untouched.
 - Reopening before the destructive cutover cancels cleanup. Cutover holds the Store lock (local serialization, not GitHub atomicity).
