@@ -446,6 +446,8 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                     .as_str()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| root.join("fixture-app")),
+                // A fixture marker stands in for a dev or temporary build.
+                installed: !root.join("fixture-app-transient").exists(),
             };
             let result = match request.command.as_str() {
                 "control_installation" => pr_sniper_lib::control::integration_at(&root, &server),

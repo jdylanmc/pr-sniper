@@ -43,7 +43,6 @@ fn crash(point: &str) {
     FAILURE.with(|value| *value.borrow_mut() = Some((point.into(), true)));
 }
 
-#[cfg(unix)]
 fn during(point: &str, action: impl FnOnce() + 'static) {
     ACTION.with(|value| *value.borrow_mut() = Some((point.into(), Box::new(action))));
 }
@@ -64,6 +63,7 @@ fn app(root: &Path, name: &str) -> Server {
     Server {
         script,
         executable: root.join(name).join("pr-sniper"),
+        installed: true,
     }
 }
 
@@ -477,6 +477,63 @@ fn customized_legacy_package_is_preserved_on_repair() {
     );
 }
 
+#[test]
+fn legacy_member_edited_after_the_scan_stops_every_deletion() {
+    for name in ["SKILL.md", "scripts/pr-sniper.mjs"] {
+        let root = root();
+        let home = root.path().canonicalize().unwrap();
+        let (package, _) = legacy_package(&home, None);
+        let server = app(&home, "app");
+        let status = integration_at(&home, &server).unwrap();
+        let edited = package.join(name);
+        during("legacy-package-scanned", move || {
+            fs::write(&edited, "edited after scan").unwrap()
+        });
+        install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
+        assert_eq!(
+            fs::read_to_string(package.join(name)).unwrap(),
+            "edited after scan"
+        );
+        assert!(package.join("SKILL.md").exists());
+        assert!(package.join("scripts/pr-sniper.mjs").exists());
+        assert!(package.join(".pr-sniper-install.json").exists());
+    }
+}
+
+#[test]
+fn an_uninstalled_build_never_rewrites_the_registration() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let installed = app(&home, "app");
+    let status = integration_at(&home, &installed).unwrap();
+    let registered = install_integration_at(&home, &installed, status.revision.as_deref()).unwrap();
+    let before = config(&home);
+    let mut transient = app(&home, "target/debug");
+    transient.installed = false;
+    assert_eq!(
+        conflict_code(install_integration_at(
+            &home,
+            &transient,
+            registered.revision.as_deref()
+        )),
+        "app_not_installed"
+    );
+    assert_eq!(
+        conflict_code(remove_integration_at(
+            &home,
+            &transient,
+            registered.revision.as_deref().unwrap()
+        )),
+        "app_not_installed"
+    );
+    assert!(!repair_integration_at(&home, &transient).unwrap());
+    assert_eq!(config(&home), before);
+    assert_eq!(
+        integration_at(&home, &transient).unwrap().state,
+        "incomplete"
+    );
+}
+
 #[cfg(unix)]
 mod linked {
     use super::*;
@@ -584,6 +641,48 @@ mod linked {
         );
         assert_eq!(read(&first), json!({"mcpServers":{}}));
         assert_eq!(read(&second), json!({"mcpServers":{}}));
+    }
+
+    #[test]
+    fn config_link_retargeted_between_check_and_replace_is_a_conflict() {
+        let root = root();
+        let home = root.path().canonicalize().unwrap();
+        let first = linked_config(&home, "first", &json!({"mcpServers":{}}));
+        let second = linked_config(&home, "second", &json!({"mcpServers":{}}));
+        fs::create_dir_all(home.join(".copilot")).unwrap();
+        link(&first, &config_path(&home));
+        let server = app(&home, "app");
+        let path = config_path(&home);
+        let retarget = second.clone();
+        during("mcp-config-checked", move || link(&retarget, &path));
+        assert_eq!(
+            conflict_code(install_integration_at(&home, &server, None)),
+            "installation_conflict"
+        );
+        assert_eq!(read(&second), json!({"mcpServers":{}}));
+        // The public path never received the entry, so it never reads as
+        // registered.
+        assert!(integration_at(&home, &server).is_err_and(|e| e.code == "installation_conflict"));
+    }
+
+    #[test]
+    fn linked_legacy_member_keeps_the_whole_package() {
+        let root = root();
+        let home = root.path().canonicalize().unwrap();
+        let (package, _) = legacy_package(&home, None);
+        let elsewhere = home.join("dotfiles-skill.md");
+        fs::rename(package.join("SKILL.md"), &elsewhere).unwrap();
+        symlink(&elsewhere, package.join("SKILL.md")).unwrap();
+        let server = app(&home, "app");
+        let status = integration_at(&home, &server).unwrap();
+        install_integration_at(&home, &server, status.revision.as_deref()).unwrap();
+        assert!(fs::symlink_metadata(package.join("SKILL.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(package.join("scripts/pr-sniper.mjs").exists());
+        assert!(package.join(".pr-sniper-install.json").exists());
+        assert!(elsewhere.exists());
     }
 
     #[test]

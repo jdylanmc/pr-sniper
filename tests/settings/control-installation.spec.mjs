@@ -83,6 +83,36 @@ test("Copilot CLI setup registers only the app-bundled MCP server and preserves 
   ).toEqual({ command: "Human customization" });
 });
 
+test("a build that is not an installed app cannot write the registration", async ({
+  page,
+  store,
+  dataRoot,
+  ipc,
+}) => {
+  await store("snapshot");
+  await mkdir(join(dataRoot, "skill-host"), { recursive: true });
+  await writeFile(join(dataRoot, "skill-host", "fixture-app-transient"), "");
+  await page.goto("/?view=settings");
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Preferences");
+  const controls = page.getByRole("group", {
+    name: "Copilot CLI",
+    exact: true,
+  });
+  await expect(controls.getByLabel("MCP status")).toHaveText("Not installed");
+  await performInstaller(
+    page,
+    ipc,
+    controls.getByRole("button", { name: "Install", exact: true }),
+    "control_install",
+  );
+  await expect(controls.getByRole("alert")).toHaveText("App not installed");
+  await expect(controls.getByLabel("MCP status")).toHaveText("Not installed");
+  await expect(
+    readFile(join(dataRoot, "skill-host", ".copilot", "mcp-config.json")),
+  ).rejects.toThrow();
+});
+
 test("an installed pr-sniper skill is detected read-only", async ({
   page,
   store,

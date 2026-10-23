@@ -87,6 +87,9 @@
 - An owned entry for another app path is `incomplete`; an installed app
   (`/Applications`, `~/Applications`, `%LOCALAPPDATA%\PR Sniper`) re-points it
   at launch. A removed entry is never restored implicitly.
+- Explicit Install/Update/Repair/Remove also require an installed app
+  (`app_not_installed` otherwise), so a dev or temporary build never records
+  transient paths.
 - macOS resolves a linked `~/.copilot` or `mcp-config.json` to its real target
   once; every resolved ancestor must be owned by the user or root and not
   group/world writable (sticky excepted). The intent records the real file; a

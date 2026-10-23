@@ -1,7 +1,7 @@
 //! The app owns exactly one Copilot CLI MCP server entry. The `/pr-sniper`
 //! skill is installed separately with the skills CLI and is only detected here.
 use super::{revision, transport::private_directory, Error};
-use crate::storage::private_fs;
+use crate::storage::{file_identity, private_fs};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -38,6 +38,8 @@ fn checkpoint(point: &str) -> Result<(), Error> {
 pub struct Server {
     pub script: PathBuf,
     pub executable: PathBuf,
+    /// Only an installed app may write its paths into the registration.
+    pub installed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,67 +80,132 @@ struct LegacyManifest {
 const LEGACY_MANIFEST: &str = ".pr-sniper-install.json";
 const LEGACY_DIRECTORIES: [&str; 2] = ["references", "scripts"];
 
-/// Hashes of a real, link-free legacy package, or `None` when it has any
+/// A regular file or directory, never a symlink or Windows reparse point.
+fn plain(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return false;
+        }
+    }
+    !metadata.file_type().is_symlink() && (metadata.is_file() || metadata.is_dir())
+}
+
+/// One scanned legacy member: its stable identity and content hash.
+struct Member {
+    identity: file_identity::Identity,
+    hash: String,
+}
+
+/// A plain file's identity and hash, or `None` if it is linked, oversized or
+/// changed while it was read.
+fn member(path: &Path) -> Option<Member> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !plain(&metadata) || !metadata.is_file() || metadata.len() > MAX_SKILL {
+        return None;
+    }
+    let identity = file_identity::identity(path).ok()??;
+    let bytes = fs::read(path).ok()?;
+    let after = fs::symlink_metadata(path).ok()?;
+    (plain(&after) && file_identity::identity(path).ok()?.as_ref() == Some(&identity)).then(|| {
+        Member {
+            identity,
+            hash: revision(&bytes),
+        }
+    })
+}
+
+/// Members of a real, link-free legacy package, or `None` when it has any
 /// member the retired installer could not have written.
-fn legacy_hashes(package: &Path) -> Option<BTreeMap<String, String>> {
+fn legacy_members(package: &Path) -> Option<BTreeMap<String, Member>> {
     let mut found = BTreeMap::new();
     for directory in std::iter::once(None).chain(LEGACY_DIRECTORIES.map(Some)) {
         let path = directory.map_or_else(|| package.to_path_buf(), |name| package.join(name));
         match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => {}
+            Ok(metadata) if plain(&metadata) && metadata.is_dir() => {}
             Err(error) if error.kind() == ErrorKind::NotFound && directory.is_some() => continue,
             _ => return None,
         }
         for entry in fs::read_dir(&path).ok()? {
             let entry = entry.ok()?;
             let name = entry.file_name().into_string().ok()?;
-            let metadata = entry.metadata().ok()?;
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            if !plain(&metadata) {
+                return None;
+            }
             if metadata.is_dir()
                 && directory.is_none()
                 && LEGACY_DIRECTORIES.contains(&name.as_str())
             {
                 continue;
             }
-            if !metadata.is_file() || metadata.len() > MAX_SKILL {
-                return None;
-            }
             let relative = directory.map_or(name.clone(), |parent| format!("{parent}/{name}"));
-            found.insert(relative, revision(&fs::read(entry.path()).ok()?));
+            found.insert(relative, member(&entry.path())?);
         }
     }
     Some(found)
 }
 
 /// Removes the retired app-installed skill package only while it is exactly
-/// what that installer recorded. Customized, extended or linked packages stay.
+/// what that installer recorded. Customized, extended or linked packages stay;
+/// a member that changes after the scan stops all further deletion.
 fn retire_legacy_package(home: &Path, target: &Path) {
     let package = home.join(".copilot").join("skills").join(NAME);
     if target != package
         || [home.join(".copilot"), home.join(".copilot").join("skills")]
             .iter()
-            .any(|parent| !fs::symlink_metadata(parent).is_ok_and(|m| m.is_dir()))
+            .any(|parent| !fs::symlink_metadata(parent).is_ok_and(|m| plain(&m) && m.is_dir()))
     {
         return;
     }
-    let manifest_path = package.join(LEGACY_MANIFEST);
-    let Some(manifest) = fs::read(&manifest_path)
+    let Some(mut found) = legacy_members(&package) else {
+        return;
+    };
+    let Some(receipt) = found.remove(LEGACY_MANIFEST) else {
+        return;
+    };
+    let Some(manifest) = fs::read(package.join(LEGACY_MANIFEST))
         .ok()
+        .filter(|bytes| revision(bytes) == receipt.hash)
         .and_then(|bytes| serde_json::from_slice::<LegacyManifest>(&bytes).ok())
     else {
         return;
     };
-    let Some(mut found) = legacy_hashes(&package) else {
-        return;
-    };
-    if found.remove(LEGACY_MANIFEST).is_none() || found != manifest.files {
+    if found.len() != manifest.files.len()
+        || found
+            .iter()
+            .any(|(name, member)| manifest.files.get(name) != Some(&member.hash))
+    {
         return;
     }
-    for name in manifest.files.keys() {
-        if fs::remove_file(package.join(name)).is_err() {
+    if checkpoint("legacy-package-scanned").is_err() {
+        return;
+    }
+    let unchanged = |name: &str, scanned: &Member| {
+        member(&package.join(name))
+            .is_some_and(|now| now.identity == scanned.identity && now.hash == scanned.hash)
+    };
+    // Revalidate everything before the first unlink, then each member again
+    // immediately before its own unlink.
+    if !found.iter().all(|(name, scanned)| unchanged(name, scanned))
+        || !unchanged(LEGACY_MANIFEST, &receipt)
+    {
+        return;
+    }
+    for (name, scanned) in &found {
+        if !unchanged(name, scanned) || fs::remove_file(package.join(name)).is_err() {
             return;
         }
     }
-    let _ = fs::remove_file(&manifest_path);
+    if !unchanged(LEGACY_MANIFEST, &receipt)
+        || fs::remove_file(package.join(LEGACY_MANIFEST)).is_err()
+    {
+        return;
+    }
     for directory in LEGACY_DIRECTORIES {
         let _ = fs::remove_dir(package.join(directory));
     }
@@ -308,6 +375,25 @@ struct Scope {
     home: PathBuf,
     paths: Resolved,
     work: PathBuf,
+    parent: Option<(u64, u64)>,
+}
+
+/// Stable identity of the real directory holding the configuration file.
+fn directory_identity(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::symlink_metadata(path)
+            .ok()
+            .filter(fs::Metadata::is_dir)
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    }
+    // Windows refuses every reparse point on the path, so it cannot move.
+    #[cfg(windows)]
+    {
+        let _ = path;
+        None
+    }
 }
 
 impl Scope {
@@ -323,15 +409,20 @@ impl Scope {
             private_fs::recover(parent, config.file_name().and_then(|name| name.to_str()))
                 .map_err(io_error)?;
         }
+        let parent = config.parent().and_then(directory_identity);
         Ok(Self {
             home: home.into(),
             paths,
             work,
+            parent,
         })
     }
-    /// A link retargeted since this scope resolved is a conflict.
+    /// A link retargeted, or a real directory replaced, since this scope
+    /// resolved is a conflict.
     fn check(&self) -> Result<(), Error> {
-        if resolve(&self.home)? != self.paths {
+        if resolve(&self.home)? != self.paths
+            || self.paths.config.parent().and_then(directory_identity) != self.parent
+        {
             return Err(conflict());
         }
         Ok(())
@@ -453,6 +544,7 @@ impl Scope {
         if self.config()?.0 != bytes {
             return Err(conflict());
         }
+        checkpoint("mcp-config-checked")?;
         let path = &self.paths.config;
         let parent = path.parent().ok_or_else(conflict)?;
         private_fs::replace(
@@ -462,6 +554,9 @@ impl Scope {
         )
         .map_err(io_error)?;
         private_fs::sync_directory(parent).map_err(io_error)?;
+        // A link retargeted during the replacement means the public path never
+        // received the write; never report it as registered.
+        self.check()?;
         if self.entry()?.as_ref() != after {
             return Err(conflict());
         }
@@ -519,7 +614,14 @@ impl Scope {
     }
 }
 
+fn not_installed() -> Error {
+    Error::new("app_not_installed", ())
+}
+
 fn validate(server: &Server) -> Result<(), Error> {
+    if !server.installed {
+        return Err(not_installed());
+    }
     if !server.executable.is_absolute()
         || !server.script.is_absolute()
         || !fs::metadata(&server.script).is_ok_and(|metadata| metadata.is_file())
@@ -557,6 +659,9 @@ pub fn remove_integration_at(
     server: &Server,
     expected: &str,
 ) -> Result<Installation, Error> {
+    if !server.installed {
+        return Err(not_installed());
+    }
     let scope = Scope::new(home)?;
     let _guard = scope.lock()?;
     scope.recover()?;
@@ -570,6 +675,9 @@ pub fn remove_integration_at(
 /// Launch repair: re-point only an owned, unmodified, still-present entry at
 /// this app. Never creates, adopts or restores a removed registration.
 pub fn repair_integration_at(home: &Path, server: &Server) -> Result<bool, Error> {
+    if !server.installed {
+        return Ok(false);
+    }
     validate(server)?;
     let scope = Scope::new(home)?;
     let _guard = scope.lock()?;
@@ -613,7 +721,7 @@ pub fn materialize(root: &Path) -> Result<PathBuf, Error> {
     Ok(directory.join("mcp-server.mjs"))
 }
 
-fn server(app: &tauri::AppHandle) -> Result<Server, Error> {
+fn server(app: &tauri::AppHandle, home: &Path) -> Result<Server, Error> {
     use tauri::Manager;
     let executable = std::env::current_exe().map_err(io_error)?;
     #[cfg(target_os = "macos")]
@@ -629,7 +737,12 @@ fn server(app: &tauri::AppHandle) -> Result<Server, Error> {
     );
     #[cfg(windows)]
     let script = materialize(&app.path().app_local_data_dir().map_err(io_error)?)?;
-    Ok(Server { script, executable })
+    let installed = crate::startup::installed_executable(&executable, home);
+    Ok(Server {
+        script,
+        executable,
+        installed,
+    })
 }
 
 fn home(app: &tauri::AppHandle) -> Result<PathBuf, Error> {
@@ -642,13 +755,7 @@ fn home(app: &tauri::AppHandle) -> Result<PathBuf, Error> {
 
 /// Startup: follow a moved or updated installed app; dev builds never rewrite.
 pub(crate) fn repair_on_launch(app: &tauri::AppHandle) {
-    let result = home(app).and_then(|home| {
-        let server = server(app)?;
-        if !crate::startup::installed_executable(&server.executable, &home) {
-            return Ok(false);
-        }
-        repair_integration_at(&home, &server)
-    });
+    let result = home(app).and_then(|home| repair_integration_at(&home, &server(app, &home)?));
     if result.is_err() {
         eprintln!("PR Sniper: Copilot MCP registration repair skipped");
     }
@@ -656,7 +763,8 @@ pub(crate) fn repair_on_launch(app: &tauri::AppHandle) {
 
 #[tauri::command]
 pub(crate) fn control_installation(app: tauri::AppHandle) -> Result<Installation, Error> {
-    integration_at(&home(&app)?, &server(&app)?)
+    let home = home(&app)?;
+    integration_at(&home, &server(&app, &home)?)
 }
 
 #[tauri::command]
@@ -669,7 +777,7 @@ pub(crate) fn control_install(
     if host != "copilot_cli" {
         return Err(Error::new("unsupported_host", ()));
     }
-    install_integration_at(&home, &server(&app)?, expected.as_deref())
+    install_integration_at(&home, &server(&app, &home)?, expected.as_deref())
 }
 
 #[tauri::command]
@@ -682,5 +790,5 @@ pub(crate) fn control_uninstall(
     if host != "copilot_cli" {
         return Err(Error::new("unsupported_host", ()));
     }
-    remove_integration_at(&home, &server(&app)?, &expected)
+    remove_integration_at(&home, &server(&app, &home)?, &expected)
 }

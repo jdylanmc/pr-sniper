@@ -88,7 +88,9 @@ export function mountControlInstallation(container: HTMLElement) {
               ? "Linked folder"
               : code === "conflict"
                 ? "Changed"
-                : "Unavailable";
+                : code === "app_not_installed"
+                  ? "App not installed"
+                  : "Unavailable";
       alert.hidden = false;
       current = undefined;
       if (command !== "control_installation") {

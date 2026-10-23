@@ -28,6 +28,11 @@
 - Moved/updated app: the owned entry shows **Incomplete**. An app in
   `/Applications`, `~/Applications` or `%LOCALAPPDATA%\PR Sniper` re-points it at
   launch; dev builds never rewrite it. A removed entry is never re-added implicitly.
+- Install, Update, Repair and Remove require an installed app; any other build
+  fails with `app_not_installed` (**App not installed**) and writes nothing.
+- A link retargeted during a write is a conflict, never reported as registered.
+  Legacy package members are re-verified (no links, same file identity and
+  hash) immediately before each unlink; any change stops deletion.
 - Linked folders (macOS): a symlinked `~/.copilot` or `mcp-config.json` is
   written at its real target; the link stays. Each resolved ancestor must be
   owned by you or root and not group/world writable (sticky excepted). Dangling
