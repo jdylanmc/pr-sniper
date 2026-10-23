@@ -621,6 +621,36 @@ fn a_replaced_directory_has_a_new_identity() {
     assert!(file_identity::directory_identity(&root.path().join("missing")).is_err());
 }
 
+/// Without the installer lock even Windows lets the folder move, so the
+/// identity comparison immediately before replacement is what refuses it.
+#[test]
+fn copilot_folder_swapped_between_check_and_replace_is_never_written() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    write_config(&home, &json!({"mcpServers":{}}));
+    let scope = Scope::new(&home).unwrap();
+    let copilot = home.join(".copilot");
+    let moved = home.join(".copilot-moved");
+    let (from, to) = (copilot.clone(), moved.clone());
+    during("mcp-config-checked", move || {
+        fs::rename(&from, &to).unwrap();
+        fs::create_dir(&from).unwrap();
+        fs::copy(to.join("mcp-config.json"), from.join("mcp-config.json")).unwrap();
+    });
+    let entry = json!({"type":"local"});
+    assert_eq!(
+        conflict_code(scope.set_entry(None, Some(&entry))),
+        "installation_conflict"
+    );
+    assert_eq!(config(&home), json!({"mcpServers":{}}));
+    let old: Value =
+        serde_json::from_slice(&fs::read(moved.join("mcp-config.json")).unwrap()).unwrap();
+    assert_eq!(old, json!({"mcpServers":{}}));
+    // A fresh scope binds the new folder; the old scope stays refused.
+    assert_eq!(conflict_code(scope.check()), "installation_conflict");
+    assert!(Scope::new(&home).unwrap().check().is_ok());
+}
+
 #[cfg(windows)]
 #[test]
 fn copilot_folder_swapped_before_replacement_is_a_conflict() {
@@ -637,8 +667,8 @@ fn copilot_folder_swapped_before_replacement_is_a_conflict() {
     let swapped = Arc::new(AtomicBool::new(false));
     let (from, to, flag) = (copilot.clone(), moved.clone(), swapped.clone());
     during("mcp-config-checked", move || {
-        // Windows may refuse to move a folder holding the open installer
-        // lock; then the swap cannot happen at all.
+        // Windows refuses to move a folder holding the open installer lock,
+        // so the swap cannot happen at all while the lock is held.
         if fs::rename(&from, &to).is_ok() {
             fs::create_dir(&from).unwrap();
             fs::copy(to.join("mcp-config.json"), from.join("mcp-config.json")).unwrap();
