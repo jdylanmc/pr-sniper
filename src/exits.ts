@@ -6,7 +6,8 @@ export type ExitName =
   | "approve_pull_request"
   | "approve_and_merge"
   | "panic_exit"
-  | "submit_report";
+  | "submit_report"
+  | "lgtm";
 
 export type Progress = "approving" | "merging" | "publishing";
 
@@ -27,6 +28,7 @@ export const exitPresentation: Record<ExitName, [string, string]> = {
   approve_and_merge: ["Approve + merge", paths.merge],
   panic_exit: ["Panic", paths.panic],
   submit_report: ["Report", paths.report],
+  lgtm: ["LGTM", paths.approve],
 };
 
 export const waitLabels = {

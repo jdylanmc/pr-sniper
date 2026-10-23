@@ -9,6 +9,14 @@ Status: accepted, implemented. Legacy path removed: every run is packet mode. Su
 - Merge ordering: the merge intent is persisted, then the PR (head, base, every thread, PR author) is fresh-read and every `author_wont_fix` or carried thread must still match its accepted snapshot before `mergePullRequest`. Auto-merge stays enabled for these dispositions.
 - Residual race: GitHub's merge and resolve mutations bind only `expectedHeadOid` / the thread id, not thread contents. A comment or edit landing between the final fresh read and the provider mutation (local work only, sub-second) is not detected before the effect; the post-resolve re-read undoes resolutions, while a merge cannot be undone.
 
+## Scoped amendment: primary sign-off (owner, 2026-10-22)
+
+- The primary may end on `lgtm` (comment only). It settles PR Sniper's own findings on the primary's judgment: no per-thread fixed evidence or Rubber Duck. It never touches another reviewer's thread. Contract: [sign-off](../review-packet.md#sign-off).
+- Own = rooted in this assignment's saved publication, verified on a fresh read. Not markers, logins or the acting account: PR Sniper may publish as the PR author.
+- Hard gates on the fresh state as it will be after the own resolutions: head and base, open, not draft, no conflicts, CI green (not pending), no changes requested, no other unresolved thread, and the action's gates including Include self on own PRs.
+- Authority decides the action: none = local Ready, Approve = approve, Approve & Merge = approve then merge (`expectedHeadOid`). Resolutions run first through the exit write (fresh re-read of each thread before and after); approve/merge waits for them and re-runs its own fresh gates. Refusal after resolutions is a recorded partial outcome.
+- Fixed evidence also accepts a ref without line (whole head file served) and an `end_line` past the last line. #207 evidence: every `fixed` was refused for line-less or past-end refs the Rubber Duck had accepted, and the error never named which.
+
 ## Context
 
 Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime.rs` (`prompt()`).
@@ -27,7 +35,7 @@ Today the agent prompt is one JSON string built in `src-tauri/src/review/runtime
 - One **review packet** per run: versioned, labeled, deterministic. Balanced push and pull: top-level facts in the packet, details through tools.
 - The agent has **no shell, `az`, `gh` or network**. Its only hands are PR Sniper tools, thin hooks into deterministic host code.
 - **Investigation tools** are read-only, bounded, paged. **Tool set is repository configuration**, per assignment.
-- A run ends on **one exit**: `leave_comments` (`new_comments`, `reply_comments`, own-thread resolutions), `ready_for_human`, `approve_pull_request`, `approve_and_merge`, `panic_exit`. Exits are grant-gated.
+- A run ends on **one exit**: `leave_comments` (`new_comments`, `reply_comments`, own-thread resolutions), `ready_for_human`, `approve_pull_request`, `approve_and_merge`, `lgtm` (primary sign-off, amendment above), `panic_exit`. Exits are grant-gated.
 - Gates run at packet build (exit not offered) and at exit (re-check). Host saves intent before effect and stamps comments with their revision.
 - A **successful exit of the primary consumes the state**. Post-exit state is the baseline. Failures and panics do not consume.
 - **Composition.** With several assignments the **primary runs last**. Every non-primary assignment (teammate) runs first and ends by calling `submit_report`, an exit that is not a provider write and needs no grant. Only the primary is offered `leave_comments`, `ready_for_human`, `approve_pull_request`, `approve_and_merge` and `panic_exit`. A sole assignment is the primary and receives no reports. The primary's turn replaces the separate primary final review run. If several assignments have no designated primary, no exits are offered and the PR goes to `ready_for_human` with the reports stored (proposal, open).

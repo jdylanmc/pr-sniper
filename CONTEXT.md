@@ -186,7 +186,7 @@ _Avoid_: Approval review, second pass
 
 **Action Clearance**:
 Gate before any provider action. Every current assignment has its own completed pass for the tracked Iteration. Old evidence never covers an added or replaced assignment. Pending conversations, held findings, human-input decisions, incomplete admission and unknown mutations block.
-An own finding assessed `still_applies` or `unverifiable` blocks approval and merge even when its provider thread is resolved or an earlier correction was acknowledged; no-write human handoff remains available. `fixed`, `withdrawn` and `author_wont_fix` do not block clearance, but provider merge still needs every thread resolved.
+An own finding assessed `still_applies` or `unverifiable` blocks approval and merge even when its provider thread is resolved or an earlier correction was acknowledged; no-write human handoff remains available. `fixed`, `withdrawn`, `author_wont_fix` and `signed_off` do not block clearance, but provider merge still needs every thread resolved.
 _Avoid_: Auto-merge approval
 
 ### Failure and retry
@@ -282,7 +282,7 @@ Publication or reply whose result is unconfirmed. Keeps original reconciliation 
 _Avoid_: Resend
 
 **Owned Feedback**:
-Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Resolvable: `fixed` with current-head evidence, or `author_wont_fix` (the PR author's latest reply, by provider identity, declines and the primary accepts it with a same-thread reply). **Carried forward**: an own finding PR Sniper resolved stays settled while the thread is resolved, has no new non-PR-Sniper comment and every anchored file keeps its head blob. Legacy follow-ups never resolved.
+Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Resolvable: `fixed` with current-head evidence, `author_wont_fix` (the PR author's latest reply, by provider identity, declines and the primary accepts it with a same-thread reply), or `signed_off` (**Sign-off**: the primary's `lgtm` exit resolves its own open threads on its judgment, then acts on the assignment's authority; never others' threads). **Carried forward**: an own finding PR Sniper resolved stays settled while the thread is resolved, has no new non-PR-Sniper comment and every anchored file keeps its head blob. Legacy follow-ups never resolved.
 _Avoid_: Own thread by author name, thread owner as responder
 
 **Feedback clearance**:

@@ -5,7 +5,26 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- `lgtm` sign-off exit for the primary: it replies on and resolves its own open
+  threads on its own judgment (no per-thread evidence or Rubber Duck), then
+  hands off, approves or approves and merges per the assignment's authority.
+  Refused while another reviewer's thread is open, CI is not green, or the PR is
+  draft, conflicting or blocked; approve/merge wait for the resolutions and
+  re-check fresh state.
+
 ### Fixed
+
+- `fixed` was refused ("evidence actually read in this attempt") for a ref with
+  no line or an `end_line` past the last line, even after the head file was
+  read, and the error never named the thread or ref. Whole-file refs count once
+  every page was served, past-end ranges run to the end, refusals list each
+  unserved ref with its reason, and a `verify_fixed` duck call that could not
+  back `fixed` is refused before it is spent.
+- A host marker or signature counts as PR Sniper's only from the acting
+  account; a marked comment from anyone else is no longer skipped when checking
+  the PR author's latest reply.
 
 - The primary may resolve its own finding when the PR author replied won't-fix and
   the primary accepts that rationale (`author_wont_fix`). The host verifies the

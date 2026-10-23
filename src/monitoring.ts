@@ -138,7 +138,13 @@ export type ExitOutcome =
   | { exit: "wait"; reason: "ci" | "draft" | "required_reviews" }
   | { exit: "approve"; comment: string }
   | { exit: "approve_and_merge"; comment: string }
-  | { exit: "submit_report" };
+  | { exit: "submit_report" }
+  | {
+      exit: "lgtm";
+      comment: string;
+      resolve_own_threads: string[];
+      action: "ready" | "approve" | "merge";
+    };
 
 export interface PublicationCandidate {
   local_only?: boolean;

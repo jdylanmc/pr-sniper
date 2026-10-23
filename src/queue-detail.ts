@@ -365,9 +365,13 @@ export function renderQueueStatus(
       .map((candidate) => {
         const output = candidate.run?.result?.output;
         // A `ready_for_human` exit keeps its summary local: shown, never posted.
+        // A sign-off's comment is shown as well (posted only on its own threads).
         return (
           output?.synopsis ||
-          (output?.exit?.exit === "ready_for_human" ? output.exit.summary : "")
+          (output?.exit?.exit === "ready_for_human"
+            ? output.exit.summary
+            : "") ||
+          (output?.exit?.exit === "lgtm" ? output.exit.comment : "")
         );
       })
       .find(Boolean);

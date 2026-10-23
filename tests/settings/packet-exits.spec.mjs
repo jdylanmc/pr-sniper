@@ -405,6 +405,47 @@ test("reply-only exit shows Publishing with its counts outside the Queue", async
   );
 });
 
+test("lgtm sign-off shows its own resolutions, action and write progress", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const run = packetRun(fixture, 21, {
+    exit: "lgtm",
+    comment: "Every finding is settled.",
+    resolve_own_threads: ["T2"],
+    action: "merge",
+  });
+  const signOff = write(run, "verified", {
+    sign_off: "merge",
+    steps: write(run, "verified").steps.map((s) => ({
+      ...s,
+      thread_id: "T2",
+      body: s.kind === "reply" ? "Every finding is settled." : "",
+    })),
+  });
+  await store("seed_queue_state", {
+    jobs: [run.job],
+    reviews: [run],
+    publications: [],
+    follow_ups: [],
+    feedback: { records: [], mentions: [], exit_writes: [signOff] },
+  });
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 21,
+  );
+  await openDetail(page, store, item);
+  const exit = activity(page, "exit");
+  await expect(exit).toHaveAttribute("data-exit", "lgtm");
+  await expect(exit.locator(".activity-verb")).toHaveText("LGTM");
+  const facts = await expand(exit);
+  await expect(fact(facts, "Exit")).toHaveText("lgtm");
+  await expect(fact(facts, "Resolved")).toHaveText("1");
+  await expect(fact(facts, "Action")).toHaveText("merge");
+  await expect(fact(facts, "Write")).toHaveText("verified");
+  await expect(fact(facts, "Done")).toHaveText("0 of 2");
+});
+
 test("parked toss, panic and a failed write are typed Needs attention rows", async ({
   page,
   store,
