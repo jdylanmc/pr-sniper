@@ -26,6 +26,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 | `state/automation.json`                                                             | Pause + capacity gate                                                                          |
 | `state/notifications.json`                                                          | Request identities, observed transitions, send intent, outcomes                                |
 | `state/actions.json`                                                                | Approve/Merge: immutable basis, FIFO identity, attempts, result                                |
+| `state/reviews.json`, `state/reviews/`                                              | Review runs: manifest of content-addressed `run-*.json`; repeated snapshots in `part-*.json`   |
 | `state/publications.json`                                                           | Comment publication ledger                                                                     |
 | `state/follow-ups.json`                                                             | Frozen reply input/output, operation budgets, attempted mutation, reply receipt                |
 | `state/feedback.json`                                                               | Owned roots, current-head observations, missing-root errors, closure tombstones                |
@@ -35,6 +36,14 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 - Legacy arrays and older shapes stay readable. Review/publication keys, receipts and old queue destinations survive adoption. Embedded originating reviews prevent replay when an older queue or review file is missing.
 - Legacy follow-ups load into typed `target` and `context` without writes on read. Retained original review supplies provenance. Legacy `trust_confirmed` is historical evidence only; never a gate.
+
+## Review segments
+
+- `reviews.json` lists run files in order (`{"format": 2, "runs": [...]}`). Each `run-<sha256>.json` holds one run; its `selection` and `feedback_context` live in `part-<sha256>.json`, shared by every run with the same value.
+- Segment files are immutable and named by content. A save writes only new files (flushed, renamed into place), then replaces the manifest: the commit point.
+- Unreferenced segments are deleted after the commit, once no frozen copy that may read them is alive. The first save of a process also removes leftovers of interrupted saves.
+- A legacy `reviews.json` array stays readable and becomes a manifest on the next save. Older builds reject the manifest (invalid review state) rather than treat it as empty.
+- Saved state is decoded once per change (Store write count + OS file identity) and shared with frozen copies.
 
 ## Config rules
 

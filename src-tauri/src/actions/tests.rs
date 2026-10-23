@@ -628,9 +628,9 @@ fn retention_waits_for_uncertain_actions_then_discards_all_final_detail_copies()
         retained.receipts[0].effects[0].receipt.as_ref(),
         Some(&receipt)
     );
-    for file in std::fs::read_dir(root.path().join("state")).unwrap() {
+    for file in Store::saved_files(&root.path().join("state")) {
         assert!(
-            !String::from_utf8(std::fs::read(file.unwrap().path()).unwrap())
+            !String::from_utf8(std::fs::read(file).unwrap())
                 .unwrap()
                 .contains("RETENTION-BULK-ONLY")
         );

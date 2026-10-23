@@ -26,6 +26,12 @@ Review detail grows without bound. Wrong deletion loses evidence. A database add
 - Cleanup is human-triggered: Reviewed **Clean** per PR and **Clean all**. No timer deletes terminal detail. Terminal PRs only.
 - Also deletes the PR's `pr-state.json` record. Uncertain publication and action records stay (ADR 0015 reconciliation). Ad hoc scope, owner review requested.
 
+## Review segments (2026-10-22)
+
+- `reviews.json` becomes a manifest of content-addressed run files under `state/reviews/`; repeated `selection` and `feedback_context` snapshots are stored once. Still typed JSON; not a database, per-PR store or archive.
+- Saving one run's progress writes that run and the manifest. Cleanup and Clean semantics are unchanged: the same runs are removed, then their files.
+- No automatic pruning of terminal detail; Clean stays human-triggered.
+
 ## Local stale-queue dismissal (2026-10-19)
 
 - **Dismiss stale review** acknowledges one stale state, not terminal cleanup.

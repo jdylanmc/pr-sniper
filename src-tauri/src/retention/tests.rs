@@ -448,8 +448,8 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
     assert!(store.load_queue().unwrap().is_empty());
     assert!(store.load_follow_ups().unwrap().is_empty());
     assert!(store.load_feedback().unwrap().records.is_empty());
-    for entry in std::fs::read_dir(root.path().join("state")).unwrap() {
-        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+    for file in Store::saved_files(&root.path().join("state")) {
+        let bytes = std::fs::read(file).unwrap();
         assert!(!String::from_utf8(bytes).unwrap().contains("BULKY-"));
     }
     assert_eq!(

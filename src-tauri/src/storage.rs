@@ -19,6 +19,9 @@ pub(crate) mod parsed;
 pub(crate) mod private_fs;
 #[path = "storage/review_store.rs"]
 pub(crate) mod review_store;
+#[cfg(all(test, target_os = "macos"))]
+#[path = "storage/cost_bench.rs"]
+mod cost_bench;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1434,6 +1437,8 @@ pub struct Store {
     #[cfg(test)]
     bytes_written: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
+    caching: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
     state_writes: std::sync::Mutex<BTreeMap<String, usize>>,
     #[cfg(test)]
     failed_state_write: std::sync::Mutex<Option<(String, usize)>>,
@@ -1453,6 +1458,8 @@ impl Store {
             reader: None,
             #[cfg(test)]
             bytes_written: Default::default(),
+            #[cfg(test)]
+            caching: std::sync::atomic::AtomicBool::new(true),
             #[cfg(test)]
             state_writes: std::sync::Mutex::new(BTreeMap::new()),
             #[cfg(test)]
@@ -1490,6 +1497,31 @@ impl Store {
     pub(crate) fn take_bytes_written(&self) -> usize {
         self.bytes_written
             .swap(0, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test support: every saved file under `root`, including review segments.
+    #[cfg(test)]
+    pub(crate) fn saved_files(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// Test support: decode on every load, as before the decode cache.
+    #[cfg(test)]
+    pub(crate) fn set_caching(&self, on: bool) {
+        self.caching.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn record_bytes(&self, _bytes: usize) {
@@ -1536,11 +1568,25 @@ impl Store {
         files: &[&str],
         load: impl FnOnce() -> Result<T, E>,
     ) -> Result<std::sync::Arc<T>, E> {
+        #[cfg(test)]
+        if !self.caching.load(std::sync::atomic::Ordering::SeqCst) {
+            return load().map(std::sync::Arc::new);
+        }
         let stamps: Option<Vec<_>> = files.iter().map(|name| self.file_stamp(name)).collect();
         if let Some(hit) = stamps
             .as_deref()
             .and_then(|stamps| self.cache.get::<T>(key, stamps))
         {
+            // Read counters record loads; `take_parses` records decodes.
+            #[cfg(test)]
+            for name in files {
+                *self
+                    .state_reads
+                    .lock()
+                    .unwrap()
+                    .entry(name.to_string())
+                    .or_default() += 1;
+            }
             return Ok(hit);
         }
         self.cache.counted(key);
@@ -1797,19 +1843,6 @@ impl Store {
         name: &str,
         value: &T,
     ) -> Result<(), String> {
-        #[cfg(test)]
-        {
-            let mut fault = self.failed_state_write.lock().unwrap();
-            if let Some((target, remaining)) = fault.as_mut() {
-                if target == name {
-                    *remaining -= 1;
-                    if *remaining == 0 {
-                        *fault = None;
-                        return Err(format!("Injected {name} write failure."));
-                    }
-                }
-            }
-        }
         self.write_state_as(name, value, None)
     }
 
@@ -1823,6 +1856,19 @@ impl Store {
     ) -> Result<(), String> {
         if self.frozen.is_some() {
             return Err("A read-only state snapshot cannot be saved.".into());
+        }
+        #[cfg(test)]
+        {
+            let mut fault = self.failed_state_write.lock().unwrap();
+            if let Some((target, remaining)) = fault.as_mut() {
+                if target == name {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        *fault = None;
+                        return Err(format!("Injected {name} write failure."));
+                    }
+                }
+            }
         }
         let directory = self
             .directory("state")

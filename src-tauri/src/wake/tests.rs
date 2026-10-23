@@ -597,7 +597,10 @@ fn running_review_progress_neither_wakes_coordinators_nor_waits_on_scans() {
         });
         (sim, progress)
     };
+    // The former loop also decoded every file on every read.
+    store.lock().unwrap().set_caching(false);
     let (legacy, (legacy_saves, legacy_wait)) = measure(Mode::Legacy, 3 * TICK);
+    store.lock().unwrap().set_caching(true);
     let (gated, (gated_saves, gated_wait)) = measure(Mode::Gated, 120);
     eprintln!(
         "active load legacy: {} passes, max hold {:?}, total hold {:?}, writer {} saves, max wait {:?}",
@@ -646,7 +649,7 @@ fn running_review_progress_neither_wakes_coordinators_nor_waits_on_scans() {
     );
 }
 
-fn settings() -> Settings {
+pub(crate) fn settings() -> Settings {
     serde_json::from_value(json!({
         "launch_at_login":false,"doctrines":[],
         "repositories":[{"id":REPO,"provider":"github","name":"example/repo","enabled":true,
@@ -660,7 +663,7 @@ fn settings() -> Settings {
     .unwrap()
 }
 
-fn job(number: u64, pass: u64, waiting: &str) -> QueueJob {
+pub(crate) fn job(number: u64, pass: u64, waiting: &str) -> QueueJob {
     serde_json::from_value(json!({
         "work": {
             "id": format!("work-{number}-{pass}"), "item_id": format!("iteration-{number}"),
@@ -682,7 +685,7 @@ fn job(number: u64, pass: u64, waiting: &str) -> QueueJob {
     .unwrap()
 }
 
-fn review(settings: &Settings, job: &QueueJob, pad: &str) -> ReviewRun {
+pub(crate) fn review(settings: &Settings, job: &QueueJob, pad: &str) -> ReviewRun {
     let mut operation = JobOperation::review(job, NOW);
     operation.state = OperationState::Completed;
     ReviewRun {
