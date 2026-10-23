@@ -165,7 +165,7 @@ fn interrupted_saves_keep_the_committed_view_and_are_swept() {
     store.save_reviews(&reviews).unwrap();
     // A crash after writing run files but before the manifest commit.
     let directory = root.path().join("state/reviews");
-    let orphan = format!("run-{}.json", "0".repeat(64));
+    let orphan = format!("run-{}.json", "0".repeat(32));
     std::fs::write(directory.join(&orphan), b"{}").unwrap();
     std::fs::write(directory.join("run-x.json.pr-sniper-write-y.partial"), b"{").unwrap();
     let fresh = Store::new(root.path().into());
@@ -182,4 +182,35 @@ fn interrupted_saves_keep_the_committed_view_and_are_swept() {
         Store::new(root.path().into()).load_reviews().unwrap()[0].phase,
         "Changed"
     );
+}
+
+#[test]
+fn panel_snapshots_send_each_repeated_selection_once() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let reviews = profile(&store, 9);
+    store.save_reviews(&reviews).unwrap();
+    let runs = Store::new(root.path().into()).load_reviews().unwrap();
+    let plain = serde_json::to_value(&runs).unwrap();
+    let sent = crate::review::interned(&runs).unwrap();
+    assert_eq!(sent["shared"].as_object().unwrap().len(), 3);
+    assert!(
+        serde_json::to_vec(&sent).unwrap().len() * 2 < serde_json::to_vec(&plain).unwrap().len()
+    );
+    fn restore(node: &mut Value, shared: &Map<String, Value>) {
+        match node {
+            Value::Array(items) => items.iter_mut().for_each(|n| restore(n, shared)),
+            Value::Object(map) if map.len() == 1 && map.contains_key("$shared") => {
+                *node = shared[map["$shared"].as_str().unwrap()].clone();
+            }
+            Value::Object(map) => map.values_mut().for_each(|n| restore(n, shared)),
+            _ => {}
+        }
+    }
+    let shared = sent["shared"].as_object().unwrap().clone();
+    let mut restored = sent["interned"].clone();
+    restore(&mut restored, &shared);
+    assert_eq!(restored, plain);
+    // Outside `interned`, serialization is unchanged.
+    assert_eq!(serde_json::to_value(&runs).unwrap(), plain);
 }

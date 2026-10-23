@@ -39,7 +39,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 
 ## Review segments
 
-- `reviews.json` lists run files in order (`{"format": 2, "runs": [...]}`). Each `run-<sha256>.json` holds one run; its `selection` and `feedback_context` live in `part-<sha256>.json`, shared by every run with the same value.
+- `reviews.json` lists run files in order (`{"format": 2, "runs": [...]}`). Each `run-<hash>.json` holds one run; its `selection` and `feedback_context` live in `part-<hash>.json`, shared by every run with the same value. `<hash>`: first 128 bits of the SHA-256 of the file.
 - Segment files are immutable and named by content. A save writes only new files (flushed, renamed into place), then replaces the manifest: the commit point.
 - Unreferenced segments are deleted after the commit, once no frozen copy that may read them is alive. The first save of a process also removes leftovers of interrupted saves.
 - A legacy `reviews.json` array stays readable and becomes a manifest on the next save. Older builds reject the manifest (invalid review state) rather than treat it as empty.

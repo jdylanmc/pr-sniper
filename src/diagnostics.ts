@@ -1,3 +1,4 @@
+import { restoreShared } from "./interned";
 import { invoke } from "@tauri-apps/api/core";
 import {
   type DoctrineCatalog,
@@ -69,7 +70,7 @@ export async function diagnosticsExport(): Promise<string> {
   const [state, entries, jobs] = await Promise.all([
     invoke<DiagnosticSnapshot>("snapshot"),
     invoke<Diagnostic[]>("diagnostics"),
-    invoke<MonitoringSnapshot>("monitoring_snapshot"),
+    invoke("monitoring_snapshot").then(restoreShared<MonitoringSnapshot>),
   ]);
   return (
     `PR Sniper ${state.version}${state.isolated ? " \u00b7 Isolated" : ""}\n\n` +

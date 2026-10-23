@@ -134,7 +134,14 @@ function run(state) {
   };
 }
 
-for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
+for (const mode of [
+  "planned",
+  "captured",
+  "interned",
+  "legacy",
+  "queued",
+  "failed-zero",
+]) {
   test(`${mode} configuration distinguishes actual execution evidence from today's plan`, async ({
     page,
     store,
@@ -195,13 +202,30 @@ for (const mode of ["planned", "captured", "legacy", "queued", "failed-zero"]) {
       review.run.operation.attempt_count = 0;
       review.run.error = "Configuration changed before the first execution.";
     }
-    await page.addInitScript((review) => {
+    // The native host sends each repeated snapshot once (`review::interned`).
+    const response =
+      mode === "interned"
+        ? {
+            interned: {
+              health: [],
+              jobs: [],
+              reviews: [
+                {
+                  ...review,
+                  run: { ...review.run, selection: { $shared: "0" } },
+                },
+              ],
+            },
+            shared: { 0: selection },
+          }
+        : { health: [], jobs: [], reviews: [review] };
+    await page.addInitScript((response) => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) =>
         command === "monitoring_snapshot"
-          ? Promise.resolve({ health: [], jobs: [], reviews: [review] })
+          ? Promise.resolve(structuredClone(response))
           : original(command, args);
-    }, review);
+    }, response);
     await page.goto("/?view=queue");
     await openDetails(page);
     const panel = page.locator("#agent-reviews");

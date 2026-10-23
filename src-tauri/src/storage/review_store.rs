@@ -2,8 +2,8 @@
 //! run segments under `state/reviews/`, so saving one run's progress writes
 //! that run and the manifest instead of every review.
 //!
-//! - `run-<sha256>.json`: one run, with its large repeated snapshots
-//!   (`selection`, `feedback_context`) stored once as `part-<sha256>.json`.
+//! - `run-<hash>.json`: one run, with its large repeated snapshots
+//!   (`selection`, `feedback_context`) stored once as `part-<hash>.json`.
 //! - Files are immutable: a changed run gets a new name. The manifest replace
 //!   is the commit point; unreferenced files are collected after it, once no
 //!   frozen copy that may still read them is alive.
@@ -125,15 +125,16 @@ fn decode(bytes: &[u8]) -> Result<Saved, ReadError> {
 fn valid_name(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix)
         .and_then(|rest| rest.strip_suffix(".json"))
-        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .is_some_and(|hash| hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 fn name(prefix: &str, bytes: &[u8]) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(bytes);
-    let mut name = String::with_capacity(prefix.len() + 69);
+    let mut name = String::with_capacity(prefix.len() + 37);
     name.push_str(prefix);
-    for byte in digest {
+    // 128 bits name a run or part uniquely and keep the manifest small.
+    for byte in &digest[..16] {
         name.push_str(&format!("{byte:02x}"));
     }
     name.push_str(".json");
@@ -340,14 +341,13 @@ impl Store {
         if wrote {
             private_fs::sync_entries(&directory).map_err(|_| "Cannot write monitoring state.")?;
         }
-        self.write_state_as(
-            MANIFEST,
-            &Manifest {
-                format: FORMAT,
-                runs: names.clone(),
-            },
-            fingerprint,
-        )?;
+        // Compact: rewritten by every progress save.
+        let manifest = serde_json::to_vec(&Manifest {
+            format: FORMAT,
+            runs: names.clone(),
+        })
+        .map_err(|_| "Cannot encode monitoring state.")?;
+        self.write_state_bytes(MANIFEST, &manifest, fingerprint)?;
         let unreferenced: Vec<String> = previous
             .into_iter()
             .map(|(name, _)| name)

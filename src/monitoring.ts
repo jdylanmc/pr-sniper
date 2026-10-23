@@ -1,3 +1,4 @@
+import { restoreShared } from "./interned";
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
 import { actualIntelligence } from "./copilot";
@@ -964,7 +965,9 @@ export function renderMonitoring(
     loading = true;
     const requestedDetail = detailRevision;
     try {
-      snapshot = await invoke<MonitoringSnapshot>("monitoring_snapshot");
+      snapshot = restoreShared<MonitoringSnapshot>(
+        await invoke("monitoring_snapshot"),
+      );
       if (requestedDetail === detailRevision) missingDetail = null;
       options.onSnapshot?.(snapshot);
       void refreshAutomation();

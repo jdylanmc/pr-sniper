@@ -339,8 +339,68 @@ impl<T> From<T> for Shared<T> {
 
 impl<T: Serialize> Serialize for Shared<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
+        match intern(&self.0) {
+            Some(id) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("$shared", &id)?;
+                map.end()
+            }
+            None => self.0.serialize(serializer),
+        }
     }
+}
+
+#[derive(Default)]
+struct Interner {
+    by_address: std::collections::HashMap<usize, String>,
+    by_content: std::collections::HashMap<Vec<u8>, String>,
+    values: serde_json::Map<String, Value>,
+}
+
+thread_local! {
+    static INTERNER: std::cell::RefCell<Option<Interner>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Id of `value` in the active `interned` table, adding it once.
+fn intern<T: Serialize>(value: &std::sync::Arc<T>) -> Option<String> {
+    let address = std::sync::Arc::as_ptr(value) as usize;
+    let known = INTERNER.with_borrow(|interner| {
+        interner
+            .as_ref()
+            .map(|interner| interner.by_address.get(&address).cloned())
+    })?;
+    if known.is_some() {
+        return known;
+    }
+    // Serialized with the table released: a value may hold shared values.
+    let json = serde_json::to_value(value.as_ref()).ok()?;
+    let content = serde_json::to_vec(&json).ok()?;
+    INTERNER.with_borrow_mut(|interner| {
+        let interner = interner.as_mut()?;
+        let next = interner.values.len().to_string();
+        let id = interner
+            .by_content
+            .entry(content)
+            .or_insert_with(|| next.clone())
+            .clone();
+        if id == next {
+            interner.values.insert(id.clone(), json);
+        }
+        interner.by_address.insert(address, id.clone());
+        Some(id)
+    })
+}
+
+/// `value` for the panel with each distinct shared snapshot sent once:
+/// `{"interned": value, "shared": {id: snapshot}}`, where the value holds
+/// `{"$shared": id}` in place of every repeat (`src/interned.ts` restores it).
+pub fn interned<T: Serialize>(value: &T) -> Result<Value, String> {
+    INTERNER.with_borrow_mut(|interner| *interner = Some(Interner::default()));
+    let body = serde_json::to_value(value);
+    let table = INTERNER.with_borrow_mut(Option::take).unwrap_or_default();
+    let body = body.map_err(|_| "Cannot encode the review queue.".to_string())?;
+    Ok(serde_json::json!({"interned": body, "shared": table.values}))
 }
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {

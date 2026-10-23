@@ -1221,10 +1221,10 @@ fn apply_staged_monitoring_activation(
 }
 
 #[tauri::command]
-async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<queue::Snapshot, String> {
+async fn monitoring_snapshot(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
-        queue_snapshot(&host)
+        review::interned(&queue_snapshot(&host)?)
     })
     .await
     .map_err(|_| "Monitoring state could not be read.".to_string())?

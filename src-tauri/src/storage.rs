@@ -1942,6 +1942,18 @@ impl Store {
         value: &T,
         fingerprint: Option<u64>,
     ) -> Result<(), String> {
+        let bytes =
+            serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
+        self.write_state_bytes(name, &bytes, fingerprint)
+    }
+
+    /// `write_state_as` for already encoded bytes.
+    pub(crate) fn write_state_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        fingerprint: Option<u64>,
+    ) -> Result<(), String> {
         if self.frozen.is_some() {
             return Err("A read-only state snapshot cannot be saved.".into());
         }
@@ -1961,8 +1973,6 @@ impl Store {
         let directory = self
             .directory("state")
             .map_err(|_| "Cannot create monitoring state directory.".to_string())?;
-        let bytes =
-            serde_json::to_vec_pretty(value).map_err(|_| "Cannot encode monitoring state.")?;
         #[cfg(test)]
         {
             *self
@@ -1972,7 +1982,7 @@ impl Store {
                 .entry(name.to_string())
                 .or_default() += 1;
         }
-        let result = private_fs::replace(&directory.join(name), &bytes, "monitoring state");
+        let result = private_fs::replace(&directory.join(name), bytes, "monitoring state");
         self.record_bytes(bytes.len());
         self.record_write(name, fingerprint);
         result
