@@ -982,12 +982,10 @@ fn lgtm_resolves_only_accounted_own_open_threads_and_acts_on_authority() {
 #[test]
 fn lgtm_cannot_pass_over_an_undismissed_teammate_finding() {
     let mut c = contract(true, false);
-    c.identities.teammate_findings = vec!["Security#1".into(), "Security#2".into()];
+    // Two teammates that share a display name: one host id each.
+    c.identities.teammate_findings = vec!["T1#1".into(), "T2#1".into()];
     let error = signed(&c, &mut lgtm(), &mut Vec::new()).unwrap_err();
-    assert!(
-        error.contains("Undismissed: Security#1, Security#2."),
-        "{error}"
-    );
+    assert!(error.contains("Undismissed: T1#1, T2#1."), "{error}");
     let dismiss = |ids: &[&str]| {
         ExitCall::parse(
             "lgtm",
@@ -997,21 +995,19 @@ fn lgtm_cannot_pass_over_an_undismissed_teammate_finding() {
         )
         .unwrap()
     };
-    assert!(signed(&c, &mut dismiss(&["Security#1"]), &mut Vec::new())
+    assert!(signed(&c, &mut dismiss(&["T1#1"]), &mut Vec::new())
         .unwrap_err()
-        .contains("Undismissed: Security#2."));
-    assert!(signed(&c, &mut dismiss(&["Security#3"]), &mut Vec::new())
+        .contains("Undismissed: T2#1."));
+    assert!(signed(&c, &mut dismiss(&["T1#1", "T1#1"]), &mut Vec::new())
         .unwrap_err()
-        .contains("Unknown teammate finding Security#3"));
-    signed(
-        &c,
-        &mut dismiss(&["Security#1", "Security#2"]),
-        &mut Vec::new(),
-    )
-    .unwrap();
+        .contains("once"));
+    assert!(signed(&c, &mut dismiss(&["Reviewer#1"]), &mut Vec::new())
+        .unwrap_err()
+        .contains("Unknown teammate finding Reviewer#1"));
+    signed(&c, &mut dismiss(&["T1#1", "T2#1"]), &mut Vec::new()).unwrap();
     assert!(ExitCall::parse(
         "lgtm",
-        &json!({"comment":"ok","dismissed_teammate_findings":[{"id":"Security#1","rationale":" "}]})
+        &json!({"comment":"ok","dismissed_teammate_findings":[{"id":"T1#1","rationale":" "}]})
     )
     .is_err());
 }

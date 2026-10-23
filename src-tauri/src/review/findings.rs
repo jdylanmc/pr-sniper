@@ -670,9 +670,13 @@ impl Contract {
         let teammates = &self.identities.teammate_findings;
         if let Some(unknown) = dismissed.iter().find(|d| !teammates.contains(&d.id)) {
             return Err(format!(
-                "Unknown teammate finding {}. Use <teammate>#<n> from Teammate reports.",
+                "Unknown teammate finding {}. Copy its exact id (T<k>#<n>) from Teammate reports.",
                 unknown.id
             ));
+        }
+        let mut seen = BTreeSet::new();
+        if let Some(twice) = dismissed.iter().find(|d| !seen.insert(d.id.as_str())) {
+            return Err(format!("Dismiss teammate finding {} once.", twice.id));
         }
         let undismissed: Vec<&str> = teammates
             .iter()

@@ -97,7 +97,7 @@ pub struct FindingFacts {
     pub lgtm_action: crate::exits::LgtmAction,
     /// Own thread id -> head the finding was published on (ownership proof).
     pub thread_heads: std::collections::BTreeMap<String, String>,
-    /// `<teammate>#<n>` of every teammate finding in this run's packet.
+    /// Host id (`T<k>#<n>`) of every teammate finding in this run's packet.
     pub teammate_findings: Vec<String>,
 }
 

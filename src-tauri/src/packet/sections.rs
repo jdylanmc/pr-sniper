@@ -315,7 +315,13 @@ fn label(text: &str) -> String {
         .collect()
 }
 
-/// `<teammate>#<n>` of every teammate finding the primary's packet lists.
+/// Host id of a teammate finding: the teammate's ordinal in this packet and the
+/// finding's, never its display name (two teammates may share one).
+fn teammate_finding_id(teammate: usize, finding: usize) -> String {
+    format!("T{teammate}#{finding}")
+}
+
+/// The id of every teammate finding the primary's packet lists, unique within it.
 pub(crate) fn teammate_finding_ids(input: &PacketInput) -> Vec<String> {
     if input.role != Role::Primary {
         return Vec::new();
@@ -323,9 +329,9 @@ pub(crate) fn teammate_finding_ids(input: &PacketInput) -> Vec<String> {
     input
         .teammates
         .iter()
-        .flat_map(|t| {
-            let agent = label(&t.agent);
-            (1..=t.report.findings.len()).map(move |n| format!("{agent}#{n}"))
+        .enumerate()
+        .flat_map(|(t, entry)| {
+            (1..=entry.report.findings.len()).map(move |n| teammate_finding_id(t + 1, n))
         })
         .collect()
 }
@@ -337,10 +343,11 @@ fn teammates(out: &mut String, input: &PacketInput) {
     out.push_str("\n## Teammate reports\n");
     out.push_str(rules::TEAMMATE_REPORTS_RULE);
     out.push('\n');
-    for teammate in &input.teammates {
+    for (ordinal, teammate) in input.teammates.iter().enumerate() {
         let _ = writeln!(
             out,
-            "\n### {} (lens: {})",
+            "\n### T{}: {} (lens: {})",
+            ordinal + 1,
             label(&teammate.agent),
             teammate
                 .lens
@@ -356,10 +363,9 @@ fn teammates(out: &mut String, input: &PacketInput) {
         for (index, f) in teammate.report.findings.iter().enumerate() {
             let _ = write!(
                 body,
-                "{}. [{}#{}] {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
+                "{}. [{}] {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
                 index + 1,
-                label(&teammate.agent),
-                index + 1,
+                teammate_finding_id(ordinal + 1, index + 1),
                 f.file,
                 f.line,
                 f.nano,

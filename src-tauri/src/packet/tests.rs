@@ -594,3 +594,27 @@ fn carried_forward_threads_are_marked_on_their_thread_line() {
     carried.conversation.threads[0].carried = true;
     assert!(line(&carried).ends_with(" carried_forward=true"));
 }
+
+#[test]
+fn teammate_finding_ids_are_unique_even_when_names_collide() {
+    let mut primary = input();
+    let first = primary.teammates[0].clone();
+    // The same agent on another assignment, and a name that sanitizes the same.
+    let mut twin = first.clone();
+    twin.lens = vec!["Style".into()];
+    let mut lookalike = first.clone();
+    lookalike.agent = "Security".into();
+    primary.teammates = vec![first.clone(), twin, lookalike];
+    primary.teammates[0].agent = "Sec<ur>ity".into();
+    primary.teammates[2].agent = "Sec>ur<ity".into();
+    let ids = crate::packet::sections::teammate_finding_ids(&primary);
+    assert_eq!(ids, ["T1#1", "T2#1", "T3#1"]);
+    let text = build(&primary).text;
+    for (ordinal, id) in ids.iter().enumerate() {
+        assert!(text.contains(&format!("### T{}: ", ordinal + 1)), "{text}");
+        assert!(text.contains(&format!("1. [{id}] src/lib.rs:10")), "{text}");
+    }
+    let mut teammate = primary.clone();
+    teammate.role = Role::Teammate;
+    assert!(crate::packet::sections::teammate_finding_ids(&teammate).is_empty());
+}

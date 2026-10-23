@@ -137,7 +137,7 @@ impl Exit {
             Exit::Lgtm => (
                 json!({"comment":{"type":"string","description":"Short sign-off rationale, posted on each own thread resolved. At most 4096 bytes."},
                     "dismissed_teammate_findings":{"type":"array","maxItems":MAX_FINDINGS,"items":{"type":"object","additionalProperties":false,
-                        "properties":{"id":{"type":"string","description":"<teammate>#<n> as listed under Teammate reports."},
+                        "properties":{"id":{"type":"string","description":"Exact id as listed under Teammate reports, e.g. T1#2."},
                             "rationale":{"type":"string","description":"Why it is not a defect. At most 4096 bytes."}},
                         "required":["id","rationale"]}}}),
                 json!(["comment"]),
@@ -238,7 +238,7 @@ pub enum ExitCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeammateDismissal {
-    /// `<teammate>#<n>`, as listed under Teammate reports.
+    /// The host id (`T<k>#<n>`) listed under Teammate reports.
     pub id: String,
     pub rationale: String,
 }
