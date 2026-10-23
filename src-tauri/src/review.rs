@@ -371,7 +371,22 @@ pub(crate) const EXECUTION_INPUTS: &[&str] = &[
 /// One run's last successful validation, keyed by the stamp of its inputs.
 /// Guarded provider reads re-check only after one of them changed.
 #[derive(Debug, Default)]
-pub(crate) struct ValidatedSelection(std::sync::Mutex<Option<crate::storage::FileStamp>>);
+pub(crate) struct ValidatedSelection(
+    std::sync::Mutex<Option<crate::storage::FileStamp>>,
+    std::sync::OnceLock<crate::storage::StampProbe>,
+);
+
+impl ValidatedSelection {
+    /// Whether the last validation still holds, checked without the Store
+    /// lock: attempt gates run every 100 ms per review.
+    pub(crate) fn unchanged(&self) -> bool {
+        let Some(probe) = self.1.get() else {
+            return false;
+        };
+        let key = probe.stamp_of(EXECUTION_INPUTS);
+        key.is_some() && self.0.lock().is_ok_and(|last| *last == key)
+    }
+}
 
 /// `validate_execution_selection`, skipped while none of its inputs was
 /// rewritten since it last passed for this run. Refusals are never cached.
@@ -380,6 +395,9 @@ pub(crate) fn validate_execution_selection_cached(
     run: &ReviewRun,
     validated: &ValidatedSelection,
 ) -> Result<(), Failure> {
+    if let Some(probe) = store.probe() {
+        let _ = validated.1.set(probe);
+    }
     let key = store.stamp_of(EXECUTION_INPUTS);
     let mut last = validated
         .0

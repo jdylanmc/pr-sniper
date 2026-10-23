@@ -156,7 +156,7 @@ Hash of the last consumed PR state, including the host's own writes, so own comm
 A successful exit consumes the state it read and sets the Baseline. A state that moved during the run tosses the result: error count +1, re-queue, park at 3. Honoured when: `ready_for_human` completes, comments publish, approve/merge confirm. Baseline = fresh snapshot after the write. Head moved, PR closed, merged or no longer admitted, or assignment removed or replaced, before or during the run: superseded, no budget spent, never parked; the next scan queues the new revision or retires the work. A superseded run waits for the repository's next successful poll, never a timer. Waiting work whose entry a scan retired (merged, closed, superseded, out of scope, assignment removed) ends quietly as superseded and leaves Running; a primary never waits on such a teammate. Base moved: superseded, never parked; after an AI run it waits for a poll that saw another base, so each base gets at most one AI attempt.
 
 **Clean** (Reviewed):
-Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay.
+Per-PR and Clean all. Deletes persisted PR state, packet and result detail of terminal PRs only. Receipts and uncertain-write records stay. The same cleanup runs automatically for PRs observed closed or merged.
 
 **Job**:
 One unit of AI work for one Agent on one exact Iteration. Kind: normal (packet run). Legacy kinds load as history, never run. Running counts jobs, not triggers: 7 Agents at capacity 4 means 4 active, 3 waiting. Carries an immutable **Execution Snapshot**.

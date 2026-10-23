@@ -923,3 +923,44 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
     assert!(coordinator.settle_terminal(&store).unwrap());
     assert_eq!(maintain(&store, true).unwrap(), 1);
 }
+
+#[test]
+fn automatic_prune_drops_closed_and_merged_prs_only_and_reopen_starts_fresh() {
+    for lifecycle in [Lifecycle::Closed, Lifecycle::Merged] {
+        let (_root, store, mut monitor) = fixture();
+        let (review, publication, follow) = evidence(&store);
+        // Open: never pruned.
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+        assert_eq!(store.load_reviews().unwrap(), vec![review.clone()]);
+        assert_eq!(store.load_publications().unwrap(), vec![publication]);
+        assert_eq!(store.load_follow_ups().unwrap(), vec![follow]);
+        scan(&store, &mut monitor, vec![pull(1, lifecycle.clone())], NOW + 5);
+        // Workers not settled: nothing yet; a zero budget defers it.
+        assert_eq!(prune_terminal(&store, false, PRUNE_PER_PASS).unwrap(), 0);
+        assert_eq!(prune_terminal(&store, true, 0).unwrap(), 0);
+        assert!(!store.review_evidence().unwrap().is_empty());
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+        assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+        assert!(store.review_evidence().unwrap().is_empty());
+        assert!(store.load_queue().unwrap().is_empty());
+        assert!(store.load_follow_ups().unwrap().is_empty());
+        assert_eq!(load(&store).unwrap().receipts.len(), 1);
+        // A reopened PR is a new iteration with fresh state.
+        scan(&store, &mut monitor, vec![pull(1, Lifecycle::Open)], NOW + 10);
+        let latest = store.load_queue().unwrap().last().unwrap().clone();
+        assert_eq!(latest.work.as_ref().unwrap().iteration, 2);
+        assert_ne!(crate::review::key(&latest, ASSIGNMENT), review.key);
+    }
+}
+
+#[test]
+fn automatic_prune_keeps_detail_needing_repair_without_failing_the_pass() {
+    let (root, store, mut monitor) = fixture();
+    evidence(&store);
+    std::fs::remove_file(root.path().join("state/publications.json")).unwrap();
+    scan(&store, &mut monitor, vec![pull(1, Lifecycle::Closed)], NOW + 5);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.load_follow_ups().unwrap().is_empty());
+    assert!(!store.review_evidence().unwrap().is_empty());
+    assert!(load(&store).unwrap().pending.is_none());
+}

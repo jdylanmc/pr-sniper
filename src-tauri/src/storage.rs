@@ -1426,7 +1426,7 @@ pub struct Store {
     initial_time_zone: String,
     /// Per saved file: every write, and the writes that can give a
     /// coordinator work (transitions, not progress or bookkeeping).
-    counters: std::sync::Mutex<BTreeMap<String, Counter>>,
+    counters: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Counter>>>,
     /// Read-only point-in-time copy for scans outside the Store lock.
     frozen: Option<std::sync::Arc<FrozenFiles>>,
     shared: std::sync::Mutex<SharedFiles>,
@@ -1451,7 +1451,7 @@ impl Store {
         Self {
             root,
             initial_time_zone: "UTC".into(),
-            counters: std::sync::Mutex::new(BTreeMap::new()),
+            counters: Default::default(),
             frozen: None,
             shared: std::sync::Mutex::new(BTreeMap::new()),
             cache: Default::default(),
@@ -1602,6 +1602,67 @@ impl Store {
         Ok(value)
     }
 
+    /// `load`'s value, computed at most once per version of every saved
+    /// file except bookkeeping (result index, queue selection) and `extra`.
+    pub(crate) fn cached_state<T: Send + Sync + 'static, E>(
+        &self,
+        key: &'static str,
+        extra: u64,
+        load: impl FnOnce() -> Result<T, E>,
+    ) -> Result<std::sync::Arc<T>, E> {
+        let names: Vec<String> = match &self.frozen {
+            Some(files) => files
+                .keys()
+                .filter(|(directory, _)| directory == "state")
+                .map(|(_, name)| name.clone())
+                .collect(),
+            None => match fs::read_dir(self.root.join("state")) {
+                Ok(entries) => entries
+                    .filter_map(|entry| entry.ok()?.file_name().to_str().map(String::from))
+                    .filter(|name| name.ends_with(".json") && !name.contains(".pr-sniper-write-"))
+                    .collect(),
+                Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+                Err(_) => return load().map(std::sync::Arc::new),
+            },
+        };
+        let mut names: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                !matches!(
+                    *name,
+                    "result-index.json" | "result-index-pending.json" | "queue-selection.json"
+                )
+            })
+            .collect();
+        names.sort_unstable();
+        names.push("settings.json");
+        let set = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            names.hash(&mut hasher);
+            extra.hash(&mut hasher);
+            hasher.finish()
+        };
+        let stamps: Option<Vec<_>> = std::iter::once(Some((set, None)))
+            .chain(names.iter().map(|name| self.file_stamp(name)))
+            .collect();
+        #[cfg(test)]
+        let stamps = stamps.filter(|_| self.caching.load(std::sync::atomic::Ordering::SeqCst));
+        if let Some(hit) = stamps
+            .as_deref()
+            .and_then(|stamps| self.cache.get::<T>(key, stamps))
+        {
+            return Ok(hit);
+        }
+        self.cache.counted(key);
+        let value = std::sync::Arc::new(load()?);
+        if let Some(stamps) = stamps {
+            self.cache.put(key, stamps, value.clone());
+        }
+        Ok(value)
+    }
+
     /// Per-file write and transition counters since this Store opened. Idle
     /// scheduler ticks compare them instead of rebuilding derived snapshots.
     pub(crate) fn generations(&self) -> BTreeMap<String, Counter> {
@@ -1619,6 +1680,28 @@ impl Store {
         if self.frozen.is_some() {
             return None;
         }
+        self.probe()?.stamp_of(names)
+    }
+
+    /// `stamp_of` without the Store: for checks that must not wait on the
+    /// Store lock. `None` for a frozen copy.
+    pub(crate) fn probe(&self) -> Option<StampProbe> {
+        self.frozen.is_none().then(|| StampProbe {
+            root: self.root.clone(),
+            counters: self.counters.clone(),
+        })
+    }
+}
+
+/// See `Store::probe`.
+#[derive(Debug, Clone)]
+pub(crate) struct StampProbe {
+    root: PathBuf,
+    counters: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Counter>>>,
+}
+
+impl StampProbe {
+    pub(crate) fn stamp_of(&self, names: &[&str]) -> Option<FileStamp> {
         let writes = {
             let counters = self.counters.lock().ok()?;
             names
@@ -1643,7 +1726,9 @@ impl Store {
         }
         Some(FileStamp { writes, files })
     }
+}
 
+impl Store {
     /// Records a transition in `name` that its write alone did not signal.
     pub(crate) fn wake_file(&self, name: &str) {
         if let Ok(mut counters) = self.counters.lock() {

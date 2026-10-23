@@ -114,7 +114,7 @@ pub(super) fn discard(store: &Store, items: &BTreeSet<String>) -> Result<(), Str
 pub(super) fn refresh(store: &Store) -> Result<(), String> {
     guard(store)?;
     let state = store.load_queue_state()?;
-    let reviews = store.review_evidence()?;
+    let reviews = store.shared_evidence()?;
     let publications = store.load_publications()?;
     let follows = store.load_follow_ups()?;
     let actions = store.load_actions()?;
@@ -135,7 +135,7 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             conversations: 0,
         });
     }
-    for run in &reviews {
+    for run in reviews.iter() {
         let id = crate::queue::item_id(&run.job);
         add(&mut parts, id.clone(), run)?;
         if let Some(row) = rows.get_mut(&id) {
@@ -417,7 +417,7 @@ pub fn detail(store: &Store, destination: Detail) -> Result<DetailResult, String
         });
     }
     let jobs = store.load_queue()?;
-    let reviews = store.review_evidence()?;
+    let reviews = store.shared_evidence()?;
     let follows = store.load_follow_ups()?;
     let actions = store.load_actions()?;
     let evidence = match &destination {

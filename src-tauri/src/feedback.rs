@@ -767,7 +767,7 @@ pub(crate) fn publication_gate_with(
 
 pub fn views(store: &Store, job: &QueueJob) -> Result<Vec<View>, String> {
     let ledger = store.load_feedback()?;
-    let reviews = store.review_evidence()?;
+    let reviews = store.shared_evidence()?;
     let replies = store.load_follow_ups()?;
     let settings = store.load_settings()?;
     let publications = store.load_publications()?;

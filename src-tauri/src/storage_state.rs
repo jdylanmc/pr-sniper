@@ -280,6 +280,22 @@ impl Store {
     /// Publication records retain their immutable originating review even if an
     /// older queue/review file is absent. Reading evidence never rewrites history.
     pub fn review_evidence(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
+        Ok(self.shared_evidence()?.as_ref().clone())
+    }
+
+    /// `review_evidence`, built once per version of its files and shared.
+    pub(crate) fn shared_evidence(
+        &self,
+    ) -> Result<std::sync::Arc<Vec<crate::review::ReviewRun>>, String> {
+        crate::retention::guard(self)?;
+        self.cached(
+            "review-evidence",
+            &["reviews.json", "publications.json", "follow-ups.json"],
+            || self.build_evidence(),
+        )
+    }
+
+    fn build_evidence(&self) -> Result<Vec<crate::review::ReviewRun>, String> {
         let reviews = self.load_reviews()?;
         let mut ids: std::collections::HashSet<_> =
             reviews.iter().map(|r| r.operation.id.clone()).collect();

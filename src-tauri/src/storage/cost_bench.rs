@@ -19,6 +19,8 @@ const CONTEXTS: usize = 152;
 const PUBLICATIONS: usize = 174;
 const OPERATIONS: usize = 4082;
 const NOW: i64 = 1_800_000_000;
+/// The panel refreshes its queue, notification and automation views every 5 s.
+const POLL_SECONDS: u64 = 5;
 
 #[cfg(target_os = "macos")]
 mod usage {
@@ -107,7 +109,7 @@ pub(crate) fn live_profile(store: &Store) {
                     format!("{}{}", index % SELECTIONS, "q".repeat(12_000));
                 run.feedback_context =
                     Some(serde_json::from_value(contexts[index % CONTEXTS].clone()).unwrap());
-                if index % 340 == 0 {
+                if index % 500 == 0 {
                     run.operation.state = OperationState::Running;
                 }
                 reviews.push(run);
@@ -118,6 +120,7 @@ pub(crate) fn live_profile(store: &Store) {
     queue.next_enqueue_order = (PRS + 1) * 1000;
     let publications: Vec<_> = reviews
         .iter()
+        .filter(|run| run.operation.state == OperationState::Completed)
         .take(PUBLICATIONS)
         .map(|run| {
             let mut publication =
@@ -151,6 +154,8 @@ pub(crate) fn live_profile(store: &Store) {
 
 #[derive(Default, Debug)]
 struct Load {
+    payload: usize,
+    gates: usize,
     saves: usize,
     snapshots: usize,
     ticks: usize,
@@ -181,7 +186,8 @@ fn live_size_progress_and_polling_cost() {
     // Warm start: the app has already loaded once when the panel opens.
     {
         let store = store.lock().unwrap();
-        crate::review::restore(&store).unwrap();
+        store.load_reviews().unwrap();
+        crate::queue::snapshot(&store, vec![]).unwrap();
         store.take_state_reads();
         store.take_state_writes();
     }
@@ -208,30 +214,59 @@ fn live_size_progress_and_polling_cost() {
             while !stop.load(Ordering::SeqCst) {
                 {
                     let store = store.lock().unwrap();
+                    // Each of the 3 running reviews reports progress.
                     let mut reviews = store.load_reviews().unwrap();
                     let running = reviews
                         .iter_mut()
-                        .find(|r| r.operation.state == OperationState::Running)
+                        .filter(|r| r.operation.state == OperationState::Running)
+                        .nth(step % 3)
                         .unwrap();
                     running.phase = format!("Reviewing file {step}");
                     store.save_reviews(&reviews).unwrap();
                 }
                 step += 1;
                 load.lock().unwrap().saves += 1;
-                std::thread::sleep(Duration::from_millis(1500));
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        // Attempt gates: every 100 ms per running review (`monitor_attempt`).
+        scope.spawn(|| {
+            let runs: Vec<_> = store
+                .lock()
+                .unwrap()
+                .load_reviews()
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.operation.state == OperationState::Running)
+                .collect();
+            let validated: Vec<_> = runs
+                .iter()
+                .map(|_| crate::review::ValidatedSelection::default())
+                .collect();
+            while !stop.load(Ordering::SeqCst) {
+                for (run, validated) in runs.iter().zip(&validated) {
+                    let store = store.lock().unwrap();
+                    let _ = crate::review::validate_execution_selection_cached(&store, run, validated);
+                }
+                load.lock().unwrap().gates += runs.len();
+                std::thread::sleep(Duration::from_millis(100));
             }
         });
         scope.spawn(|| {
             while !stop.load(Ordering::SeqCst) {
                 let view = store.lock().unwrap().freeze().unwrap();
-                crate::queue::snapshot(&view, vec![]).unwrap();
+                let snapshot = crate::queue::snapshot(&view, vec![]).unwrap();
+                // What the panel receives over IPC.
+                let payload = serde_json::to_vec(&snapshot).unwrap().len();
+                load.lock().unwrap().payload = payload;
+                drop(snapshot);
                 let view = store.lock().unwrap().freeze().unwrap();
                 crate::notifications::host::view(&view, Err("bench".into())).unwrap();
                 let ai = crate::capacity::Coordinator::default();
                 let view = store.lock().unwrap().freeze().unwrap();
                 ai.snapshot(&view, NOW).unwrap();
                 load.lock().unwrap().snapshots += 1;
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(Duration::from_secs(POLL_SECONDS));
             }
         });
         scope.spawn(|| {
@@ -263,10 +298,29 @@ fn live_size_progress_and_polling_cost() {
     };
     let store = store.into_inner().unwrap();
     let reads = store.take_state_reads();
+    let writes = store.take_state_writes();
+    eprintln!(
+        "state writes per minute: {:?}",
+        writes
+            .iter()
+            .map(|(k, v)| (k.as_str(), (*v as f64 / minutes).round()))
+            .collect::<Vec<_>>()
+    );
     let parses = store.take_parses();
     let heavy = |name: &str| *reads.get(name).unwrap_or(&0) as f64 / minutes;
     eprintln!("load: {:?} over {elapsed:.0} s", load.into_inner().unwrap());
+    let mut windows: Vec<f64> = cpu.chunks(5).map(|w| w.iter().sum::<f64>() / w.len() as f64).collect();
+    windows.sort_by(f64::total_cmp);
+    let pick = |q: f64| windows[((windows.len() - 1) as f64 * q).round() as usize];
     eprintln!("cpu: average {average:.1}%, peak {peak:.1}% (1 s samples)");
+    eprintln!(
+        "cpu per 5 s window: p50 {:.1}%, p95 {:.1}%, max {:.1}%",
+        pick(0.5),
+        pick(0.95),
+        pick(1.0)
+    );
+    let series: Vec<u64> = samples.iter().step_by(60).map(|s| s.1 / (1 << 20)).collect();
+    eprintln!("resident MB per minute: {series:?}");
     eprintln!(
         "disk: {:.1} MB written per minute (OS counter), {:.1} MB per minute through Store",
         (end.3 - base.3) as f64 / minutes / 1e6,

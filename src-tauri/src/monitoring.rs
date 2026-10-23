@@ -631,6 +631,25 @@ pub struct MonitoringState {
     pub admission_upgrade_done: bool,
 }
 
+/// Retired poll operations kept for diagnosis; nothing reads them back, so
+/// only the most recent are kept instead of growing every saved poll.
+pub(crate) const ARCHIVED_OPERATIONS: usize = 64;
+
+pub(crate) fn archive(operations: &mut BTreeMap<String, JobOperation>, operation: JobOperation) {
+    operations.insert(operation.id.clone(), operation);
+    let excess = operations.len().saturating_sub(ARCHIVED_OPERATIONS);
+    if excess > 0 {
+        let mut ids: Vec<_> = operations
+            .iter()
+            .map(|(id, o)| (o.initial_attempt_at, id.clone()))
+            .collect();
+        ids.sort_unstable();
+        for (_, id) in ids.into_iter().take(excess) {
+            operations.remove(&id);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivationMode {
@@ -1885,9 +1904,7 @@ impl Monitor {
             })
             .collect();
         for operation in removed_operations {
-            self.state
-                .operations
-                .insert(operation.id.clone(), operation);
+            archive(&mut self.state.operations, operation);
         }
         self.state
             .health
@@ -1913,9 +1930,7 @@ impl Monitor {
                     operation.next_attempt_at = None;
                     operation.failure = Some(OperationFailure::Permanent);
                 }
-                self.state
-                    .operations
-                    .insert(operation.id.clone(), operation);
+                archive(&mut self.state.operations, operation);
             }
         }
 
@@ -2042,9 +2057,7 @@ impl Monitor {
                     .is_some_and(|o| o.state == OperationState::Failed)
                 {
                     if let Some(operation) = health.operation.take() {
-                        self.state
-                            .operations
-                            .insert(operation.id.clone(), operation);
+                        archive(&mut self.state.operations, operation);
                     }
                 }
             }
@@ -2067,9 +2080,7 @@ impl Monitor {
                 });
             if restart {
                 if let Some(operation) = health.operation.as_mut() {
-                    self.state
-                        .operations
-                        .insert(operation.id.clone(), operation.clone());
+                    archive(&mut self.state.operations, operation.clone());
                     operation.id = uuid::Uuid::new_v4().to_string();
                     operation.requeue_fresh(now);
                 }
@@ -2572,9 +2583,7 @@ impl Monitor {
             })
             .cloned()
         {
-            self.state
-                .operations
-                .insert(operation.id.clone(), operation);
+            archive(&mut self.state.operations, operation);
         }
         let retrying = self
             .state
@@ -2644,9 +2653,7 @@ impl Monitor {
         health.next_run = now;
         health.schedule_available = true;
         health.scan_pending = true;
-        self.state
-            .operations
-            .insert(previous_operation.id.clone(), previous_operation);
+        archive(&mut self.state.operations, previous_operation);
         if let Err(error) = store.save_monitoring_state(&self.state) {
             self.state = previous;
             return Err(error);

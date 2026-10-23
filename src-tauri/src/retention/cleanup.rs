@@ -21,13 +21,18 @@ struct State {
     pr_states: crate::pr_state::PrStates,
 }
 
-fn read<T: serde::de::DeserializeOwned + Default>(store: &Store, name: &str) -> Result<T, String> {
-    match store.read_state(name) {
+/// Shares the decode cache entry of the typed loader for `name`.
+fn read<T: serde::de::DeserializeOwned + Default + Clone + Send + Sync + 'static>(
+    store: &Store,
+    name: &'static str,
+) -> Result<T, String> {
+    let decoded = store.cached(name, &[name], || match store.read_state(name) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| format!("Cannot recover cleanup: invalid {name}.")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(_) => Err(format!("Cannot recover cleanup: unreadable {name}.")),
-    }
+    })?;
+    Ok(decoded.as_ref().clone())
 }
 
 impl State {
@@ -43,7 +48,13 @@ impl State {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => QueueState::default(),
             Err(_) => return Err("Cannot recover cleanup: unreadable queue.json.".into()),
         };
-        let notifications: Notifications = read(store, "notifications.json")?;
+        // Validated below; never share an unvalidated ledger with the loader.
+        let notifications: Notifications = match store.read_state("notifications.json") {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Cannot recover cleanup: invalid notifications.json.".to_string())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Notifications::default(),
+            Err(_) => return Err("Cannot recover cleanup: unreadable notifications.json.".into()),
+        };
         notifications.validate()?;
         Ok(Self {
             queue,
@@ -423,6 +434,24 @@ pub fn maintain_where(
     workers_quiescent: bool,
     select: impl Fn(&TrackedPullRequest) -> bool,
 ) -> Result<usize, String> {
+    clean(store, workers_quiescent, select, true, usize::MAX)
+}
+
+/// Automatic retention: drops detail of PRs observed closed or merged, at
+/// most `limit` per pass so a large backlog is spread over passes. A PR whose
+/// provenance needs repair is skipped (kept), not reported every pass; human
+/// **Clean** still reports it.
+pub fn prune_terminal(store: &Store, workers_quiescent: bool, limit: usize) -> Result<usize, String> {
+    clean(store, workers_quiescent, |_| true, false, limit)
+}
+
+fn clean(
+    store: &Store,
+    workers_quiescent: bool,
+    select: impl Fn(&TrackedPullRequest) -> bool,
+    strict: bool,
+    limit: usize,
+) -> Result<usize, String> {
     if !workers_quiescent {
         return Ok(0);
     }
@@ -438,6 +467,9 @@ pub fn maintain_where(
     let scopes = store.load_queue_state()?.tracked;
     let mut count = 0;
     for scope in scopes {
+        if count >= limit {
+            break;
+        }
         if !scope.terminal_observed || scope.lifecycle == Lifecycle::Open || !select(&scope) {
             continue;
         }
@@ -478,6 +510,9 @@ pub fn maintain_where(
                     _ => false,
                 })
         {
+            if !strict {
+                continue;
+            }
             return Err("Terminal cleanup needs the missing owned-publication provenance. Detail was retained; repair the original receipt.".into());
         }
         let Some(mut receipt) = state.receipt(&scope)? else {

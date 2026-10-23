@@ -2,7 +2,11 @@ mod cleanup;
 mod paging;
 mod reopening;
 
-pub use cleanup::{maintain, maintain_where, recover};
+pub use cleanup::{maintain, maintain_where, prune_terminal, recover};
+
+/// Closed or merged PRs pruned per scheduled maintenance pass; each pass
+/// writes, so the next tick continues a backlog.
+pub const PRUNE_PER_PASS: usize = 2;
 pub use paging::{detail, page, DetailResult, Page, PageRequest};
 pub(crate) use reopening::contexts_checked as retained_contexts_checked;
 pub(crate) use reopening::known_key;

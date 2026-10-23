@@ -1287,8 +1287,8 @@ async fn result_detail(
     .map_err(|_| "Result detail query failed.".to_string())?
 }
 
-/// Journal roll-forward runs on every tick. Deleting terminal PR detail
-/// happens only when a human asks (`clean`): Reviewed keeps those PRs until then.
+/// Journal roll-forward, queue compaction and automatic pruning of closed and
+/// merged PRs (bounded per pass); `clean` is the human-selected Clean.
 fn retention_maintenance(
     app: &tauri::AppHandle,
     clean: Option<&dyn Fn(&monitoring::TrackedPullRequest) -> bool>,
@@ -1330,11 +1330,14 @@ fn retention_maintenance(
     if compact && clean.is_none() {
         monitoring::compact_saved_queue(&store)?;
     }
+    // Scheduled passes prune closed and merged PRs automatically; Clean
+    // selects them explicitly. Active work on them is stopped first.
+    if !host.ai.settle_terminal(&store)? {
+        return Ok(0);
+    }
     match clean {
-        Some(select) if host.ai.settle_terminal(&store)? => {
-            retention::maintain_where(&store, true, select)
-        }
-        _ => Ok(0),
+        Some(select) => retention::maintain_where(&store, true, select),
+        None => retention::prune_terminal(&store, true, retention::PRUNE_PER_PASS),
     }
 }
 

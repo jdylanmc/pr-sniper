@@ -38,6 +38,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   state is decoded once per change and shared by the panel's snapshots, and
   the automation snapshot no longer holds the storage lock. Older review files
   migrate on the next save.
+- Closed and merged PRs are pruned automatically (reviews, publications,
+  conversations, actions, notices, queue entries), a few per pass once their
+  work settles; **Clean** still prunes on demand. Retired poll operations are
+  capped at 64 instead of growing with every poll.
 - The primary may resolve its own finding when the PR author replied won't-fix and
   the primary accepts that rationale (`author_wont_fix`). The host verifies the
   reply is the PR author's latest by provider identity, that no one else spoke
