@@ -107,18 +107,46 @@ function setup(command, args = {}) {
 }
 const owned = new Map();
 
+// Windows PowerShell 5.1 plus a cold WMI provider can take >15 s to answer the
+// first Get-CimInstance on a fresh hosted VM. Prefer PowerShell 7 and
+// Get-Process (no WMI), and give a cold start a bounded, named budget.
+let windowsShell;
+function windowsProcesses() {
+  const script =
+    "$ErrorActionPreference='Stop'; @(" +
+    "Get-Process | Where-Object { try { $_.Path -eq $env:PR_SNIPER_ACCEPTANCE_EXECUTABLE } catch { $false } } " +
+    "| ForEach-Object { [pscustomobject]@{ pid=[int]$_.Id; born=$_.StartTime.ToUniversalTime().ToString('o') } }) | ConvertTo-Json -Compress";
+  const env = { ...process.env, PR_SNIPER_ACCEPTANCE_EXECUTABLE: executable };
+  for (const shell of windowsShell
+    ? [windowsShell]
+    : ["pwsh.exe", "powershell.exe"]) {
+    const started = Date.now();
+    const result = spawnSync(
+      shell,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 60_000, env, windowsHide: true },
+    );
+    if (result.error?.code === "ENOENT" && !windowsShell) continue;
+    if (result.error) {
+      throw new Error(
+        `${shell} process enumeration failed after ${Date.now() - started} ms (60000 ms budget): ${result.error.message}`,
+      );
+    }
+    assert.equal(
+      result.status,
+      0,
+      `${shell} process enumeration failed (${result.status}): ${result.stderr}`,
+    );
+    windowsShell = shell;
+    return result.stdout.trim();
+  }
+  throw new Error("Neither pwsh.exe nor powershell.exe is available");
+}
+
 function observedProcesses() {
   if (!executable) return [];
   if (process.platform === "win32") {
-    const script =
-      "$ErrorActionPreference='Stop'; @(" +
-      "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:PR_SNIPER_ACCEPTANCE_EXECUTABLE } " +
-      "| ForEach-Object { [pscustomobject]@{ pid=[int]$_.ProcessId; born=$_.CreationDate.ToUniversalTime().ToString('o') } }) | ConvertTo-Json -Compress";
-    const json = run(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { env: { ...process.env, PR_SNIPER_ACCEPTANCE_EXECUTABLE: executable } },
-    ).trim();
+    const json = windowsProcesses();
     const result = json ? JSON.parse(json) : [];
     return Array.isArray(result) ? result : [result];
   }
