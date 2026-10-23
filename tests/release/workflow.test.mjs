@@ -306,6 +306,18 @@ test("every PR workflow cancels superseded runs without cancelling non-PR runs",
   assert.ok(names.size > 0, "No PR-triggered workflows inspected");
 });
 
+test("Site tests run in the Playwright image matching @playwright/test", () => {
+  const job = parse(readFileSync(".github/workflows/pages.yml", "utf8")).jobs
+    .test;
+  const { devDependencies } = JSON.parse(readFileSync("package.json", "utf8"));
+  assert.equal(
+    job.container.image,
+    `mcr.microsoft.com/playwright:v${devDependencies["@playwright/test"]}-noble`,
+  );
+  const commands = job.steps.map((step) => step.run ?? "").join("\n");
+  assert.doesNotMatch(commands, /playwright install|apt-get|sudo /);
+});
+
 test("Windows browser shards keep the full suite and bounded per-shard headroom", () => {
   const job = windows.jobs["windows-browser"];
   assert.equal(job.name, "windows-browser (${{ matrix.shard }}/3)");
