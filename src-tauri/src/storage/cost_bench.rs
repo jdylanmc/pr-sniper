@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const PRS: u64 = 460;
-const PASSES: u64 = 3;
+const PRS: u64 = 96;
+const OPEN_PRS: u64 = 10;
 const SELECTIONS: usize = 31;
 const CONTEXTS: usize = 152;
 const PUBLICATIONS: usize = 174;
@@ -52,6 +52,13 @@ mod usage {
     extern "C" {
         fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfoV2) -> i32;
         fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
+        fn clock_gettime_nsec_np(clock: u32) -> u64;
+    }
+
+    /// CPU time of the calling thread (ns).
+    pub(super) fn thread_cpu() -> u64 {
+        // SAFETY: plain call; 16 is CLOCK_THREAD_CPUTIME_ID on macOS.
+        unsafe { clock_gettime_nsec_np(16) }
     }
 
     /// (CPU ns, resident bytes, footprint bytes, disk bytes written).
@@ -92,35 +99,66 @@ pub(crate) fn live_profile(store: &Store) {
             })).collect::<Vec<_>>())
         })
         .collect();
+    // Live shape: 10 open PRs hold about half the runs; the rest belong to
+    // PRs observed merged or closed.
     for number in 1..=PRS {
-        for pass in 1..=PASSES {
-            let waiting = if pass == PASSES {
-                WAITING_HUMAN_START
-            } else {
-                WAITING_SUPERSEDED
+        let open = number <= OPEN_PRS;
+        let passes = if open { 66 } else { 8 };
+        for pass in 1..=passes {
+            let waiting = match (open, pass == passes) {
+                (false, _) => crate::monitoring::WAITING_MERGED,
+                (true, true) => WAITING_HUMAN_START,
+                (true, false) => WAITING_SUPERSEDED,
             };
             let entry = job(number, pass, waiting);
             let index = reviews.len();
-            if index < 1376 {
-                let mut run = review(&settings, &job(number, pass, WAITING_HUMAN_START), "p");
+            let mut run = review(&settings, &job(number, pass, WAITING_HUMAN_START), "p");
+            if open && number <= 3 && pass == passes {
+                // Running with today's configuration: its attempt gate passes.
+                run.operation.state = OperationState::Running;
+            } else {
                 run.selection.doctrine =
                     Some(format!("{}{}", index % SELECTIONS, "d".repeat(9800)));
                 run.selection.agent.prompt =
                     format!("{}{}", index % SELECTIONS, "q".repeat(12_000));
                 run.feedback_context =
                     Some(serde_json::from_value(contexts[index % CONTEXTS].clone()).unwrap());
-                if index % 500 == 0 {
-                    run.operation.state = OperationState::Running;
-                }
-                reviews.push(run);
             }
+            reviews.push(run);
             queue.jobs.push(entry);
         }
+        let last = queue.jobs.last().unwrap().clone();
+        queue.tracked.push(crate::monitoring::TrackedPullRequest {
+            terminal_observed: !open,
+            provider: "github".into(),
+            configuration_id: last.configuration_id.clone(),
+            account_id: "22".into(),
+            repository_id: "100".into(),
+            pull_request_id: number.to_string(),
+            number,
+            head_sha: last.head_sha,
+            lifecycle: if open {
+                crate::github::metadata::Lifecycle::Open
+            } else {
+                crate::github::metadata::Lifecycle::Merged
+            },
+            iteration_id: format!("iteration-{number}"),
+            item_id: format!("iteration-{number}"),
+            iteration: 1,
+            admission: crate::monitoring::Admission {
+                watched_author: true,
+                all_authors: false,
+                requested_reviewer: false,
+            },
+            admitted_at: NOW,
+            observed_at: NOW,
+        });
     }
     queue.next_enqueue_order = (PRS + 1) * 1000;
     let publications: Vec<_> = reviews
         .iter()
         .filter(|run| run.operation.state == OperationState::Completed)
+        .step_by(7)
         .take(PUBLICATIONS)
         .map(|run| {
             let mut publication =
@@ -154,6 +192,8 @@ pub(crate) fn live_profile(store: &Store) {
 
 #[derive(Default, Debug)]
 struct Load {
+    /// Wall time spent per event kind (ms).
+    spent: std::collections::BTreeMap<&'static str, u128>,
     payload: usize,
     gates: usize,
     saves: usize,
@@ -183,13 +223,46 @@ fn live_size_progress_and_polling_cost() {
         size("monitoring.json"),
         size("queue.json")
     );
+    let footprint = || -> u64 {
+        Store::saved_files(&root.path().join("state"))
+            .iter()
+            .map(|file| std::fs::metadata(file).unwrap().len())
+            .sum()
+    };
+    eprintln!("footprint before: {} B", footprint());
     // Warm start: the app has already loaded once when the panel opens.
     {
         let store = store.lock().unwrap();
+        let started = Instant::now();
+        let mut pruned = 0;
+        loop {
+            // PRUNE: startup maintenance passes until the backlog is gone.
+            let count = crate::retention::prune_terminal(&store, true, 2).unwrap();
+            pruned += count;
+            if count == 0 {
+                break;
+            }
+        }
+        // Progress first written by this process starts its coalescing window.
+        let mut reviews = store.load_reviews().unwrap();
+        if let Some(run) = reviews
+            .iter_mut()
+            .find(|r| r.operation.state == OperationState::Running)
+        {
+            run.phase = "Starting".into();
+        }
+        store.save_reviews(&reviews).unwrap();
+        eprintln!(
+            "pruned {pruned} closed or merged PRs in {:?}; footprint after: {} B",
+            started.elapsed(),
+            footprint()
+        );
         store.load_reviews().unwrap();
         crate::queue::snapshot(&store, vec![]).unwrap();
         store.take_state_reads();
         store.take_state_writes();
+        store.take_bytes_written();
+        store.take_parses();
     }
     let stop = AtomicBool::new(false);
     let load = Mutex::new(Load::default());
@@ -212,6 +285,7 @@ fn live_size_progress_and_polling_cost() {
         scope.spawn(|| {
             let mut step = 0usize;
             while !stop.load(Ordering::SeqCst) {
+                let cpu = usage::thread_cpu();
                 {
                     let store = store.lock().unwrap();
                     // Each of the 3 running reviews reports progress.
@@ -225,7 +299,11 @@ fn live_size_progress_and_polling_cost() {
                     store.save_reviews(&reviews).unwrap();
                 }
                 step += 1;
-                load.lock().unwrap().saves += 1;
+                let mut load = load.lock().unwrap();
+                load.saves += 1;
+                *load.spent.entry("progress save").or_default() +=
+                    (usage::thread_cpu() - cpu) as u128;
+                drop(load);
                 std::thread::sleep(Duration::from_millis(500));
             }
         });
@@ -244,21 +322,33 @@ fn live_size_progress_and_polling_cost() {
                 .map(|_| crate::review::ValidatedSelection::default())
                 .collect();
             while !stop.load(Ordering::SeqCst) {
+                let cpu = usage::thread_cpu();
                 for (run, validated) in runs.iter().zip(&validated) {
-                    let store = store.lock().unwrap();
-                    let _ =
-                        crate::review::validate_execution_selection_cached(&store, run, validated);
+                    // As `review::host::local_gate`: no Store lock while
+                    // nothing it validated has changed.
+                    if !validated.unchanged() {
+                        let store = store.lock().unwrap();
+                        crate::review::validate_execution_selection_cached(&store, run, validated)
+                            .unwrap();
+                    }
                 }
-                load.lock().unwrap().gates += runs.len();
+                let mut load = load.lock().unwrap();
+                load.gates += runs.len();
+                *load.spent.entry("tool-callback gate").or_default() +=
+                    (usage::thread_cpu() - cpu) as u128;
+                drop(load);
                 std::thread::sleep(Duration::from_millis(100));
             }
         });
         scope.spawn(|| {
             while !stop.load(Ordering::SeqCst) {
+                let cpu = usage::thread_cpu();
                 let view = store.lock().unwrap().freeze().unwrap();
                 let snapshot = crate::queue::snapshot(&view, vec![]).unwrap();
                 // What the panel receives over IPC.
-                let payload = serde_json::to_vec(&snapshot).unwrap().len();
+                let payload = serde_json::to_vec(&crate::review::interned(&snapshot).unwrap())
+                    .unwrap()
+                    .len();
                 load.lock().unwrap().payload = payload;
                 drop(snapshot);
                 let view = store.lock().unwrap().freeze().unwrap();
@@ -266,7 +356,11 @@ fn live_size_progress_and_polling_cost() {
                 let ai = crate::capacity::Coordinator::default();
                 let view = store.lock().unwrap().freeze().unwrap();
                 ai.snapshot(&view, NOW).unwrap();
-                load.lock().unwrap().snapshots += 1;
+                let mut load = load.lock().unwrap();
+                load.snapshots += 1;
+                *load.spent.entry("UI snapshot").or_default() +=
+                    (usage::thread_cpu() - cpu) as u128;
+                drop(load);
                 std::thread::sleep(Duration::from_secs(POLL_SECONDS));
             }
         });
@@ -274,10 +368,20 @@ fn live_size_progress_and_polling_cost() {
         // progress saves wake no other coordinator (see `wake`).
         scope.spawn(|| {
             while !stop.load(Ordering::SeqCst) {
+                let cpu = usage::thread_cpu();
+                {
+                    let store = store.lock().unwrap();
+                    // Scheduler tick: deferred progress becomes due.
+                    let _ = store.flush_progress(false);
+                }
                 let view = store.lock().unwrap().freeze().unwrap();
                 let snapshot = crate::queue::snapshot(&view, vec![]).unwrap();
                 crate::notifications::observe_queue(&view, &snapshot, NOW).ok();
-                load.lock().unwrap().ticks += 1;
+                let mut load = load.lock().unwrap();
+                load.ticks += 1;
+                *load.spent.entry("scheduler projection").or_default() +=
+                    (usage::thread_cpu() - cpu) as u128;
+                drop(load);
                 std::thread::sleep(Duration::from_secs(5));
             }
         });
@@ -310,7 +414,15 @@ fn live_size_progress_and_polling_cost() {
     );
     let parses = store.take_parses();
     let heavy = |name: &str| *reads.get(name).unwrap_or(&0) as f64 / minutes;
-    eprintln!("load: {:?} over {elapsed:.0} s", load.into_inner().unwrap());
+    let load = load.into_inner().unwrap();
+    eprintln!(
+        "cpu ms per minute by event: {:?}",
+        load.spent
+            .iter()
+            .map(|(k, v)| (*k, (*v as f64 / 1e6 / minutes).round()))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("load: {load:?} over {elapsed:.0} s");
     let mut windows: Vec<f64> = cpu
         .chunks(5)
         .map(|w| w.iter().sum::<f64>() / w.len() as f64)

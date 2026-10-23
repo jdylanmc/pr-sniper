@@ -240,9 +240,24 @@ pub(crate) fn reject_cleaned(
     jobs: impl IntoIterator<Item = QueueJob>,
 ) -> Result<(), String> {
     let ledger = shared(store)?;
-    let receipts = &ledger.receipts;
+    // Every match shares the PR's repository and number; index by them so a
+    // save is linear in its jobs, not jobs x receipts.
+    let mut receipts: std::collections::HashMap<(&str, &str), Vec<&Receipt>> =
+        std::collections::HashMap::new();
+    for receipt in &ledger.receipts {
+        receipts
+            .entry((
+                receipt.scope.repository_id.as_str(),
+                receipt.scope.pull_request_id.as_str(),
+            ))
+            .or_default()
+            .push(receipt);
+    }
     for job in jobs {
-        if receipts.iter().any(|r| {
+        let candidates = receipts
+            .get(&(job.repository_id.as_str(), job.pull_request_id.as_str()))
+            .map_or(&[][..], Vec::as_slice);
+        if candidates.iter().any(|r| {
             Binding::tracked(&r.scope).matches(&job)
                 && (r.items.contains(&crate::queue::item_id(&job))
                     || job

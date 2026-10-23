@@ -111,8 +111,41 @@ pub(super) fn discard(store: &Store, items: &BTreeSet<String>) -> Result<(), Str
     Ok(())
 }
 
+/// Activity hashes of large records from the previous refresh, reused when
+/// the record is unchanged (equal values serialize to equal bytes).
+type Hashes<T> = std::collections::HashMap<String, (T, String)>;
+
+fn add_known<T: Serialize + PartialEq + Clone>(
+    known: &Hashes<T>,
+    next: &mut Hashes<T>,
+    parts: &mut BTreeMap<String, BTreeSet<String>>,
+    id: String,
+    key: &str,
+    value: &T,
+) -> Result<(), String> {
+    let digest = match known.get(key).filter(|(old, _)| old == value) {
+        Some((_, digest)) => digest.clone(),
+        None => hash(&serde_json::to_string(value).map_err(|_| "Cannot encode result activity.")?),
+    };
+    next.insert(key.to_string(), (value.clone(), digest.clone()));
+    parts.entry(id).or_default().insert(digest);
+    Ok(())
+}
+
+#[derive(Default)]
+struct Known {
+    runs: Hashes<crate::review::ReviewRun>,
+    publications: Hashes<crate::publication::Publication>,
+}
+
 pub(super) fn refresh(store: &Store) -> Result<(), String> {
     guard(store)?;
+    let known: std::sync::Arc<std::sync::Mutex<Known>> =
+        store.cached("result-index-hashes", &[], || {
+            Ok::<_, String>(Default::default())
+        })?;
+    let mut known = known.lock().map_err(|_| "Result index unavailable.")?;
+    let mut next = Known::default();
     let state = store.load_queue_state()?;
     let reviews = store.shared_evidence()?;
     let publications = store.load_publications()?;
@@ -135,9 +168,17 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             conversations: 0,
         });
     }
-    for run in reviews.iter() {
+    for (index, run) in reviews.iter().enumerate() {
         let id = crate::queue::item_id(&run.job);
-        add(&mut parts, id.clone(), run)?;
+        let key = format!("{index}:{}", run.operation.id);
+        add_known(
+            &known.runs,
+            &mut next.runs,
+            &mut parts,
+            id.clone(),
+            &key,
+            run,
+        )?;
         if let Some(row) = rows.get_mut(&id) {
             row.review_attempts += 1;
             if run.operation.state == OperationState::Completed {
@@ -148,9 +189,18 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             }
         }
     }
-    for p in publications {
-        add(&mut parts, crate::queue::item_id(&p.review.job), &p)?;
+    for (index, p) in publications.iter().enumerate() {
+        let key = format!("{index}:{}", p.id);
+        add_known(
+            &known.publications,
+            &mut next.publications,
+            &mut parts,
+            crate::queue::item_id(&p.review.job),
+            &key,
+            p,
+        )?;
     }
+    *known = next;
     for f in &follows {
         let id = crate::queue::item_id(&f.context.job);
         let intent = feedback
