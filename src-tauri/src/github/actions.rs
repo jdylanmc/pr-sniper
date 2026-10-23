@@ -79,6 +79,10 @@ pub struct Observation {
     pub merge_commit: Option<String>,
 }
 
+/// Merge blocker when branch protection needs an up-to-date branch.
+pub const BEHIND_BASE: &str =
+    "Branch is behind base; the author must update it. PR Sniper never updates branches.";
+
 impl Observation {
     pub fn common_blocker(&self) -> Option<String> {
         if self.state != "OPEN" {
@@ -158,6 +162,8 @@ impl Observation {
             Action::Merge if self.checks.as_deref() != Some("SUCCESS") => {
                 Some("Current-head CI has not been verified green.".into())
             }
+            // PR Sniper never updates a branch; only the author can.
+            Action::Merge if self.merge_state == "BEHIND" => Some(BEHIND_BASE.into()),
             Action::Merge if self.mergeable != "MERGEABLE" || self.merge_state != "CLEAN" => {
                 Some(format!(
                     "Provider merge readiness is {}/{}; no bypass is permitted.",

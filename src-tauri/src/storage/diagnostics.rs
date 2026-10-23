@@ -315,7 +315,8 @@ impl ToolName {
             | "approve_and_merge"
             | "panic_exit"
             | "submit_report"
-            | "submit_verdict" => Self::Exit,
+            | "submit_verdict"
+            | "lgtm" => Self::Exit,
             _ => Self::NotPermitted,
         }
     }

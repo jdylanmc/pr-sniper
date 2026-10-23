@@ -5,7 +5,33 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- `lgtm` sign-off exit for the primary: it accounts for every own open thread
+  (`fixed` with evidence, `author_wont_fix`, `withdrawn` or `no_longer_applies`
+  on a changed head), dismisses every teammate finding with a rationale,
+  replies each disposition on and resolves those threads, then hands off,
+  approves or approves and merges per the assignment's authority. An
+  unaccounted thread, a finding that still applies or an undismissed teammate
+  finding refuses it, listing the ids. Refused while another reviewer's thread
+  is open, CI is red or pending, or the PR is draft; approve/merge wait for the
+  resolutions and re-check fresh state.
+- A branch behind its base or with conflicts no longer blocks approval: the
+  sign-off approves, shows **Approved — merge pending (behind base/conflicts)**
+  and keeps monitoring; the merge waits for the author to update the branch.
+  PR Sniper never updates a branch.
+
 ### Fixed
+
+- `fixed` was refused ("evidence actually read in this attempt") for a ref with
+  no line or an `end_line` past the last line, even after the head file was
+  read, and the error never named the thread or ref. Whole-file refs count once
+  every page was served, past-end ranges run to the end, refusals list each
+  unserved ref with its reason, and a `verify_fixed` duck call that could not
+  back `fixed` is refused before it is spent.
+- A host marker or signature counts as PR Sniper's only from the acting
+  account; a marked comment from anyone else is no longer skipped when checking
+  the PR author's latest reply.
 
 - The primary may resolve its own finding when the PR author replied won't-fix and
   the primary accepts that rationale (`author_wont_fix`). The host verifies the

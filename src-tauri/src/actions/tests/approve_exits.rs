@@ -708,3 +708,245 @@ fn a_settled_thread_changed_after_the_merge_intent_is_saved_blocks_the_merge() {
         );
     }
 }
+
+fn sign_off(threads: &[&str], action: crate::exits::LgtmAction) -> ExitOutcome {
+    ExitOutcome::Lgtm {
+        comment: "Signed off: every finding is settled.".into(),
+        resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
+        action,
+        dismissed_teammate_findings: vec![],
+    }
+}
+
+#[test]
+fn lgtm_applies_the_assignments_authority() {
+    use crate::exits::LgtmAction;
+    let (_root, store, item) = setup(false, false, sign_off(&[], LgtmAction::Ready), false);
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(
+        store.load_actions().unwrap().finals.is_empty(),
+        "no authority: a local hand-off, nothing to send"
+    );
+    for (action, merge) in [(LgtmAction::Approve, false), (LgtmAction::Merge, true)] {
+        let (_root, store, item) = setup(true, merge, sign_off(&[], action), false);
+        let run = adopted(&store, &item, observed());
+        let approval = run.packet.as_ref().unwrap();
+        assert_eq!(approval.comment, "Signed off: every finding is settled.");
+        assert_eq!(approval.merge, merge);
+        let effect = host::prepare_next_effect(&store, &item, NOW + 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(effect.action, Action::Approve);
+        assert!(effect
+            .body
+            .starts_with("Signed off: every finding is settled."));
+    }
+}
+
+#[test]
+fn lgtm_acts_only_after_its_own_thread_resolutions_complete() {
+    use crate::exit_writes::Phase;
+    let (_root, store, item) = setup(
+        true,
+        true,
+        sign_off(&["T1"], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    let review = store.load_reviews().unwrap().remove(0);
+    let mut write = crate::exit_writes::plan(&review, NOW).unwrap();
+    let save = |write: &crate::exit_writes::ExitWrite| {
+        let mut ledger = store.load_feedback().unwrap();
+        ledger.exit_writes = vec![write.clone()];
+        store.save_feedback(&ledger).unwrap();
+    };
+    save(&write);
+    let run = adopted(&store, &item, observed());
+    assert_eq!(
+        packet::ready(&store, &run, &observed(), Action::Approve).unwrap_err(),
+        packet::PENDING_SIGN_OFF
+    );
+    // Threads resolved, then the merge gate still applies: a partial outcome.
+    write.phase = Phase::Completed;
+    write.consumed = true;
+    save(&write);
+    assert!(packet::ready(&store, &run, &observed(), Action::Approve).is_ok());
+    let mut red = observed();
+    red.checks = Some("FAILURE".into());
+    assert!(packet::ready(&store, &run, &red, Action::Merge)
+        .unwrap_err()
+        .contains("CI"));
+    // Stopped resolutions never send the approval or merge.
+    write.phase = Phase::Tossed;
+    save(&write);
+    assert!(packet::ready(&store, &run, &observed(), Action::Approve)
+        .unwrap_err()
+        .contains("stopped"));
+}
+
+fn behind(o: &mut Observation) {
+    o.merge_state = "BEHIND".into();
+}
+
+/// Conflicts, and GitHub ran no checks at all for the head.
+fn conflicted(o: &mut Observation) {
+    o.mergeable = "CONFLICTING".into();
+    o.merge_state = "DIRTY".into();
+    o.checks = None;
+    o.check_contexts.clear();
+}
+
+#[test]
+fn lgtm_approves_a_branch_only_the_author_can_fix_and_leaves_the_merge_pending() {
+    use crate::{exits::gates::MergeBlock, queue::Progress};
+    type Case = (MergeBlock, fn(&mut Observation), &'static str, Progress);
+    let cases: [Case; 2] = [
+        (
+            MergeBlock::BehindBase,
+            behind,
+            "behind base",
+            Progress::MergePendingBehindBase,
+        ),
+        (
+            MergeBlock::Conflicts,
+            conflicted,
+            "conflicts",
+            Progress::MergePendingConflicts,
+        ),
+    ];
+    for (block, change, reason, progress) in cases {
+        let (_root, store, id) = setup(
+            true,
+            true,
+            sign_off(&[], crate::exits::LgtmAction::Merge),
+            false,
+        );
+        let mut current = observed();
+        change(&mut current);
+        adopted(&store, &id, current);
+        let approve = host::prepare_next_effect(&store, &id, NOW + 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(approve.action, Action::Approve, "{reason}");
+        let mut env = env(&store);
+        change(&mut env.wire.0.lock().unwrap().observation);
+        host::execute_action(&mut env, &approve).unwrap();
+        let after = env.wire.0.lock().unwrap().observation.clone();
+        synchronize(&store, &id, Ok(after.clone()), NOW + 22).unwrap();
+        assert!(
+            packet::settle(&store, &id, &after, NOW + 23)
+                .unwrap()
+                .is_empty(),
+            "{reason}: the merge is still wanted"
+        );
+        let run = store.load_actions().unwrap().finals.remove(0);
+        let pending = run.packet.as_ref().unwrap().merge_pending.unwrap();
+        assert_eq!(pending.reason, block);
+        assert_eq!(pending.ci_not_run, block == MergeBlock::Conflicts);
+        // The merge is refused with its reason and never prepared; nothing but the
+        // approval reached GitHub (no branch update).
+        assert!(packet::ready(&store, &run, &after, Action::Merge)
+            .unwrap_err()
+            .to_lowercase()
+            .contains(reason));
+        assert!(host::prepare_next_effect(&store, &id, NOW + 24)
+            .unwrap()
+            .is_none());
+        assert_eq!(env.wire.0.lock().unwrap().writes.len(), 1, "{reason}");
+        let row = item(&store, &id);
+        assert_eq!(row.state, State::Approved, "{reason}");
+        assert_eq!(row.progress, Some(progress));
+        assert!(
+            packet::open(&store.load_actions().unwrap(), &id),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn after_the_author_updates_the_branch_a_fresh_lgtm_approves_the_new_head_and_merges() {
+    let (_root, store, id) = setup(
+        true,
+        true,
+        sign_off(&[], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    let mut current = observed();
+    behind(&mut current);
+    adopted(&store, &id, current);
+    let approve = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    behind(&mut env.wire.0.lock().unwrap().observation);
+    host::execute_action(&mut env, &approve).unwrap();
+    // The author updates the branch: a new head, mergeable.
+    let new_head = "c".repeat(40);
+    let updated = {
+        let mut wire = env.wire.0.lock().unwrap();
+        wire.observation.head = new_head.clone();
+        wire.observation.merge_state = "CLEAN".into();
+        wire.observation.clone()
+    };
+    synchronize(&store, &id, Ok(updated.clone()), NOW + 30).unwrap();
+    assert!(packet::settle(&store, &id, &updated, NOW + 31)
+        .unwrap()
+        .is_empty());
+    assert!(
+        !packet::open(&store.load_actions().unwrap(), &id),
+        "the old head's final is abandoned"
+    );
+    // The new head is a new iteration whose review signs off again.
+    let mut reviews = store.load_reviews().unwrap();
+    let mut second = reviews[0].clone();
+    second.operation.id = "second-lgtm".into();
+    second.job.head_sha = new_head.clone();
+    let work = second.job.work.as_mut().unwrap();
+    work.state_seq = 2;
+    work.iteration += 1;
+    work.iteration_id = "second-iteration".into();
+    work.item_id = "iteration-second-iteration".into();
+    let next = work.item_id.clone();
+    reviews.push(second.clone());
+    store.save_reviews(&reviews).unwrap();
+    let mut queue = store.load_queue_state().unwrap();
+    queue.jobs.push(second.job.clone());
+    for tracked in &mut queue.tracked {
+        tracked.head_sha = new_head.clone();
+        tracked.item_id = next.clone();
+        tracked.iteration_id = "second-iteration".into();
+        tracked.iteration += 1;
+    }
+    store.save_queue_state(&queue).unwrap();
+    let binding = Binding::job(&second.job);
+    let mut states = store.load_pr_states().unwrap();
+    let record = states
+        .records
+        .iter_mut()
+        .find(|r| r.binding == binding)
+        .unwrap();
+    record.state_seq = 2;
+    store.save_pr_states(&states).unwrap();
+    synchronize(&store, &next, Ok(updated.clone()), NOW + 32).unwrap();
+    packet::adopt(&store, &next).unwrap();
+    let approve = host::prepare_next_effect(&store, &next, NOW + 33)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        approve.action,
+        Action::Approve,
+        "a fresh vote for the new head"
+    );
+    env.now = NOW + 33;
+    host::execute_action(&mut env, &approve).unwrap();
+    let approved = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &next, Ok(approved), NOW + 34).unwrap();
+    let merge = host::prepare_next_effect(&store, &next, NOW + 35)
+        .unwrap()
+        .unwrap();
+    assert_eq!(merge.action, Action::Merge);
+    env.now = NOW + 35;
+    host::execute_action(&mut env, &merge).unwrap();
+    assert_eq!(env.wire.0.lock().unwrap().observation.state, "MERGED");
+    assert_eq!(env.wire.0.lock().unwrap().writes.len(), 3);
+}

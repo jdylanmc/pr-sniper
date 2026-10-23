@@ -397,6 +397,60 @@ fn range(line: Option<u64>, end_line: Option<u64>) -> Result<(), String> {
     }
 }
 
+/// Why a cited evidence ref does not count as current-head code served in this attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unserved {
+    NotHead,
+    UnknownPath,
+    /// No line, and the whole head file was not served.
+    NoLine,
+    BadRange,
+    /// The range ends past the file's last line (its line count).
+    PastEnd(usize),
+    NotRead,
+}
+
+impl Unserved {
+    pub fn text(self) -> String {
+        match self {
+            Self::NotHead => "side must be head".into(),
+            Self::UnknownPath => "path not in head".into(),
+            Self::NoLine => "no line and the whole head file was not read".into(),
+            Self::BadRange => "line must be >= 1, end_line >= line, and end_line needs line".into(),
+            Self::PastEnd(lines) => format!("past end of file ({lines} lines)"),
+            Self::NotRead => "those head lines were not served".into(),
+        }
+    }
+}
+
+/// `path:line-end_line` as cited.
+pub(crate) fn cite(e: &EvidenceRef) -> String {
+    match (e.line, e.end_line) {
+        (Some(line), Some(end)) if end != line => format!("{}:{line}-{end}", e.path),
+        (Some(line), _) => format!("{}:{line}", e.path),
+        _ => e.path.clone(),
+    }
+}
+
+/// Every unserved ref with its reason, or `None` when all were served.
+pub(crate) fn unserved(
+    refs: &[EvidenceRef],
+    served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
+) -> Option<String> {
+    let failed: Vec<String> = refs
+        .iter()
+        .filter_map(|e| {
+            served(e)
+                .err()
+                .map(|r| format!("{} ({})", cite(e), r.text()))
+        })
+        .collect();
+    (!failed.is_empty()).then(|| format!(
+        "Evidence not served in this attempt: {}. Read those head lines with read_source side=head or read_changes part=after (patch does not count), or cite lines you read; a ref without line needs the whole head file read.",
+        failed.join("; ")
+    ))
+}
+
 pub(crate) fn evidence(refs: &[EvidenceRef]) -> Result<(), String> {
     if refs.len() > MAX_EVIDENCE {
         return Err(format!("At most {MAX_EVIDENCE} evidence refs."));

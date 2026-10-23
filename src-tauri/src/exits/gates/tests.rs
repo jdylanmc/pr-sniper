@@ -270,13 +270,220 @@ fn roles_and_assignment_tools_intersect_with_the_gates() {
             "ready_for_human",
             "approve_pull_request",
             "approve_and_merge",
-            "panic_exit"
+            "panic_exit",
+            "lgtm"
         ]
     );
     let mut narrow = base();
     narrow.tools = vec!["ready_for_human".into(), "read_changes".into()];
     let ids: Vec<_> = offered(&narrow).iter().map(|(e, _)| e.id()).collect();
-    assert_eq!(ids, ["ready_for_human"]);
+    assert_eq!(ids, ["ready_for_human", "lgtm"]);
+}
+
+#[test]
+fn lgtm_acts_on_the_granted_authority_whatever_the_tool_list() {
+    let narrow_tool_sets: [&[&str]; 4] = [
+        &ALL_TOOLS,
+        &["ready_for_human", "read_changes"],
+        &["leave_comments", "approve_pull_request"],
+        &["read_changes"],
+    ];
+    for tools in narrow_tool_sets {
+        let with = |approve: bool, merge: bool| {
+            let mut input = base();
+            input.tools = tools.iter().map(|t| t.to_string()).collect();
+            input.grants.approve = approve;
+            input.grants.merge = merge;
+            input
+        };
+        assert_eq!(
+            lgtm_action(&with(true, true)),
+            LgtmAction::Merge,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(false, true)),
+            LgtmAction::Merge,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(true, false)),
+            LgtmAction::Approve,
+            "{tools:?}"
+        );
+        assert_eq!(
+            lgtm_action(&with(false, false)),
+            LgtmAction::Ready,
+            "{tools:?}"
+        );
+        assert_eq!(lgtm_denial(&with(false, false)), None, "{tools:?}");
+        assert!(is_offered(&with(true, true), Exit::Lgtm), "{tools:?}");
+    }
+}
+
+#[test]
+fn lgtm_needs_verified_green_ci_for_every_action() {
+    let mut no_rollup = observation();
+    no_rollup.checks = None;
+    let mut empty_rollup = observation();
+    empty_rollup.checks = Some(String::new());
+    empty_rollup.check_contexts = vec![];
+    for (name, ci) in [
+        ("unknown", Ci::Unknown),
+        ("absent rollup", Facts::from_observation(&no_rollup).ci),
+        ("empty rollup", Facts::from_observation(&empty_rollup).ci),
+    ] {
+        assert_ne!(ci, Ci::Green, "{name}");
+        for (approve, merge) in [(false, false), (true, false), (true, true)] {
+            let mut input = base();
+            input.grants.approve = approve;
+            input.grants.merge = merge;
+            input.facts.ci = ci;
+            let reason = lgtm_denial(&input)
+                .unwrap_or_else(|| panic!("{name}: {:?} signed off", lgtm_action(&input)));
+            assert!(reason.contains("CI"), "{name}: {reason}");
+            assert!(!is_offered(&input, Exit::Lgtm), "{name}");
+        }
+    }
+}
+
+#[test]
+fn lgtm_is_primary_only_and_refused_on_every_hard_gate() {
+    let mut teammate = base();
+    teammate.primary = false;
+    assert_eq!(offer(&teammate, Exit::Lgtm), None);
+    assert!(lgtm_denial(&teammate).unwrap().contains("primary-only"));
+    // Own open threads are the sign-off's to resolve: judged on the state after them.
+    let mut own_open = base();
+    own_open.facts.unresolved_threads = true;
+    own_open.facts.merge_blocker = Some("Unresolved provider discussions remain.".into());
+    assert!(lgtm_denial(&own_open)
+        .unwrap()
+        .contains("not rooted in your own findings"));
+    assert!(
+        !is_offered(&own_open, Exit::Lgtm),
+        "unknown ownership: as is"
+    );
+    own_open.facts.sign_off = Some(Box::new(Facts::default()));
+    assert!(is_offered(&own_open, Exit::Lgtm));
+    type Edit = fn(&mut GateInput);
+    let cases: [(Edit, &str); 8] = [
+        (|i| i.facts.open = false, "closed"),
+        (|i| i.facts.draft = true, "draft"),
+        (|i| i.facts.ci = Ci::Red, "CI is red"),
+        (|i| i.facts.ci = Ci::Pending, "CI is pending"),
+        (|i| i.facts.changes_requested = true, "Changes requested"),
+        (|i| i.facts.ci = Ci::Unknown, "CI not verified green"),
+        (
+            |i| i.facts.merge_blocker = Some("Branch is out of date.".into()),
+            "out of date",
+        ),
+        (
+            |i| i.facts.required_reviews_unmet = true,
+            "Required reviews",
+        ),
+    ];
+    for (edit, expected) in cases {
+        let mut input = base();
+        edit(&mut input);
+        match offer(&input, Exit::Lgtm).unwrap() {
+            Offer::Denied(reason) => assert!(reason.contains(expected), "{reason}"),
+            Offer::Offered => panic!("lgtm offered: {expected}"),
+        }
+    }
+}
+
+#[test]
+fn sign_off_facts_resolve_only_own_threads_and_their_provider_block() {
+    let thread = |id: &str| HumanThread {
+        id: id.into(),
+        resolved: false,
+        outdated: false,
+        resolved_by: None,
+        comments: vec![],
+    };
+    let mut o = observation();
+    o.merge_state = "BLOCKED".into();
+    o.threads = vec![thread("own"), thread("theirs")];
+    let mixed = sign_off_facts(&o, &["own".into()]);
+    assert!(
+        mixed.unresolved_threads,
+        "another reviewer's thread stays open"
+    );
+    assert!(mixed.merge_blocker.is_some());
+    o.threads.pop();
+    let after = sign_off_facts(&o, &["own".into()]);
+    assert!(!after.unresolved_threads);
+    assert_eq!(after.merge_blocker, None);
+    // Behind or dirty is never read as clean.
+    o.merge_state = "BEHIND".into();
+    assert!(sign_off_facts(&o, &["own".into()])
+        .merge_blocker
+        .unwrap()
+        .contains("behind base"));
+    // Nothing of its own open: the provider block stands.
+    o.merge_state = "BLOCKED".into();
+    assert!(sign_off_facts(&o, &[]).merge_blocker.is_some());
+}
+
+#[test]
+fn lgtm_approves_past_author_only_merge_blockers_and_its_merge_waits() {
+    let mut behind = observation();
+    behind.merge_state = "BEHIND".into();
+    let mut input = base();
+    input.facts = Facts::from_observation(&behind);
+    assert_eq!(input.facts.merge_pending, Some(MergeBlock::BehindBase));
+    assert_eq!(
+        input.facts.merge_blocker.as_deref(),
+        Some(crate::github::actions::BEHIND_BASE)
+    );
+    // Approve + merge authority: signs off; only the merge is refused.
+    assert_eq!(lgtm_action(&input), LgtmAction::Merge);
+    assert_eq!(lgtm_denial(&input), None);
+    assert!(merge_denial(&input).unwrap().contains("behind base"));
+    input.grants.merge = false;
+    assert_eq!(lgtm_denial(&input), None);
+    // Self-authored: no approval to give, so the merge is the whole action.
+    let mut own = base();
+    own.facts = Facts::from_observation(&behind);
+    own.facts.author_is_acting = true;
+    own.grants.include_self = true;
+    assert!(lgtm_denial(&own).unwrap().contains("behind base"));
+
+    // Conflicts and GitHub ran no checks at all for the head: approval proceeds.
+    let mut conflicted = observation();
+    conflicted.mergeable = "CONFLICTING".into();
+    conflicted.merge_state = "DIRTY".into();
+    conflicted.checks = None;
+    conflicted.check_contexts = vec![];
+    assert!(ci_not_run(&conflicted));
+    let mut input = base();
+    input.facts = Facts::from_observation(&conflicted);
+    assert_eq!(input.facts.merge_pending, Some(MergeBlock::Conflicts));
+    assert_eq!(input.facts.ci, Ci::Unknown);
+    assert_eq!(lgtm_denial(&input), None);
+    assert!(merge_denial(&input).unwrap().contains("Merge conflicts"));
+    assert_eq!(approve_denial(&sign_off_approval(&input)), None);
+    // Any red or pending check still refuses it.
+    for (checks, reason) in [("FAILURE", "CI is red"), ("PENDING", "CI is pending")] {
+        conflicted.checks = Some(checks.into());
+        input.facts = Facts::from_observation(&conflicted);
+        assert!(lgtm_denial(&input).unwrap().contains(reason), "{checks}");
+    }
+}
+
+#[test]
+fn lgtm_on_an_own_pr_follows_include_self() {
+    let mut own = base();
+    own.facts.author_is_acting = true;
+    assert!(lgtm_denial(&own).unwrap().contains("Include self is off"));
+    own.grants.include_self = true;
+    assert_eq!(lgtm_denial(&own), None);
+    let mut approve_only = own.clone();
+    approve_only.grants.merge = false;
+    assert!(lgtm_denial(&approve_only)
+        .unwrap()
+        .contains("self-approval"));
 }
 
 #[test]
@@ -428,4 +635,35 @@ fn approve_ignores_discussion_that_only_blocks_merge() {
         submitted_at: None,
     }];
     assert!(o.blocker(Action::Approve).unwrap().contains("pending"));
+}
+
+#[test]
+fn no_code_path_updates_a_pull_request_branch() {
+    // Split so this file does not match itself.
+    let forbidden = [
+        concat!("update", "PullRequestBranch"),
+        concat!("update", "-branch"),
+        concat!("update", "_branch"),
+    ];
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut scanned = 0;
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap().to_lowercase();
+                scanned += 1;
+                for word in forbidden {
+                    assert!(
+                        !text.contains(&word.to_lowercase()),
+                        "{} calls {word}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    assert!(scanned > 50);
 }

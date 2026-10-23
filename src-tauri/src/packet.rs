@@ -93,6 +93,12 @@ pub struct FindingFacts {
     pub own_comments: std::collections::BTreeSet<String>,
     /// Standing resolution evidence of every carried-forward thread.
     pub carried: Vec<crate::review::findings::Assessment>,
+    /// What a sign-off does after resolving: the assignment's authority.
+    pub lgtm_action: crate::exits::LgtmAction,
+    /// Own thread id -> head the finding was published on (ownership proof).
+    pub thread_heads: std::collections::BTreeMap<String, String>,
+    /// Host id (`T<k>#<n>`) of every teammate finding in this run's packet.
+    pub teammate_findings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

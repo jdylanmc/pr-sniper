@@ -103,6 +103,7 @@ const exitIds: Record<ExitOutcome["exit"], ExitName> = {
   approve: "approve_pull_request",
   approve_and_merge: "approve_and_merge",
   submit_report: "submit_report",
+  lgtm: "lgtm",
 };
 
 // The exit taken: icon, name and its counts; labels and values only.
@@ -146,6 +147,20 @@ function exitRow(
   } else if (exit.exit === "wait") {
     value = exit.reason === "ci" ? "CI" : state(exit.reason);
     facts.push(["Prerequisite", value]);
+  } else if (exit.exit === "lgtm") {
+    const resolved = exit.resolve_own_threads.length;
+    value = `Resolved ${resolved} \u00b7 ${state(exit.action)}`;
+    facts.push(["Resolved", String(resolved)], ["Action", state(exit.action)]);
+    const write = snapshot.exit_writes?.find(
+      (entry) => entry.review_operation_id === operationId,
+    );
+    if (write) {
+      const done = write.steps.filter((step) => step.state === "done").length;
+      facts.push(
+        ["Write", state(write.phase)],
+        ["Done", `${done} of ${write.steps.length}`],
+      );
+    }
   } else if (exit.exit === "approve" || exit.exit === "approve_and_merge") {
     const merge = exit.exit === "approve_and_merge";
     value = merge ? "Approve 1 \u00b7 Merge 1" : "Approve 1";

@@ -96,6 +96,10 @@ pub struct ExitWrite {
     pub consumed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_base_sha: Option<String>,
+    /// A primary `lgtm` sign-off: its approve or merge final may adopt the state this
+    /// write consumed (`actions::packet::adopt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_off: Option<crate::exits::LgtmAction>,
 }
 
 impl ExitWrite {
@@ -133,6 +137,15 @@ impl ExitWrite {
 pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
     if review.operation.state != OperationState::Completed {
         return None;
+    }
+    if let Some(ExitOutcome::Lgtm {
+        comment,
+        resolve_own_threads,
+        action,
+        ..
+    }) = review.result.as_ref()?.output.exit.as_ref()
+    {
+        return sign_off(review, comment, resolve_own_threads, *action, now);
     }
     let Some(ExitOutcome::Comments {
         new_comments,
@@ -210,6 +223,87 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         error: None,
         consumed: false,
         reviewed_base_sha: review.result.as_ref()?.reviewed_base_sha.clone(),
+        sign_off: None,
+    })
+}
+
+/// A sign-off's audit reply (its comment and the thread's disposition) and
+/// resolution on each accounted own open thread.
+fn sign_off(
+    review: &ReviewRun,
+    comment: &str,
+    threads: &[String],
+    action: crate::exits::LgtmAction,
+    now: i64,
+) -> Option<ExitWrite> {
+    use crate::review::findings::Disposition;
+    if threads.is_empty() {
+        return None;
+    }
+    let result = review.result.as_ref()?;
+    let duck_required = review
+        .selection
+        .configuration
+        .as_ref()
+        .is_some_and(|c| c.rubber_duck.is_some());
+    let evidence = |id: &String| {
+        result
+            .finding_dispositions
+            .iter()
+            .find(|a| {
+                a.thread_id == *id
+                    && match a.disposition {
+                        Disposition::Fixed => {
+                            !duck_required
+                                || review
+                                    .packet
+                                    .as_ref()
+                                    .is_some_and(|p| a.duck_confirms(&p.state_id, &result.ducks))
+                        }
+                        Disposition::SignedOff => true,
+                        other => other.signs_off(),
+                    }
+            })
+            .cloned()
+    };
+    let step = |kind, id: &String| Step {
+        kind,
+        thread_id: id.clone(),
+        body: if kind == StepKind::Reply {
+            match evidence(id) {
+                Some(a) if a.disposition != Disposition::SignedOff => {
+                    format!("{comment}\n\n{}: {}", a.disposition.id(), a.rationale)
+                }
+                _ => comment.to_string(),
+            }
+        } else {
+            String::new()
+        },
+        root_id: None,
+        revision: None,
+        state: StepState::Planned,
+        receipt: None,
+        resolution_evidence: (kind == StepKind::Resolve).then(|| evidence(id)).flatten(),
+    };
+    let mut steps: Vec<Step> = threads.iter().map(|id| step(StepKind::Reply, id)).collect();
+    steps.extend(threads.iter().map(|id| step(StepKind::Resolve, id)));
+    let mut operation = JobOperation::review(&review.job, now);
+    operation.operation_type = "exit_writes".into();
+    Some(ExitWrite {
+        id: uuid::Uuid::new_v4().to_string(),
+        review_operation_id: review.operation.id.clone(),
+        job: review.job.clone(),
+        assignment_id: review.assignment_id.clone(),
+        comments_first: false,
+        published: false,
+        steps,
+        phase: Phase::Planned,
+        operation,
+        uncertain: false,
+        error: None,
+        consumed: false,
+        reviewed_base_sha: result.reviewed_base_sha.clone(),
+        sign_off: Some(action),
     })
 }
 
@@ -471,8 +565,8 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
             }
             StepKind::Resolve => {
                 resolution_proof(write, step)?;
-                if let Some(evidence) = won_t_fix(step) {
-                    author_reply_holds(env, write, evidence, &thread)?;
+                if let Some(evidence) = settled(step) {
+                    settled_holds(env, write, evidence, &thread)?;
                 }
                 if !thread.owned_by_any(&proofs) {
                     return Err(Failure::permanent(
@@ -498,6 +592,9 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
                     a.author_comment_id.is_some()
                         && a.anchor.as_ref().is_some_and(|x| x.author_id.is_some())
                 }
+                Disposition::SignedOff | Disposition::Withdrawn | Disposition::NoLongerApplies => {
+                    write.sign_off.is_some() && a.anchor.is_some()
+                }
                 _ => false,
             }
             && a.head_sha == write.job.head_sha
@@ -506,14 +603,16 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
             && a.evidence.iter().all(|e| {
                 !e.path.trim().is_empty()
                     && e.side.as_deref().unwrap_or("head") == "head"
-                    && e.line
-                        .is_some_and(|line| line > 0 && e.end_line.unwrap_or(line) >= line)
+                    // No line: the whole head file was served (see `evidence_served`).
+                    && e.line.map_or(e.end_line.is_none(), |line| {
+                        line > 0 && e.end_line.unwrap_or(line) >= line
+                    })
             })
     });
     if valid {
         Ok(())
     } else {
-        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence, or a verified author won't-fix; outdated is not proof."))
+        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence, a verified author won't-fix, or a disposition the primary's sign-off accounted for; outdated is not proof."))
     }
 }
 
@@ -542,10 +641,45 @@ fn author_reply_holds(
     }
 }
 
-fn won_t_fix(step: &Step) -> Option<&crate::review::findings::Assessment> {
-    step.resolution_evidence
-        .as_ref()
-        .filter(|a| a.disposition == crate::review::findings::Disposition::AuthorWontFix)
+/// Resolution evidence that relies on an accepted thread snapshot (author won't-fix,
+/// sign-off) rather than code: re-read before and after the effect.
+fn settled(step: &Step) -> Option<&crate::review::findings::Assessment> {
+    use crate::review::findings::Disposition;
+    step.resolution_evidence.as_ref().filter(|a| {
+        matches!(
+            a.disposition,
+            Disposition::AuthorWontFix
+                | Disposition::SignedOff
+                | Disposition::Withdrawn
+                | Disposition::NoLongerApplies
+        )
+    })
+}
+
+fn settled_holds(
+    env: &mut impl Environment,
+    write: &ExitWrite,
+    evidence: &crate::review::findings::Assessment,
+    thread: &Thread,
+) -> Result<(), Failure> {
+    if evidence.disposition == crate::review::findings::Disposition::AuthorWontFix {
+        return author_reply_holds(env, write, evidence, thread);
+    }
+    let comments: Vec<crate::review::findings::Seen<'_>> =
+        thread.comments.iter().map(Into::into).collect();
+    let holds = evidence.anchor.as_ref().is_some_and(|anchor| {
+        Some(anchor.base_sha.as_str()) == write.reviewed_base_sha.as_deref()
+            && crate::review::findings::snapshot_holds(anchor, &comments, |c| {
+                crate::review::findings::own_marked(c, &write.job.account_id)
+            })
+    });
+    if holds {
+        Ok(())
+    } else {
+        Err(Failure::permanent(
+            "A signed-off thread changed since the review. Nothing was resolved.",
+        ))
+    }
 }
 
 fn own_proofs(env: &mut impl Environment, write: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
@@ -671,7 +805,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
             write.uncertain = true;
             env.save(write)?;
             let request = write.request_id(index);
-            let won_t = won_t_fix(&step);
+            let won_t = settled(&step);
             // Last check before the effect: after every local write, a fresh thread
             // and PR author read. A refusal here sent nothing.
             if let Some(evidence) = won_t {
@@ -679,7 +813,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     let thread = thread.ok_or_else(|| {
                         Failure::permanent("A thread disappeared before its write.")
                     })?;
-                    author_reply_holds(env, write, evidence, &thread)
+                    settled_holds(env, write, evidence, &thread)
                 });
                 if let Err(error) = fresh {
                     write.steps[index].state = step.state;
@@ -734,7 +868,7 @@ fn confirm_won_t_fix(
     let holds = env.thread(write, &thread_id).and_then(|thread| {
         let thread =
             thread.ok_or_else(|| Failure::permanent("A thread disappeared after its write."))?;
-        author_reply_holds(env, write, evidence, &thread)
+        settled_holds(env, write, evidence, &thread)
     });
     let Err(changed) = holds else {
         done(write, index, request);

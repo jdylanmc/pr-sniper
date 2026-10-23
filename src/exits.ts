@@ -6,9 +6,15 @@ export type ExitName =
   | "approve_pull_request"
   | "approve_and_merge"
   | "panic_exit"
-  | "submit_report";
+  | "submit_report"
+  | "lgtm";
 
-export type Progress = "approving" | "merging" | "publishing";
+export type Progress =
+  | "approving"
+  | "merging"
+  | "merge_pending_behind_base"
+  | "merge_pending_conflicts"
+  | "publishing";
 
 const paths = {
   comment: "M4 5h16v11H9l-5 4V5Z",
@@ -27,6 +33,7 @@ export const exitPresentation: Record<ExitName, [string, string]> = {
   approve_and_merge: ["Approve + merge", paths.merge],
   panic_exit: ["Panic", paths.panic],
   submit_report: ["Report", paths.report],
+  lgtm: ["LGTM", paths.approve],
 };
 
 export const waitLabels = {
@@ -43,6 +50,14 @@ export const waitingStates: Record<string, string> = {
 export const progressPresentation: Record<Progress, [string, string]> = {
   approving: ["Approving", paths.approve],
   merging: ["Merging", paths.merge],
+  merge_pending_behind_base: [
+    "Approved \u2014 merge pending (behind base)",
+    paths.merge,
+  ],
+  merge_pending_conflicts: [
+    "Approved \u2014 merge pending (conflicts)",
+    paths.merge,
+  ],
   publishing: ["Publishing", paths.comment],
 };
 

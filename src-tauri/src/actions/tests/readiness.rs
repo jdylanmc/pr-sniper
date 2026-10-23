@@ -964,19 +964,19 @@ fn readiness_include_self_reaches_the_agent_and_merges_without_an_approval_vote(
         assert!(!prepared.setup.offered.contains(&Exit::ApprovePullRequest));
         if !include_self {
             assert!(!prepared.setup.offered.contains(&Exit::ApproveAndMerge));
+            assert!(!prepared.setup.offered.contains(&Exit::Lgtm));
             assert!(prepared.packet.text.contains("Include self is off."));
             assert!(!prepared
                 .packet
                 .text
                 .contains("clean_review_exit: approve_and_merge"));
+            assert!(!prepared.packet.text.contains("clean_review_exit: lgtm"));
             assert!(env.wire.0.lock().unwrap().writes.is_empty());
             continue;
         }
         assert!(prepared.setup.offered.contains(&Exit::ApproveAndMerge));
-        assert!(prepared
-            .packet
-            .text
-            .contains("clean_review_exit: approve_and_merge"));
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm));
+        assert!(prepared.packet.text.contains("clean_review_exit: lgtm"));
         assert!(prepared
             .packet
             .text

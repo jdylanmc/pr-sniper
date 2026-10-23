@@ -202,6 +202,7 @@ pub fn retry_parked(store: &Store, item_id: &str, now: i64) -> Result<usize, Str
                     ExitOutcome::Comments { .. }
                         | ExitOutcome::Approve { .. }
                         | ExitOutcome::ApproveAndMerge { .. }
+                        | ExitOutcome::Lgtm { .. }
                 )
             );
         let binding = Binding::job(&run.job);
@@ -269,6 +270,20 @@ pub fn writing(store: &Store) -> Result<std::collections::BTreeSet<Binding>, Str
     Ok(bindings)
 }
 
+/// A sign-off with nothing to resolve and no approve authority: a local hand-off
+/// like `ready_for_human`, its comment kept as the local summary.
+pub fn local_sign_off(exit: Option<&ExitOutcome>) -> Option<&String> {
+    match exit? {
+        ExitOutcome::Lgtm {
+            comment,
+            resolve_own_threads,
+            action: super::LgtmAction::Ready,
+            ..
+        } if resolve_own_threads.is_empty() => Some(comment),
+        _ => None,
+    }
+}
+
 /// Exits with no provider write are honoured when the run completes: the summary
 /// is kept locally and the state the agent read becomes the baseline. Other
 /// exits consume when their effect is confirmed.
@@ -308,8 +323,12 @@ pub fn honour_local(
         }
         return Ok(outcome);
     }
-    let Some(ExitOutcome::ReadyForHuman { summary }) = &result.output.exit else {
-        return Ok(Consumed::Consumed);
+    let summary = match &result.output.exit {
+        Some(ExitOutcome::ReadyForHuman { summary }) => summary,
+        exit => match local_sign_off(exit.as_ref()) {
+            Some(comment) => comment,
+            None => return Ok(Consumed::Consumed),
+        },
     };
     let baseline = run
         .packet

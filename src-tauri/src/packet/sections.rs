@@ -315,6 +315,27 @@ fn label(text: &str) -> String {
         .collect()
 }
 
+/// Host id of a teammate finding: the teammate's ordinal in this packet and the
+/// finding's, never its display name (two teammates may share one).
+fn teammate_finding_id(teammate: usize, finding: usize) -> String {
+    format!("T{teammate}#{finding}")
+}
+
+/// The id of every teammate finding the primary's packet lists, unique within it.
+pub(crate) fn teammate_finding_ids(input: &PacketInput) -> Vec<String> {
+    if input.role != Role::Primary {
+        return Vec::new();
+    }
+    input
+        .teammates
+        .iter()
+        .enumerate()
+        .flat_map(|(t, entry)| {
+            (1..=entry.report.findings.len()).map(move |n| teammate_finding_id(t + 1, n))
+        })
+        .collect()
+}
+
 fn teammates(out: &mut String, input: &PacketInput) {
     if input.role != Role::Primary || input.teammates.is_empty() {
         return;
@@ -322,10 +343,11 @@ fn teammates(out: &mut String, input: &PacketInput) {
     out.push_str("\n## Teammate reports\n");
     out.push_str(rules::TEAMMATE_REPORTS_RULE);
     out.push('\n');
-    for teammate in &input.teammates {
+    for (ordinal, teammate) in input.teammates.iter().enumerate() {
         let _ = writeln!(
             out,
-            "\n### {} (lens: {})",
+            "\n### T{}: {} (lens: {})",
+            ordinal + 1,
             label(&teammate.agent),
             teammate
                 .lens
@@ -341,8 +363,9 @@ fn teammates(out: &mut String, input: &PacketInput) {
         for (index, f) in teammate.report.findings.iter().enumerate() {
             let _ = write!(
                 body,
-                "{}. {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
+                "{}. [{}] {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
                 index + 1,
+                teammate_finding_id(ordinal + 1, index + 1),
                 f.file,
                 f.line,
                 f.nano,
@@ -405,6 +428,7 @@ fn exits(out: &mut String, input: &PacketInput) {
     out.push_str("Call exactly one. Host re-checks gates when you call it.\n");
     if input.role == Role::Primary {
         if let Some(preferred) = [
+            Exit::Lgtm,
             Exit::ApproveAndMerge,
             Exit::Wait,
             Exit::ApprovePullRequest,
@@ -420,7 +444,7 @@ fn exits(out: &mut String, input: &PacketInput) {
             let _ = writeln!(out, "clean_review_exit: {}", preferred.id());
         }
         if input.include_self && input.pr.author_relation == AuthorRelation::Owner {
-            out.push_str("Include self is enabled for this repository assignment. If approve_and_merge is offered and review is clear, use it: the host merges without an approval vote. Do not hand off solely because approve_pull_request is unavailable. If merge is not offered, state its actual gate reason.\n");
+            out.push_str("Include self is enabled for this repository assignment. If lgtm or approve_and_merge is offered and review is clear, use it: the host merges without an approval vote. Do not hand off solely because approve_pull_request is unavailable. If merge is not offered, state its actual gate reason.\n");
         }
     }
     for (exit, offer) in &input.exits {

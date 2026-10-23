@@ -1,7 +1,7 @@
 //! Pure gate table: which exits the host offers for a PR state, and why not.
 //! Run at packet build (offered set + reasons in the packet) and again at exit time.
 
-use super::{Exit, ExitCall, WaitReason};
+use super::{Exit, ExitCall, LgtmAction, WaitReason};
 use crate::github::actions::{Action, Observation};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,25 @@ pub enum Ci {
     Green,
     /// No checks reported, or not verifiable.
     Unknown,
+}
+
+/// A merge blocker only the PR author can clear by updating the branch. PR Sniper
+/// never updates a branch; it approves and leaves the merge pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeBlock {
+    /// Branch protection requires an up-to-date branch and the head is behind base.
+    BehindBase,
+    Conflicts,
+}
+
+impl MergeBlock {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BehindBase => "behind base",
+            Self::Conflicts => "conflicts",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,6 +61,14 @@ pub struct Facts {
     /// Gates remaining after only observable external prerequisites are satisfied.
     pub wait_approve_blocker: Option<String>,
     pub wait_merge_blocker: Option<String>,
+    /// Mergeability only the author can fix (behind base, conflicts).
+    pub merge_pending: Option<MergeBlock>,
+    /// The provider merge blocker were the branch mergeable (and, with conflicts
+    /// and no checks reported, CI not run because of them).
+    pub merge_blocker_if_mergeable: Option<String>,
+    /// The facts once a sign-off resolved its own open threads ([`sign_off_facts`]).
+    /// `None`: unknown, so a sign-off is judged on the facts as they are.
+    pub sign_off: Option<Box<Facts>>,
 }
 
 impl Default for Facts {
@@ -60,6 +87,9 @@ impl Default for Facts {
             merge_blocker: None,
             wait_approve_blocker: None,
             wait_merge_blocker: None,
+            merge_pending: None,
+            merge_blocker_if_mergeable: None,
+            sign_off: None,
         }
     }
 }
@@ -97,6 +127,20 @@ impl Facts {
         actionable.mergeable = "MERGEABLE".into();
         actionable.merge_state = "CLEAN".into();
         actionable.review_decision = Some("APPROVED".into());
+        let conflicts = o.mergeable == "CONFLICTING" || o.merge_state == "DIRTY";
+        let merge_pending = if conflicts {
+            Some(MergeBlock::Conflicts)
+        } else if o.merge_state == "BEHIND" {
+            Some(MergeBlock::BehindBase)
+        } else {
+            None
+        };
+        let mut mergeable = o.clone();
+        mergeable.mergeable = "MERGEABLE".into();
+        mergeable.merge_state = "CLEAN".into();
+        if conflicts && ci_not_run(o) {
+            mergeable.checks = Some("SUCCESS".into());
+        }
         let mut latest = std::collections::BTreeMap::new();
         for review in &o.reviews {
             if matches!(
@@ -110,7 +154,7 @@ impl Facts {
             open: o.state == "OPEN",
             draft: o.draft,
             ci: ci(o),
-            conflicts: o.mergeable == "CONFLICTING" || o.merge_state == "DIRTY",
+            conflicts,
             required_reviews_unmet: o.review_decision.as_deref() == Some("REVIEW_REQUIRED")
                 || (o.protection["requiresApprovingReviews"] == true
                     && !matches!(
@@ -130,8 +174,37 @@ impl Facts {
             merge_blocker: o.blocker(Action::Merge),
             wait_approve_blocker: actionable.blocker(Action::Approve),
             wait_merge_blocker: actionable.blocker(Action::Merge),
+            merge_pending,
+            merge_blocker_if_mergeable: mergeable.blocker(Action::Merge),
+            sign_off: None,
         }
     }
+}
+
+/// The facts as they will be once a sign-off resolved `own` (this assignment's open
+/// threads): those threads resolved, and a provider merge state `BLOCKED` while they
+/// were open read as clean, since resolving them may be what unblocks it. Every other
+/// gate is unchanged; the action re-reads the real state before approving or merging.
+pub fn sign_off_facts(o: &Observation, own: &[String]) -> Facts {
+    let mut after = o.clone();
+    let mut resolved = false;
+    for thread in after
+        .threads
+        .iter_mut()
+        .filter(|t| !t.resolved && own.contains(&t.id))
+    {
+        thread.resolved = true;
+        resolved = true;
+    }
+    if resolved && after.merge_state == "BLOCKED" && after.threads.iter().all(|t| t.resolved) {
+        after.merge_state = "CLEAN".into();
+    }
+    Facts::from_observation(&after)
+}
+
+/// GitHub reported no check run or status at all for the head.
+pub fn ci_not_run(o: &Observation) -> bool {
+    o.checks.is_none() && o.check_contexts.is_empty()
 }
 
 fn ci(o: &Observation) -> Ci {
@@ -158,7 +231,7 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
     let f = &input.facts;
     Exit::ALL
         .into_iter()
-        .filter(|exit| input.tools.iter().any(|tool| tool == exit.id()))
+        .filter(|exit| *exit == Exit::Lgtm || input.tools.iter().any(|tool| tool == exit.id()))
         .filter(|exit| match exit {
             Exit::SubmitReport => !input.primary,
             Exit::SubmitVerdict => false,
@@ -186,6 +259,15 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     approve_denial(input).map_or(Offer::Offered, Offer::Denied)
                 }
                 Exit::ApproveAndMerge => merge_denial(input).map_or(Offer::Offered, Offer::Denied),
+                // Judged on the state after its own resolutions; ownership is
+                // re-verified on a fresh read when it is called.
+                Exit::Lgtm => {
+                    let mut after = input.clone();
+                    if let Some(facts) = &f.sign_off {
+                        after.facts = (**facts).clone();
+                    }
+                    lgtm_denial(&after).map_or(Offer::Offered, Offer::Denied)
+                }
                 Exit::Wait => {
                     if wait_reasons(input).is_empty() {
                         Offer::Denied(
@@ -292,6 +374,71 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     } else {
         return f.merge_blocker.clone();
     })
+}
+
+/// The sign-off's action: the assignment's strongest granted authority. Grants alone
+/// decide it; the tool list only gates the legacy explicit approve exits.
+pub fn lgtm_action(input: &GateInput) -> LgtmAction {
+    if input.grants.merge {
+        LgtmAction::Merge
+    } else if input.grants.approve {
+        LgtmAction::Approve
+    } else {
+        LgtmAction::Ready
+    }
+}
+
+/// Why a sign-off is refused on these facts: the facts after its own resolutions.
+/// Mergeability only the author can fix (behind base, conflicts) never refuses it:
+/// it approves and leaves the merge pending. Merge itself still needs every gate.
+pub fn lgtm_denial(input: &GateInput) -> Option<String> {
+    let f = &input.facts;
+    Some(if !input.primary {
+        "lgtm is primary-only.".into()
+    } else if !f.open {
+        "PR is closed or merged.".into()
+    } else if f.draft {
+        "PR is draft. Do not sign off.".into()
+    } else if f.ci == Ci::Red {
+        "CI is red. Do not sign off.".into()
+    } else if f.ci == Ci::Pending {
+        "CI is pending. Do not sign off until it is green.".into()
+    } else if f.ci != Ci::Green && !(f.conflicts && f.ci == Ci::Unknown) {
+        // With conflicts GitHub may run no checks at all: approval proceeds, merge waits.
+        "CI not verified green. Do not sign off.".into()
+    } else if f.changes_requested {
+        "Changes requested by a reviewer. Do not sign off.".into()
+    } else if f.unresolved_threads {
+        "Unresolved threads not rooted in your own findings remain. They need the author's fix or reply; lgtm cannot clear them.".into()
+    } else {
+        let approvable = mergeable(input);
+        return match lgtm_action(input) {
+            LgtmAction::Ready => None,
+            LgtmAction::Approve => approve_denial(&approvable),
+            // Self-authored: nothing to approve, so the merge is the whole action.
+            LgtmAction::Merge if f.author_is_acting => merge_denial(input),
+            LgtmAction::Merge => merge_denial(&approvable),
+        };
+    })
+}
+
+/// `input` as if the author had updated the branch: the gates a sign-off's
+/// approval and the rest of its merge are judged on.
+fn mergeable(input: &GateInput) -> GateInput {
+    let mut out = input.clone();
+    if out.facts.conflicts && out.facts.ci == Ci::Unknown {
+        out.facts.ci = Ci::Green;
+    }
+    if out.facts.conflicts || out.facts.merge_pending.is_some() {
+        out.facts.conflicts = false;
+        out.facts.merge_blocker = out.facts.merge_blocker_if_mergeable.clone();
+    }
+    out
+}
+
+/// The approval half of a sign-off's action: mergeability never blocks it.
+pub fn sign_off_approval(input: &GateInput) -> GateInput {
+    mergeable(input)
 }
 
 /// Approving a head we already approved is a successful no-op.

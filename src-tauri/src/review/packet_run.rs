@@ -103,7 +103,23 @@ where
                 .after(super::Resume::NextPoll),
         );
     }
-    let base = gate_input(run, Facts::from_observation(&observation))?;
+    let mut facts = Facts::from_observation(&observation);
+    let own_open = {
+        let mut threads = reads::conversation(&observation).threads;
+        super::findings::stamp_ownership(
+            &mut threads,
+            &ownership,
+            &run.assignment_id,
+            &run.job.account_id,
+        );
+        threads
+            .into_iter()
+            .filter(|t| t.mine && !t.resolved)
+            .map(|t| t.id)
+            .collect::<Vec<_>>()
+    };
+    facts.sign_off = Some(Box::new(gates::sign_off_facts(&observation, &own_open)));
+    let base = gate_input(run, facts)?;
     let exits = gates::offered(&base);
     let offered: Vec<_> = exits
         .iter()
@@ -264,6 +280,18 @@ where
             .chain(receipts)
             .collect(),
         carried,
+        lgtm_action: gates::lgtm_action(&base),
+        thread_heads: conversation
+            .threads
+            .iter()
+            .filter(|t| t.mine)
+            .filter_map(|t| {
+                let root = &t.comments.first()?.id;
+                let proof = ownership.iter().find(|p| p.root_ids.contains(root))?;
+                Some((t.id.clone(), proof.head_sha.clone()))
+            })
+            .collect(),
+        teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(
@@ -317,10 +345,47 @@ where
         if observation.state != "OPEN" {
             return Err(Refusal::Moved("PR is no longer open. Stop.".into()));
         }
-        let input = GateInput {
+        let mut input = GateInput {
             facts: Facts::from_observation(&observation),
             ..base.clone()
         };
+        // Sign-off: only this assignment's verified own threads are resolved; it is
+        // judged on the state after them, so any other open thread refuses it.
+        if let crate::exits::ExitCall::Lgtm {
+            resolve_own_threads,
+            action,
+            ..
+        } = call
+        {
+            if *action != gates::lgtm_action(&base) {
+                return Err(Refusal::Denied(
+                    "Sign-off authority changed. Try again.".into(),
+                ));
+            }
+            if !resolve_own_threads.is_empty() && !base.grants.reply {
+                return Err(Refusal::Denied(
+                    "No Reply Comment grant to resolve your own threads. Use ready_for_human."
+                        .into(),
+                ));
+            }
+            for id in resolve_own_threads {
+                let thread = client
+                    .review_thread(&repo.id, &pull_request_id, id)
+                    .map_err(|_| {
+                        Refusal::Denied("Thread ownership unreadable now. Try again.".into())
+                    })?
+                    .ok_or_else(|| Refusal::Denied("Thread unavailable now.".into()))?;
+                if !thread.owned_by_any(&ownership) {
+                    return Err(Refusal::Denied(
+                        "Only this assignment's verified own threads may be resolved.".into(),
+                    ));
+                }
+            }
+            input.facts.sign_off = Some(Box::new(gates::sign_off_facts(
+                &observation,
+                resolve_own_threads,
+            )));
+        }
         gates::check_call(&input, call).map_err(Refusal::Denied)?;
         // A reply or resolve must name a thread of this PR now. Caught here, the agent
         // fixes the id in the loop instead of the host tossing the whole exit later.

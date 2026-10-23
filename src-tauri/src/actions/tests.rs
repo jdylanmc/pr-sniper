@@ -281,7 +281,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             Exit::ReadyForHuman,
             Exit::ApprovePullRequest,
             Exit::ApproveAndMerge,
-            Exit::PanicExit
+            Exit::PanicExit,
+            Exit::Lgtm
         ],
         "{:?}",
         prepared.packet.record.exits_denied
@@ -294,7 +295,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             "ready_for_human",
             "approve_pull_request",
             "approve_and_merge",
-            "panic_exit"
+            "panic_exit",
+            "lgtm"
         ]
     );
     assert!(prepared.packet.text.contains("role: primary"));
@@ -429,16 +431,52 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             (stamped.setup.gate)(&reply("mapped-typo")),
             Err(Refusal::Denied(reason)) if reason.contains("unknown thread")
         ));
+        // A sign-off never clears another reviewer's thread, nor a thread it cannot
+        // prove is this assignment's own on a fresh read.
+        let lgtm = |threads: &[&str], action| ExitCall::Lgtm {
+            comment: "All settled.".into(),
+            resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
+            action,
+            dismissed_teammate_findings: vec![],
+        };
+        assert!(matches!(
+            (stamped.setup.gate)(&lgtm(&[], crate::exits::LgtmAction::Merge)),
+            Err(Refusal::Denied(reason)) if reason.contains("not rooted in your own findings")
+        ));
+        // No fresh proof that the thread is this assignment's own: refused.
+        assert_eq!(
+            (stamped.setup.gate)(&lgtm(&["mapped"], crate::exits::LgtmAction::Merge)),
+            Err(Refusal::Denied("Thread unavailable now.".into()))
+        );
         env.wire.0.lock().unwrap().observation.threads.clear();
+        assert_eq!(
+            (stamped.setup.gate)(&lgtm(&[], crate::exits::LgtmAction::Merge)),
+            Ok(())
+        );
+        // The host decides the action from the assignment's authority, never the call.
+        assert!(matches!(
+            (stamped.setup.gate)(&lgtm(&[], crate::exits::LgtmAction::Ready)),
+            Err(Refusal::Denied(reason)) if reason.contains("authority")
+        ));
     }
     let approve = ExitCall::ApprovePullRequest {
         comment: "ok".into(),
     };
     assert_eq!((prepared.setup.gate)(&approve), Ok(()));
+    let sign_off = ExitCall::Lgtm {
+        comment: "All settled.".into(),
+        resolve_own_threads: vec![],
+        action: crate::exits::LgtmAction::Merge,
+        dismissed_teammate_findings: vec![],
+    };
     // CI turns red between packet and exit: that exit is denied, the run continues.
     env.wire.0.lock().unwrap().observation.checks = Some("FAILURE".into());
     assert!(matches!(
         (prepared.setup.gate)(&approve),
+        Err(Refusal::Denied(reason)) if reason.contains("CI is red")
+    ));
+    assert!(matches!(
+        (prepared.setup.gate)(&sign_off),
         Err(Refusal::Denied(reason)) if reason.contains("CI is red")
     ));
     assert_eq!(
@@ -451,6 +489,10 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
     env.wire.0.lock().unwrap().observation.head = "d".repeat(40);
     assert!(matches!(
         (prepared.setup.gate)(&approve),
+        Err(Refusal::Moved(_))
+    ));
+    assert!(matches!(
+        (prepared.setup.gate)(&sign_off),
         Err(Refusal::Moved(_))
     ));
     assert_eq!(
