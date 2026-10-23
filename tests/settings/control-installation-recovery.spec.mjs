@@ -90,7 +90,8 @@ for (const mode of ["conflict", "installation_io"]) {
     hold.release();
     await page.evaluate(() => window.__settingsIdle());
     const action = controls.getByRole("button", {
-      name: mode === "conflict" ? "Update" : "Repair",
+      // Either way the owned entry no longer matches this app: Repair.
+      name: "Repair",
       exact: true,
     });
     await expect(action).toBeEnabled();
@@ -146,7 +147,7 @@ test("repeated status failures expose explicit read-only Retry and retain origin
   const retry = controls.getByRole("button", { name: "Retry", exact: true });
   await expect(retry).toBeEnabled();
   await expect(retry).toBeFocused();
-  await expect(controls.getByLabel("Skill status")).toHaveText("Unavailable");
+  await expect(controls.getByLabel("MCP status")).toHaveText("Unavailable");
   await expect(controls.getByRole("alert")).toHaveText("Changed");
   await retry.click();
   await page.evaluate(() => window.__settingsIdle());
@@ -162,9 +163,9 @@ test("repeated status failures expose explicit read-only Retry and retain origin
   ).toBe(2);
   await retry.click();
   await page.evaluate(() => window.__settingsIdle());
-  const update = controls.getByRole("button", { name: "Update", exact: true });
-  await expect(update).toBeEnabled();
-  await expect(update).toBeFocused();
+  const repair = controls.getByRole("button", { name: "Repair", exact: true });
+  await expect(repair).toBeEnabled();
+  await expect(repair).toBeFocused();
   await expect(controls.getByRole("alert")).toHaveText("Changed");
   expect(
     await page.evaluate(

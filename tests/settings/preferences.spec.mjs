@@ -76,6 +76,14 @@ async function syntheticNative(page, options = {}) {
         native.registration = args.enabled ? "registered" : "absent";
         return;
       }
+      if (command === "repair_login") {
+        const { settings } = await original("snapshot");
+        native.repairs = (native.repairs ?? 0) + 1;
+        native.registration = settings.launch_at_login
+          ? "registered"
+          : "absent";
+        return;
+      }
       if (command === "notification_snapshot" && native.notificationReadError)
         throw "Synthetic native notification read failed.";
       if (command === "set_notifications_enabled" && native.denied)
@@ -558,8 +566,36 @@ for (const { os, userAgent, startupSettings } of [
         if (registration === null)
           await expect(page.locator("#login")).toBeDisabled();
         else await expect(page.locator("#login")).toBeEnabled();
+        if (["absent", "invalid"].includes(registration))
+          await expect(page.locator("#login-repair")).toBeVisible();
+        else await expect(page.locator("#login-repair")).toBeHidden();
       });
     }
+  });
+}
+
+for (const enabled of [true, false]) {
+  test(`Repair reapplies the saved ${enabled ? "On" : "Off"} preference to an invalid registration`, async ({
+    page,
+    store,
+  }) => {
+    const settings = (await store("snapshot")).settings;
+    settings.launch_at_login = enabled;
+    await store("seed_settings", settings);
+    await syntheticNative(page, { registration: "invalid" });
+    await ready(page, store);
+    const repair = page.locator("#login-repair");
+    await expect(repair).toBeVisible();
+    await repair.click();
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(page.locator("#login-status")).toHaveText(
+      `${enabled ? "On" : "Off"}; registration ${enabled ? "registered" : "absent"}`,
+    );
+    await expect(repair).toBeHidden();
+    expect(await page.evaluate(() => window.__nativePreferences.repairs)).toBe(
+      1,
+    );
+    expect((await store("snapshot")).settings.launch_at_login).toBe(enabled);
   });
 }
 

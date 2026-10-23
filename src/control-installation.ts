@@ -3,28 +3,37 @@ import { invoke } from "@tauri-apps/api/core";
 interface Installation {
   state: "absent" | "installed" | "incomplete";
   revision: string | null;
-  version: string | null;
+  mcp_registered: boolean;
+  skill_detected: boolean;
+  skill_command: string;
 }
+
+const SKILL_COMMAND =
+  "npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot";
+const COPY_ICON =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>';
 
 export function mountControlInstallation(container: HTMLElement) {
   container.innerHTML = `<fieldset aria-label="Copilot CLI"><legend>Copilot CLI</legend>
-    <div class="setting-row"><span>MCP · /pr-sniper</span><output aria-label="Skill status">Loading</output></div>
-    <div class="resource-actions"><button type="button" data-install-skill disabled>Install</button><button type="button" data-remove-skill aria-label="Remove PR Sniper skill" disabled><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></button></div>
+    <div class="setting-row"><span>MCP</span><output aria-label="MCP status">Loading</output></div>
+    <div class="resource-actions"><button type="button" data-install-mcp disabled>Install</button><button type="button" data-remove-mcp aria-label="Remove PR Sniper MCP server" disabled><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></button></div>
+    <div class="setting-row"><span>/pr-sniper</span><output aria-label="Skill status">Loading</output></div>
+    <div class="setting-row skill-command"><code aria-label="Skill install command">${SKILL_COMMAND}</code><button type="button" data-copy-skill aria-label="Copy skill install command" title="Copy">${COPY_ICON}</button></div>
     <p role="alert" hidden></p></fieldset>`;
-  const status = container.querySelector("output")!;
-  const install = container.querySelector<HTMLButtonElement>(
-    "[data-install-skill]",
-  )!;
-  const remove = container.querySelector<HTMLButtonElement>(
-    "[data-remove-skill]",
-  )!;
+  const [status, skill] = container.querySelectorAll("output");
+  const command = container.querySelector("code")!;
+  const install =
+    container.querySelector<HTMLButtonElement>("[data-install-mcp]")!;
+  const remove =
+    container.querySelector<HTMLButtonElement>("[data-remove-mcp]")!;
+  const copy = container.querySelector<HTMLButtonElement>("[data-copy-skill]")!;
   const alert = container.querySelector<HTMLElement>("[role=alert]")!;
   let current: Installation | undefined;
   let pending = false;
   const render = () => {
     status.textContent =
       current?.state === "installed"
-        ? current.version
+        ? "Installed"
         : current?.state === "incomplete"
           ? "Incomplete"
           : current
@@ -38,6 +47,12 @@ export function mountControlInstallation(container: HTMLElement) {
           : !current && !alert.hidden
             ? "Retry"
             : "Install";
+    skill.textContent = current
+      ? current.skill_detected
+        ? "Detected"
+        : "Not detected"
+      : "Unavailable";
+    command.textContent = current?.skill_command ?? SKILL_COMMAND;
     install.disabled = pending || (!current && Boolean(alert.hidden));
     remove.disabled = pending || !current?.revision;
   };
@@ -69,9 +84,11 @@ export function mountControlInstallation(container: HTMLElement) {
         alert.textContent =
           code === "installation_conflict"
             ? "Conflict"
-            : code === "conflict"
-              ? "Changed"
-              : "Unavailable";
+            : code === "installation_linked_unsupported"
+              ? "Linked folder"
+              : code === "conflict"
+                ? "Changed"
+                : "Unavailable";
       alert.hidden = false;
       current = undefined;
       if (command !== "control_installation") {
@@ -119,5 +136,10 @@ export function mountControlInstallation(container: HTMLElement) {
       },
       remove,
     );
+  copy.onclick = () => {
+    void navigator.clipboard
+      ?.writeText(command.textContent ?? "")
+      .catch(() => undefined);
+  };
   void perform("control_installation");
 }

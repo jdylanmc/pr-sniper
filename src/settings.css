@@ -732,6 +732,17 @@
   font-weight: 400;
   margin-top: 4px;
 }
+.settings-window .skill-command {
+  margin-top: 10px;
+  gap: 10px;
+}
+.skill-command code {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .settings-window .setting-row select {
   width: 38%;
   min-width: 175px;

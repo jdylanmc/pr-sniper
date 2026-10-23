@@ -4428,7 +4428,13 @@ export async function mountSettings(
     const checkbox = content.querySelector<HTMLInputElement>("#login");
     const status = content.querySelector<HTMLElement>("#login-status");
     const error = content.querySelector<HTMLElement>("#login-error");
-    if (!checkbox || !status || !error) return;
+    const repair = content.querySelector<HTMLButtonElement>("#login-repair");
+    if (!checkbox || !status || !error || !repair) return;
+    repair.hidden = !(
+      snapshot.login_registration === "invalid" ||
+      (saved.launch_at_login && snapshot.login_registration === "absent")
+    );
+    repair.disabled = startupPending || snapshot.isolated;
     error.textContent = startupError;
     error.hidden = !startupError;
     checkbox.checked = saved.launch_at_login;
@@ -4511,7 +4517,7 @@ export async function mountSettings(
       <div class="settings-group"><fieldset aria-label="Appearance"><legend>Appearance</legend><label class="setting-row"><span>Theme</span><select id="theme" aria-label="Theme">${themeOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><p id="theme-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group" id="notification-settings"></div>
       <div class="settings-group" id="control-installation"></div>
-      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
+      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><div class="resource-actions"><button type="button" id="login-repair" hidden>Repair</button></div><p id="login-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
@@ -4584,18 +4590,17 @@ export async function mountSettings(
           else preferenceDisclosures.delete(details.id);
         };
       });
-    content.querySelector<HTMLInputElement>("#login")!.onchange = async (
-      event,
+    const applyStartup = async (
+      command: string,
+      args?: { enabled: boolean },
     ) => {
       if (startupPending) return;
-      const checkbox = event.target as HTMLInputElement;
-      const enabled = checkbox.checked;
       const errors: string[] = [];
       startupPending = true;
       startupError = "";
       updateStartup();
       try {
-        await invoke("save_login", { enabled });
+        await invoke(command, args);
       } catch (cause) {
         errors.push(
           typeof cause === "string" ? cause : "Startup change failed",
@@ -4622,6 +4627,12 @@ export async function mountSettings(
         if (errors.length) showError(errors.join("\n"));
       }
     };
+    content.querySelector<HTMLInputElement>("#login")!.onchange = (event) =>
+      void applyStartup("save_login", {
+        enabled: (event.target as HTMLInputElement).checked,
+      });
+    content.querySelector<HTMLButtonElement>("#login-repair")!.onclick = () =>
+      void applyStartup("repair_login");
     const copy = content.querySelector<HTMLButtonElement>("#copy-diagnostics")!;
     copy.onclick = async () => {
       if (copy.getAttribute("aria-busy") === "true") return;
