@@ -9,7 +9,12 @@ export type ExitName =
   | "submit_report"
   | "lgtm";
 
-export type Progress = "approving" | "merging" | "publishing";
+export type Progress =
+  | "approving"
+  | "merging"
+  | "merge_pending_behind_base"
+  | "merge_pending_conflicts"
+  | "publishing";
 
 const paths = {
   comment: "M4 5h16v11H9l-5 4V5Z",
@@ -45,6 +50,14 @@ export const waitingStates: Record<string, string> = {
 export const progressPresentation: Record<Progress, [string, string]> = {
   approving: ["Approving", paths.approve],
   merging: ["Merging", paths.merge],
+  merge_pending_behind_base: [
+    "Approved \u2014 merge pending (behind base)",
+    paths.merge,
+  ],
+  merge_pending_conflicts: [
+    "Approved \u2014 merge pending (conflicts)",
+    paths.merge,
+  ],
   publishing: ["Publishing", paths.comment],
 };
 

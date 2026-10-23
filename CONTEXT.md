@@ -186,7 +186,7 @@ _Avoid_: Approval review, second pass
 
 **Action Clearance**:
 Gate before any provider action. Every current assignment has its own completed pass for the tracked Iteration. Old evidence never covers an added or replaced assignment. Pending conversations, held findings, human-input decisions, incomplete admission and unknown mutations block.
-An own finding assessed `still_applies` or `unverifiable` blocks approval and merge even when its provider thread is resolved or an earlier correction was acknowledged; no-write human handoff remains available. `fixed`, `withdrawn`, `author_wont_fix` and `signed_off` do not block clearance, but provider merge still needs every thread resolved.
+An own finding assessed `still_applies` or `unverifiable` blocks approval and merge even when its provider thread is resolved or an earlier correction was acknowledged; no-write human handoff remains available. `fixed`, `withdrawn`, `author_wont_fix`, `no_longer_applies` and `signed_off` do not block clearance, but provider merge still needs every thread resolved.
 _Avoid_: Auto-merge approval
 
 ### Failure and retry

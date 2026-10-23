@@ -315,6 +315,21 @@ fn label(text: &str) -> String {
         .collect()
 }
 
+/// `<teammate>#<n>` of every teammate finding the primary's packet lists.
+pub(crate) fn teammate_finding_ids(input: &PacketInput) -> Vec<String> {
+    if input.role != Role::Primary {
+        return Vec::new();
+    }
+    input
+        .teammates
+        .iter()
+        .flat_map(|t| {
+            let agent = label(&t.agent);
+            (1..=t.report.findings.len()).map(move |n| format!("{agent}#{n}"))
+        })
+        .collect()
+}
+
 fn teammates(out: &mut String, input: &PacketInput) {
     if input.role != Role::Primary || input.teammates.is_empty() {
         return;
@@ -341,7 +356,9 @@ fn teammates(out: &mut String, input: &PacketInput) {
         for (index, f) in teammate.report.findings.iter().enumerate() {
             let _ = write!(
                 body,
-                "{}. {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
+                "{}. [{}#{}] {}:{}\nnano: {}\nfull: {}\nfix: {}\n",
+                index + 1,
+                label(&teammate.agent),
                 index + 1,
                 f.file,
                 f.line,

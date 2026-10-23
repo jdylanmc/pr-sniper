@@ -889,7 +889,15 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {
                     None
                 } else if approved {
-                    Some(queue::Progress::Merging)
+                    Some(match approval.merge_pending.as_ref().map(|p| p.reason) {
+                        Some(crate::exits::gates::MergeBlock::BehindBase) => {
+                            queue::Progress::MergePendingBehindBase
+                        }
+                        Some(crate::exits::gates::MergeBlock::Conflicts) => {
+                            queue::Progress::MergePendingConflicts
+                        }
+                        None => queue::Progress::Merging,
+                    })
                 } else {
                     Some(queue::Progress::Approving)
                 };
@@ -898,7 +906,12 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         if item.state != State::MachineSignedOff
             && matches!(
                 item.progress,
-                Some(queue::Progress::Approving | queue::Progress::Merging)
+                Some(
+                    queue::Progress::Approving
+                        | queue::Progress::Merging
+                        | queue::Progress::MergePendingBehindBase
+                        | queue::Progress::MergePendingConflicts
+                )
             )
         {
             item.progress = None;

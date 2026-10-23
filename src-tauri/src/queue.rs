@@ -78,6 +78,9 @@ impl State {
 pub enum Progress {
     Approving,
     Merging,
+    /// Approved; the merge waits for the author to update the branch.
+    MergePendingBehindBase,
+    MergePendingConflicts,
     Publishing,
 }
 

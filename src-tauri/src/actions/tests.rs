@@ -437,6 +437,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             comment: "All settled.".into(),
             resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
             action,
+            dismissed_teammate_findings: vec![],
         };
         assert!(matches!(
             (stamped.setup.gate)(&lgtm(&[], crate::exits::LgtmAction::Merge)),
@@ -466,6 +467,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         comment: "All settled.".into(),
         resolve_own_threads: vec![],
         action: crate::exits::LgtmAction::Merge,
+        dismissed_teammate_findings: vec![],
     };
     // CI turns red between packet and exit: that exit is denied, the run continues.
     env.wire.0.lock().unwrap().observation.checks = Some("FAILURE".into());

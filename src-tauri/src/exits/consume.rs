@@ -278,6 +278,7 @@ pub fn local_sign_off(exit: Option<&ExitOutcome>) -> Option<&String> {
             comment,
             resolve_own_threads,
             action: super::LgtmAction::Ready,
+            ..
         } if resolve_own_threads.is_empty() => Some(comment),
         _ => None,
     }

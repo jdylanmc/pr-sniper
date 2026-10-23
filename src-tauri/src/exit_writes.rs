@@ -142,6 +142,7 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         comment,
         resolve_own_threads,
         action,
+        ..
     }) = review.result.as_ref()?.output.exit.as_ref()
     {
         return sign_off(review, comment, resolve_own_threads, *action, now);
@@ -226,7 +227,8 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
     })
 }
 
-/// A sign-off's sign-off reply and resolution on each own open thread.
+/// A sign-off's audit reply (its comment and the thread's disposition) and
+/// resolution on each accounted own open thread.
 fn sign_off(
     review: &ReviewRun,
     comment: &str,
@@ -234,15 +236,46 @@ fn sign_off(
     action: crate::exits::LgtmAction,
     now: i64,
 ) -> Option<ExitWrite> {
+    use crate::review::findings::Disposition;
     if threads.is_empty() {
         return None;
     }
     let result = review.result.as_ref()?;
+    let duck_required = review
+        .selection
+        .configuration
+        .as_ref()
+        .is_some_and(|c| c.rubber_duck.is_some());
+    let evidence = |id: &String| {
+        result
+            .finding_dispositions
+            .iter()
+            .find(|a| {
+                a.thread_id == *id
+                    && match a.disposition {
+                        Disposition::Fixed => {
+                            !duck_required
+                                || review
+                                    .packet
+                                    .as_ref()
+                                    .is_some_and(|p| a.duck_confirms(&p.state_id, &result.ducks))
+                        }
+                        Disposition::SignedOff => true,
+                        other => other.signs_off(),
+                    }
+            })
+            .cloned()
+    };
     let step = |kind, id: &String| Step {
         kind,
         thread_id: id.clone(),
         body: if kind == StepKind::Reply {
-            comment.to_string()
+            match evidence(id) {
+                Some(a) if a.disposition != Disposition::SignedOff => {
+                    format!("{comment}\n\n{}: {}", a.disposition.id(), a.rationale)
+                }
+                _ => comment.to_string(),
+            }
         } else {
             String::new()
         },
@@ -250,18 +283,7 @@ fn sign_off(
         revision: None,
         state: StepState::Planned,
         receipt: None,
-        resolution_evidence: (kind == StepKind::Resolve)
-            .then(|| {
-                result
-                    .finding_dispositions
-                    .iter()
-                    .find(|a| {
-                        a.thread_id == *id
-                            && a.disposition == crate::review::findings::Disposition::SignedOff
-                    })
-                    .cloned()
-            })
-            .flatten(),
+        resolution_evidence: (kind == StepKind::Resolve).then(|| evidence(id)).flatten(),
     };
     let mut steps: Vec<Step> = threads.iter().map(|id| step(StepKind::Reply, id)).collect();
     steps.extend(threads.iter().map(|id| step(StepKind::Resolve, id)));
@@ -570,7 +592,9 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
                     a.author_comment_id.is_some()
                         && a.anchor.as_ref().is_some_and(|x| x.author_id.is_some())
                 }
-                Disposition::SignedOff => write.sign_off.is_some() && a.anchor.is_some(),
+                Disposition::SignedOff | Disposition::Withdrawn | Disposition::NoLongerApplies => {
+                    write.sign_off.is_some() && a.anchor.is_some()
+                }
                 _ => false,
             }
             && a.head_sha == write.job.head_sha
@@ -588,7 +612,7 @@ fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
     if valid {
         Ok(())
     } else {
-        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence, a verified author won't-fix, or the primary's sign-off; outdated is not proof."))
+        Err(Failure::permanent("Resolution needs a fixed disposition with exact head/base and current-code evidence, a verified author won't-fix, or a disposition the primary's sign-off accounted for; outdated is not proof."))
     }
 }
 
@@ -624,7 +648,10 @@ fn settled(step: &Step) -> Option<&crate::review::findings::Assessment> {
     step.resolution_evidence.as_ref().filter(|a| {
         matches!(
             a.disposition,
-            Disposition::AuthorWontFix | Disposition::SignedOff
+            Disposition::AuthorWontFix
+                | Disposition::SignedOff
+                | Disposition::Withdrawn
+                | Disposition::NoLongerApplies
         )
     })
 }

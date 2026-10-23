@@ -1335,7 +1335,9 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                     None => Vec::new(),
                 };
                 if let crate::exits::ExitCall::Lgtm { .. } = call {
-                    return contract.sign_off(call, assessments);
+                    return contract.sign_off(call, assessments, &ducks, |evidence| {
+                        reads.evidence_served(evidence)
+                    });
                 }
                 contract.prepare(call, assessments, &ducks, |evidence| {
                     reads.evidence_served(evidence)

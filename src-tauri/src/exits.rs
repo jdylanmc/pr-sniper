@@ -90,7 +90,7 @@ impl Exit {
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
             Exit::SubmitVerdict => crate::review::duck::VERDICT_DESCRIPTION,
-            Exit::Lgtm => "Terminal exit: sign off. No new findings and nothing pending. The host posts comment as a reply on each of your own open threads and resolves them, then acts on the assignment's authority after fresh gates: hand to the human, approve, or approve and merge. Refused while others' threads are open, CI is not green, or the PR is draft or conflicting. Ends the run.",
+            Exit::Lgtm => "Terminal exit: sign off. No new findings and nothing pending. Every own open thread needs a finding_dispositions entry: fixed (verified evidence), author_wont_fix, withdrawn (your rationale) or no_longer_applies (head changed since the thread, with evidence); still_applies or unverifiable refuses it. Every teammate finding in this run needs a dismissed_teammate_findings entry, or publish it with leave_comments instead. The host posts comment and each disposition as an audit reply on each own open thread and resolves it, then acts on the assignment's authority after fresh gates: hand to the human, approve, or approve and merge. Never updates the branch: a branch behind its base refuses merge. Refused while others' threads are open, CI is not green, or the PR is draft or conflicting. Ends the run.",
         }
     }
 
@@ -135,7 +135,11 @@ impl Exit {
             ),
             Exit::SubmitVerdict => return crate::review::duck::verdict_schema(),
             Exit::Lgtm => (
-                json!({"comment":{"type":"string","description":"Short sign-off rationale, posted on each own thread resolved. At most 4096 bytes."}}),
+                json!({"comment":{"type":"string","description":"Short sign-off rationale, posted on each own thread resolved. At most 4096 bytes."},
+                    "dismissed_teammate_findings":{"type":"array","maxItems":MAX_FINDINGS,"items":{"type":"object","additionalProperties":false,
+                        "properties":{"id":{"type":"string","description":"<teammate>#<n> as listed under Teammate reports."},
+                            "rationale":{"type":"string","description":"Why it is not a defect. At most 4096 bytes."}},
+                        "required":["id","rationale"]}}}),
                 json!(["comment"]),
             ),
         };
@@ -146,6 +150,7 @@ impl Exit {
                 | Exit::Wait
                 | Exit::ApprovePullRequest
                 | Exit::ApproveAndMerge
+                | Exit::Lgtm
         ) {
             properties["finding_dispositions"] = crate::review::findings::assessment_schema();
         }
@@ -219,12 +224,23 @@ pub enum ExitCall {
     SubmitVerdict {
         verdict: crate::review::duck::Verdict,
     },
-    /// The model supplies `comment`; the host fills the threads and the action.
+    /// The model supplies `comment` and teammate dismissals; the host fills the
+    /// threads and the action.
     Lgtm {
         comment: String,
         resolve_own_threads: Vec<String>,
         action: LgtmAction,
+        dismissed_teammate_findings: Vec<TeammateDismissal>,
     },
+}
+
+/// A teammate finding of this run the primary signs off past, with its reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeammateDismissal {
+    /// `<teammate>#<n>`, as listed under Teammate reports.
+    pub id: String,
+    pub rationale: String,
 }
 
 /// What a sign-off does after its thread resolutions: the assignment's authority.
@@ -268,6 +284,8 @@ pub enum ExitOutcome {
         comment: String,
         resolve_own_threads: Vec<String>,
         action: LgtmAction,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dismissed_teammate_findings: Vec<TeammateDismissal>,
     },
 }
 
@@ -335,11 +353,13 @@ impl ExitCall {
                 comment,
                 resolve_own_threads,
                 action,
+                dismissed_teammate_findings,
             } => (
                 ExitOutcome::Lgtm {
                     comment: comment.clone(),
                     resolve_own_threads: resolve_own_threads.clone(),
                     action: *action,
+                    dismissed_teammate_findings: dismissed_teammate_findings.clone(),
                 },
                 None,
             ),
@@ -486,13 +506,28 @@ impl ExitCall {
                 #[serde(deny_unknown_fields)]
                 struct Args {
                     comment: String,
+                    #[serde(default)]
+                    dismissed_teammate_findings: Vec<TeammateDismissal>,
                 }
                 let a: Args = serde_json::from_value(args.clone()).map_err(bad)?;
                 check_text(&a.comment, MAX_SUMMARY_BYTES, "comment")?;
+                if a.dismissed_teammate_findings.len() > MAX_FINDINGS {
+                    return Err(format!(
+                        "At most {MAX_FINDINGS} dismissed_teammate_findings."
+                    ));
+                }
+                for d in &a.dismissed_teammate_findings {
+                    check_text(&d.id, MAX_PATH_BYTES, "id")?;
+                    if d.rationale.trim().is_empty() {
+                        return Err(format!("Dismissing {}: rationale is required.", d.id));
+                    }
+                    check_text(&d.rationale, MAX_SUMMARY_BYTES, "rationale")?;
+                }
                 Ok(Self::Lgtm {
                     comment: a.comment,
                     resolve_own_threads: Vec::new(),
                     action: LgtmAction::Ready,
+                    dismissed_teammate_findings: a.dismissed_teammate_findings,
                 })
             }
         }

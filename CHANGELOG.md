@@ -7,12 +7,19 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Added
 
-- `lgtm` sign-off exit for the primary: it replies on and resolves its own open
-  threads on its own judgment (no per-thread evidence or Rubber Duck), then
-  hands off, approves or approves and merges per the assignment's authority.
-  Refused while another reviewer's thread is open, CI is not green, or the PR is
-  draft, conflicting or blocked; approve/merge wait for the resolutions and
-  re-check fresh state.
+- `lgtm` sign-off exit for the primary: it accounts for every own open thread
+  (`fixed` with evidence, `author_wont_fix`, `withdrawn` or `no_longer_applies`
+  on a changed head), dismisses every teammate finding with a rationale,
+  replies each disposition on and resolves those threads, then hands off,
+  approves or approves and merges per the assignment's authority. An
+  unaccounted thread, a finding that still applies or an undismissed teammate
+  finding refuses it, listing the ids. Refused while another reviewer's thread
+  is open, CI is red or pending, or the PR is draft; approve/merge wait for the
+  resolutions and re-check fresh state.
+- A branch behind its base or with conflicts no longer blocks approval: the
+  sign-off approves, shows **Approved — merge pending (behind base/conflicts)**
+  and keeps monitoring; the merge waits for the author to update the branch.
+  PR Sniper never updates a branch.
 
 ### Fixed
 

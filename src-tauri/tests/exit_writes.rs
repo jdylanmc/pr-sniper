@@ -1154,12 +1154,17 @@ fn a_change_while_the_resolve_lands_is_undone_and_not_completed() {
 
 /// The primary's `lgtm` on `threads`, each anchored to its current snapshot.
 fn sign_off_write(threads: &[&str]) -> ExitWrite {
+    sign_off_as(threads, "signed_off")
+}
+
+fn sign_off_as(threads: &[&str], disposition: &str) -> ExitWrite {
     let mut review = fake::review(json!([]), json!([]), json!([]), &fake::settings());
     let result = review.result.as_mut().unwrap();
     result.output.exit = Some(pr_sniper_lib::exits::ExitOutcome::Lgtm {
         comment: "Signed off: every finding is settled.".into(),
         resolve_own_threads: threads.iter().map(|t| t.to_string()).collect(),
         action: pr_sniper_lib::exits::LgtmAction::Merge,
+        dismissed_teammate_findings: vec![],
     });
     result.finding_dispositions = threads
         .iter()
@@ -1169,7 +1174,7 @@ fn sign_off_write(threads: &[&str]) -> ExitWrite {
                 _ => json!({"100":hash("Root finding"),"101":hash("Why?")}),
             };
             serde_json::from_value(json!({
-                "thread_id":id,"disposition":"signed_off","head_sha":HEAD,"base_sha":"b".repeat(40),
+                "thread_id":id,"disposition":disposition,"head_sha":HEAD,"base_sha":"b".repeat(40),
                 "rationale":"Signed off: every finding is settled.","evidence":[],
                 "anchor":{"base_sha":"b".repeat(40),"blobs":{},"manifests":"m","comments":comments}
             }))
@@ -1197,6 +1202,31 @@ fn a_sign_off_replies_on_and_resolves_only_its_own_threads_without_fixed_evidenc
     drive(&mut env, &mut w);
     assert_eq!(w.phase, Phase::Tossed);
     assert!(wire.log().is_empty());
+    assert!(!wire.thread("T1").resolved);
+}
+
+#[test]
+fn a_sign_off_posts_each_threads_disposition_as_its_audit_reply() {
+    for disposition in ["withdrawn", "no_longer_applies"] {
+        let wire = wire();
+        let mut env = Env::new(&wire);
+        let mut w = sign_off_as(&["T1"], disposition);
+        assert_eq!(
+            w.steps[0].body,
+            format!(
+                "Signed off: every finding is settled.\n\n{disposition}: Signed off: every finding is settled."
+            )
+        );
+        drive(&mut env, &mut w);
+        assert_eq!(w.phase, Phase::Completed, "{disposition}");
+        assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+    }
+    // Not a disposition a sign-off accounts for: nothing is resolved.
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = sign_off_as(&["T1"], "still_applies");
+    drive(&mut env, &mut w);
+    assert_ne!(w.phase, Phase::Completed);
     assert!(!wire.thread("T1").resolved);
 }
 

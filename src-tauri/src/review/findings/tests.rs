@@ -642,6 +642,7 @@ fn won_t_fix_contract(reply_author: Option<&str>) -> Contract {
         own_comments: ["root".to_string()].into(),
         carried: Vec::new(),
         lgtm_action: Default::default(),
+        ..Default::default()
     };
     c.threads[0].comments.push(CommentFact {
         id: "reply".into(),
@@ -855,58 +856,162 @@ fn lgtm() -> ExitCall {
     ExitCall::parse("lgtm", &json!({"comment":"Every finding is settled."})).unwrap()
 }
 
+fn signed(c: &Contract, call: &mut ExitCall, given: &mut Vec<Assessment>) -> Result<(), String> {
+    c.sign_off(call, given, &[], |_| Ok(()))
+}
+
+fn on(id: &str, disposition: Disposition) -> Assessment {
+    Assessment {
+        thread_id: id.into(),
+        ..assessment(disposition)
+    }
+}
+
 #[test]
-fn lgtm_signs_off_every_own_finding_and_resolves_only_own_open_threads() {
+fn lgtm_never_clears_an_own_open_thread_it_did_not_account_for() {
+    // A teammate's finding published on this head is an own open thread.
+    let mut c = contract(false, false);
+    c.identities.thread_heads = [("existing".to_string(), "head".to_string())].into();
+    let mut given = Vec::new();
+    let error = signed(&c, &mut lgtm(), &mut given).unwrap_err();
+    assert!(error.contains("Unaccounted: existing."), "{error}");
+    for refused in [Disposition::StillApplies, Disposition::Unverifiable] {
+        let error = signed(&c, &mut lgtm(), &mut vec![assessment(refused)]).unwrap_err();
+        assert!(error.contains("still apply"), "{error}");
+    }
+    // Same head: nothing changed for it to stop applying.
+    let error = signed(
+        &c,
+        &mut lgtm(),
+        &mut vec![assessment(Disposition::NoLongerApplies)],
+    )
+    .unwrap_err();
+    assert!(error.contains("head has not changed"), "{error}");
+    // Fixed keeps its evidence rules.
+    let unread = c.sign_off(
+        &mut lgtm(),
+        &mut vec![assessment(Disposition::Fixed)],
+        &[],
+        |_| Err(crate::review::duck::Unserved::NotRead),
+    );
+    assert!(unread.unwrap_err().contains("Fixed existing"));
+    // The model never stamps signed_off itself.
+    assert!(signed(
+        &c,
+        &mut lgtm(),
+        &mut vec![assessment(Disposition::SignedOff)]
+    )
+    .unwrap_err()
+    .contains("host-only"));
+}
+
+#[test]
+fn lgtm_resolves_only_accounted_own_open_threads_and_acts_on_authority() {
     let mut c = contract(false, false);
     c.identities.lgtm_action = crate::exits::LgtmAction::Merge;
-    let mut other = c.threads[0].clone();
-    other.id = "theirs".into();
-    other.mine = false;
-    let mut closed = c.threads[0].clone();
-    closed.id = "closed".into();
-    closed.resolved = true;
-    let mut carried = c.threads[0].clone();
-    carried.id = "carried".into();
-    carried.carried = true;
-    c.threads.extend([other, closed, carried]);
+    c.identities.thread_heads = [
+        ("existing".to_string(), "head".to_string()),
+        ("moved".to_string(), "old-head".to_string()),
+        ("dropped".to_string(), "head".to_string()),
+    ]
+    .into();
+    let thread = |id: &str, mine, resolved, carried| {
+        let mut t = c.threads[0].clone();
+        t.id = id.into();
+        t.mine = mine;
+        t.resolved = resolved;
+        t.carried = carried;
+        t
+    };
+    let extra = [
+        thread("moved", true, false, false),
+        thread("dropped", true, false, false),
+        thread("theirs", false, false, false),
+        thread("closed", true, true, false),
+        thread("carried", true, true, true),
+    ];
+    c.threads.extend(extra);
     let mut call = lgtm();
-    let mut assessments = Vec::new();
-    c.sign_off(&mut call, &mut assessments).unwrap();
+    let mut given = vec![
+        on("existing", Disposition::Fixed),
+        on("moved", Disposition::NoLongerApplies),
+        on("dropped", Disposition::Withdrawn),
+    ];
+    signed(&c, &mut call, &mut given).unwrap();
     let ExitCall::Lgtm {
         comment,
         resolve_own_threads,
         action,
+        ..
     } = &call
     else {
         panic!("still lgtm");
     };
-    assert_eq!(resolve_own_threads, &["existing".to_string()]);
+    assert_eq!(resolve_own_threads, &["existing", "moved", "dropped"]);
     assert_eq!(*action, crate::exits::LgtmAction::Merge);
-    let ids: Vec<_> = assessments.iter().map(|a| a.thread_id.as_str()).collect();
-    assert_eq!(ids, ["existing", "closed"]);
-    assert!(assessments
+    let kinds: Vec<_> = given
         .iter()
-        .all(|a| a.disposition == Disposition::SignedOff
-            && a.rationale == *comment
-            && a.head_sha == "head"
-            && a.base_sha == "base"));
-    // The model never supplies dispositions to a sign-off, nor signed_off elsewhere.
-    let mut call = lgtm();
-    let mut given = vec![assessment(Disposition::Fixed)];
-    assert!(c.sign_off(&mut call, &mut given).is_err());
-    assert!(c
-        .validate(
-            &resolve(),
-            &[assessment(Disposition::SignedOff)],
-            &[],
-            |_| Ok(())
-        )
+        .map(|a| (a.thread_id.as_str(), a.disposition))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("existing", Disposition::Fixed),
+            ("moved", Disposition::NoLongerApplies),
+            ("dropped", Disposition::Withdrawn),
+            ("closed", Disposition::SignedOff),
+        ]
+    );
+    assert_eq!(given[3].rationale, *comment);
+    // Leaving one own open thread out refuses the whole sign-off, listing it.
+    let mut partial = vec![
+        on("existing", Disposition::Fixed),
+        on("moved", Disposition::NoLongerApplies),
+    ];
+    assert!(signed(&c, &mut lgtm(), &mut partial)
         .unwrap_err()
-        .contains("host-only"));
-    // The model's arguments carry only the comment.
+        .contains("Unaccounted: dropped."));
+    // The model's arguments never name threads to resolve.
     assert!(ExitCall::parse(
         "lgtm",
         &json!({"comment":"ok","resolve_own_threads":["theirs"]})
+    )
+    .is_err());
+}
+
+#[test]
+fn lgtm_cannot_pass_over_an_undismissed_teammate_finding() {
+    let mut c = contract(true, false);
+    c.identities.teammate_findings = vec!["Security#1".into(), "Security#2".into()];
+    let error = signed(&c, &mut lgtm(), &mut Vec::new()).unwrap_err();
+    assert!(
+        error.contains("Undismissed: Security#1, Security#2."),
+        "{error}"
+    );
+    let dismiss = |ids: &[&str]| {
+        ExitCall::parse(
+            "lgtm",
+            &json!({"comment":"ok","dismissed_teammate_findings":ids.iter()
+                .map(|id| json!({"id":id,"rationale":"Guarded by the caller's bounds check."}))
+                .collect::<Vec<_>>()}),
+        )
+        .unwrap()
+    };
+    assert!(signed(&c, &mut dismiss(&["Security#1"]), &mut Vec::new())
+        .unwrap_err()
+        .contains("Undismissed: Security#2."));
+    assert!(signed(&c, &mut dismiss(&["Security#3"]), &mut Vec::new())
+        .unwrap_err()
+        .contains("Unknown teammate finding Security#3"));
+    signed(
+        &c,
+        &mut dismiss(&["Security#1", "Security#2"]),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(ExitCall::parse(
+        "lgtm",
+        &json!({"comment":"ok","dismissed_teammate_findings":[{"id":"Security#1","rationale":" "}]})
     )
     .is_err());
 }

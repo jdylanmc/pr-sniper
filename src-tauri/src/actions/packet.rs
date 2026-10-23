@@ -27,6 +27,18 @@ pub struct PacketApproval {
     /// Every wanted action is done (or abandoned): nothing more to watch.
     #[serde(default)]
     pub settled: bool,
+    /// Approved; the merge waits for the author to update the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_pending: Option<MergePending>,
+}
+
+/// Typed outcome: approved; merge pending on `reason`; waiting for the author.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergePending {
+    pub reason: gates::MergeBlock,
+    /// GitHub ran no checks for the head because of the conflicts.
+    #[serde(default)]
+    pub ci_not_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +224,7 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
                 comment,
                 merge,
                 settled: false,
+                merge_pending: None,
             }),
         });
         changed = true;
@@ -230,11 +243,23 @@ fn settled_threads_hold(run: &FinalReview, observation: &Observation) -> Result<
         .result
         .as_ref()
         .ok_or("Final review result unavailable.")?;
-    settled_hold(
-        &result.finding_dispositions,
-        &result.carried_findings,
-        observation,
-    )
+    // A sign-off also resolved withdrawn and no-longer-applicable own threads on
+    // their unchanged snapshot; elsewhere those resolve nothing.
+    let signed_off = matches!(result.output.exit, Some(ExitOutcome::Lgtm { .. }));
+    let dispositions: Vec<_> = result
+        .finding_dispositions
+        .iter()
+        .filter(|a| {
+            signed_off
+                || !matches!(
+                    a.disposition,
+                    crate::review::findings::Disposition::Withdrawn
+                        | crate::review::findings::Disposition::NoLongerApplies
+                )
+        })
+        .cloned()
+        .collect();
+    settled_hold(&dispositions, &result.carried_findings, observation)
 }
 
 pub(super) fn settled_hold(
@@ -249,7 +274,10 @@ pub(super) fn settled_hold(
         .filter(|a| {
             matches!(
                 a.disposition,
-                Disposition::AuthorWontFix | Disposition::SignedOff
+                Disposition::AuthorWontFix
+                    | Disposition::SignedOff
+                    | Disposition::Withdrawn
+                    | Disposition::NoLongerApplies
             )
         })
         .chain(carried)
@@ -409,7 +437,7 @@ pub fn ready(
         Action::Approve => Exit::ApprovePullRequest,
         Action::Merge => Exit::ApproveAndMerge,
     };
-    let input = GateInput {
+    let mut input = GateInput {
         tools: vec![exit.id().into()],
         primary: true,
         grants: Grants {
@@ -422,6 +450,18 @@ pub fn ready(
         review_drafts: false,
         facts,
     };
+    // A sign-off approves whatever the branch's mergeability: only its merge waits
+    // for the author to update the branch.
+    let signed_off = matches!(
+        run.execution
+            .result
+            .as_ref()
+            .and_then(|r| r.output.exit.as_ref()),
+        Some(ExitOutcome::Lgtm { .. })
+    );
+    if signed_off && action == Action::Approve {
+        input = gates::sign_off_approval(&input);
+    }
     if let Some((_, Offer::Denied(reason))) = gates::offered(&input)
         .into_iter()
         .find(|(offered, _)| *offered == exit)
@@ -516,13 +556,25 @@ pub fn settle(
                 e.action == Action::Merge
                     && matches!(e.state, EffectState::Confirmed | EffectState::ExternalMerge)
             });
-        if approve_done && merge_done {
-            ready_to_consume.push(Settle {
-                final_id: run.id.clone(),
-                job,
-                run_id: approval.run_id.clone(),
+        let pending = (approve_done && !merge_done)
+            .then(|| Facts::from_observation(observation).merge_pending)
+            .flatten()
+            .map(|reason| MergePending {
+                reason,
+                ci_not_run: reason == gates::MergeBlock::Conflicts
+                    && gates::ci_not_run(observation),
             });
+        let settle = (approve_done && merge_done).then(|| Settle {
+            final_id: run.id.clone(),
+            job,
+            run_id: approval.run_id.clone(),
+        });
+        let packet = ledger.finals[index].packet.as_mut().unwrap();
+        if packet.merge_pending != pending {
+            packet.merge_pending = pending;
+            changed = true;
         }
+        ready_to_consume.extend(settle);
     }
     for (index, job) in failed {
         ledger.finals[index].packet.as_mut().unwrap().settled = true;

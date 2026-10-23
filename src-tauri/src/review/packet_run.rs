@@ -281,6 +281,17 @@ where
             .collect(),
         carried,
         lgtm_action: gates::lgtm_action(&base),
+        thread_heads: conversation
+            .threads
+            .iter()
+            .filter(|t| t.mine)
+            .filter_map(|t| {
+                let root = &t.comments.first()?.id;
+                let proof = ownership.iter().find(|p| p.root_ids.contains(root))?;
+                Some((t.id.clone(), proof.head_sha.clone()))
+            })
+            .collect(),
+        teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(

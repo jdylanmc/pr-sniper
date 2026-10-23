@@ -128,8 +128,34 @@ pub enum Disposition {
     /// The PR author replied won't-fix in the thread and the primary accepts that
     /// rationale on its merits.
     AuthorWontFix,
-    /// Host-stamped by the primary's `lgtm` sign-off; never model input.
+    /// Host-stamped by the primary's `lgtm` sign-off on an own resolved thread it
+    /// did not classify; never model input.
     SignedOff,
+    /// Re-assessed on a head changed since the thread was posted: the finding no
+    /// longer applies to the current code (current-head evidence required).
+    NoLongerApplies,
+}
+
+impl Disposition {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::StillApplies => "still_applies",
+            Self::Fixed => "fixed",
+            Self::Withdrawn => "withdrawn",
+            Self::Unverifiable => "unverifiable",
+            Self::AuthorWontFix => "author_wont_fix",
+            Self::SignedOff => "signed_off",
+            Self::NoLongerApplies => "no_longer_applies",
+        }
+    }
+
+    /// Accounts for an own open thread a sign-off resolves.
+    pub fn signs_off(self) -> bool {
+        matches!(
+            self,
+            Self::Fixed | Self::AuthorWontFix | Self::Withdrawn | Self::NoLongerApplies
+        )
+    }
 }
 
 /// Host-stamped at exit, never model input: what a resolution relied on, so a later
@@ -462,12 +488,13 @@ pub fn assessment_schema() -> Value {
     json!({"type":"array","items":{"type":"object","additionalProperties":false,
         "properties":{
             "thread_id":{"type":"string"},
-            "disposition":{"type":"string","enum":["still_applies","fixed","withdrawn","unverifiable","author_wont_fix"]},
+            "disposition":{"type":"string","enum":["still_applies","fixed","withdrawn","unverifiable","author_wont_fix","no_longer_applies"]},
             "head_sha":{"type":"string"},"base_sha":{"type":"string"},
             "rationale":{"type":"string","maxLength":4096},
             "evidence":{"type":"array","maxItems":10,"items":super::duck::reference_schema()},
             "duck_call":{"type":"integer","minimum":1},
             "author_comment_id":{"type":"string","maxLength":64,"description":"author_wont_fix only: the PR author's latest reply in that thread."}},
+        "description":"no_longer_applies: only when the head changed since the thread was posted, with current-head evidence.",
         "required":["thread_id","disposition","head_sha","base_sha","rationale","evidence"]}})
 }
 
@@ -613,25 +640,25 @@ impl Contract {
         Ok(())
     }
 
-    /// The primary's sign-off: every own finding not carried forward becomes
-    /// `signed_off` with the sign-off rationale, and every own open one is resolved.
-    /// The primary is accountable for the judgment; no per-thread evidence or duck.
+    /// The primary's sign-off. Every own open thread needs a resolvable disposition
+    /// (fixed, author_wont_fix, withdrawn, no_longer_applies) under the usual
+    /// evidence rules, nothing may still apply, and every teammate finding of this
+    /// run is dismissed with a rationale. Only accounted own open threads are
+    /// resolved; an own resolved thread left unclassified is recorded `signed_off`.
     pub fn sign_off(
         &self,
         call: &mut ExitCall,
         assessments: &mut Vec<Assessment>,
+        ducks: &[DuckCall],
+        served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
         let ExitCall::Lgtm {
-            comment,
-            resolve_own_threads,
-            action,
-        } = call
+            dismissed_teammate_findings: dismissed,
+            ..
+        } = &*call
         else {
             return Ok(());
         };
-        if !assessments.is_empty() {
-            return Err("lgtm takes no finding_dispositions; the host records your sign-off on every own finding.".into());
-        }
         if self.corrections.iter().any(|c| {
             !self
                 .threads
@@ -640,13 +667,75 @@ impl Contract {
         }) {
             return Err("An earlier correction outcome is unresolved; lgtm cannot proceed. Use ready_for_human.".into());
         }
-        let own: Vec<_> = self
+        let teammates = &self.identities.teammate_findings;
+        if let Some(unknown) = dismissed.iter().find(|d| !teammates.contains(&d.id)) {
+            return Err(format!(
+                "Unknown teammate finding {}. Use <teammate>#<n> from Teammate reports.",
+                unknown.id
+            ));
+        }
+        let undismissed: Vec<&str> = teammates
+            .iter()
+            .filter(|id| !dismissed.iter().any(|d| d.id == **id))
+            .map(String::as_str)
+            .collect();
+        if !undismissed.is_empty() {
+            return Err(format!(
+                "lgtm cannot pass over teammate findings: dismiss each in dismissed_teammate_findings with a rationale, or publish it with leave_comments. Undismissed: {}.",
+                undismissed.join(", ")
+            ));
+        }
+        self.validate(call, assessments, ducks, served)?;
+        let applicable: Vec<&str> = assessments
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.disposition,
+                    Disposition::StillApplies | Disposition::Unverifiable
+                )
+            })
+            .map(|a| a.thread_id.as_str())
+            .collect();
+        if !applicable.is_empty() {
+            return Err(format!(
+                "lgtm cannot clear findings that still apply or are unverifiable: {}. Use leave_comments or ready_for_human.",
+                applicable.join(", ")
+            ));
+        }
+        let open: Vec<&ThreadFact> = self
             .threads
             .iter()
-            .filter(|t| t.mine && !t.carried)
+            .filter(|t| t.mine && !t.resolved && !t.carried)
             .collect();
-        *assessments = own
+        let unaccounted: Vec<&str> = open
             .iter()
+            .filter(|t| {
+                !assessments
+                    .iter()
+                    .any(|a| a.thread_id == t.id && a.disposition.signs_off())
+            })
+            .map(|t| t.id.as_str())
+            .collect();
+        if !unaccounted.is_empty() {
+            return Err(format!(
+                "lgtm needs a finding_dispositions entry for every own open thread: fixed (verified evidence), author_wont_fix, withdrawn (your rationale) or no_longer_applies (head changed since the thread, with evidence). Unaccounted: {}.",
+                unaccounted.join(", ")
+            ));
+        }
+        let ExitCall::Lgtm {
+            comment,
+            resolve_own_threads,
+            action,
+            ..
+        } = call
+        else {
+            return Ok(());
+        };
+        let unclassified: Vec<Assessment> = self
+            .threads
+            .iter()
+            .filter(|t| t.mine && t.resolved && !t.carried)
+            .filter(|t| !assessments.iter().any(|a| a.thread_id == t.id))
             .map(|t| Assessment {
                 thread_id: t.id.clone(),
                 disposition: Disposition::SignedOff,
@@ -659,11 +748,8 @@ impl Contract {
                 anchor: None,
             })
             .collect();
-        *resolve_own_threads = own
-            .iter()
-            .filter(|t| !t.resolved)
-            .map(|t| t.id.clone())
-            .collect();
+        assessments.extend(unclassified);
+        *resolve_own_threads = open.iter().map(|t| t.id.clone()).collect();
         *action = self.identities.lgtm_action;
         Ok(())
     }
@@ -757,6 +843,22 @@ impl Contract {
                 }
                 _ => {}
             }
+            if a.disposition == Disposition::NoLongerApplies {
+                if a.evidence.is_empty() {
+                    return Err(format!("no_longer_applies {}: needs current-head code evidence actually read in this attempt.", a.thread_id));
+                }
+                if let Some(reason) = super::duck::unserved(&a.evidence, &served) {
+                    return Err(format!("no_longer_applies {}: needs current-head code evidence actually read in this attempt. {reason}", a.thread_id));
+                }
+                if self
+                    .identities
+                    .thread_heads
+                    .get(&a.thread_id)
+                    .is_none_or(|posted| *posted == self.head)
+                {
+                    return Err(format!("no_longer_applies {}: the head has not changed since that thread was posted. Use fixed, withdrawn or still_applies.", a.thread_id));
+                }
+            }
             if a.disposition == Disposition::Fixed {
                 if a.evidence.is_empty() {
                     return Err(format!("Fixed {}: needs current-head code evidence actually read in this attempt; outdated alone is not evidence.", a.thread_id));
@@ -785,8 +887,9 @@ impl Contract {
             .filter(|t| t.mine && t.carried)
             .map(|t| t.id.as_str())
             .collect();
-        if own.difference(&seen).any(|id| !carried.contains(id)) {
-            return Err("Classify every own finding, including resolved/outdated threads, except carried_forward ones: still_applies, fixed, withdrawn, unverifiable or author_wont_fix.".into());
+        // A sign-off accounts for its own open threads itself (`sign_off`).
+        if call.exit() != Exit::Lgtm && own.difference(&seen).any(|id| !carried.contains(id)) {
+            return Err("Classify every own finding, including resolved/outdated threads, except carried_forward ones: still_applies, fixed, withdrawn, unverifiable, author_wont_fix or no_longer_applies.".into());
         }
         if let ExitCall::LeaveComments {
             resolve_own_threads,
@@ -926,7 +1029,11 @@ pub(crate) fn stamp_carried(
                 r.thread_id == thread.id
                     && matches!(
                         r.evidence.disposition,
-                        Disposition::Fixed | Disposition::AuthorWontFix | Disposition::SignedOff
+                        Disposition::Fixed
+                            | Disposition::AuthorWontFix
+                            | Disposition::SignedOff
+                            | Disposition::Withdrawn
+                            | Disposition::NoLongerApplies
                     )
                     && anchor.base_sha == now.base_sha
                     && anchor.manifests == now.manifests
@@ -961,7 +1068,11 @@ pub(crate) fn stamp_anchors(
     for a in assessments {
         if !matches!(
             a.disposition,
-            Disposition::Fixed | Disposition::AuthorWontFix | Disposition::SignedOff
+            Disposition::Fixed
+                | Disposition::AuthorWontFix
+                | Disposition::SignedOff
+                | Disposition::Withdrawn
+                | Disposition::NoLongerApplies
         ) {
             continue;
         }

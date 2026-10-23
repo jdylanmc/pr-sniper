@@ -367,10 +367,9 @@ fn lgtm_is_primary_only_and_refused_on_every_hard_gate() {
     own_open.facts.sign_off = Some(Box::new(Facts::default()));
     assert!(is_offered(&own_open, Exit::Lgtm));
     type Edit = fn(&mut GateInput);
-    let cases: [(Edit, &str); 9] = [
+    let cases: [(Edit, &str); 8] = [
         (|i| i.facts.open = false, "closed"),
         (|i| i.facts.draft = true, "draft"),
-        (|i| i.facts.conflicts = true, "conflicts"),
         (|i| i.facts.ci = Ci::Red, "CI is red"),
         (|i| i.facts.ci = Ci::Pending, "CI is pending"),
         (|i| i.facts.changes_requested = true, "Changes requested"),
@@ -421,10 +420,56 @@ fn sign_off_facts_resolve_only_own_threads_and_their_provider_block() {
     assert!(sign_off_facts(&o, &["own".into()])
         .merge_blocker
         .unwrap()
-        .contains("BEHIND"));
+        .contains("behind base"));
     // Nothing of its own open: the provider block stands.
     o.merge_state = "BLOCKED".into();
     assert!(sign_off_facts(&o, &[]).merge_blocker.is_some());
+}
+
+#[test]
+fn lgtm_approves_past_author_only_merge_blockers_and_its_merge_waits() {
+    let mut behind = observation();
+    behind.merge_state = "BEHIND".into();
+    let mut input = base();
+    input.facts = Facts::from_observation(&behind);
+    assert_eq!(input.facts.merge_pending, Some(MergeBlock::BehindBase));
+    assert_eq!(
+        input.facts.merge_blocker.as_deref(),
+        Some(crate::github::actions::BEHIND_BASE)
+    );
+    // Approve + merge authority: signs off; only the merge is refused.
+    assert_eq!(lgtm_action(&input), LgtmAction::Merge);
+    assert_eq!(lgtm_denial(&input), None);
+    assert!(merge_denial(&input).unwrap().contains("behind base"));
+    input.grants.merge = false;
+    assert_eq!(lgtm_denial(&input), None);
+    // Self-authored: no approval to give, so the merge is the whole action.
+    let mut own = base();
+    own.facts = Facts::from_observation(&behind);
+    own.facts.author_is_acting = true;
+    own.grants.include_self = true;
+    assert!(lgtm_denial(&own).unwrap().contains("behind base"));
+
+    // Conflicts and GitHub ran no checks at all for the head: approval proceeds.
+    let mut conflicted = observation();
+    conflicted.mergeable = "CONFLICTING".into();
+    conflicted.merge_state = "DIRTY".into();
+    conflicted.checks = None;
+    conflicted.check_contexts = vec![];
+    assert!(ci_not_run(&conflicted));
+    let mut input = base();
+    input.facts = Facts::from_observation(&conflicted);
+    assert_eq!(input.facts.merge_pending, Some(MergeBlock::Conflicts));
+    assert_eq!(input.facts.ci, Ci::Unknown);
+    assert_eq!(lgtm_denial(&input), None);
+    assert!(merge_denial(&input).unwrap().contains("Merge conflicts"));
+    assert_eq!(approve_denial(&sign_off_approval(&input)), None);
+    // Any red or pending check still refuses it.
+    for (checks, reason) in [("FAILURE", "CI is red"), ("PENDING", "CI is pending")] {
+        conflicted.checks = Some(checks.into());
+        input.facts = Facts::from_observation(&conflicted);
+        assert!(lgtm_denial(&input).unwrap().contains(reason), "{checks}");
+    }
 }
 
 #[test]
@@ -590,4 +635,35 @@ fn approve_ignores_discussion_that_only_blocks_merge() {
         submitted_at: None,
     }];
     assert!(o.blocker(Action::Approve).unwrap().contains("pending"));
+}
+
+#[test]
+fn no_code_path_updates_a_pull_request_branch() {
+    // Split so this file does not match itself.
+    let forbidden = [
+        concat!("update", "PullRequestBranch"),
+        concat!("update", "-branch"),
+        concat!("update", "_branch"),
+    ];
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut scanned = 0;
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap().to_lowercase();
+                scanned += 1;
+                for word in forbidden {
+                    assert!(
+                        !text.contains(&word.to_lowercase()),
+                        "{} calls {word}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    assert!(scanned > 50);
 }
