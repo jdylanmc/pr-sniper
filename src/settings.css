@@ -2958,7 +2958,11 @@
     animation-duration: 2.4s;
   }
 }
-.panel-shell[data-settings-editor="true"] .panel-content {
+/* An open editor's body is the only scroller. The hidden library under its
+   transparent host still lays out, so #content must not scroll (or paint a
+   second scrollbar) behind it; scrollTop is retained for Back. */
+.panel-shell[data-settings-editor="true"] .panel-content,
+.panel-shell[data-settings-editor="true"] .settings-window #content {
   overflow: hidden;
 }
 .panel-shell .shared-resource-editor .doctrine-choices {

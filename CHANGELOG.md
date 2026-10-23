@@ -23,6 +23,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- Settings editors (repository detail, Agent, assignment) no longer show a
+  second scrollbar beside their own when the Settings list behind them is long;
+  the editor body is the panel's only scroll container.
 - `fixed` was refused ("evidence actually read in this attempt") for a ref with
   no line or an `end_line` past the last line, even after the head file was
   read, and the error never named the thread or ref. Whole-file refs count once
