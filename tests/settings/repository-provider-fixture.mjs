@@ -92,6 +92,13 @@ export async function providerFixture(page, store, handler) {
   });
   await page.addInitScript(() => {
     const original = window.__TAURI_INTERNALS__.invoke;
+    const fixtureReply = (command, args) =>
+      window
+        .__repositoryFixture(command, args)
+        .catch((error) =>
+          Promise.reject(error instanceof Error ? error.message : error),
+        );
+    // Auth-state reads stay untracked, matching the base Store bridge.
     window.__TAURI_INTERNALS__.invoke = (command, args = {}) =>
       [
         "github_auth_state",
@@ -106,11 +113,9 @@ export async function providerFixture(page, store, handler) {
         "admit_explicit_pull_request",
         "monitoring_setup_review",
       ].includes(command)
-        ? window
-            .__repositoryFixture(command, args)
-            .catch((error) =>
-              Promise.reject(error instanceof Error ? error.message : error),
-            )
+        ? ["github_auth_state", "copilot_auth_state"].includes(command)
+          ? fixtureReply(command, args)
+          : window.__settingsTrack(fixtureReply(command, args))
         : original(command, args);
   });
   return state;

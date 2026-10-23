@@ -169,10 +169,14 @@ export const test = base.extend({
               }
               throw error;
             });
-          const settled = request.finally(() => pending.delete(settled));
-          pending.add(settled);
-          return settled;
+          return window.__settingsTrack(request);
         },
+      };
+      // Wrapped invokes that bypass the Store bridge register their replies here.
+      window.__settingsTrack = (request) => {
+        const settled = request.finally(() => pending.delete(settled));
+        pending.add(settled);
+        return settled;
       };
       window.__settingsIdle = async () => {
         while (pending.size) await Promise.allSettled([...pending]);

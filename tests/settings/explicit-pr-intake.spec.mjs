@@ -270,6 +270,8 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
+      // Ordinary Save closes the editor where an explicit Save would admit.
+      await expect(editor).toBeHidden();
       await page.evaluate(() => window.__settingsIdle());
       expect(
         fixture.calls.filter(
@@ -277,7 +279,6 @@ for (const genie of [false, true]) {
         ),
       ).toEqual([]);
       expect((await store("monitoring_snapshot")).jobs).toEqual([]);
-      await expect(editor).toBeHidden();
     });
   }
 
@@ -338,6 +339,10 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
+      // Save admits only after its Store commit settles; wait for that outcome.
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        "PR #303 queued",
+      );
       await page.evaluate(() => window.__settingsIdle());
       expect(
         fixture.calls
