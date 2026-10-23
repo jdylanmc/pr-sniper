@@ -75,6 +75,27 @@ struct Run {
 struct Part {
     value: Arc<Value>,
     instants: Vec<i64>,
+    /// The decoded field every run naming this part shares.
+    typed: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+/// Points `run`'s field at the copy every run with the same `part` shares.
+fn intern(run: &mut ReviewRun, field: &str, part: &mut Part) {
+    match field {
+        "selection" => match part.typed.clone().and_then(|t| t.downcast().ok()) {
+            Some(shared) => run.selection = crate::review::Shared(shared),
+            None => part.typed = Some(run.selection.0.clone()),
+        },
+        "feedback_context" => {
+            if let Some(context) = &mut run.feedback_context {
+                match part.typed.clone().and_then(|t| t.downcast().ok()) {
+                    Some(shared) => *context = crate::review::Shared(shared),
+                    None => part.typed = Some(context.0.clone()),
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Decoded segments by file name. Names are content hashes, so an entry is
@@ -166,17 +187,26 @@ impl Store {
         let mut object = segment.run;
         let mut all = instants(&bytes);
         let mut parts = Vec::with_capacity(segment.parts.len());
+        let mut fields = Vec::with_capacity(segment.parts.len());
         for (field, part) in segment.parts {
             if !PARTS.contains(&field.as_str()) || !valid_name(&part, "part-") {
                 return Err(INVALID);
             }
             let (value, part_instants) = self.part(&part)?;
             all.extend(part_instants);
-            object.insert(field, (*value).clone());
+            object.insert(field.clone(), (*value).clone());
+            fields.push(field);
             parts.push(part);
         }
-        let value: ReviewRun =
+        let mut value: ReviewRun =
             serde_json::from_value(Value::Object(object)).map_err(|_| INVALID)?;
+        if let Ok(mut segments) = self.cache.reviews.lock() {
+            for (field, part) in fields.iter().zip(&parts) {
+                if let Some(part) = segments.parts.get_mut(part) {
+                    intern(&mut value, field, part);
+                }
+            }
+        }
         all.sort_unstable();
         all.dedup();
         let run = Run {
@@ -212,6 +242,7 @@ impl Store {
                 Part {
                     value,
                     instants: found.1.clone(),
+                    typed: None,
                 },
             );
         }
@@ -352,10 +383,19 @@ impl Store {
             let part_instants = instants(&bytes);
             all.extend(part_instants.iter().copied());
             if let Ok(mut segments) = self.cache.reviews.lock() {
-                segments.parts.entry(part.clone()).or_insert(Part {
+                let entry = segments.parts.entry(part.clone()).or_insert(Part {
                     value: Arc::new(value),
                     instants: part_instants,
+                    typed: None,
                 });
+                if entry.typed.is_none() {
+                    entry.typed = match field {
+                        "selection" => Some(run.selection.0.clone()),
+                        _ => run.feedback_context.as_ref().map(|context| {
+                            context.0.clone() as Arc<dyn std::any::Any + Send + Sync>
+                        }),
+                    };
+                }
             }
             parts.insert(field.to_string(), part);
         }
@@ -373,8 +413,14 @@ impl Store {
         all.sort_unstable();
         all.dedup();
         if let Ok(mut segments) = self.cache.reviews.lock() {
+            let mut value = run.clone();
+            for (field, part) in &parts {
+                if let Some(part) = segments.parts.get_mut(part) {
+                    intern(&mut value, field, part);
+                }
+            }
             segments.runs.entry(segment.clone()).or_insert(Run {
-                value: Arc::new(run.clone()),
+                value: Arc::new(value),
                 parts: parts.into_values().collect(),
                 instants: Arc::new(all),
             });

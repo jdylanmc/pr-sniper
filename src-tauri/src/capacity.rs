@@ -265,7 +265,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             candidate
                 .run
                 .as_ref()
-                .map(|run| &run.selection)
+                .map(|run| &*run.selection)
                 .or(candidate.planned_selection.as_ref()),
         );
         let delayed_until = reason.is_none().then(|| {
@@ -282,7 +282,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 candidate
                     .run
                     .as_ref()
-                    .map(|run| &run.selection)
+                    .map(|run| &*run.selection)
                     .or(candidate.planned_selection.as_ref()),
             ))
             .cloned();

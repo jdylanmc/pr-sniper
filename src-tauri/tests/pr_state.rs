@@ -183,7 +183,9 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
         job: job.clone(),
-        selection: Selection::resolve(settings, job, assignment).unwrap(),
+        selection: Selection::resolve(settings, job, assignment)
+            .unwrap()
+            .into(),
         operation,
         manual_start: true,
         trust_confirmed: false,

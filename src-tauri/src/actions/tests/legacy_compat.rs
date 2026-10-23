@@ -36,7 +36,7 @@ fn old_legacy_records_load_and_unfinished_legacy_work_is_retired_not_run() {
     finished.mode = RunMode::Legacy;
     finished.packet = None;
     finished.result = Some(output());
-    finished.feedback_context = Some(vec![]);
+    finished.feedback_context = Some(vec![].into());
     let mut queued = finished.clone();
     queued.operation = JobOperation::review(&queued.job, NOW + 1);
     queued.result = None;
@@ -65,7 +65,7 @@ fn old_legacy_records_load_and_unfinished_legacy_work_is_retired_not_run() {
     let context = ConversationContext {
         assignment_id: finished.assignment_id.clone(),
         job: finished.job.clone(),
-        selection: finished.selection.clone(),
+        selection: (*finished.selection).clone(),
         trust_confirmed: false,
         feedback: vec![],
         feedback_checked: true,

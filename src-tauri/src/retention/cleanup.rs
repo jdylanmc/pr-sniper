@@ -441,7 +441,11 @@ pub fn maintain_where(
 /// most `limit` per pass so a large backlog is spread over passes. A PR whose
 /// provenance needs repair is skipped (kept), not reported every pass; human
 /// **Clean** still reports it.
-pub fn prune_terminal(store: &Store, workers_quiescent: bool, limit: usize) -> Result<usize, String> {
+pub fn prune_terminal(
+    store: &Store,
+    workers_quiescent: bool,
+    limit: usize,
+) -> Result<usize, String> {
     clean(store, workers_quiescent, |_| true, false, limit)
 }
 

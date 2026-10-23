@@ -697,7 +697,7 @@ pub(crate) fn review(settings: &Settings, job: &QueueJob, pad: &str) -> ReviewRu
         key: crate::review::key(job, ASSIGNMENT),
         assignment_id: ASSIGNMENT.into(),
         job: job.clone(),
-        selection: Selection::resolve(settings, job, ASSIGNMENT).unwrap(),
+        selection: Selection::resolve(settings, job, ASSIGNMENT).unwrap().into(),
         operation,
         manual_start: true,
         trust_confirmed: true,

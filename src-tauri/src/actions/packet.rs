@@ -207,7 +207,7 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
                 iteration_id,
                 repository: repository.clone(),
                 job: run.job.clone(),
-                selection: run.selection.clone(),
+                selection: (*run.selection).clone(),
                 peers: vec![run.clone()],
                 feedback: vec![],
                 conversations: vec![],

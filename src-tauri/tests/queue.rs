@@ -46,7 +46,7 @@ fn review(number: u64) -> ReviewRun {
         packet: None,
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),
-        selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap(),
+        selection: Selection::resolve(&settings(), &job, ASSIGNMENT).unwrap().into(),
         job, assignment_id: ASSIGNMENT.into(), operation,
         manual_start: true, trust_confirmed: true, phase: "Completed".into(), error: None,
         result: Some(serde_json::from_value(json!({

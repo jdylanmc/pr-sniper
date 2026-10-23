@@ -739,7 +739,7 @@ pub(crate) fn publication_gate_with(
             Some(&review.operation.id),
             false,
         )?;
-        if &current != captured {
+        if current != **captured {
             return Err(GateError::Policy("Prior feedback changed after this review; reconcile its original publication but do not send new stale feedback.".into()));
         }
     }
@@ -824,7 +824,10 @@ pub(crate) fn views_from_evidence(
                     && r.job.work.as_ref().map(|w| &w.iteration_id)
                         == job.work.as_ref().map(|w| &w.iteration_id)
                     && r.operation.state == OperationState::Completed
-                    && r.feedback_context.iter().flatten().any(|c| c == context)
+                    && r.feedback_context
+                        .iter()
+                        .flat_map(|c| c.iter())
+                        .any(|c| c == context)
             }) {
                 if let Some(result) = &review.result {
                     assessed.extend(

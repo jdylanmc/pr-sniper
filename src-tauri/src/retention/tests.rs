@@ -125,7 +125,7 @@ fn completed(store: &Store, job: &QueueJob) -> ReviewRun {
         failed_duck: None,
         attempt_ducks: Vec::new(),
         feedback_context: None, key: crate::review::key(job, ASSIGNMENT), assignment_id: ASSIGNMENT.into(),
-        job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap(),
+        job: job.clone(), selection: Selection::resolve(&store.load_settings().unwrap(), job, ASSIGNMENT).unwrap().into(),
         operation, manual_start: true, trust_confirmed: true, phase: "Complete".into(), error: None,
         result: Some(serde_json::from_value(json!({
             "reviewed_base_sha":"b".repeat(40),
@@ -934,7 +934,12 @@ fn automatic_prune_drops_closed_and_merged_prs_only_and_reopen_starts_fresh() {
         assert_eq!(store.load_reviews().unwrap(), vec![review.clone()]);
         assert_eq!(store.load_publications().unwrap(), vec![publication]);
         assert_eq!(store.load_follow_ups().unwrap(), vec![follow]);
-        scan(&store, &mut monitor, vec![pull(1, lifecycle.clone())], NOW + 5);
+        scan(
+            &store,
+            &mut monitor,
+            vec![pull(1, lifecycle.clone())],
+            NOW + 5,
+        );
         // Workers not settled: nothing yet; a zero budget defers it.
         assert_eq!(prune_terminal(&store, false, PRUNE_PER_PASS).unwrap(), 0);
         assert_eq!(prune_terminal(&store, true, 0).unwrap(), 0);
@@ -946,7 +951,12 @@ fn automatic_prune_drops_closed_and_merged_prs_only_and_reopen_starts_fresh() {
         assert!(store.load_follow_ups().unwrap().is_empty());
         assert_eq!(load(&store).unwrap().receipts.len(), 1);
         // A reopened PR is a new iteration with fresh state.
-        scan(&store, &mut monitor, vec![pull(1, Lifecycle::Open)], NOW + 10);
+        scan(
+            &store,
+            &mut monitor,
+            vec![pull(1, Lifecycle::Open)],
+            NOW + 10,
+        );
         let latest = store.load_queue().unwrap().last().unwrap().clone();
         assert_eq!(latest.work.as_ref().unwrap().iteration, 2);
         assert_ne!(crate::review::key(&latest, ASSIGNMENT), review.key);
@@ -958,7 +968,12 @@ fn automatic_prune_keeps_detail_needing_repair_without_failing_the_pass() {
     let (root, store, mut monitor) = fixture();
     evidence(&store);
     std::fs::remove_file(root.path().join("state/publications.json")).unwrap();
-    scan(&store, &mut monitor, vec![pull(1, Lifecycle::Closed)], NOW + 5);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
     assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
     assert!(!store.load_follow_ups().unwrap().is_empty());
     assert!(!store.review_evidence().unwrap().is_empty());

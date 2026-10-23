@@ -313,15 +313,51 @@ pub fn key(job: &QueueJob, assignment_id: &str) -> String {
     .to_string()
 }
 
+/// A large snapshot that many runs repeat verbatim (the captured selection,
+/// prior feedback). Clones share one decoded value; serialized as `T`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Shared<T>(pub std::sync::Arc<T>);
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+}
+
+impl<T: Serialize> Serialize for Shared<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::from)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feedback_context: Option<Vec<crate::feedback::Context>>,
+    pub feedback_context: Option<Shared<Vec<crate::feedback::Context>>>,
     pub key: String,
     pub assignment_id: String,
     pub job: QueueJob,
-    pub selection: Selection,
+    pub selection: Shared<Selection>,
     pub operation: JobOperation,
     pub manual_start: bool,
     /// Legacy evidence only; assignment and scope activation now authorize review.

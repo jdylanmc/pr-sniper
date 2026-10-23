@@ -621,7 +621,7 @@ impl FollowUp {
             context: ConversationContext {
                 assignment_id: origin.review.assignment_id.clone(),
                 job: origin.review.job.clone(),
-                selection: origin.review.selection.clone(),
+                selection: (*origin.review.selection).clone(),
                 trust_confirmed: origin.review.trust_confirmed,
                 feedback: Vec::new(),
                 feedback_checked: false,

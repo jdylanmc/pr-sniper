@@ -751,7 +751,7 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
         assignment_id: ASSIGNMENT.into(),
         operation: JobOperation::review(&job, 100),
         job,
-        selection: selection.clone(),
+        selection: selection.clone().into(),
         manual_start: true,
         trust_confirmed: true,
         phase: "Completed fixture".into(),
@@ -807,7 +807,7 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
     review::restore(&store).unwrap();
     let interrupted = store.load_reviews().unwrap().remove(0);
     assert_eq!(interrupted.operation.state, OperationState::Interrupted);
-    assert_eq!(interrupted.selection, selection);
+    assert_eq!(*interrupted.selection, selection);
     let mut without_revision = serde_json::to_value(&selection).unwrap();
     without_revision["configuration"]
         .as_object_mut()

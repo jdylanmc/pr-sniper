@@ -22,8 +22,9 @@ fn feedback_fixture(teammate: bool) -> (tempfile::TempDir, Store, ReviewRun) {
         settings.repositories[0].assignments.push(primary);
         settings.agents.push(agent);
         store.save_settings(&settings).unwrap();
-        template.selection =
-            Selection::resolve(&settings, &template.job, &template.assignment_id).unwrap();
+        template.selection = Selection::resolve(&settings, &template.job, &template.assignment_id)
+            .unwrap()
+            .into();
     }
     let mut origin = template.clone();
     origin.job.work.as_mut().unwrap().iteration_id = "earlier".into();

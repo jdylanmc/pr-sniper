@@ -6,7 +6,7 @@
 
 use crate::monitoring::{OperationState, QueueState, WAITING_HUMAN_START, WAITING_SUPERSEDED};
 use crate::storage::Store;
-use crate::wake::tests::{job, review, settings, Mode, Sim};
+use crate::wake::tests::{job, review, settings};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -246,7 +246,8 @@ fn live_size_progress_and_polling_cost() {
             while !stop.load(Ordering::SeqCst) {
                 for (run, validated) in runs.iter().zip(&validated) {
                     let store = store.lock().unwrap();
-                    let _ = crate::review::validate_execution_selection_cached(&store, run, validated);
+                    let _ =
+                        crate::review::validate_execution_selection_cached(&store, run, validated);
                 }
                 load.lock().unwrap().gates += runs.len();
                 std::thread::sleep(Duration::from_millis(100));
@@ -269,12 +270,13 @@ fn live_size_progress_and_polling_cost() {
                 std::thread::sleep(Duration::from_secs(POLL_SECONDS));
             }
         });
+        // Scheduler: the notifications pass projects the queue each tick;
+        // progress saves wake no other coordinator (see `wake`).
         scope.spawn(|| {
-            let mut sim = Sim::new(&store, Mode::Gated);
-            let start = Instant::now();
             while !stop.load(Ordering::SeqCst) {
-                sim.now = NOW + start.elapsed().as_secs() as i64;
-                sim.tick();
+                let view = store.lock().unwrap().freeze().unwrap();
+                let snapshot = crate::queue::snapshot(&view, vec![]).unwrap();
+                crate::notifications::observe_queue(&view, &snapshot, NOW).ok();
                 load.lock().unwrap().ticks += 1;
                 std::thread::sleep(Duration::from_secs(5));
             }
@@ -309,7 +311,10 @@ fn live_size_progress_and_polling_cost() {
     let parses = store.take_parses();
     let heavy = |name: &str| *reads.get(name).unwrap_or(&0) as f64 / minutes;
     eprintln!("load: {:?} over {elapsed:.0} s", load.into_inner().unwrap());
-    let mut windows: Vec<f64> = cpu.chunks(5).map(|w| w.iter().sum::<f64>() / w.len() as f64).collect();
+    let mut windows: Vec<f64> = cpu
+        .chunks(5)
+        .map(|w| w.iter().sum::<f64>() / w.len() as f64)
+        .collect();
     windows.sort_by(f64::total_cmp);
     let pick = |q: f64| windows[((windows.len() - 1) as f64 * q).round() as usize];
     eprintln!("cpu: average {average:.1}%, peak {peak:.1}% (1 s samples)");
@@ -319,7 +324,11 @@ fn live_size_progress_and_polling_cost() {
         pick(0.95),
         pick(1.0)
     );
-    let series: Vec<u64> = samples.iter().step_by(60).map(|s| s.1 / (1 << 20)).collect();
+    let series: Vec<u64> = samples
+        .iter()
+        .step_by(60)
+        .map(|s| s.1 / (1 << 20))
+        .collect();
     eprintln!("resident MB per minute: {series:?}");
     eprintln!(
         "disk: {:.1} MB written per minute (OS counter), {:.1} MB per minute through Store",

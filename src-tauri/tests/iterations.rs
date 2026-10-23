@@ -423,7 +423,9 @@ fn completed(settings: &Settings, job: &QueueJob) -> ReviewRun {
         key: review::key(job, assignment),
         assignment_id: assignment.clone(),
         job: job.clone(),
-        selection: Selection::resolve(settings, job, assignment).unwrap(),
+        selection: Selection::resolve(settings, job, assignment)
+            .unwrap()
+            .into(),
         operation,
         manual_start: true,
         trust_confirmed: false,
@@ -555,7 +557,7 @@ fn normal_review_survives_sibling_resource_saves_without_replacing_snapshot() {
             current.configuration.as_ref().unwrap().doctrines,
             original.configuration.as_ref().unwrap().doctrines
         );
-        assert_ne!(current, original, "{change}: archive must remain exact");
+        assert_ne!(current, *original, "{change}: archive must remain exact");
         review::validate_execution_selection(&store, &run)
             .unwrap_or_else(|error| panic!("{change}: {}", error.message));
         assert_eq!(store.load_reviews().unwrap()[0], run);

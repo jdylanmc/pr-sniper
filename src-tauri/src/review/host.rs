@@ -177,7 +177,7 @@ pub(crate) fn request(
             assignment_id: candidate.assignment_id,
             operation: monitoring::JobOperation::review(&candidate.job, now),
             job: candidate.job,
-            selection: selection.clone(),
+            selection: selection.clone().into(),
             manual_start: manual,
             trust_confirmed: false,
             phase: "Waiting for shared AI capacity".into(),
@@ -211,7 +211,8 @@ pub(crate) fn prepare_dispatch(
     let mut run = request(store, key, false, now)?;
     run.feedback_context = Some(
         crate::feedback::contexts(store, &run.job, &run.selection.agent.id)
-            .map_err(|e| e.message)?,
+            .map_err(|e| e.message)?
+            .into(),
     );
     let mut reviews = store.load_reviews()?;
     if let Err(error) = run.operation.begin_ai_attempt(now) {
@@ -888,7 +889,7 @@ async fn execute_attempt(
             context,
             client,
             repository_name: run.job.repository_name.clone(),
-            selection: run.selection.clone(),
+            selection: (*run.selection).clone(),
             before_send,
             local_gate: gate.clone(),
             failure_commit: Some(attempt.committer()),

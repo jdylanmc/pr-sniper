@@ -1562,7 +1562,7 @@ async fn failure_during_abort(signal: &str, scenario: &str) {
             &identity,
             &operation,
             Request {
-                selection: run.selection.clone(),
+                selection: (*run.selection).clone(),
                 ..base
             },
         )

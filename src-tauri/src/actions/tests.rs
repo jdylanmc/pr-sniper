@@ -140,7 +140,9 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
                 key: crate::review::key(job, assignment),
                 assignment_id: assignment.clone(),
                 job: job.clone(),
-                selection: Selection::resolve(&settings, job, assignment).unwrap(),
+                selection: Selection::resolve(&settings, job, assignment)
+                    .unwrap()
+                    .into(),
                 operation,
                 manual_start: false,
                 trust_confirmed: false,
@@ -198,7 +200,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         assignment_id: assignment,
         operation: JobOperation::review(&job, NOW),
         job: job.clone(),
-        selection,
+        selection: selection.into(),
         manual_start: false,
         trust_confirmed: false,
         phase: String::new(),

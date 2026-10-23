@@ -386,7 +386,7 @@ fn r2_missing_closed_compact_root_blocks_unreferenced_republication() {
         );
         assert!(crate::feedback::contexts(&fresh, &job, AGENT).is_err());
         let mut attempted = completed(&fresh, &job);
-        attempted.feedback_context = Some(vec![]);
+        attempted.feedback_context = Some(vec![].into());
         let finding = &mut attempted.result.as_mut().unwrap().output.findings[0];
         finding.path = path.into();
         finding.title = title.into();
