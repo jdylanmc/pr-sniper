@@ -261,3 +261,35 @@ fn caches_and_files_stay_bounded_over_a_long_running_review() {
     assert_eq!(store.cache.oldest_reader(), None);
     assert!(store.progress.lock().unwrap().pending.is_none());
 }
+
+#[test]
+fn a_failed_manifest_commit_is_retried_as_a_transition_and_becomes_durable() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut reviews = profile(&store, 5);
+    store.save_reviews(&reviews).unwrap();
+    // Fails inside the real replace: staged and claimed, never renamed.
+    reviews[2].operation.state = OperationState::Failed;
+    crate::storage::private_fs::recovery_fault::arm(
+        root.path().join("state").join(MANIFEST),
+        "payload",
+    );
+    assert!(store.save_reviews(&reviews).is_err());
+    assert_eq!(
+        Store::new(root.path().into()).load_reviews().unwrap()[2]
+            .operation
+            .state,
+        OperationState::Completed
+    );
+    // The retry of the same transition, well within `PROGRESS_FLUSH`, is
+    // written at once rather than coalesced as progress.
+    store.take_state_writes();
+    store.save_reviews(&reviews).unwrap();
+    assert_eq!(store.take_state_writes().get(MANIFEST), Some(&1));
+    assert_eq!(
+        Store::new(root.path().into()).load_reviews().unwrap()[2]
+            .operation
+            .state,
+        OperationState::Failed
+    );
+}

@@ -75,7 +75,14 @@ impl Store {
         Ok(ledger)
     }
     pub fn save_feedback(&self, ledger: &crate::feedback::Ledger) -> Result<(), String> {
-        crate::retention::reject_cleaned(self, ledger.records.iter().map(|r| r.job.clone()))?;
+        crate::retention::reject_cleaned(
+            self,
+            ledger
+                .records
+                .iter()
+                .map(|r| r.job.clone())
+                .chain(ledger.exit_writes.iter().map(|w| w.job.clone())),
+        )?;
         for mention in &ledger.mentions {
             if crate::retention::known_key(self, &mention.key)? {
                 return Err(

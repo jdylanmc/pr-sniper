@@ -2755,6 +2755,12 @@ impl Monitor {
                     && p.repository_id == ticket.provider_repository_id
                     && p.pull_request_id == pull.id
             });
+            // A read prepared before the latest accepted observation of this
+            // PR is stale: overlapping reads finish out of order, and an older
+            // Closed must not undo a newer reopen (and so admit pruning).
+            if index.is_some_and(|i| ticket.prepared_at < queue.tracked[i].observed_at) {
+                continue;
+            }
             let mut trigger = WorkTrigger::AssignmentAdded;
             if index.is_none() {
                 let legacy = queue.jobs.iter().filter(|j| bound(j)).max_by_key(|j| {
@@ -2849,8 +2855,7 @@ impl Monitor {
             tracked.head_sha = pull.head_sha.clone();
             tracked.lifecycle = pull.state.clone();
             tracked.terminal_observed = pull.state != Lifecycle::Open;
-            // Overlapping reads may finish out of order; never move it back.
-            tracked.observed_at = tracked.observed_at.max(ticket.prepared_at);
+            tracked.observed_at = ticket.prepared_at;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| bound(j)) {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
@@ -4171,6 +4176,11 @@ pub struct LifecycleTicket {
     pub provider_account_id: String,
     pub provider_repository_id: String,
     pub tracked: Vec<(String, u64)>,
+    /// Iteration of each tracked PR when the ticket was prepared; a reopen
+    /// since then makes the read stale.
+    pub iterations: BTreeMap<String, u64>,
+    /// Before any read: what the ticket observes is no newer than this.
+    pub prepared_at: i64,
 }
 
 impl Monitor {
@@ -4186,7 +4196,7 @@ impl Monitor {
         if now < self.lifecycle_next {
             return Ok(Vec::new());
         }
-        let tickets = Self::lifecycle_candidates(store, accounts)?;
+        let tickets = Self::lifecycle_candidates(store, accounts, now)?;
         self.lifecycle_next = now + LIFECYCLE_SWEEP_SECONDS;
         Ok(tickets)
     }
@@ -4196,6 +4206,7 @@ impl Monitor {
     pub(crate) fn lifecycle_candidates(
         store: &Store,
         accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
     ) -> Result<Vec<LifecycleTicket>, String> {
         let settings = store.load_settings()?;
         let queue = store.load_queue_state()?;
@@ -4215,7 +4226,7 @@ impl Monitor {
             {
                 continue;
             }
-            let tracked: std::collections::BTreeSet<_> = queue
+            let current: Vec<_> = queue
                 .tracked
                 .iter()
                 .filter(|p| {
@@ -4224,6 +4235,13 @@ impl Monitor {
                         && &p.account_id == account
                         && &p.repository_id == repository
                 })
+                .collect();
+            let iterations = current
+                .iter()
+                .map(|p| (p.pull_request_id.clone(), p.iteration))
+                .collect();
+            let tracked: std::collections::BTreeSet<_> = current
+                .iter()
                 .map(|p| (p.pull_request_id.clone(), p.number))
                 .collect();
             if tracked.is_empty() {
@@ -4235,6 +4253,8 @@ impl Monitor {
                 provider_account_id: account.clone(),
                 provider_repository_id: repository.clone(),
                 tracked: tracked.into_iter().collect(),
+                iterations,
+                prepared_at: now,
             });
         }
         Ok(tickets)
@@ -4247,7 +4267,7 @@ impl Monitor {
         store: &Store,
         ticket: &LifecycleTicket,
         observed: Result<Vec<(String, Lifecycle)>, ConnectionError>,
-        now: i64,
+        _now: i64,
     ) -> Result<(), String> {
         let Ok(observed) = observed else {
             return Ok(());
@@ -4266,9 +4286,16 @@ impl Monitor {
             }) else {
                 continue;
             };
+            // Reopened, or observed by a newer read, since this read was
+            // prepared: its terminal state is old.
+            if ticket.iterations.get(&id) != Some(&tracked.iteration)
+                || ticket.prepared_at < tracked.observed_at
+            {
+                continue;
+            }
             tracked.lifecycle = state.clone();
             tracked.terminal_observed = true;
-            tracked.observed_at = now;
+            tracked.observed_at = ticket.prepared_at;
             let tracked = tracked.clone();
             for job in queue.jobs.iter_mut().filter(|j| tracked.matches(j)) {
                 if !matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {

@@ -174,6 +174,14 @@ impl State {
             || self.notifications.notices.iter().any(|n|
                 matches!(&n.event.destination, Destination::QueueItem { item_id } if items.contains(item_id))
                     && n.phase == NoticePhase::Submitting)
+            // An exit write still planned or verified, uncertain, or with an
+            // attempted step may still land (or be landing) on the provider.
+            // Completed (every effect confirmed) needs no local consume.
+            || self.feedback.exit_writes.iter().filter(|w| matches(&w.job)).any(|w|
+                matches!(w.phase, crate::exit_writes::Phase::Planned | crate::exit_writes::Phase::Verified)
+                    || w.uncertain
+                    || running(&w.operation)
+                    || w.steps.iter().any(|s| s.state == crate::exit_writes::StepState::Attempted))
         {
             return Ok(None);
         }

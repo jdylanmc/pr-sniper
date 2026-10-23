@@ -89,6 +89,16 @@ fn pull(number: u64, state: Lifecycle) -> PullRequest {
 
 fn scan(store: &Store, monitor: &mut Monitor, pulls: Vec<PullRequest>, now: i64) {
     let ticket = monitor.prepare_checks(store, now, true).unwrap().remove(0);
+    finish_scan(store, monitor, ticket, pulls, now);
+}
+
+fn finish_scan(
+    store: &Store,
+    monitor: &mut Monitor,
+    ticket: crate::monitoring::PollTicket,
+    pulls: Vec<PullRequest>,
+    now: i64,
+) {
     monitor
         .finish(
             store,
@@ -978,4 +988,128 @@ fn automatic_prune_keeps_detail_needing_repair_without_failing_the_pass() {
     assert!(!store.load_follow_ups().unwrap().is_empty());
     assert!(!store.review_evidence().unwrap().is_empty());
     assert!(load(&store).unwrap().pending.is_none());
+}
+
+#[test]
+fn an_older_closed_read_finishing_after_a_newer_reopen_is_ignored() {
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 5,
+    );
+    // Overlapping reads: the older still sees Closed, the newer the reopen.
+    let older = monitor
+        .prepare_checks(&store, NOW + 10, true)
+        .unwrap()
+        .remove(0);
+    let mut newer = older.clone();
+    newer.prepared_at = NOW + 20;
+    finish_scan(
+        &store,
+        &mut monitor,
+        newer,
+        vec![pull(1, Lifecycle::Open)],
+        NOW + 20,
+    );
+    finish_scan(
+        &store,
+        &mut monitor,
+        older,
+        vec![pull(1, Lifecycle::Closed)],
+        NOW + 30,
+    );
+    let tracked = store.load_queue_state().unwrap().tracked.remove(0);
+    assert_eq!(tracked.lifecycle, Lifecycle::Open);
+    assert!(!tracked.terminal_observed);
+    assert_eq!(tracked.iteration, 2);
+    assert_eq!(tracked.observed_at, NOW + 20);
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(store
+        .review_evidence()
+        .unwrap()
+        .iter()
+        .any(|run| run.operation.id == review.operation.id));
+}
+
+fn exit_write(
+    job: &QueueJob,
+    phase: crate::exit_writes::Phase,
+    step: crate::exit_writes::StepState,
+) -> crate::exit_writes::ExitWrite {
+    crate::exit_writes::ExitWrite {
+        id: "exit-1".into(),
+        review_operation_id: "operation".into(),
+        job: job.clone(),
+        assignment_id: ASSIGNMENT.into(),
+        comments_first: false,
+        published: false,
+        steps: vec![crate::exit_writes::Step {
+            kind: crate::exit_writes::StepKind::Reply,
+            thread_id: "thread".into(),
+            body: "Reply".into(),
+            root_id: Some("root".into()),
+            revision: None,
+            state: step,
+            receipt: (step == crate::exit_writes::StepState::Done).then(|| "comment".into()),
+            resolution_evidence: None,
+        }],
+        phase,
+        operation: JobOperation::review(job, NOW),
+        uncertain: false,
+        error: None,
+        consumed: false,
+        reviewed_base_sha: None,
+        sign_off: None,
+    }
+}
+
+fn save_exit_write(store: &Store, write: &crate::exit_writes::ExitWrite) -> Result<(), String> {
+    // As the exit-write worker saves: load, replace by id, save.
+    let mut ledger = store.load_feedback()?;
+    ledger.exit_writes.retain(|w| w.id != write.id);
+    ledger.exit_writes.push(write.clone());
+    store.save_feedback(&ledger)
+}
+
+#[test]
+fn pruning_waits_for_exit_writes_and_a_late_save_cannot_restore_them() {
+    use crate::exit_writes::{Phase, StepState};
+    let (_root, store, mut monitor) = fixture();
+    let (review, _, _) = evidence(&store);
+    save_exit_write(
+        &store,
+        &exit_write(&review.job, Phase::Planned, StepState::Planned),
+    )
+    .unwrap();
+    scan(
+        &store,
+        &mut monitor,
+        vec![pull(1, Lifecycle::Merged)],
+        NOW + 5,
+    );
+    // Before the provider mutation, and after its intent was saved.
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    save_exit_write(
+        &store,
+        &exit_write(&review.job, Phase::Verified, StepState::Attempted),
+    )
+    .unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    let mut uncertain = exit_write(&review.job, Phase::Failed, StepState::Done);
+    uncertain.uncertain = true;
+    save_exit_write(&store, &uncertain).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 0);
+    assert!(!store.review_evidence().unwrap().is_empty());
+    // Every effect confirmed: settled, pruned once, receipt retained.
+    let done = exit_write(&review.job, Phase::Completed, StepState::Done);
+    save_exit_write(&store, &done).unwrap();
+    assert_eq!(prune_terminal(&store, true, PRUNE_PER_PASS).unwrap(), 1);
+    assert_eq!(load(&store).unwrap().receipts.len(), 1);
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
+    // A worker finishing late cannot resurrect the cleaned write.
+    assert!(save_exit_write(&store, &done).is_err());
+    assert!(store.load_feedback().unwrap().exit_writes.is_empty());
 }

@@ -1989,10 +1989,12 @@ impl Store {
                 .entry(name.to_string())
                 .or_default() += 1;
         }
-        let result = private_fs::replace(&directory.join(name), bytes, "monitoring state");
+        private_fs::replace(&directory.join(name), bytes, "monitoring state")?;
+        // Only a committed write changes versions and transition fingerprints:
+        // a failed one must not let its retry pass as progress.
         self.record_bytes(bytes.len());
         self.record_write(name, fingerprint);
-        result
+        Ok(())
     }
 
     fn directory(&self, name: &str) -> std::io::Result<PathBuf> {
@@ -2539,9 +2541,9 @@ impl Store {
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
-        let result = private_fs::replace(&directory.join("settings.json"), &bytes, "settings");
+        private_fs::replace(&directory.join("settings.json"), &bytes, "settings")?;
         self.record_write("settings.json", None);
-        result
+        Ok(())
     }
 
     pub fn add_repository(&self, repository: &str) -> Result<Settings, String> {

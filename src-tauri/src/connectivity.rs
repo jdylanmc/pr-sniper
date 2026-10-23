@@ -274,7 +274,7 @@ fn wanted_scopes(
             scopes.insert(Scope::github(account));
         }
     }
-    for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts)? {
+    for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts, 0)? {
         scopes.insert(Scope::github(&ticket.provider_account_id));
     }
     // Planned work must clear the offline gate before its first run can exist.

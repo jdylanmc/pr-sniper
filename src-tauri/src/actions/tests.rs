@@ -1761,3 +1761,15 @@ fn merge_rejects_a_settled_thread_that_differs_from_its_accepted_snapshot() {
     observation.author_id = "44".into();
     assert!(packet::settled_hold(&[won_t], &[], &observation).is_err());
 }
+
+#[test]
+fn retention_holds_provider_mutations_off_only_while_none_runs() {
+    let owner = crate::actions::host::MutationOwner::default();
+    assert!(owner.acquire("exit:1").unwrap());
+    assert!(owner.idle().unwrap().is_none());
+    owner.release("exit:1").unwrap();
+    let held = owner.idle().unwrap().expect("idle");
+    assert!(held.is_none());
+    drop(held);
+    assert!(owner.acquire("exit:2").unwrap());
+}

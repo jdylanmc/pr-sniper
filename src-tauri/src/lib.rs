@@ -1318,6 +1318,10 @@ fn retention_maintenance(
         Arc<AtomicBool>
     )>| p.is_some());
     let _actions = idle!(host.actions.active, |active: &bool| *active);
+    // Exit writes hold only this owner while their provider effects land.
+    let Some(_mutations) = host.mutations.idle()? else {
+        return Ok(0);
+    };
     let store = host
         .store
         .lock()
