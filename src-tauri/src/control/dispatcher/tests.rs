@@ -858,14 +858,22 @@ fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries
         run.attempt_ducks = vec![serde_json::from_value(duck(2, "failed", "stream_lost")).unwrap()];
         run.result = Some(
             serde_json::from_value(json!({
-                "reviewed_base_sha":"b".repeat(40),"output":{},
+                "reviewed_base_sha":"b".repeat(40),
+                "output":{"exit":{"exit":"lgtm","comment":"c","resolve_own_threads":["T5"],"action":"merge"}},
                 "session_id":"fixture","model":"fixture-model","runtime_version":"fixture",
                 "input_tokens":1,"output_tokens":1,"tool_calls":1,
                 "ducks":[duck(1, "unverified", "thread_unread")],
                 "finding_dispositions":[assessment("T1","author_wont_fix"),
-                    assessment("T2","fixed"),assessment("T3","author_wont_fix")],
+                    assessment("T2","fixed"),assessment("T3","author_wont_fix"),
+                    assessment("T5","no_longer_applies"),assessment("T6","signed_off")],
                 "carried_findings":[assessment("T4","fixed")]
             }))
+            .unwrap(),
+        );
+        run.packet = Some(
+            serde_json::from_value(json!({"state_id":"0:hash","hash":"h","schema":1,
+                "tool_set":[],"exits_offered":["lgtm"],
+                "exits_denied":[{"exit":"approve_and_merge","reason":"CI is pending. Cannot merge yet."}]}))
             .unwrap(),
         );
         store.save_reviews(&[run]).unwrap();
@@ -878,11 +886,50 @@ fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries
         .is_some_and(|at| at >= now));
     assert_eq!(
         review["dispositions"],
-        json!({"author_wont_fix":2,"carried_forward":1,"fixed":1})
+        json!({"author_wont_fix":2,"carried_forward":1,"fixed":1,"no_longer_applies":1,"signed_off":1})
+    );
+    // Only a completed run has an exit; this one failed after its packet.
+    assert!(review["exit"].is_null());
+    assert_eq!(
+        review["exits_denied"],
+        json!([{"exit":"approve_and_merge","reason":"CI is pending. Cannot merge yet."}])
     );
     assert_eq!(
         review["duck_failures"],
         json!([{"ordinal":1,"failure":"unverified","reason":"thread_unread"},
             {"ordinal":2,"failure":"failed","reason":"stream_lost"}])
     );
+}
+
+#[test]
+fn detail_of_an_automatically_pruned_pr_reads_its_tombstone() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    let now = crate::now_seconds().unwrap();
+    {
+        let store = fixture.store.lock().unwrap();
+        let mut scope = store.load_queue_state().unwrap().tracked.remove(0);
+        scope.lifecycle = crate::github::metadata::Lifecycle::Merged;
+        scope.terminal_observed = true;
+        let receipt = serde_json::from_value(json!({"scope":scope,"enqueue_watermark":1,
+            "items":["pruned-item"],"pass_ordinals":{},"reply_ordinals":{},
+            "follow_up_keys":[],"owned":[],"cleaned_at":now}))
+        .unwrap();
+        crate::retention::save(
+            &store,
+            &crate::retention::Ledger {
+                receipts: vec![receipt],
+                pending: None,
+            },
+        )
+        .unwrap();
+    }
+    let detail = fixture.call(json!({"operation":"detail","item_id":"pruned-item"}));
+    let text: serde_json::Value =
+        serde_json::from_str(detail["result"]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text["item"]["state"], "pruned");
+    assert_eq!(text["item"]["pruned_at"], now);
+    assert_eq!(text["reviews"], json!([]));
+    let missing = fixture.call(json!({"operation":"detail","item_id":"never-seen"}));
+    assert_eq!(missing["ok"], false);
 }

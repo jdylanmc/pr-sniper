@@ -370,7 +370,12 @@ fn new_readonly_assignment_tools_need_no_effect_grant_and_native_catalog_filters
             );
         }
         if requested.len() == 3 {
-            assert_eq!(available, ["read_source", "ready_for_human", "panic_exit"]);
+            // `lgtm` is the primary's own exit, never a configured tool; with no
+            // grant it is a local hand-off.
+            assert_eq!(
+                available,
+                ["read_source", "ready_for_human", "panic_exit", "lgtm"]
+            );
         }
     }
 }
@@ -450,7 +455,10 @@ fn request_override_changes_execution_not_saved_configuration_and_freezes_at_sta
     assert_eq!(batch.dispatched.len(), 1);
     let run = store.load_reviews().unwrap().remove(0);
     assert_eq!(run.selection.agent.id, settings.agents[1].id);
-    assert_eq!(run.selection.configuration.unwrap().repository.id, repo.id);
+    assert_eq!(
+        run.selection.configuration.as_ref().unwrap().repository.id,
+        repo.id
+    );
     assert_eq!(store.load_settings().unwrap(), settings);
     assert!(work::apply_overrides(&store, &repo.id, 1, &overrides).is_err());
 }

@@ -104,7 +104,12 @@ fn snapshots_decode_each_change_once_from_frozen_copies() {
     let mut reviews = profile(&store, 20);
     store.save_reviews(&reviews).unwrap();
     crate::storage::file_identity::settle();
-    crate::queue::snapshot(&store.freeze().unwrap(), vec![]).unwrap();
+    let warm = store.freeze().unwrap();
+    crate::queue::snapshot(&warm, vec![]).unwrap();
+    // Capacity also decodes native-control watch holds once per version.
+    crate::capacity::Coordinator::default()
+        .snapshot(&warm, 0)
+        .unwrap();
     store.take_parses();
     // Unchanged state: snapshots of fresh frozen copies decode nothing.
     for _ in 0..3 {

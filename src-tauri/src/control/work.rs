@@ -23,14 +23,16 @@ pub struct WatchResult {
     pub item_id: Option<String>,
 }
 
+/// Decoded once per version of the file: the capacity pass reads it every tick.
 pub(crate) fn holds(store: &Store) -> Result<Vec<(String, u64)>, String> {
-    match store.read_state("control-watch-holds.json") {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|_| "Invalid pending watch requests.".into())
-        }
+    const NAME: &str = "control-watch-holds.json";
+    let holds = store.cached(NAME, &[NAME], || match store.read_state(NAME) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|_| String::from("Invalid pending watch requests.")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(_) => Err("Pending watch requests unavailable.".into()),
-    }
+    })?;
+    Ok(holds.as_ref().clone())
 }
 
 pub(crate) fn hold(

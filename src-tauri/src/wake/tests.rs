@@ -126,6 +126,8 @@ fn coordinator_inputs_cover_every_file_their_pass_reads() {
     let root = tempfile::tempdir().unwrap();
     let store = std::sync::Mutex::new(Store::new(root.path().into()));
     bloated(&store.lock().unwrap(), 8);
+    // A native-control watch hold (#209) the capacity pass must wake for.
+    crate::control::work::hold(&store.lock().unwrap(), "held-repository", 1, true).unwrap();
     let mut sim = Sim::new(&store, Mode::Gated);
     // Compaction is time-driven (hourly), not woken by inputs.
     assert!(sim.gates.compaction_due(sim.now));
@@ -140,6 +142,9 @@ fn coordinator_inputs_cover_every_file_their_pass_reads() {
                 coordinator.reads(name),
                 "{coordinator:?} reads {name} without waking for it"
             );
+        }
+        if coordinator == Coordinator::Capacity {
+            assert!(reads.contains_key("control-watch-holds.json"), "{reads:?}");
         }
     }
 }

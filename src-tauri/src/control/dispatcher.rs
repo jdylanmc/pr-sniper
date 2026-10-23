@@ -23,9 +23,34 @@ fn frozen(runtime: &impl Runtime) -> Result<Store, Error> {
 }
 
 /// Bounded queue view of one review: operation identity and state, the saved
-/// failure text and retry time, how its findings settled (including
-/// `author_wont_fix` and carried-forward resolutions) and failed Rubber Duck
-/// calls with their typed reasons. Full evidence stays in `detail`.
+/// failure text and retry time, its exit and the exits its packet denied with
+/// their reasons, how its findings settled (including `author_wont_fix`,
+/// `no_longer_applies`, `signed_off` and carried-forward resolutions) and
+/// failed Rubber Duck calls with their typed reasons. Full evidence stays in
+/// `detail`.
+/// A closed or merged PR pruned automatically keeps only its retention
+/// tombstone: shown as `pruned`, never read from removed review files.
+fn pruned(view: &Store, item_id: &str) -> Result<Value, Error> {
+    let ledger = crate::retention::load(view).map_err(storage)?;
+    let receipt = ledger
+        .receipts
+        .iter()
+        .rev()
+        .find(|r| r.items.contains(item_id))
+        .ok_or_else(|| Error::new("missing_destination", ()))?;
+    let scope = &receipt.scope;
+    let detail = json!({"item":{"id":item_id,"state":"pruned",
+        "configuration_id":scope.configuration_id,"number":scope.number,
+        "lifecycle":scope.lifecycle,"head_sha":scope.head_sha,"pruned_at":receipt.cleaned_at},
+        "reviews":[],"publications":[],"follow_ups":[],"exit_writes":[]});
+    let text = serde_json::to_string(&detail).map_err(|_| storage(()))?;
+    let total = text.chars().count();
+    Ok(
+        json!({"encoding":"json-text","revision":revision(&detail),"text":text,
+        "offset":0,"next_offset":null,"total":total}),
+    )
+}
+
 fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
     let run = candidate.run.as_ref();
     let mut dispositions = BTreeMap::<&str, usize>::new();
@@ -33,14 +58,7 @@ fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
     if let Some(run) = run {
         if let Some(result) = &run.result {
             for assessment in &result.finding_dispositions {
-                let id = match assessment.disposition {
-                    crate::review::findings::Disposition::StillApplies => "still_applies",
-                    crate::review::findings::Disposition::Fixed => "fixed",
-                    crate::review::findings::Disposition::Withdrawn => "withdrawn",
-                    crate::review::findings::Disposition::Unverifiable => "unverifiable",
-                    crate::review::findings::Disposition::AuthorWontFix => "author_wont_fix",
-                };
-                *dispositions.entry(id).or_default() += 1;
+                *dispositions.entry(assessment.disposition.id()).or_default() += 1;
             }
             if !result.carried_findings.is_empty() {
                 dispositions.insert("carried_forward", result.carried_findings.len());
@@ -64,6 +82,10 @@ fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
         "state":run.map(|r|&r.operation.state),
         "error":run.and_then(|r|r.error.as_ref()).map(|e|e.chars().take(256).collect::<String>()),
         "next_attempt_at":run.and_then(|r|r.operation.next_attempt_at),
+        "exit":run.and_then(crate::queue::run_exit),
+        "exits_denied":run.and_then(|r|r.packet.as_ref()).map(|p|p.exits_denied.iter().take(16)
+            .map(|d|json!({"exit":d.exit,"reason":d.reason.chars().take(256).collect::<String>()}))
+            .collect::<Vec<_>>()).unwrap_or_default(),
         "dispositions":dispositions,"duck_failures":duck_failures})
 }
 
@@ -353,6 +375,11 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 "failure_class":item.failure_class,"failure_cause":item.failure_cause,
                 "dismiss_token":item.dismiss_token,
                 "resume_at":item.resume_at,
+                "exit":item.exit,"progress":item.progress,
+                "merge_pending":item.action_status.as_ref()
+                    .and_then(|s|s.final_review.as_ref())
+                    .and_then(|f|f.packet.as_ref())
+                    .and_then(|p|p.merge_pending),
                 "reviews":snapshot.reviews.iter().filter(|r|item.review_keys.contains(&r.key))
                     .take(25)
                     .map(review_summary).collect::<Vec<_>>(),
@@ -403,11 +430,13 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             // Parse a frozen copy outside the Store lock, like the Queue panel.
             let view = frozen(runtime)?;
             let snapshot = crate::queue::snapshot(&view, vec![]).map_err(storage)?;
-            let item = snapshot
+            let Some(item) = snapshot
                 .items
                 .iter()
                 .find(|i| i.id == item_id || i.aliases.contains(&item_id))
-                .ok_or_else(|| Error::new("missing_destination", ()))?;
+            else {
+                return pruned(&view, &item_id);
+            };
             let reviews: Vec<_> = snapshot
                 .reviews
                 .iter()

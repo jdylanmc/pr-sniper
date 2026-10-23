@@ -83,9 +83,13 @@
 - `saved`, `queued`, `waiting`, `running`, `completed` are distinct outcomes.
 - `inspect` returns bounded counts and control state. `accounts` carries safe
   identities/generations; `resources` pages configuration; `queue` pages operation
-  identities, saved retry times, finding dispositions (`author_wont_fix`,
-  `carried_forward`) and typed Rubber Duck failure reasons; `detail` streams one
-  item's evidence, including exit writes, as revision-checked JSON text.
+  identities, saved retry times, each item's exit, progress and typed
+  `merge_pending` (approved; merge waits on `behind_base`/`conflicts`), each
+  review's exit and denied exits with reasons, finding dispositions
+  (`author_wont_fix`, `no_longer_applies`, `signed_off`, `carried_forward`) and
+  typed Rubber Duck failure reasons; `detail` streams one item's evidence,
+  including exit writes, as revision-checked JSON text. A closed or merged PR
+  pruned automatically answers `detail` from its tombstone (`state: pruned`).
 - `health` pages repository polling state, causes and exact retry IDs, even
   before any PR is detected. Use its retryable operation ID with `retry`.
 - Ordinary failed/cancelled AI work uses `retry_review` with its candidate key.
