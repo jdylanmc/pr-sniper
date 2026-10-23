@@ -226,3 +226,38 @@ fn panel_snapshots_send_each_repeated_selection_once() {
     // Outside `interned`, serialization is unchanged.
     assert_eq!(serde_json::to_value(&runs).unwrap(), plain);
 }
+
+#[test]
+fn caches_and_files_stay_bounded_over_a_long_running_review() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut reviews = profile(&store, 30);
+    reviews[4].operation.state = OperationState::Running;
+    store.save_reviews(&reviews).unwrap();
+    let files = segment_files(&store).len();
+    for step in 0..200 {
+        let view = store.freeze().unwrap();
+        crate::queue::snapshot(&view, vec![]).unwrap();
+        let mut reviews = store.load_reviews().unwrap();
+        reviews[4].phase = format!("Reviewing file {step}");
+        if step % 20 == 0 {
+            // A transition: written at once with the pending progress.
+            reviews[4].operation.attempt_count += 1;
+        }
+        store.save_reviews(&reviews).unwrap();
+        if step % 50 == 0 {
+            store.flush_progress(true).unwrap();
+        }
+    }
+    store.flush_progress(true).unwrap();
+    // One run file per run, no part growth, no retained readers or stale
+    // decoded runs: memory and disk return to the size of the live view.
+    assert_eq!(segment_files(&store).len(), files);
+    let segments = store.cache.reviews.lock().unwrap();
+    assert_eq!(segments.runs.len(), 30);
+    assert!(segments.parts.len() <= 3);
+    assert!(segments.garbage.is_empty());
+    drop(segments);
+    assert_eq!(store.cache.oldest_reader(), None);
+    assert!(store.progress.lock().unwrap().pending.is_none());
+}
