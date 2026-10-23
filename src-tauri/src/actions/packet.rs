@@ -607,6 +607,28 @@ pub fn unadopted(
     store: &Store,
     ledger: &Ledger,
 ) -> Result<std::collections::HashSet<String>, String> {
+    Ok(awaiting_adoption(store, ledger)?
+        .iter()
+        .map(|r| queue::item_id(&r.job))
+        .collect())
+}
+
+/// Operation ids of completed approve, approve-and-merge and acting sign-off
+/// runs that [`adopt`] could still turn into a packet final. Settled for good
+/// once adopted, or once adoption is obsolete: the provider reports the PR
+/// closed or merged, the assignment or activation is gone, or the state the
+/// exit read has moved.
+pub(crate) fn adoptable_runs(
+    store: &Store,
+    ledger: &Ledger,
+) -> Result<std::collections::HashSet<String>, String> {
+    Ok(awaiting_adoption(store, ledger)?
+        .into_iter()
+        .map(|r| r.operation.id)
+        .collect())
+}
+
+fn awaiting_adoption(store: &Store, ledger: &Ledger) -> Result<Vec<ReviewRun>, String> {
     let states = store.load_pr_states()?;
     let writes = store.load_feedback()?.exit_writes;
     let settings = store.load_settings()?;
@@ -632,7 +654,7 @@ pub fn unadopted(
     };
     Ok(store
         .load_reviews()?
-        .iter()
+        .into_iter()
         .filter(|r| {
             adoptable(r)
                 && r.mode == RunMode::Packet
@@ -645,7 +667,6 @@ pub fn unadopted(
                 })
                 && live(&states, &writes, r)
         })
-        .map(|r| queue::item_id(&r.job))
         .collect())
 }
 

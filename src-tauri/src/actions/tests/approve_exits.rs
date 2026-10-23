@@ -950,3 +950,81 @@ fn after_the_author_updates_the_branch_a_fresh_lgtm_approves_the_new_head_and_me
     assert_eq!(env.wire.0.lock().unwrap().observation.state, "MERGED");
     assert_eq!(env.wire.0.lock().unwrap().writes.len(), 3);
 }
+
+/// The sign-off's thread writes completed (`consumed` as given) and the PR
+/// observed merged by polling: only adoption can still hold its detail.
+fn signed_off_and_merged(store: &Store, consumed: bool) -> crate::exit_writes::ExitWrite {
+    let review = store.load_reviews().unwrap().remove(0);
+    let mut write = crate::exit_writes::plan(&review, NOW).unwrap();
+    write.phase = crate::exit_writes::Phase::Completed;
+    for step in &mut write.steps {
+        step.state = crate::exit_writes::StepState::Done;
+        step.receipt = Some("done".into());
+    }
+    write.consumed = consumed;
+    let mut feedback = store.load_feedback().unwrap();
+    feedback.exit_writes = vec![write.clone()];
+    store.save_feedback(&feedback).unwrap();
+    let mut queue = store.load_queue_state().unwrap();
+    for tracked in &mut queue.tracked {
+        tracked.lifecycle = crate::github::metadata::Lifecycle::Merged;
+        tracked.terminal_observed = true;
+    }
+    store.save_queue_state(&queue).unwrap();
+    write
+}
+
+fn prune(store: &Store) -> usize {
+    crate::retention::prune_terminal(store, true, crate::retention::PRUNE_PER_PASS).unwrap()
+}
+
+#[test]
+fn a_consumed_sign_off_holds_pruning_until_its_final_is_adopted() {
+    let (root, store, item) = setup(
+        true,
+        true,
+        sign_off(&["T1"], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    // The last action observation still reads the PR open.
+    synchronize(&store, &item, Ok(observed()), NOW + 10).unwrap();
+    let mut write = signed_off_and_merged(&store, false);
+    assert_eq!(prune(&store), 0, "completed, not consumed");
+    write.consumed = true;
+    let mut feedback = store.load_feedback().unwrap();
+    feedback.exit_writes = vec![write];
+    store.save_feedback(&feedback).unwrap();
+    // Restart: maintenance runs before the actions coordinator adopts it.
+    drop(store);
+    let store = Store::new(root.path().into());
+    assert_eq!(prune(&store), 0, "consumed, final not adopted");
+    assert!(!store.load_reviews().unwrap().is_empty());
+    packet::adopt(&store, &item).unwrap();
+    let finals = store.load_actions().unwrap().finals;
+    assert_eq!(finals.len(), 1, "the approve-and-merge final is durable");
+    let final_id = finals[0].id.clone();
+    assert_eq!(prune(&store), 1);
+    let receipt = crate::retention::load(&store).unwrap().receipts.remove(0);
+    assert!(receipt
+        .work
+        .iter()
+        .any(|w| w.kind == crate::capacity::Kind::PrimaryFinal && w.id == final_id));
+}
+
+#[test]
+fn an_unadoptable_sign_off_never_holds_pruning() {
+    let (_root, store, item) = setup(
+        true,
+        true,
+        sign_off(&["T1"], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    signed_off_and_merged(&store, true);
+    // Adoption is obsolete once the provider reports the PR merged.
+    let mut merged = observed();
+    merged.state = "MERGED".into();
+    synchronize(&store, &item, Ok(merged), NOW + 10).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(store.load_actions().unwrap().finals.is_empty());
+    assert_eq!(prune(&store), 1);
+}

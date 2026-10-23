@@ -71,7 +71,13 @@ impl State {
         })
     }
 
-    fn receipt(&self, scope: &TrackedPullRequest) -> Result<Option<Receipt>, String> {
+    /// `adoptable`: operation ids of approve/sign-off runs still owed a packet
+    /// final (`actions::adoptable_runs`).
+    fn receipt(
+        &self,
+        scope: &TrackedPullRequest,
+        adoptable: &std::collections::HashSet<String>,
+    ) -> Result<Option<Receipt>, String> {
         let binding = Binding::tracked(scope);
         let matches = |job: &QueueJob| binding.matches(job);
         let running = |op: &JobOperation| op.state == OperationState::Running;
@@ -183,6 +189,9 @@ impl State {
                     || w.uncertain
                     || running(&w.operation)
                     || w.steps.iter().any(|s| s.state == crate::exit_writes::StepState::Attempted))
+            // A completed approve or sign-off whose final is not adopted yet:
+            // pruning would erase the approval or merge-pending outcome.
+            || reviews.iter().any(|r| adoptable.contains(&r.operation.id))
         {
             return Ok(None);
         }
@@ -530,7 +539,8 @@ fn clean(
             }
             return Err("Terminal cleanup needs the missing owned-publication provenance. Detail was retained; repair the original receipt.".into());
         }
-        let Some(mut receipt) = state.receipt(&scope)? else {
+        let adoptable = crate::actions::adoptable_runs(store, &state.actions)?;
+        let Some(mut receipt) = state.receipt(&scope, &adoptable)? else {
             continue;
         };
         for notice in &state.notifications.notices {
