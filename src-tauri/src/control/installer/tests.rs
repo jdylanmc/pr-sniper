@@ -43,6 +43,7 @@ fn crash(point: &str) {
     FAILURE.with(|value| *value.borrow_mut() = Some((point.into(), true)));
 }
 
+#[cfg(unix)]
 fn during(point: &str, action: impl FnOnce() + 'static) {
     ACTION.with(|value| *value.borrow_mut() = Some((point.into(), Box::new(action))));
 }
