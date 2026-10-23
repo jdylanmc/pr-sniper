@@ -168,9 +168,16 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             conversations: 0,
         });
     }
-    for (index, run) in reviews.iter().enumerate() {
+    // Keyed by identity and occurrence, stable when other records go away.
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut occurrence = |id: String| -> String {
+        let n = seen.entry(id.clone()).or_default();
+        *n += 1;
+        format!("{id}#{n}")
+    };
+    for run in reviews.iter() {
         let id = crate::queue::item_id(&run.job);
-        let key = format!("{index}:{}", run.operation.id);
+        let key = occurrence(format!("run:{}", run.operation.id));
         add_known(
             &known.runs,
             &mut next.runs,
@@ -189,8 +196,8 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             }
         }
     }
-    for (index, p) in publications.iter().enumerate() {
-        let key = format!("{index}:{}", p.id);
+    for p in publications.iter() {
+        let key = occurrence(format!("publication:{}", p.id));
         add_known(
             &known.publications,
             &mut next.publications,

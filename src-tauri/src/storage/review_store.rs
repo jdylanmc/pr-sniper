@@ -309,6 +309,19 @@ impl Store {
             .unwrap_or_default()
     }
 
+    pub(crate) fn saved_is_legacy(&self) -> bool {
+        self.saved_reviews()
+            .is_ok_and(|saved| matches!(saved.as_ref(), Some(Saved::Legacy(_))))
+    }
+
+    pub(crate) fn write_legacy_reviews(&self, bytes: &[u8]) -> Result<(), String> {
+        self.write_state_bytes(MANIFEST, bytes, None)?;
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.pending = None;
+        }
+        Ok(())
+    }
+
     /// Keeps progress-only `reviews` in memory when the last write is recent;
     /// false when they must be written now.
     pub(crate) fn defer_progress(&self, reviews: &[ReviewRun], fingerprint: u64) -> bool {

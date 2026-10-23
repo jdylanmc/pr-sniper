@@ -467,3 +467,57 @@ fn live_size_progress_and_polling_cost() {
         rss(|s| s.2)
     );
 }
+
+/// Prunes a copy of a real profile (`PR_SNIPER_BENCH_ROOT`, never the live
+/// one) as startup maintenance would, and reports its footprint.
+#[test]
+#[ignore = "measurement on a copied profile; set PR_SNIPER_BENCH_ROOT"]
+fn copied_profile_prune_footprint() {
+    let Some(root) = std::env::var_os("PR_SNIPER_BENCH_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let footprint = || -> u64 {
+        Store::saved_files(&root.join("state"))
+            .iter()
+            .map(|file| std::fs::metadata(file).unwrap().len())
+            .sum()
+    };
+    let store = Store::new(root.clone());
+    eprintln!("footprint before: {} B", footprint());
+    let started = Instant::now();
+    let mut pruned = 0;
+    let mut slowest = Duration::ZERO;
+    let before = store.load_reviews().unwrap().len();
+    eprintln!("runs before: {before}");
+    while std::env::var_os("PR_SNIPER_BENCH_NO_PRUNE").is_none() {
+        let pass = Instant::now();
+        let count = crate::retention::prune_terminal(&store, true, 1).unwrap();
+        eprintln!(
+            "pass: {count} pruned, {} runs",
+            store.load_reviews().unwrap().len()
+        );
+        slowest = slowest.max(pass.elapsed());
+        pruned += count;
+        if count == 0 {
+            break;
+        }
+    }
+    // The first save migrates reviews to segments.
+    let reviews = store.load_reviews().unwrap();
+    store.save_reviews(&reviews).unwrap();
+    eprintln!(
+        "pruned {pruned} PRs in {:?} (slowest pass {slowest:?}); {} runs kept; footprint after: {} B",
+        started.elapsed(),
+        reviews.len(),
+        footprint()
+    );
+    let snapshot = crate::queue::snapshot(&store.freeze().unwrap(), vec![]).unwrap();
+    eprintln!(
+        "panel payload: {} B (was {} B)",
+        serde_json::to_vec(&crate::review::interned(&snapshot).unwrap())
+            .unwrap()
+            .len(),
+        serde_json::to_vec(&snapshot).unwrap().len()
+    );
+}

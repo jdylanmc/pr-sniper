@@ -254,10 +254,17 @@ impl Store {
     }
 
     /// Replaces saved reviews without retention checks (cleanup recovery).
+    /// A legacy file stays legacy: pruning an upgrade backlog shrinks it,
+    /// and the next ordinary save migrates only what is left.
     pub(crate) fn replace_reviews(
         &self,
         reviews: &[crate::review::ReviewRun],
     ) -> Result<(), String> {
+        if self.saved_is_legacy() {
+            let bytes =
+                serde_json::to_vec(reviews).map_err(|_| "Cannot encode monitoring state.")?;
+            return self.write_legacy_reviews(&bytes);
+        }
         self.write_reviews(reviews, None)
     }
 
