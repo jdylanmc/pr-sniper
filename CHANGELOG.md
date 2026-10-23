@@ -7,8 +7,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## 0.5.0 - 2026-10-22
 
-Agentic control over local MCP, plus a large set of review, merge-path and
-performance fixes.
+Agentic control over local MCP, a stricter `lgtm` sign-off, and a large set of
+efficiency, merge-path and reliability fixes.
 
 ### Added
 
@@ -17,9 +17,21 @@ performance fixes.
   server and Settings registers only its owned entry; install the skill with
   `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`.
   Settings shows whether the skill is detected; login setup stays human-managed.
-- MCP queue views report saved retry times, finding dispositions
-  (`author_wont_fix`, `carried_forward`), typed Rubber Duck failure reasons and
-  feedback-observation waits; evidence detail includes exit writes.
+- MCP queue views report each item's exit, progress and typed merge pending,
+  each review's exit and denied exits with reasons, saved retry times, finding
+  dispositions (`author_wont_fix`, `no_longer_applies`, `signed_off`,
+  `carried_forward`), typed Rubber Duck failure reasons and feedback-observation
+  waits; evidence detail includes exit writes, and a pruned PR answers from its
+  tombstone.
+- `lgtm` sign-off exit for the primary: it accounts for every own open thread
+  (`fixed` with evidence, `author_wont_fix`, `withdrawn` or `no_longer_applies`
+  on a changed head), dismisses every teammate finding with a rationale,
+  replies each disposition on and resolves those threads, then hands off,
+  approves or approves and merges per the assignment's authority. An
+  unaccounted thread, a finding that still applies or an undismissed teammate
+  finding refuses it, listing the ids. Refused while another reviewer's thread
+  is open, CI is red or pending, or the PR is draft; approve/merge wait for the
+  resolutions and re-check fresh state.
 - Watch exact PRs with persistent queue priority, explicit review-again and
   request-only Agent/doctrine selections; preserve pause, prerequisites and
   existing grants.
@@ -28,7 +40,57 @@ performance fixes.
 
 ### Fixed
 
+- **Efficiency & resource use**
+  - Saving a running review's progress no longer rewrites every saved review:
+    `reviews.json` is a manifest of per-run files that store repeated agent and
+    feedback snapshots once (the live 72 MB profile saves about 13 MB). Older
+    review files migrate on the next save.
+  - Far fewer disk writes: progress-only saves (phase label, duck calls) stay in
+    memory and are written at most every 30 s, with the next transition or at
+    quit; unchanged passes write nothing; a failed write is retried, never
+    coalesced as progress.
+  - Saved state is parsed once per change and shared: the panel and MCP read
+    the same decoded snapshots, repeated selection and feedback snapshots are
+    sent to the panel once (was 73 MB per 5 s poll at live size), unchanged
+    activity hashes are reused, and the automation snapshot no longer holds the
+    storage lock.
+  - Closed and merged PRs are pruned automatically (reviews, publications,
+    conversations, actions, notices, queue entries), one per pass once their
+    work settles and never around an in-flight provider write; **Clean** still
+    prunes on demand. Retention receipts keep 30 days of detail (newest 500)
+    and a one-year per-PR safety tombstone; retired poll operations are capped
+    at 64.
+  - Large profiles no longer pin a CPU core or starve the panel. Coordinators
+    run on saved transitions and saved retry times (60 s heartbeat), not on
+    running-review progress; scans parse a frozen copy outside the storage
+    lock; Queue projection and publication scans stay linear in history;
+    unneeded retired Queue entries are compacted.
+  - Backlog catch-up no longer pins a core or grows memory. Review attempts
+    revalidate saved state only after its files change, not on every GitHub
+    read; idle provider-action items are re-read once per heartbeat; probe
+    planning reuses its last result until state changes; concurrent state
+    snapshots share unchanged file bytes.
+  - Attempt diagnostics write about a tenth of their former volume: each file
+    records an attempt header and Duck identity once, unrecognized runtime
+    chatter and successful nested Duck tool calls are counted, and coverage
+    repeats are dropped. Failures stay itemized; older logs still read.
 - **Merge path**
+  - A branch behind its base or with conflicts no longer blocks approval: the
+    sign-off approves, shows **Approved — merge pending (behind base/conflicts)**
+    and keeps monitoring; the merge waits for the author to update the branch
+    and the new head is reviewed, approved and merged afresh. PR Sniper never
+    updates a branch.
+  - Approve first reads the PR's reviews and reuses this account's approval on
+    the head instead of posting another.
+  - `fixed` was refused ("evidence actually read in this attempt") for a ref
+    with no line or an `end_line` past the last line, even after the head file
+    was read, and the error never named the thread or ref. Whole-file refs count
+    once every page was served, past-end ranges run to the end, refusals list
+    each unserved ref with its reason, and a `verify_fixed` duck call that could
+    not back `fixed` is refused before it is spent.
+  - A host marker or signature counts as PR Sniper's only from the acting
+    account; a marked comment from anyone else is no longer skipped when
+    checking the PR author's latest reply.
   - The primary may resolve its own finding when the PR author replied won't-fix
     and the primary accepts that rationale (`author_wont_fix`). The host verifies
     the reply is the PR author's latest by provider identity, that no one else
@@ -78,6 +140,8 @@ performance fixes.
   - Settings editors (repository detail, Agent, assignment) no longer show a
     second scrollbar beside their own when the Settings list behind them is
     long; the editor body is the panel's only scroll container.
+  - Poll and lifecycle reads of the same second are ordered by sequence, so an
+    older Closed read can no longer undo a newer reopen.
 - **Startup and Copilot CLI**
   - A login item left pointing at a moved or deleted build no longer stays
     "registration invalid": an installed app re-registers itself at launch while
