@@ -51,12 +51,16 @@ jobs:
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-webkit
         timeout-minutes: 5
       # System packages come from the runner's apt mirror, which intermittently
-      # stalls; retry instead of failing the job on one slow mirror.
+      # stalls. Let apt time out and retry its own downloads instead of killing
+      # it mid-install (which leaves dpkg locked), and repair dpkg between tries.
       - name: Install Playwright system dependencies
         run: |
+          printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null
           for attempt in 1 2 3; do
-            timeout 300 npx playwright install-deps chromium webkit && exit 0
+            npx playwright install-deps chromium webkit && exit 0
             echo "install-deps attempt $attempt failed; retrying"
+            sudo dpkg --configure -a || true
             sleep 15
           done
           exit 1
