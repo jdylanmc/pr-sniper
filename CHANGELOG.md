@@ -56,7 +56,8 @@ efficiency, merge-path and reliability fixes.
     storage lock.
   - Closed and merged PRs are pruned automatically (reviews, publications,
     conversations, actions, notices, queue entries), one per pass once their
-    work settles and never around an in-flight provider write; **Clean** still
+    work settles, never around an in-flight provider write or before an
+    approval or merge-pending outcome is recorded; **Clean** still
     prunes on demand. Retention receipts keep 30 days of detail (newest 500)
     and a one-year per-PR safety tombstone; retired poll operations are capped
     at 64.
