@@ -188,11 +188,20 @@ as `jdylanmc` under the [merge gate](.agents/skills/joe-mode/MERGE.md)
 until Dylan revokes the grant; changes to this exception remain human-merged.
 The 2026-10-08 human authorization carries that same gate to the CMUX
 coordinator; it does not grant merge power to PM, implementers or Shepherd.
-PR Sniper may be pointed at its own repository through separately configured
-app assignments, but that does not bypass the coordinator gate or authorize
-an agent to approve its own implementation. This policy-changing PR remains
-human-merged.
-Agents must not submit approval votes, enable automatic merging or bypass
+PR Sniper itself is a separate reviewer, not a development agent. On
+2026-10-22 Dylan authorized PR Sniper's configured app assignments for
+`jdylanmc/pr-sniper` (including its primary decider, The Maintainer) to review,
+resolve their own threads, approve and merge PRs in this repository, including
+PRs authored as `jdylanmc`, within the authority each assignment is configured
+with in the app and only through the app's host-enforced gates (current head,
+green required checks, not draft, mergeable and up to date, no unresolved
+threads from other humans). This grant applies to the PR Sniper app's review
+runtime only; it does not grant approval or merge power to PM, implementers,
+Shepherd, coordinators or any other development agent, and it does not permit
+bypassing provider protections. Dylan may revoke it by editing this section;
+changes to this section remain human-merged.
+Development agents (anything other than the PR Sniper app's configured review
+runtime) must not submit approval votes, enable automatic merging or bypass
 provider protections.
 
 Use one repository PM and shared owner board, isolated delivery worktrees,
