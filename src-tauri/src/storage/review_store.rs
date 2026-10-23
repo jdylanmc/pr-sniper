@@ -60,6 +60,17 @@ struct Segment {
     parts: BTreeMap<String, String>,
 }
 
+/// Progress saves of running reviews (phase label, duck calls) are kept in
+/// memory and written at most once per `PROGRESS_FLUSH`, or with the next
+/// transition. A crash loses at most that much progress, never a transition.
+pub(crate) const PROGRESS_FLUSH: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+pub(crate) struct Progress {
+    pub(super) pending: Option<Arc<(Vec<Arc<ReviewRun>>, u64)>>,
+    flushed: Option<std::time::Instant>,
+}
+
 pub(super) enum Saved {
     Legacy(Vec<Arc<ReviewRun>>),
     Segmented(Vec<String>),
@@ -160,6 +171,15 @@ impl Store {
 
     /// Every saved run, shared with the decode cache. No retention guard.
     pub(crate) fn review_runs(&self) -> Result<Vec<Arc<ReviewRun>>, ReadError> {
+        if let Some(pending) = self
+            .progress
+            .lock()
+            .map_err(|_| UNREADABLE)?
+            .pending
+            .clone()
+        {
+            return Ok(pending.0.clone());
+        }
         match self.saved_reviews()?.as_ref() {
             None => Ok(Vec::new()),
             Some(Saved::Legacy(runs)) => Ok(runs.clone()),
@@ -289,6 +309,49 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// Keeps progress-only `reviews` in memory when the last write is recent;
+    /// false when they must be written now.
+    pub(crate) fn defer_progress(&self, reviews: &[ReviewRun], fingerprint: u64) -> bool {
+        if self.is_frozen() {
+            return false;
+        }
+        let Ok(mut progress) = self.progress.lock() else {
+            return false;
+        };
+        if progress
+            .flushed
+            .is_none_or(|flushed| flushed.elapsed() >= PROGRESS_FLUSH)
+        {
+            return false;
+        }
+        let runs = reviews.iter().cloned().map(Arc::new).collect();
+        progress.pending = Some(Arc::new((runs, fingerprint)));
+        drop(progress);
+        // A new version for every cache keyed on this file; not a transition.
+        self.record_write(MANIFEST, Some(fingerprint));
+        true
+    }
+
+    /// Writes deferred progress once `PROGRESS_FLUSH` has passed, or now when
+    /// `force` (shutdown). Called by the scheduler tick.
+    pub(crate) fn flush_progress(&self, force: bool) -> Result<(), String> {
+        let pending = {
+            let progress = self.progress.lock().map_err(|_| UNREADABLE)?;
+            let due = force
+                || progress
+                    .flushed
+                    .is_none_or(|flushed| flushed.elapsed() >= PROGRESS_FLUSH);
+            match &progress.pending {
+                Some(pending) if due => pending.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let runs: Vec<ReviewRun> = pending.0.iter().map(|run| run.as_ref().clone()).collect();
+        crate::retention::guard(self)?;
+        crate::retention::mark_activity_pending(self)?;
+        self.write_reviews(&runs, Some(pending.1))
+    }
+
     /// Saves `reviews` as the manifest, writing only runs that no saved
     /// segment already holds. `fingerprint` as in `write_state_as`.
     pub(crate) fn write_reviews(
@@ -348,6 +411,10 @@ impl Store {
         })
         .map_err(|_| "Cannot encode monitoring state.")?;
         self.write_state_bytes(MANIFEST, &manifest, fingerprint)?;
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.pending = None;
+            progress.flushed = Some(std::time::Instant::now());
+        }
         let unreferenced: Vec<String> = previous
             .into_iter()
             .map(|(name, _)| name)

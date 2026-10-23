@@ -50,7 +50,7 @@ fn legacy_array_migrates_on_save_with_the_same_logical_view() {
 }
 
 #[test]
-fn progress_save_writes_only_the_changed_run_and_decodes_no_run() {
+fn progress_saves_are_coalesced_and_write_only_the_changed_run() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let mut reviews = profile(&store, 40);
@@ -66,23 +66,35 @@ fn progress_save_writes_only_the_changed_run_and_decodes_no_run() {
         reviews[7].phase = format!("Reviewing file {step}");
         store.save_reviews(&reviews).unwrap();
     }
-    // Five saves of one run (its selection stored once) plus the manifest
-    // and pending flag: far below a single full rewrite.
-    let written = store.take_bytes_written();
-    assert!(written * 10 < full, "{written} vs {full}");
-    // No run is decoded again. Only the small manifest may be, while its
-    // fresh write is inside the racy identity window.
-    let parses = store.take_parses();
-    assert!(parses.keys().all(|key| key == MANIFEST), "{parses:?}");
-    assert!(parses.get(MANIFEST).is_none_or(|&count| count <= 10));
-    assert_eq!(store.take_state_writes().get(MANIFEST), Some(&5));
-    // Superseded progress files are collected.
-    assert_eq!(segment_files(&store).len(), before.len());
+    // Within `PROGRESS_FLUSH`: nothing written, nothing decoded, and every
+    // reader, including a frozen copy, sees the latest progress.
+    assert_eq!(store.take_state_writes(), BTreeMap::new());
+    assert_eq!(store.take_bytes_written(), 0);
     assert_eq!(store.load_reviews().unwrap()[7].phase, "Reviewing file 4");
+    let view = store.freeze().unwrap();
+    assert_eq!(view.load_reviews().unwrap()[7].phase, "Reviewing file 4");
+    assert!(store.take_parses().keys().all(|key| key == MANIFEST));
+    // The scheduler flush writes the run and the manifest once.
+    store.flush_progress(true).unwrap();
+    store.flush_progress(true).unwrap();
+    assert_eq!(store.take_state_writes().get(MANIFEST), Some(&1));
+    let written = store.take_bytes_written();
+    assert!(written * 20 < full, "{written} vs {full}");
+    assert_eq!(segment_files(&store).len(), before.len() + 1);
+    drop(view);
     assert_eq!(
         Store::new(root.path().into()).load_reviews().unwrap()[7].phase,
         "Reviewing file 4"
     );
+    // A transition is written at once, with the pending progress.
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[7].phase = "Reviewing file 5".into();
+    store.save_reviews(&reviews).unwrap();
+    reviews[7].operation.state = OperationState::Completed;
+    store.save_reviews(&reviews).unwrap();
+    let saved = Store::new(root.path().into()).load_reviews().unwrap();
+    assert_eq!(saved[7].operation.state, OperationState::Completed);
+    assert_eq!(saved[7].phase, "Reviewing file 5");
 }
 
 #[test]
@@ -139,14 +151,14 @@ fn collection_waits_for_frozen_copies_that_may_read_old_runs() {
     store.save_reviews(&reviews).unwrap();
     let old = manifest(&store)[1].clone();
     let view = store.freeze().unwrap();
-    reviews[1].phase = "Changed".into();
+    reviews[1].error = Some("Changed".into());
     store.save_reviews(&reviews).unwrap();
     assert!(segment_files(&store).contains(&old));
     // The copy reads its own point in time from disk, not the cache.
     view.cache.reviews.lock().unwrap().runs.clear();
-    assert_eq!(view.load_reviews().unwrap()[1].phase, "Complete");
+    assert_eq!(view.load_reviews().unwrap()[1].error, None);
     drop(view);
-    reviews[2].phase = "Changed".into();
+    reviews[2].error = Some("Changed".into());
     store.save_reviews(&reviews).unwrap();
     let files = segment_files(&store);
     assert!(!files.contains(&old));
@@ -170,17 +182,17 @@ fn interrupted_saves_keep_the_committed_view_and_are_swept() {
     std::fs::write(directory.join("run-x.json.pr-sniper-write-y.partial"), b"{").unwrap();
     let fresh = Store::new(root.path().into());
     assert_eq!(fresh.load_reviews().unwrap(), reviews);
-    reviews[0].phase = "Changed".into();
+    reviews[0].error = Some("Changed".into());
     fresh.save_reviews(&reviews).unwrap();
     let files = segment_files(&fresh);
     assert!(!files.contains(&orphan) && files.iter().all(|n| !n.ends_with(".partial")));
     // A failed manifest write commits nothing.
     fresh.fail_state_write(MANIFEST, 1);
-    reviews[0].phase = "Lost".into();
+    reviews[0].error = Some("Lost".into());
     assert!(fresh.save_reviews(&reviews).is_err());
     assert_eq!(
-        Store::new(root.path().into()).load_reviews().unwrap()[0].phase,
-        "Changed"
+        Store::new(root.path().into()).load_reviews().unwrap()[0].error,
+        Some("Changed".into())
     );
 }
 

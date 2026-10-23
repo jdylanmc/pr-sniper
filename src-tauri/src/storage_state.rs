@@ -265,9 +265,12 @@ impl Store {
         crate::retention::reject_cleaned(self, reviews.iter().map(|r| r.job.clone()))?;
         let fingerprint = review_transitions(reviews);
         if self.same_transition("reviews.json", fingerprint) {
-            // Progress of a running review: saved and marked for the result
-            // index (rebuilt when read), but it wakes no coordinator.
+            // Progress of a running review wakes no coordinator. Kept in
+            // memory and written at most every `PROGRESS_FLUSH`.
             crate::retention::guard(self)?;
+            if self.defer_progress(reviews, fingerprint) {
+                return Ok(());
+            }
             crate::retention::mark_activity_pending(self)?;
             return self.write_reviews(reviews, Some(fingerprint));
         }

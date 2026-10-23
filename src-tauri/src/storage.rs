@@ -1434,6 +1434,9 @@ pub struct Store {
     cache: std::sync::Arc<parsed::Cache>,
     /// Keeps the review segments this frozen copy may read.
     reader: Option<std::sync::Arc<parsed::Reader>>,
+    /// Running-review progress not yet written (see `save_reviews`); a
+    /// frozen copy holds the progress it was taken with.
+    progress: std::sync::Mutex<review_store::Progress>,
     #[cfg(test)]
     bytes_written: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -1456,6 +1459,7 @@ impl Store {
             shared: std::sync::Mutex::new(BTreeMap::new()),
             cache: Default::default(),
             reader: None,
+            progress: Default::default(),
             #[cfg(test)]
             bytes_written: Default::default(),
             #[cfg(test)]
@@ -1879,6 +1883,9 @@ impl Store {
             Store::new(self.root.clone()).with_initial_time_zone(self.initial_time_zone.clone());
         view.frozen = Some(files);
         view.cache = self.cache.clone();
+        if let (Ok(seen), Ok(mut progress)) = (self.progress.lock(), view.progress.lock()) {
+            progress.pending = seen.pending.clone();
+        }
         if let (Ok(seen), Ok(mut counters)) = (self.counters.lock(), view.counters.lock()) {
             *counters = seen.clone();
         }

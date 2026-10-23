@@ -4535,7 +4535,12 @@ pub fn run() {
                     // Sample before the gated passes: their own writes wake
                     // the next tick once, then an unchanged store settles.
                     let generations = match host.store.lock() {
-                        Ok(store) => store.generations(),
+                        Ok(store) => {
+                            if let Err(error) = store.flush_progress(false) {
+                                report(&scheduler_app, error);
+                            }
+                            store.generations()
+                        }
                         Err(_) => continue,
                     };
                     let mut due = gates.due(&generations, now);
@@ -4662,6 +4667,9 @@ pub fn run() {
                         host.copilot.request_shutdown();
                         if let Ok(store) = host.store.lock() {
                             if let Err(error) = host.ai.shutdown(&store) {
+                                report(app, error);
+                            }
+                            if let Err(error) = store.flush_progress(true) {
                                 report(app, error);
                             }
                         }
