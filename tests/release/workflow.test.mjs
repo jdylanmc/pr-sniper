@@ -1311,12 +1311,12 @@ test("browser shards partition every test file and case exactly once per engine"
   ]);
   for (const [, browser, total] of shardRuns) {
     const engine = browser === "webkit" ? ["--browser=webkit"] : [];
-    const [full, ...shards] = await Promise.all([
-      list(engine),
-      ...Array.from({ length: total }, (_, index) =>
-        list([...engine, `--shard=${index + 1}/${total}`]),
-      ),
-    ]);
+    // Sequential: concurrent Playwright processes race on the shared transform
+    // cache and fail with EPERM on Windows runners.
+    const full = await list(engine);
+    const shards = [];
+    for (let index = 0; index < total; index += 1)
+      shards.push(await list([...engine, `--shard=${index + 1}/${total}`]));
     assert.ok(full.length > 900, `${browser} suite unexpectedly small`);
     const fullIds = full.map((spec) => spec.id);
     assert.equal(new Set(fullIds).size, fullIds.length);
