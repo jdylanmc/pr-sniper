@@ -1,3 +1,4 @@
+use crate::storage::review_store::ReadError;
 use super::*;
 use crate::{
     actions::{EffectState, Ledger as Actions},
@@ -46,7 +47,10 @@ impl State {
         notifications.validate()?;
         Ok(Self {
             queue,
-            reviews: read(store, "reviews.json")?,
+            reviews: store.stored_reviews().map_err(|error| match error {
+                ReadError::Unreadable => "Cannot recover cleanup: unreadable reviews.json.",
+                ReadError::Invalid => "Cannot recover cleanup: invalid reviews.json.",
+            })?,
             publications,
             follow_ups,
             actions: read(store, "actions.json")?,
@@ -379,7 +383,7 @@ impl State {
         store.write_state("feedback.json", &self.feedback)?;
         store.write_state("follow-ups.json", &self.follow_ups)?;
         store.write_state("publications.json", &self.publications)?;
-        store.write_state("reviews.json", &self.reviews)?;
+        store.replace_reviews(&self.reviews)?;
         store.write_state("actions.json", &self.actions)?;
         store.write_state("notifications.json", &self.notifications)?;
         store.write_state("queue.json", &self.queue)?;

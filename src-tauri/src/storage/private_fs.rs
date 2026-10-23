@@ -242,6 +242,60 @@ pub(crate) fn recover(directory: &Path, target: Option<&str>) -> io::Result<()> 
     Ok(())
 }
 
+/// Writes a content-addressed file that is never rewritten: a private stage
+/// flushed to the device, then renamed into place. A present name is kept
+/// (same name, same bytes). Returns whether it wrote. Callers commit by
+/// replacing the file that references it after `sync_directory`.
+pub(super) fn create_immutable(directory: &Path, name: &str, bytes: &[u8]) -> io::Result<bool> {
+    let path = directory.join(name);
+    match existing_file(&path) {
+        Ok(()) => return Ok(false),
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let stage = directory.join(format!(
+        "{name}{WRITE_MARKER}{}.partial",
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = create_stage(&stage)?;
+    let written = (|| {
+        #[cfg(windows)]
+        windows::protect(&stage, false)?;
+        file.write_all(bytes)?;
+        flush_data(&file)
+    })();
+    // Windows rename must not retain the staging handle.
+    drop(file);
+    let result = written.and_then(|()| fs::rename(&stage, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&stage);
+    }
+    result.map(|()| true)
+}
+
+/// Pushes file data to the device. macOS `sync_all` is a full device-cache
+/// flush per file; the committing replace issues one for the whole batch.
+fn flush_data(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        extern "C" {
+            fn fsync(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        // SAFETY: `file` keeps the descriptor open for the whole call.
+        if unsafe { fsync(file.as_raw_fd()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    file.sync_data()
+}
+
+pub(super) fn sync_entries(directory: &Path) -> io::Result<()> {
+    sync_directory(directory)
+}
+
 pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     let name = path
         .file_name()

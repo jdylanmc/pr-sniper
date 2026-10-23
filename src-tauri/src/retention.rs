@@ -150,7 +150,7 @@ pub(crate) fn ordinal(
     agent: &str,
     reply: bool,
 ) -> Result<u64, String> {
-    Ok(load(store)?
+    Ok(shared(store)?
         .receipts
         .iter()
         .filter(|r| &Binding::tracked(&r.scope) == binding)
@@ -185,6 +185,16 @@ pub(crate) fn hash(value: &str) -> String {
 }
 
 pub fn load(store: &Store) -> Result<Ledger, String> {
+    Ok(shared(store)?.as_ref().clone())
+}
+
+/// The saved ledger, decoded once per version and shared; every guarded
+/// read checks it.
+pub(crate) fn shared(store: &Store) -> Result<std::sync::Arc<Ledger>, String> {
+    store.cached("retention.json", &["retention.json"], || decode(store))
+}
+
+fn decode(store: &Store) -> Result<Ledger, String> {
     match store.read_state("retention.json") {
         Ok(bytes) => {
             let ledger: Ledger = serde_json::from_slice(&bytes)
@@ -214,7 +224,7 @@ pub(crate) fn save(store: &Store, ledger: &Ledger) -> Result<(), String> {
 }
 
 pub(crate) fn guard(store: &Store) -> Result<(), String> {
-    if load(store)?.pending.is_some_and(|p| p.applying) {
+    if shared(store)?.pending.as_ref().is_some_and(|p| p.applying) {
         Err("Terminal cleanup is incomplete. Operational state is unavailable until recovery succeeds.".into())
     } else {
         Ok(())
@@ -225,7 +235,8 @@ pub(crate) fn reject_cleaned(
     store: &Store,
     jobs: impl IntoIterator<Item = QueueJob>,
 ) -> Result<(), String> {
-    let receipts = load(store)?.receipts;
+    let ledger = shared(store)?;
+    let receipts = &ledger.receipts;
     for job in jobs {
         if receipts.iter().any(|r| {
             Binding::tracked(&r.scope).matches(&job)
@@ -245,7 +256,8 @@ pub(crate) fn reject_items<'a>(
     store: &Store,
     items: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), String> {
-    let receipts = load(store)?.receipts;
+    let ledger = shared(store)?;
+    let receipts = &ledger.receipts;
     if items.into_iter().any(|id| {
         receipts
             .iter()
@@ -262,7 +274,7 @@ pub(crate) fn cleaned(
     destination: &crate::panel::Detail,
 ) -> Result<Option<&'static str>, String> {
     guard(store)?;
-    Ok(load(store)?.receipts.iter().any(|r| match destination {
+    Ok(shared(store)?.receipts.iter().any(|r| match destination {
         crate::panel::Detail::Item {item_id} => r.items.contains(item_id),
         crate::panel::Detail::Job {kind, id} => r.work.contains(&WorkId {kind:*kind,id:id.clone()}),
     }).then_some("Detail for this exact destination was cleaned after provider-confirmed closure or merge. No other PR or iteration was selected."))

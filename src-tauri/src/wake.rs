@@ -185,10 +185,7 @@ impl Gates {
                 .get(name)
                 .is_none_or(|(seen, _)| *seen != writes);
             if stale {
-                let instants = view
-                    .read_state(name)
-                    .map(|bytes| future_instants(&bytes, now))
-                    .unwrap_or_default();
+                let instants = view.saved_instants(name, now);
                 self.deadlines.insert(name.to_string(), (writes, instants));
             }
         }
