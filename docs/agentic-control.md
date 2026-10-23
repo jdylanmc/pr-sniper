@@ -2,59 +2,48 @@
 
 ## Install
 
-| Step         | Action                                                                                 |
-| ------------ | -------------------------------------------------------------------------------------- |
-| Prerequisite | PR Sniper with protocol 1 support; Node 22+; Copilot CLI                               |
-| Install      | Settings → Preferences → Copilot CLI → Install                                         |
-| Discover     | Restart Copilot CLI for MCP discovery; `/skills reload`, then `/skills info pr-sniper` |
-| Invoke       | `/pr-sniper start watching this PR https://github.com/owner/repo/pull/123`             |
-| Update       | Update the app, then the same Settings section → Update                                |
-| Remove       | Trash button removes owned MCP entry and skill; customized content is never deleted    |
-| Conflict     | Preserve/move the existing skill yourself, then install; no force overwrite            |
+| Step         | Action                                                                                |
+| ------------ | ------------------------------------------------------------------------------------- |
+| Prerequisite | PR Sniper 0.5.0+; Node 22+; Copilot CLI                                               |
+| MCP          | Settings → Preferences → Copilot CLI → Install; restart Copilot CLI                   |
+| Skill        | `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`            |
+| Discover     | `/skills reload`, then `/skills info pr-sniper`                                       |
+| Invoke       | `/pr-sniper start watching this PR https://github.com/owner/repo/pull/123`            |
+| Update       | App: update the app (registration follows). Skill: `npx skills update pr-sniper`      |
+| Repair       | MCP **Incomplete** → Repair (moved app or removed entry)                              |
+| Remove       | Trash button removes the owned MCP entry; `npx skills remove pr-sniper` removes skill |
+| Conflict     | Preserve/move a foreign or customized `pr-sniper` entry yourself; no force overwrite  |
 
-- Bundle location: `~/.copilot/skills/pr-sniper` (Windows: `%USERPROFILE%\.copilot\skills\pr-sniper`).
-- MCP registration: only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`;
-  local `node <bundle>/scripts/mcp-server.mjs`, no runtime npm download.
-- Explicit Install/Update/Repair owns the skill and server entry. Other servers
-  and root configuration survive updates/removal. A foreign or customized own
-  entry conflicts; no force overwrite or implicit adoption.
+- Skill: [`skills/pr-sniper`](../skills/pr-sniper), thin orchestration only (no
+  scripts). skills 1.7.2 installs it to `~/.agents/skills/pr-sniper`; Copilot CLI
+  reads `~/.agents/skills` and `~/.copilot/skills`. Settings shows **Detected**
+  read-only (links followed, nothing written). Protocol mismatch → update the app.
+- Server: shipped by the app. macOS: signed `PR Sniper.app/Contents/Resources/mcp/mcp-server.mjs`.
+  Windows: embedded bytes published to `%LOCALAPPDATA%\com.jdylanmc.pr-sniper\mcp\`
+  (the installer owns only its executable and uninstaller).
+- Registration: only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`:
+  `node <server> --app <app executable>`. No runtime npm download.
+- Other servers and root configuration survive install/repair/removal. A
+  foreign or customized own entry conflicts; no force overwrite or adoption.
+- Moved/updated app: the owned entry shows **Incomplete**. An app in
+  `/Applications`, `~/Applications` or `%LOCALAPPDATA%\PR Sniper` re-points it at
+  launch; dev builds never rewrite it. A removed entry is never re-added implicitly.
+- Linked folders (macOS): a symlinked `~/.copilot` or `mcp-config.json` is
+  written at its real target; the link stays. Each resolved ancestor must be
+  owned by you or root and not group/world writable (sticky excepted). Dangling
+  or retargeted links conflict; restore the link to recover.
+- Linked folders (Windows): junctions/symlinks in `%USERPROFILE%\.copilot` are
+  refused (**Linked folder**). Use a real folder and file.
 - Failed setup/removal refreshes status once while retaining the original error.
-  If status remains unavailable, **Retry** only reads status; it never repeats
-  the failed mutation or overwrites customized content.
-- A durable integration intent joins package activation and host registration.
-  Reopen completes only an already-authorized intent. Missing registration is
-  shown as **Incomplete** with **Repair**, not a successful installation.
-- Registration-only Repair reuses an exactly verified current package; it does
-  not republish unchanged assets. Customized content still fails verification.
-- Source/skills.sh-compatible package: [`skills/pr-sniper`](../skills/pr-sniper).
-  Skill discovery alone does not register MCP; use the app's explicit setup.
-  Only Copilot CLI is configured; no additional host is required.
+  **Retry** only reads status; it never repeats the failed mutation.
+- A durable intent joins the entry change and the ownership receipt. Reopen
+  completes only an already-authorized intent; an external edit conflicts.
+- Pre-release app-installed `~/.copilot/skills/pr-sniper` packages are left
+  untouched (detected as a skill). Delete the folder, then run the skills
+  command, to switch. Its legacy MCP receipt migrates on Repair.
+- Native isolated profiles cannot read or change the real registration.
 - Human login remains in Settings → Accounts. The skill binds existing GitHub
   and Copilot accounts; it neither reads tokens nor performs authentication.
-- Installer updates stage and verify a complete package outside skill discovery,
-  under `~/.copilot/.pr-sniper-installer`. A locked journal records ownership
-  before activation. Status/install/remove recover interrupted work: unfinished
-  staging rolls back; a verified ready package finishes activation; interrupted
-  cleanup resumes only for matching owned files.
-- Directory replacement is recoverable, not a zero-gap atomic swap. The previous
-  package stays in an owned backup until the new package and activation record
-  are verified. Read current installation status/revision after an interruption;
-  an old expected revision is never silently accepted.
-- Unexpected, customized or linked content remains untouched and causes a
-  conflict. Unclaimed pre-journal artifacts are preserved, never guessed to be
-  owned. Linked installation/profile ancestry is intentionally unsupported;
-  fixture-only canonicalization is not redirected-profile support.
-- Incomplete per-file bootstrap claims inside an owned staging package are
-  preserved together in a `.preserved` quarantine, never individually deleted
-  on filename evidence. Rollback completes only while the prior live package
-  remains verified unchanged; later install/update/removal can then proceed.
-- Transaction storage and the skill destination must permit same-filesystem
-  directory renames. Windows process-interruption recovery is tested separately
-  from power-loss durability; no portable directory-flush guarantee is claimed.
-- Native isolated profiles cannot read/recover or install/remove the real
-  user-wide skill. Synthetic tests use explicitly owned fixture destinations.
-- Existing installations without protocol 1 produce an unavailable/not-ready
-  error; update the app rather than editing settings files.
 
 ## Behavior
 
@@ -101,5 +90,5 @@
 - The bundled official MCP SDK supports legacy initialization and modern
   2026-07-28 stdio negotiation. Copilot CLI 1.0.100 accepts the local registration
   schema. SDK interoperability tests are not evidence of a signed-in host session.
-- Internal `scripts/pr-sniper.mjs` remains for diagnostic/native acceptance
+- Internal `src-control/pr-sniper.mjs` remains for diagnostic/native acceptance
   tests only; it is not the skill's primary agent interface.

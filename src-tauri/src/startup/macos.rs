@@ -100,7 +100,9 @@ impl LoginRegistration {
             || !metadata.is_file()
             || metadata.permissions().mode() & 0o111 == 0
         {
-            return Err("Launch at login requires an absolute, executable application path.".into());
+            return Err(
+                "Launch at login requires an absolute, executable application path.".into(),
+            );
         }
         let mut values = Dictionary::new();
         values.insert("Label".into(), Value::String(LABEL.into()));

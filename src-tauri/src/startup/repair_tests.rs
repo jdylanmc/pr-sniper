@@ -88,12 +88,28 @@ fn only_installed_locations_may_repair_at_launch() {
     {
         let roots = [PathBuf::from(r"C:\Users\fixture\AppData\Local\PR Sniper")];
         for (path, installed) in [
-            (r"C:\Users\fixture\AppData\Local\PR Sniper\pr-sniper.exe", true),
-            (r"c:\users\FIXTURE\appdata\local\pr sniper\pr-sniper.exe", true),
-            (r"C:\src\pr-sniper\src-tauri\target\release\pr-sniper.exe", false),
-            (r"C:\Users\fixture\AppData\Local\PR Sniper\old\pr-sniper.exe", false),
+            (
+                r"C:\Users\fixture\AppData\Local\PR Sniper\pr-sniper.exe",
+                true,
+            ),
+            (
+                r"c:\users\FIXTURE\appdata\local\pr sniper\pr-sniper.exe",
+                true,
+            ),
+            (
+                r"C:\src\pr-sniper\src-tauri\target\release\pr-sniper.exe",
+                false,
+            ),
+            (
+                r"C:\Users\fixture\AppData\Local\PR Sniper\old\pr-sniper.exe",
+                false,
+            ),
         ] {
-            assert_eq!(installed_under(&PathBuf::from(path), &roots), installed, "{path}");
+            assert_eq!(
+                installed_under(&PathBuf::from(path), &roots),
+                installed,
+                "{path}"
+            );
         }
     }
 }

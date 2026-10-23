@@ -10,7 +10,9 @@ npm run tauri -- build --debug --bundles app --config tests/control/tauri.accept
 node tests/control/native-acceptance.mjs --executable "src-tauri/target/debug/bundle/macos/PR Sniper Control Acceptance.app/Contents/MacOS/pr-sniper"
 ```
 
-- Both native CI workflows **run** the bundled CLI against the real app after
+- Both native CI workflows register the app-bundled server
+  (`node <app>/mcp/mcp-server.mjs --app <exe>`; macOS from the signed bundle)
+  and **run** it plus the diagnostic CLI against the real app after
   building. Compilation alone cannot pass this check.
 - CLI launches the closed app. Harness verifies native inspect, resource save,
   stale-save rejection, pause, malformed/unknown/login rejection and real
@@ -19,7 +21,7 @@ node tests/control/native-acceptance.mjs --executable "src-tauri/target/debug/bu
   listener and must return a typed rejection; the original CLI rejection
   assertions remain unchanged.
 - Fresh run-owned profile and credential-service namespace. No Copilot install,
-  sign-in, inference, provider effects, skill installation or login-item changes.
+  sign-in, inference, provider effects, skill files or login-item changes.
 - Stop uses exact observed PID plus creation identity for the run-owned copied
   executable. No process-name kill, installed-app termination or broad cleanup.
   Process termination is restart acceptance, **not** graceful tray-Quit proof.

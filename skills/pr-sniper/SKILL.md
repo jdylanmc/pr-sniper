@@ -13,10 +13,14 @@ This skill controls the app; it does not review code or publish provider actions
 ## Tools and setup
 
 Use the **pr-sniper MCP server's discovered typed tools**, starting with `inspect`.
-If unavailable, ask the human to install via Settings → Preferences → Copilot CLI,
-restart Copilot CLI to load its MCP configuration, then `/skills reload`.
+The PR Sniper app ships and registers that server; this skill contains no server
+code. If the tools are missing, ask the human to open PR Sniper → Settings →
+Preferences → Copilot CLI → Install (or Repair), then restart Copilot CLI.
+Every reply carries `protocol`; this skill supports protocol `1`. If `protocol`
+differs, a tool is missing, or the error is `unsupported_protocol`/unknown
+operation, stop and ask the human to update the PR Sniper app (or this skill
+with `npx skills update pr-sniper`). Never work around a mismatch.
 Do not substitute shell JSON, edit host/app files, install packages or run `gh`.
-The app installs both this skill and its self-contained local stdio server.
 Node 22+ is required; no runtime npm packages/downloads. The server launches
 the app if closed and preserves pause. Tool discovery alone does not launch it.
 

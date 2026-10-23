@@ -168,7 +168,7 @@ async function stopOwned() {
 
 function call(input) {
   const started = Date.now();
-  const result = spawnSync(process.execPath, [cli], {
+  const result = spawnSync(process.execPath, [cli, "--app", executable], {
     cwd: root,
     env,
     input: typeof input === "string" ? input : JSON.stringify(input),
@@ -302,24 +302,45 @@ try {
     executable = path.join(root, "pr-sniper.exe");
     await fs.copyFile(source, executable);
   }
+  // The app registers its bundled server; macOS proves it is in the signed
+  // bundle. Windows publishes the same embedded bytes into app data.
+  const script =
+    process.platform === "darwin"
+      ? path.join(executable, "../../Resources/mcp/mcp-server.mjs")
+      : path.join(root, "app-data", "mcp", "mcp-server.mjs");
+  if (process.platform !== "darwin") {
+    await fs.mkdir(path.dirname(script), { recursive: true });
+    await fs.copyFile(
+      path.join(repository, "src-tauri/resources/mcp/mcp-server.mjs"),
+      script,
+    );
+  }
+  assert.deepEqual(
+    await fs.readFile(script),
+    await fs.readFile(
+      path.join(repository, "src-tauri/resources/mcp/mcp-server.mjs"),
+    ),
+    "Bundled MCP server must match the checked-in build",
+  );
   installation = setup("control_install", {
     host: "copilot_cli",
     expected: null,
     executable,
+    script,
   });
+  assert.equal(installation.state, "installed");
   assert.equal(installation.mcp_registered, true);
   const hostHome = path.join(root, "installer-store/skill-host");
-  const skill = path.join(hostHome, ".copilot/skills/pr-sniper");
   const registered = JSON.parse(
     await fs.readFile(path.join(hostHome, ".copilot/mcp-config.json"), "utf8"),
   );
-  assert.deepEqual(registered.mcpServers["pr-sniper"].args, [
-    path.join(skill, "scripts/mcp-server.mjs"),
-  ]);
+  const entry = registered.mcpServers["pr-sniper"];
+  assert.deepEqual(entry.args, [script, "--app", executable]);
+  await assert.rejects(fs.access(path.join(hostHome, ".copilot/skills")));
   receipt.checks.push(
-    "native installer creates verified embedded skill/server and owned stdio registration in synthetic home",
+    "native setup registers only the app-bundled stdio server in synthetic home; no skill files",
   );
-  cli = path.join(skill, "scripts", "pr-sniper.mjs");
+  cli = path.join(repository, "src-control", "pr-sniper.mjs");
   env = {
     ...process.env,
     PR_SNIPER_DATA_DIR: path.join(root, "data"),
@@ -338,7 +359,7 @@ try {
   assert.equal(initial.counts.copilot_accounts, 0);
   assert.equal(initial.automation.paused, false);
   receipt.checks.push(
-    "bundled CLI launched real app into fresh synthetic profile",
+    "diagnostic CLI launched real app into fresh synthetic profile",
   );
   const id = randomUUID();
   const edit = {
@@ -396,7 +417,7 @@ try {
   await stopOwned();
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(skill, "scripts/mcp-server.mjs")],
+    args: entry.args,
     env,
     stderr: "pipe",
   });
@@ -523,7 +544,7 @@ try {
       });
       assert.equal(removed.state, "absent");
       receipt.checks.push(
-        "native integration uninstall removes owned package and server entry",
+        "native integration uninstall removes only the owned server entry",
       );
     }
     receipt.cleanup =
@@ -532,7 +553,7 @@ try {
     // or synthetic profile. The test executable is also owned by this run.
     for (const name of [
       "data",
-      "skill",
+      "app-data",
       "installer-store",
       "PR Sniper Control Acceptance.app",
       "pr-sniper.exe",

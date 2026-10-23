@@ -13,11 +13,11 @@ mod windows;
 pub use windows::LoginRegistration;
 
 #[cfg(test)]
-#[path = "startup/retention_tests.rs"]
-mod retention_tests;
-#[cfg(test)]
 #[path = "startup/repair_tests.rs"]
 mod repair_tests;
+#[cfg(test)]
+#[path = "startup/retention_tests.rs"]
+mod retention_tests;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +98,10 @@ pub fn installed_under(executable: &Path, roots: &[PathBuf]) -> bool {
         return false;
     };
     let key = |path: &Path| {
-        let text = path.to_string_lossy().trim_end_matches(['/', '\\']).to_owned();
+        let text = path
+            .to_string_lossy()
+            .trim_end_matches(['/', '\\'])
+            .to_owned();
         if cfg!(windows) {
             text.to_lowercase()
         } else {

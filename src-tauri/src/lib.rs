@@ -4554,8 +4554,7 @@ pub fn run() {
                     .ok()
                     .and_then(|store| store.load_settings().ok())
                     .is_some_and(|settings| settings.launch_at_login);
-                let installed =
-                    startup::installed_executable(&executable, &app.path().home_dir()?);
+                let installed = startup::installed_executable(&executable, &app.path().home_dir()?);
                 if host
                     .registration
                     .repair_on_launch(enabled, installed)

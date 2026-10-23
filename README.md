@@ -61,8 +61,10 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 
 ## Copilot CLI
 
-- Settings → Preferences → Copilot CLI → **Install** registers local MCP and
-  `/pr-sniper`; restart Copilot CLI, then `/skills reload`.
+- Settings → Preferences → Copilot CLI → **Install** registers the app's local
+  MCP server; restart Copilot CLI.
+- Skill: `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`,
+  then `/skills reload`.
 - `/pr-sniper start watching this PR <url>` inspects configuration, resolves
   scope and reuses queued work. Unchanged completed work runs again only on
   explicit request.

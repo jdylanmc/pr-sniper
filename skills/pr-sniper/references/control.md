@@ -1,6 +1,6 @@
 # PR Sniper MCP tools
 
-The installed local stdio server is the agent-facing interface. Its typed
+The app-bundled local stdio server is the agent-facing interface. Its typed
 `tools/list` schemas define exact inputs and outputs. It calls the same native
 operations as the desktop UI; annotations never grant app permissions.
 
@@ -28,14 +28,15 @@ operations as the desktop UI; annotations never grant app permissions.
   identity within the receipt lifetime. Cancellation after dispatch does not
   undo native work. A replay is an old observation; read current state afterward.
 - No login, arbitrary shell, generic execute or second review engine.
-- Installation/update/removal is an explicit human Settings action; the server
-  cannot silently register itself or edit another server.
+- MCP registration is an explicit human Settings action; the server cannot
+  register itself or edit another server. The skill is installed separately
+  (`npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`).
 
 ## Internal diagnostic protocol 1
 
 The CLI below is retained for diagnostics/acceptance, **not** the primary agent API.
 
-Commands: `node scripts/pr-sniper.mjs describe|inspect|--version`; otherwise read
+Commands: `node src-control/pr-sniper.mjs [--app <executable>] describe|inspect|--version`; otherwise read
 one JSON object from stdin. Output: `{protocol,ok,result}` or `{protocol,ok:false,error:{code,detail}}`.
 Exit 0 means an operation returned successfully, not that reviews completed.
 Exit 1 means typed application failure; 2 means local CLI/transport failure.
@@ -125,25 +126,18 @@ and releases it (null Agent/doctrine fields select shared configuration).
 Ordinary `{}` watch requests and rejected reruns preserve pre-existing holds.
 Active jobs are not interrupted.
 
-Default executable discovery: installed `launcher.json`, then standard macOS
-Applications or Windows per-user PR Sniper install paths. No PATH shell lookup.
+Executable: the registration's `--app <absolute executable>`, else standard
+macOS Applications or Windows per-user PR Sniper install paths. No PATH lookup.
 `PR_SNIPER_DATA_DIR` selects isolated data; background launch then also requires
 an explicit `PR_SNIPER_KEYCHAIN_SERVICE` test scope. Neither variable is needed
 for the installed app. Protocol mismatches never fall back to file mutation.
 
-Installer status can recover a previously authorized package transaction.
-Whole-package staging and backups live outside skill discovery in
-`~/.copilot/.pr-sniper-installer`; they require same-filesystem directory moves.
-Before-ready failures roll back staging; ready activation and owned cleanup
-resume on reopen. Replacement is recoverable, not a zero-gap atomic swap.
-After interruption, read `installation` and use its current revision; stale
-expected revisions still fail. Customized, foreign and linked content is never
-force-replaced or deleted. Linked profile/installation ancestry is unsupported.
-Native isolated profiles cannot recover or mutate the real user-wide install.
-
-Installation also owns only `mcpServers.pr-sniper` in
-`~/.copilot/mcp-config.json`. Other servers and root fields are preserved.
-An existing unowned or customized entry is a conflict. Registration intent
-survives process interruption; status completes only previously authorized
-work. A package without registration is `incomplete`, not installed; use Repair.
+The app owns only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`:
+`node <app>/mcp/mcp-server.mjs --app <executable>`. Other servers and root
+fields are preserved; an unowned or customized entry is a conflict. A durable
+intent survives interruption and status completes only authorized work. An
+owned entry for another app path is `incomplete` (Repair); an installed app
+re-points it at launch. A linked `~/.copilot` or `mcp-config.json` (macOS)
+is written at its user-owned real target; retargeting it conflicts.
+Native isolated profiles cannot read or mutate the real registration.
 SDK 2.3.1 handles legacy initialization and modern 2026-07-28 stdio negotiation.

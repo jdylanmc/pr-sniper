@@ -71,39 +71,34 @@
 
 ## Distribution
 
-- `skills/pr-sniper` is the source package; native binary embeds matching assets.
-- Settings installs only Copilot CLI at `~/.copilot/skills/pr-sniper` and owns
-  only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`.
-- A separate integration lock and durable intent coordinate verified package
-  activation with exact owned-entry registration/removal. Other server entries
-  and root configuration are merged from the latest read. Custom own entries,
-  malformed config and links conflict; no force/adoption. This is not a global
-  lock against unrelated host writers: a detected concurrent change fails.
-- Install receipts verify every managed file. Existing unowned, changed,
-  linked or additional content produces a conflict, not overwrite/removal.
-- Package staging, prior-package backups and a durable activation journal live
-  outside Copilot skill discovery in `.copilot/.pr-sniper-installer`. A per-parent
-  OS file lock serializes inspection/recovery, installation and removal.
-  Staging failure leaves the live package unchanged; ready activation and
-  verified partial cleanup recover on reopen. A missing new package can restore
-  the verified old backup. The two directory renames are not a single atomic
-  operation; ownership and content proofs make interruption recoverable.
-- Only exact known, hash-matching remnants are cleaned. Foreign staging,
-  customization and links are never adopted or removed. Unclaimed artifacts
-  before journal publication stay untouched. Expected revision is checked after
-  recovery, so callers must reload after an uncertain outcome.
-- Nested incomplete per-file ownership claims do not authorize deletion.
-  When the prior live package is unchanged and all other staged content still
-  matches the package proof, recovery quarantines the entire staging directory
-  and completes rollback. Quarantine is preserved outside skill discovery.
-- Installer records the exact app executable; source-distributed skills also
-  recognize standard per-user/system install locations.
+- The skill and the server ship separately. `skills/pr-sniper` is a thin,
+  skills.sh-compatible package installed with
+  `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`;
+  it contains no server code and stops on a protocol mismatch.
+- The app ships the bundled stdio server: macOS signed bundle resources
+  (`Contents/Resources/mcp/`); Windows embedded bytes published to app data
+  (the NSIS installer owns only its executable and uninstaller).
+- Settings owns only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`:
+  `node <server> --app <executable>`. No skill files are written.
+- A lock and durable intent make registration/removal recoverable. Other
+  entries and root configuration are merged from the latest read. Custom own
+  entries and malformed config conflict; no force/adoption. Not a global lock
+  against unrelated host writers: a detected concurrent change fails.
+- An owned entry for another app path is `incomplete`; an installed app
+  (`/Applications`, `~/Applications`, `%LOCALAPPDATA%\PR Sniper`) re-points it
+  at launch. A removed entry is never restored implicitly.
+- macOS resolves a linked `~/.copilot` or `mcp-config.json` to its real target
+  once; every resolved ancestor must be owned by the user or root and not
+  group/world writable (sticky excepted). The intent records the real file; a
+  retargeted link conflicts. Windows refuses reparse points explicitly.
+- A pre-release app-installed skill package is detected as a skill and never
+  deleted; its legacy owner receipt migrates on Repair.
 - Node 22+ runs the bundled server without npm installation. Restart Copilot CLI
   for MCP registration changes; `/skills reload` discovers skill changes.
 
 ## Verification boundary
 
-- Native tests exercise real Store, queue, preset, installer and framed CLI
+- Native tests exercise real Store, queue, preset, registration and framed CLI
   boundaries using synthetic profiles; browser tests use the native Store bridge.
 - `tests/control/native-acceptance.mjs` runs the real bundled MCP server, CLI and app in
   both native CI lanes: closed-app launch, save/conflict, pause, rejected

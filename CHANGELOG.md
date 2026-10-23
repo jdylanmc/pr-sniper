@@ -13,8 +13,10 @@ performance fixes.
 ### Added
 
 - Configure and control PR Sniper through local MCP tools and the human-invoked
-  `/pr-sniper` Copilot CLI skill on macOS and Windows. Settings installs the owned
-  server entry and skill together; login setup stays human-managed.
+  `/pr-sniper` Copilot CLI skill on macOS and Windows. The app ships the MCP
+  server and Settings registers only its owned entry; install the skill with
+  `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`.
+  Settings shows whether the skill is detected; login setup stays human-managed.
 - MCP queue views report saved retry times, finding dispositions
   (`author_wont_fix`, `carried_forward`), typed Rubber Duck failure reasons and
   feedback-observation waits; evidence detail includes exit writes.
@@ -76,6 +78,15 @@ performance fixes.
   - Settings editors (repository detail, Agent, assignment) no longer show a
     second scrollbar beside their own when the Settings list behind them is
     long; the editor body is the panel's only scroll container.
+- **Startup and Copilot CLI**
+  - A login item left pointing at a moved or deleted build no longer stays
+    "registration invalid": an installed app re-registers itself at launch while
+    Open at login is on, and Settings offers **Repair**. Dev builds never rewrite
+    it; Off never registers.
+  - The Copilot MCP entry follows a moved or updated app the same way.
+  - A symlinked `~/.copilot` or `mcp-config.json` (for example, dotfiles) no
+    longer shows Unavailable/Conflict on macOS: the real file is updated, the
+    link is kept, and a retargeted link conflicts instead of writing blindly.
 
 ## 0.4.2 - 2026-10-20
 

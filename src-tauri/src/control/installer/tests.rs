@@ -10,7 +10,10 @@ thread_local! {
 
 pub(super) fn fault(point: &str) -> Result<(), Error> {
     let action = ACTION.with(|value| {
-        let hit = value.borrow().as_ref().is_some_and(|(name, _)| name == point);
+        let hit = value
+            .borrow()
+            .as_ref()
+            .is_some_and(|(name, _)| name == point);
         hit.then(|| value.borrow_mut().take().unwrap().1)
     });
     if let Some(action) = action {
@@ -149,7 +152,8 @@ fn uncreated_ordinary_home_beyond_max_path_supports_the_lifecycle() {
         config(&home)["mcpServers"]["pr-sniper"]["args"][0],
         json!(server.script)
     );
-    let removed = remove_integration_at(&home, &server, first.revision.as_deref().unwrap()).unwrap();
+    let removed =
+        remove_integration_at(&home, &server, first.revision.as_deref().unwrap()).unwrap();
     assert_eq!(removed.state, "absent");
 }
 
@@ -271,10 +275,7 @@ fn interrupted_registration_boundaries_complete_the_authorized_intent() {
                 },
                 "{operation} {point}"
             );
-            assert_eq!(
-                config(&home)["mcpServers"]["other"]["command"],
-                "untouched"
-            );
+            assert_eq!(config(&home)["mcpServers"]["other"]["command"], "untouched");
         }
     }
 }
@@ -331,7 +332,11 @@ fn skill_detection_is_read_only_and_follows_links() {
     let skill = "---\nname: pr-sniper\ndescription: fixture\n---\n# PR Sniper\n";
     let other = home.join(".agents/skills/pr-sniper");
     fs::create_dir_all(&other).unwrap();
-    fs::write(other.join("SKILL.md"), "---\nname: other\n---\nname: pr-sniper\n").unwrap();
+    fs::write(
+        other.join("SKILL.md"),
+        "---\nname: other\n---\nname: pr-sniper\n",
+    )
+    .unwrap();
     assert!(!integration_at(&home, &server).unwrap().skill_detected);
     fs::write(other.join("SKILL.md"), skill).unwrap();
     assert!(integration_at(&home, &server).unwrap().skill_detected);

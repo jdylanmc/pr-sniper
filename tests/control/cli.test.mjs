@@ -1,10 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import {
-  exchange,
-  dataRoot,
-} from "../../src-control/pr-sniper.mjs";
+import { exchange, dataRoot } from "../../src-control/pr-sniper.mjs";
 
 async function server(handler) {
   const listener = net.createServer(handler);
