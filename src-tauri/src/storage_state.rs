@@ -239,7 +239,19 @@ impl Store {
 
     pub fn save_notifications(&self, ledger: &crate::notifications::Ledger) -> Result<(), String> {
         crate::retention::guard(self)?;
-        crate::retention::reject_items(self, ledger.notices.iter().map(|n| n.id.as_str()))?;
+        // Notice IDs are receipt detail; their destinations stay fenced.
+        crate::retention::reject_items(
+            self,
+            ledger.notices.iter().flat_map(|n| {
+                let destination = match &n.event.destination {
+                    crate::notifications::Destination::QueueItem { item_id } => {
+                        Some(item_id.as_str())
+                    }
+                    _ => None,
+                };
+                std::iter::once(n.id.as_str()).chain(destination)
+            }),
+        )?;
         ledger.validate()?;
         self.write_state("notifications.json", ledger)
     }

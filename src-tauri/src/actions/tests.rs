@@ -1773,3 +1773,38 @@ fn retention_holds_provider_mutations_off_only_while_none_runs() {
     drop(held);
     assert!(owner.acquire("exit:2").unwrap());
 }
+
+#[test]
+fn approval_already_given_on_the_head_is_never_posted_again() {
+    let mut observation = observed();
+    observation.reviews.push(ProviderReview {
+        id: "77".into(),
+        actor_id: "22".into(),
+        head: observation.head.clone(),
+        state: "APPROVED".into(),
+        body: "Earlier approval".into(),
+        submitted_at: Some("2026-09-30T00:00:00Z".into()),
+    });
+    let head = observation.head.clone();
+    let wire = Wire(Arc::new(Mutex::new(Server {
+        observation,
+        writes: vec![],
+        lost: false,
+        reject: false,
+    })));
+    let repo = RemoteRepository {
+        id: "100".into(),
+        name: "example/repo".into(),
+    };
+    let Ok(receipt) =
+        GithubClient::new(wire.clone()).approve_exact(&repo, 1, "22", &head, "Approve")
+    else {
+        panic!("existing approval is the receipt");
+    };
+    assert_eq!(receipt.id, "77");
+    assert_eq!(receipt.action, Action::Approve);
+    assert!(wire.0.lock().unwrap().writes.is_empty());
+    // Another account's approval does not count as this account's.
+    let _ = GithubClient::new(wire.clone()).approve_exact(&repo, 1, "23", &head, "Approve");
+    assert_eq!(wire.0.lock().unwrap().writes.len(), 1);
+}

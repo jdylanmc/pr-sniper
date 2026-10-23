@@ -125,7 +125,9 @@ pub struct Receipt {
     pub scope: TrackedPullRequest,
     pub enqueue_watermark: u64,
     pub items: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub work: BTreeSet<WorkId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completions: Vec<(WorkId, String)>,
     pub pass_ordinals: BTreeMap<String, u64>,
     pub reply_ordinals: BTreeMap<String, u64>,
@@ -137,10 +139,13 @@ pub struct Receipt {
     /// When the cleanup was journaled (0 on older receipts).
     #[serde(default)]
     pub cleaned_at: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub publications: Vec<(String, String, Vec<crate::publication::Receipt>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectReceipt>,
     pub follow_up_keys: BTreeSet<String>,
     pub owned: Vec<OwnedReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub notices: BTreeMap<String, String>,
 }
 
@@ -270,12 +275,18 @@ fn decode(store: &Store) -> Result<Ledger, String> {
     }
 }
 
-/// Receipts newer than this keep every identity a stale worker or a saved
-/// destination may still present; older ones keep only the PR tombstone.
+/// A receipt is two parts with different lifetimes:
+///
+/// - Detail (work and operation IDs, completions, publication and effect
+///   receipts, notice IDs): explains cleaned destinations; dropped after
+///   `RECEIPT_DETAIL_SECONDS`, and beyond the newest `DETAIL_RECEIPTS`.
+/// - The PR's safety tombstone (scope and iteration watermark, enqueue
+///   watermark, ordinals, item IDs, mention keys, own-comment proofs): fences
+///   stale workers and keeps reopen semantics. Never evicted by count; kept
+///   for `TOMBSTONE_SECONDS`.
 pub(crate) const RECEIPT_DETAIL_SECONDS: i64 = 30 * 24 * 60 * 60;
-/// Most PR tombstones kept; the oldest go first. A PR reopened after its
-/// tombstone went starts again at iteration 1 with fresh identities.
-pub(crate) const MAX_RECEIPTS: usize = 500;
+pub(crate) const DETAIL_RECEIPTS: usize = 500;
+pub(crate) const TOMBSTONE_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 impl Receipt {
     fn age_reference(&self) -> i64 {
@@ -286,21 +297,32 @@ impl Receipt {
         }
     }
 
-    /// Keeps what stale-worker rejection and reopen semantics need: the
-    /// tracked scope (iteration watermark), enqueue watermark, ordinals and
-    /// owned-comment proofs; per-run detail only while recent.
+    fn has_detail(&self) -> bool {
+        !(self.work.is_empty()
+            && self.completions.is_empty()
+            && self.operation_ids.is_empty()
+            && self.operations.is_empty()
+            && self.publications.is_empty()
+            && self.effects.is_empty()
+            && self.notices.is_empty())
+    }
+
+    /// Keeps only the safety tombstone.
+    fn drop_detail(&mut self) {
+        self.work.clear();
+        self.completions.clear();
+        self.operations.clear();
+        self.operation_ids.clear();
+        self.publications.clear();
+        self.effects.clear();
+        self.notices.clear();
+    }
+
     fn compact(&mut self, now: i64) {
         let legacy = std::mem::take(&mut self.operations);
         self.operation_ids.extend(legacy.into_iter().map(|o| o.id));
         if now.saturating_sub(self.age_reference()) > RECEIPT_DETAIL_SECONDS {
-            self.items.clear();
-            self.work.clear();
-            self.completions.clear();
-            self.operation_ids.clear();
-            self.publications.clear();
-            self.effects.clear();
-            self.follow_up_keys.clear();
-            self.notices.clear();
+            self.drop_detail();
         }
     }
 }
@@ -308,16 +330,24 @@ impl Receipt {
 pub(crate) fn save(store: &Store, ledger: &Ledger) -> Result<(), String> {
     let now = crate::now_seconds()?;
     let mut ledger = ledger.clone();
+    ledger
+        .receipts
+        .retain(|r| now.saturating_sub(r.age_reference()) <= TOMBSTONE_SECONDS);
     for receipt in &mut ledger.receipts {
         receipt.compact(now);
     }
-    if ledger.receipts.len() > MAX_RECEIPTS {
-        ledger
-            .receipts
-            .sort_by_key(|r| std::cmp::Reverse(r.age_reference()));
-        ledger.receipts.truncate(MAX_RECEIPTS);
+    let mut detailed: Vec<usize> = (0..ledger.receipts.len())
+        .filter(|&i| ledger.receipts[i].has_detail())
+        .collect();
+    if detailed.len() > DETAIL_RECEIPTS {
+        detailed.sort_by_key(|&i| std::cmp::Reverse(ledger.receipts[i].age_reference()));
+        for &i in &detailed[DETAIL_RECEIPTS..] {
+            ledger.receipts[i].drop_detail();
+        }
     }
-    store.write_state("retention.json", &ledger)
+    // Compact: rewritten by every cleanup.
+    let bytes = serde_json::to_vec(&ledger).map_err(|_| "Cannot encode retention receipts.")?;
+    store.write_state_bytes("retention.json", &bytes, None)
 }
 
 pub(crate) fn guard(store: &Store) -> Result<(), String> {

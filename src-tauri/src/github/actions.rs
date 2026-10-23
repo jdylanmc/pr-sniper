@@ -495,6 +495,27 @@ impl<T: MutationTransport> GithubClient<T> {
             failure: Failure::permanent(e),
             uncertain: false,
         })?;
+        // Idempotent against the provider: an approval this account already
+        // gave on this head (a lost response, a reopened PR whose local
+        // evidence is gone) is the receipt; nothing is posted twice.
+        let existing = self
+            .action_reviews(repo, number)
+            .map_err(|e| WriteFailure {
+                failure: e.into(),
+                uncertain: false,
+            })?;
+        if let Some(review) = existing
+            .iter()
+            .find(|r| r.actor_id == account && r.head == head && r.state == "APPROVED")
+        {
+            return Ok(Receipt {
+                id: review.id.clone(),
+                actor_id: account.into(),
+                head: head.into(),
+                action: Action::Approve,
+                merge_commit: None,
+            });
+        }
         let response = self
             .transport
             .mutate(

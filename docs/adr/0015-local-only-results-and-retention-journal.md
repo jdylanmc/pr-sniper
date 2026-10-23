@@ -38,8 +38,9 @@ Supersedes the ADR 0021 amendment's "human-triggered only; no timer" for closed 
 - Scheduled maintenance and each finished poll run the cleanup above for PRs observed closed or merged, at most a few per pass, once their workers settle. Same receipts, journal, fences and reopen rules; uncertain publication and action records still stay.
 - A PR needing provenance repair is skipped, not reported each pass. **Clean** / **Clean all** remain for on-demand cleanup and report it.
 - Open PRs are never pruned. Reopen = new iteration with fresh state.
-- Pruning waits for the provider-mutation owner and for exit writes that are planned, verified, uncertain or have an attempted step; feedback saves reject cleaned exit writes. Poll and lifecycle reads prepared before a PR's latest accepted observation are ignored, so a stale Closed never undoes a reopen.
-- Receipts keep operation IDs, not operation records. After 30 days a receipt keeps only its PR tombstone (scope and iteration, enqueue watermark, ordinals, owned-comment proofs); at most 500 receipts, oldest dropped first. A PR reopened after its tombstone is gone starts again at iteration 1 with fresh identities.
+- Pruning waits for the provider-mutation owner and for exit writes that are planned, verified, uncertain or have an attempted step; feedback saves reject cleaned exit writes. Poll and lifecycle reads carry their prepared second plus a process-monotonic sequence; a read older than a PR's latest accepted observation is ignored, so a stale Closed never undoes a reopen.
+- A receipt has two lifetimes. Detail (work and operation IDs, completions, publication and effect receipts, notice IDs) is kept for 30 days and for at most the 500 newest receipts. The safety tombstone (scope and iteration watermark, enqueue watermark, ordinals, item IDs, mention keys, own-comment proofs) is never evicted by count and is kept for a year. Notifications stay fenced by their destination item after notice IDs go. About 0.8–1.6 KB per PR; 10,000 PRs ≈ 8–16 MB.
+- Approve is idempotent at the provider: an approval this account already gave on the head is the receipt, never posted twice.
 - `monitoring.json` keeps only the 64 most recent retired poll operations (never read back).
 
 ## Local stale-queue dismissal (2026-10-19)
