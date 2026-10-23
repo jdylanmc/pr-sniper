@@ -1,10 +1,5 @@
 import { test, expect } from "./fixtures.mjs";
-import {
-  fixtureAgent,
-  repositorySettings,
-  section,
-  seedBoundRepositories,
-} from "./navigation.mjs";
+import { fixtureAgent, section, seedBoundRepositories } from "./navigation.mjs";
 
 // A long library stays laid out (visibility: hidden) under an open editor's
 // transparent host. It must never leave a second scrollbar beside the editor's.
@@ -19,14 +14,16 @@ async function seed(page, store) {
   settings.repositories.forEach((repository) => {
     repository.enabled = false;
   });
-  settings.repositories[0].assignments = Array.from({ length: 4 }, (_, i) => ({
-    id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, "0")}`,
-    agent_id: fixtureAgent.id,
-    schedule: settings.defaults.schedule,
-    comment: false,
-    approve: false,
-    actions: { reply: false, approve: false, merge: false },
-  }));
+  settings.repositories.forEach((repository, r) => {
+    repository.assignments = Array.from({ length: 4 }, (_, i) => ({
+      id: `dddddddd-dddd-4ddd-8ddd-${String(r * 10 + i).padStart(12, "0")}`,
+      agent_id: fixtureAgent.id,
+      schedule: settings.defaults.schedule,
+      comment: false,
+      approve: false,
+      actions: { reply: false, approve: false, merge: false },
+    }));
+  });
   await store("seed_settings", settings);
   await page.goto("/");
 }
@@ -83,10 +80,25 @@ for (const viewport of [
       await section(page, name);
       expect((await scrollers(page)).length, name).toBeLessThanOrEqual(1);
     }
-    const editor = await repositorySettings(page, "fixture/detail");
+    // A row deep in the library, short of max scroll: Back must restore its
+    // scroll and focus.
+    await section(page, "Repositories");
+    const content = page.locator(".settings-window #content");
+    const row = page.locator("[data-repository]").nth(repositories.length - 4);
+    await page.evaluate(() => window.__settingsIdle());
+    await row.scrollIntoViewIfNeeded();
+    const listScroll = await content.evaluate((element) => element.scrollTop);
+    expect(listScroll).toBeGreaterThan(0);
+    const name = await row.getAttribute("aria-label");
+    await row.focus();
+    await page.keyboard.press("Enter");
+    const editor = page.getByRole("dialog", { name, exact: true });
     await expect(
       editor.getByRole("switch", { name: "Review drafts", exact: true }),
     ).toBeVisible();
+    expect(await content.evaluate((e) => getComputedStyle(e).overflowY)).toBe(
+      "hidden",
+    );
     await expect
       .poll(async () => (await scrollers(page)).map(({ name }) => name))
       .toEqual(["div.dialog-body"]);
@@ -100,14 +112,26 @@ for (const viewport of [
       .first()
       .getByRole("button", { name: "Edit assignment", exact: true })
       .click();
-    await expect(
-      page.getByRole("dialog", { name: "Edit assignment", exact: true }),
-    ).toBeVisible();
+    const assignment = page.getByRole("dialog", {
+      name: "Edit assignment",
+      exact: true,
+    });
+    await expect(assignment).toBeVisible();
     const nested = await scrollers(page);
     expect(nested.length).toBeLessThanOrEqual(1);
     for (const scroller of nested) {
       expect(scroller.top).toBeGreaterThanOrEqual(scroller.headerBottom);
       expect(scroller.bottom).toBeLessThanOrEqual(scroller.navTop);
     }
+
+    const back = page.locator("[data-panel-back]");
+    await back.click();
+    await expect(assignment).toHaveCount(0);
+    await back.click();
+    await expect(editor).toHaveCount(0);
+    await expect(row).toBeFocused();
+    expect(await content.evaluate((element) => element.scrollTop)).toBe(
+      listScroll,
+    );
   });
 }
