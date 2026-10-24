@@ -5,12 +5,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { exchange, dataRoot, invoke } from "../../src-control/pr-sniper.mjs";
 import {
-  proof,
+  mac,
   proofMatches,
   protocol,
+  sha256,
   useExecutable,
 } from "../../src-control/control-client.mjs";
-import { fakeApp, impostor, reply } from "./fake-app.mjs";
+import { fakeApp, flip, impostor, relay, reply, signed } from "./fake-app.mjs";
 
 const token = "a".repeat(64);
 
@@ -72,19 +73,25 @@ test("oversized replies are rejected before unbounded buffering", async () => {
 
 test("proofs are domain-separated HMAC-SHA256 pinned to the native server", () => {
   const [client, server] = ["b".repeat(64), "c".repeat(64)];
+  const rq = sha256(Buffer.from('{"operation":"inspect"}'));
+  const rs = sha256(Buffer.from('{"protocol":2,"ok":true}'));
   // Same vectors as control_proofs_are_domain_separated_hmac_sha256 (Rust).
   assert.equal(
-    proof(token, "server", client, server),
-    "a83260e7589091cf80635cc6b9b516846f8a12625769899220f850f578146f8b",
+    mac(token, "challenge", client, server),
+    "9be37531fcc3b4c3250e1bf788cf8a278d76e86925f29d220037a323b19dbf85",
   );
   assert.equal(
-    proof(token, "client", client, server),
-    "11fb03febf717d5898d5e3caeca82858bc5a77144b445f4287eefbb24129e530",
+    mac(token, "request", client, server, rq),
+    "840373773afcbfc2b5e109150d3aec8cc5c46d8683cdee8f21d5511a744006f5",
   );
-  const valid = proof(token, "server", client, server);
+  assert.equal(
+    mac(token, "response", client, server, rq, rs),
+    "55cf3d2ee068f8ffa08852174a0ef68dd9f440b9865489def76c7468cbae1c1d",
+  );
+  const valid = mac(token, "challenge", client, server);
   assert.equal(proofMatches(valid, valid), true);
   for (const forged of [
-    proof(token, "client", client, server),
+    mac(token, "request", client, server),
     valid.toUpperCase(),
     valid.slice(2),
     `${valid}00`,
@@ -92,6 +99,98 @@ test("proofs are domain-separated HMAC-SHA256 pinned to the native server", () =
     token,
   ])
     assert.equal(proofMatches(forged, valid), false);
+});
+
+test("a relay that changes one request byte is rejected before native dispatch", async () => {
+  const seen = [];
+  const app = await fakeApp(token, (input) => {
+    seen.push(input);
+    return { protocol, ok: true, result: { state: "saved" } };
+  });
+  const request = {
+    operation: "save",
+    request_id: "relayed",
+    edit: { value: "replacement" },
+  };
+  // Forwards the genuine challenge and request proof; alters the request.
+  const proxy = await relay(app.port, (direction, index, body) =>
+    direction === "request" && index === 1
+      ? { ...body, request: flip(body.request, "t") }
+      : null,
+  );
+  try {
+    await assert.rejects(exchange({ port: proxy.port, token }, request), {
+      code: "outcome_unknown",
+    });
+    assert.deepEqual(seen, []);
+  } finally {
+    await proxy.close();
+    await app.close();
+  }
+});
+
+for (const [name, mutate] of [
+  [
+    "changes one response byte",
+    (body) => ({ ...body, response: flip(body.response, "f") }),
+  ],
+  [
+    "replaces the signed response with plain success",
+    () => ({ protocol, ok: true, result: { state: "saved" } }),
+  ],
+  [
+    "re-signs a forged response without the capability",
+    (body) => ({
+      ...signed("f".repeat(64), "b".repeat(64), "c".repeat(64), sha256(""), {
+        protocol,
+        ok: true,
+        result: { state: "saved" },
+      }),
+      proof: body.proof,
+    }),
+  ],
+])
+  test(`a relay that ${name} is never trusted as native success`, async () => {
+    let calls = 0;
+    const app = await fakeApp(token, () => {
+      calls++;
+      return {
+        protocol,
+        ok: false,
+        error: { code: "conflict", detail: null },
+      };
+    });
+    const proxy = await relay(app.port, (direction, index, body) =>
+      direction === "response" && index === 1 ? mutate(body) : null,
+    );
+    try {
+      await assert.rejects(
+        exchange({ port: proxy.port, token }, { request_id: "relayed" }),
+        { code: "outcome_unknown", detail: { request_id: "relayed" } },
+      );
+      assert.equal(calls, 1);
+    } finally {
+      await proxy.close();
+      await app.close();
+    }
+  });
+
+test("an unmodified relay path still exchanges authenticated frames", async () => {
+  const app = await fakeApp(token, (input) => ({
+    protocol,
+    ok: true,
+    result: input,
+  }));
+  const proxy = await relay(app.port, () => null);
+  try {
+    assert.deepEqual(
+      await exchange({ port: proxy.port, token }, { operation: "inspect" }),
+      { protocol, ok: true, result: { operation: "inspect" } },
+    );
+  } finally {
+    await proxy.close();
+    await app.close();
+  }
 });
 
 for (const [name, respond] of [
@@ -110,7 +209,7 @@ for (const [name, respond] of [
         {
           protocol,
           nonce,
-          proof: proof(token, "server", "d".repeat(64), nonce),
+          proof: mac(token, "challenge", "d".repeat(64), nonce),
         },
         false,
       );

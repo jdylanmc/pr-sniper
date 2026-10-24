@@ -36,12 +36,18 @@
 - Private `control/endpoint.json`: protocol, port, app PID, per-launch random
   capability. Never included in diagnostics, command output or account enumeration.
 - Protocol 2 mutual authentication; the capability never crosses the socket.
+  Proofs are HMAC-SHA256(capability, length-prefixed label and fields).
   Client sends a fresh 32-byte nonce only. App replies with its own fresh nonce
-  and HMAC-SHA256(capability, server label ‖ client nonce ‖ server nonce). The
-  client verifies in constant time, then sends the request with the
-  client-labelled HMAC over the same nonces. Distinct labels prevent reflection;
-  fresh nonces prevent replay. A failed or absent app proof is `unavailable`:
-  nothing sensitive was sent and the normal launch path runs.
+  and a `challenge` proof over both nonces; the client verifies in constant time.
+  The request travels as base64 of its exact bytes with a `request` proof over
+  the nonces and their SHA-256; the app verifies the received bytes before
+  parsing or dispatch. Every reply after the challenge is base64 of the exact
+  response bytes with a `response` proof over the nonces, request digest and
+  response digest; the client trusts nothing unproven. A relay can therefore
+  alter neither request nor response; distinct labels prevent reflection and
+  fresh nonces prevent replay. A failed or absent challenge proof is
+  `unavailable` (nothing sensitive sent; normal launch); an unproven reply is
+  `outcome_unknown`, never success.
 - A crash leaves the descriptor and frees its port. A descriptor whose PID is
   not a live current-user process is stale and never contacted; the app proof
   still guards a reused PID.

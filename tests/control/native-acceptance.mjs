@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import net from "node:net";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { proof, protocol } from "../../src-control/control-client.mjs";
+import { mac, protocol, sha256 } from "../../src-control/control-client.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -238,6 +238,14 @@ async function fragmentedRejection() {
     await fs.readFile(path.join(root, "data/control/endpoint.json"), "utf8"),
   );
   const nonce = randomBytes(32).toString("hex");
+  const request = Buffer.from(
+    JSON.stringify({
+      operation: "login",
+      request_id: randomUUID(),
+      issued_at: Math.floor(Date.now() / 1000),
+    }),
+  );
+  const digest = sha256(request);
   const frame = (value) => {
     const payload = Buffer.from(JSON.stringify(value));
     const header = Buffer.alloc(12);
@@ -280,21 +288,32 @@ async function fragmentedRejection() {
         return done(new Error("Invalid native reply"));
       }
       received = received.subarray(received.readUInt32BE(0) + 4);
-      if (challenge) return done(null, value);
+      if (challenge) {
+        const raw = Buffer.from(value.response ?? "", "base64");
+        if (
+          value.proof !==
+          mac(
+            endpoint.token,
+            "response",
+            nonce,
+            challenge.nonce,
+            digest,
+            sha256(raw),
+          )
+        )
+          return done(new Error("Native response failed its proof"));
+        return done(null, JSON.parse(raw));
+      }
       challenge = value;
       if (
         challenge.proof !==
-        proof(endpoint.token, "server", nonce, challenge.nonce)
+        mac(endpoint.token, "challenge", nonce, challenge.nonce)
       )
         return done(new Error("Native listener failed its server proof"));
       const [header, payload] = frame({
         protocol,
-        proof: proof(endpoint.token, "client", nonce, challenge.nonce),
-        request: {
-          operation: "login",
-          request_id: randomUUID(),
-          issued_at: Math.floor(Date.now() / 1000),
-        },
+        proof: mac(endpoint.token, "request", nonce, challenge.nonce, digest),
+        request: request.toString("base64"),
       });
       socket.write(header);
       write = setTimeout(() => socket.write(payload), 100);
@@ -309,7 +328,7 @@ async function fragmentedRejection() {
   assert.equal(response.ok, false);
   assert.equal(response.error?.code, "invalid_request");
   receipt.checks.push(
-    "actual native listener proves its capability, accepts a fragmented authenticated frame and returns typed rejection",
+    "actual native listener proves its capability, accepts a fragmented request-bound frame and returns a proven typed rejection",
   );
 }
 

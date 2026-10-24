@@ -551,6 +551,18 @@ fn fixture_endpoint(port: u16) -> Endpoint {
     }
 }
 
+fn request_frame(token: &str, client: &str, server: &str, raw: &[u8]) -> Value {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use sha2::{Digest, Sha256};
+    let [_, request, _] = transport::PROOF_LABELS;
+    let proof = transport::mac(
+        token,
+        request,
+        &[client.as_bytes(), server.as_bytes(), &Sha256::digest(raw)],
+    );
+    json!({"protocol":PROTOCOL,"proof":proof,"request":STANDARD.encode(raw)})
+}
+
 fn send_frame(stream: &mut TcpStream, magic: &[u8; 8], value: &Value) {
     let payload = serde_json::to_vec(value).unwrap();
     stream.write_all(magic).unwrap();
@@ -586,7 +598,12 @@ fn unauthenticated_and_http_clients_never_reach_app_operations() {
             send_frame(
                 &mut stream,
                 b"SNIPER1\n",
-                &json!({"protocol":PROTOCOL,"proof":"c".repeat(64),"request":{"operation":"inspect"}}),
+                &request_frame(
+                    &"c".repeat(64),
+                    &"b".repeat(64),
+                    challenge["nonce"].as_str().unwrap(),
+                    br#"{"operation":"inspect"}"#,
+                ),
             );
             assert_eq!(
                 transport::client_read(&mut stream)["error"]["code"],
@@ -607,16 +624,29 @@ fn control_proofs_are_domain_separated_hmac_sha256() {
         "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
     );
     // Pinned with Node's crypto.createHmac in tests/control/cli.test.mjs.
-    let (server, client) = transport::PROOF_LABELS;
+    use sha2::{Digest, Sha256};
+    let [challenge, request, response] = transport::PROOF_LABELS;
     let token = "a".repeat(64);
     let (a, b) = ("b".repeat(64), "c".repeat(64));
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let rq = Sha256::digest(br#"{"operation":"inspect"}"#);
+    let rs = Sha256::digest(br#"{"protocol":2,"ok":true}"#);
     assert_eq!(
-        transport::proof(&token, server, &a, &b),
-        "a83260e7589091cf80635cc6b9b516846f8a12625769899220f850f578146f8b"
+        transport::mac(&token, challenge, &[a, b]),
+        "9be37531fcc3b4c3250e1bf788cf8a278d76e86925f29d220037a323b19dbf85"
     );
     assert_eq!(
-        transport::proof(&token, client, &a, &b),
-        "11fb03febf717d5898d5e3caeca82858bc5a77144b445f4287eefbb24129e530"
+        transport::mac(&token, request, &[a, b, &rq]),
+        "840373773afcbfc2b5e109150d3aec8cc5c46d8683cdee8f21d5511a744006f5"
+    );
+    assert_eq!(
+        transport::mac(&token, response, &[a, b, &rq, &rs]),
+        "55cf3d2ee068f8ffa08852174a0ef68dd9f440b9865489def76c7468cbae1c1d"
+    );
+    // Length framing: moving a byte between fields changes the input.
+    assert_ne!(
+        transport::mac(&token, challenge, &[b"ab", b"c"]),
+        transport::mac(&token, challenge, &[b"a", b"bc"])
     );
 }
 
@@ -639,7 +669,7 @@ fn server_proves_capability_before_client_reveals_anything() {
 
 #[test]
 fn replayed_and_raw_token_client_proofs_are_rejected() {
-    let (server_label, client_label) = transport::PROOF_LABELS;
+    let [challenge_label, _, _] = transport::PROOF_LABELS;
     let token = "a".repeat(64);
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -658,7 +688,7 @@ fn replayed_and_raw_token_client_proofs_are_rejected() {
     });
     // The same client nonce each time: only the server's fresh nonce defeats replay.
     let nonce = "d".repeat(64);
-    let mut recorded: Option<(String, String)> = None;
+    let mut recorded: Option<(String, Value)> = None;
     for attempt in ["valid", "replay", "raw_token", "server_proof"] {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         send_frame(
@@ -670,11 +700,16 @@ fn replayed_and_raw_token_client_proofs_are_rejected() {
         let fresh = challenge["nonce"].as_str().unwrap().to_owned();
         assert_eq!(
             challenge["proof"],
-            transport::proof(&token, server_label, &nonce, &fresh)
+            transport::mac(
+                &token,
+                challenge_label,
+                &[nonce.as_bytes(), fresh.as_bytes()]
+            )
         );
-        let proof = match attempt {
+        let raw = br#"{"operation":"inspect"}"#;
+        let frame = match attempt {
             "valid" => {
-                let valid = transport::proof(&token, client_label, &nonce, &fresh);
+                let valid = request_frame(&token, &nonce, &fresh, raw);
                 recorded = Some((fresh.clone(), valid.clone()));
                 valid
             }
@@ -683,14 +718,18 @@ fn replayed_and_raw_token_client_proofs_are_rejected() {
                 assert_ne!(old, fresh, "Server nonce must be fresh per connection");
                 valid
             }
-            "raw_token" => token.clone(),
-            _ => challenge["proof"].as_str().unwrap().to_owned(),
+            "raw_token" => {
+                let mut frame = request_frame(&token, &nonce, &fresh, raw);
+                frame["proof"] = json!(token);
+                frame
+            }
+            _ => {
+                let mut frame = request_frame(&token, &nonce, &fresh, raw);
+                frame["proof"] = challenge["proof"].clone();
+                frame
+            }
         };
-        send_frame(
-            &mut stream,
-            b"SNIPER1\n",
-            &json!({"protocol":PROTOCOL,"proof":proof,"request":{"operation":"inspect"}}),
-        );
+        send_frame(&mut stream, b"SNIPER1\n", &frame);
         let reply = transport::client_read(&mut stream);
         if attempt == "valid" {
             assert_eq!(reply["ok"], true);
@@ -699,6 +738,40 @@ fn replayed_and_raw_token_client_proofs_are_rejected() {
         }
     }
     assert_eq!(server.join().unwrap(), 1);
+}
+
+#[test]
+fn relayed_request_with_one_changed_byte_is_rejected_undispatched() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let endpoint = fixture_endpoint(port);
+        let mut calls = Vec::new();
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().unwrap();
+            serve_connection(stream, &endpoint, &mut |request| {
+                calls.push(request.clone());
+                Ok(request)
+            })
+            .unwrap();
+        }
+        calls
+    });
+    let request = json!({"operation":"save","edit":{"value":"replacement"}});
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // A relay forwards the valid challenge and request proof but changes one
+    // request byte ("replacement" -> "replacemenT").
+    let rejected =
+        transport::client_exchange_with(&mut stream, &"a".repeat(64), request.clone(), |raw| {
+            let index = raw.iter().rposition(|b| *b == b't').unwrap();
+            raw[index] = b'T';
+        })
+        .unwrap_err();
+    assert_eq!(rejected["error"]["code"], "unauthorized");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let reply = transport::client_exchange(&mut stream, &"a".repeat(64), request.clone());
+    assert_eq!(reply["result"], request);
+    assert_eq!(server.join().unwrap(), vec![request]);
 }
 
 #[test]
@@ -813,7 +886,6 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
-    let (_, client_label) = transport::PROOF_LABELS;
     let nonce = "b".repeat(64);
     send_frame(
         &mut stream,
@@ -821,15 +893,12 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
         &json!({"protocol":PROTOCOL,"nonce":nonce}),
     );
     let challenge = transport::client_read(&mut stream);
-    let proof = transport::proof(
+    let payload = serde_json::to_vec(&request_frame(
         &"a".repeat(64),
-        client_label,
         &nonce,
         challenge["nonce"].as_str().unwrap(),
-    );
-    let payload = serde_json::to_vec(
-        &json!({"protocol":PROTOCOL,"proof":proof,"request":{"operation":"login"}}),
-    )
+        br#"{"operation":"login"}"#,
+    ))
     .unwrap();
     stream.write_all(b"SNIPER1\n").unwrap();
     std::thread::sleep(Duration::from_millis(40));

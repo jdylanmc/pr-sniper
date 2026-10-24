@@ -4,6 +4,7 @@ import os from "node:os";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import {
+  createHash,
   createHmac,
   randomBytes,
   randomUUID,
@@ -15,10 +16,11 @@ const maxFrame = 1024 * 1024;
 const magic = Buffer.from("SNIPER1\n");
 const hex64 = /^[a-f0-9]{64}$/;
 const handshakeTimeout = 5_000;
-// Domain-separated labels: a server proof is never valid as a client proof.
+// Domain-separated labels: no proof is valid in another role.
 const labels = {
-  server: "pr-sniper control 2 server\n",
-  client: "pr-sniper control 2 client\n",
+  challenge: "pr-sniper/control/2/challenge",
+  request: "pr-sniper/control/2/request",
+  response: "pr-sniper/control/2/response",
 };
 
 function failure(code, detail = null) {
@@ -105,15 +107,21 @@ function alive(pid) {
   }
 }
 
-/** HMAC-SHA256 over `label ‖ client nonce ‖ "\n" ‖ server nonce`. */
-export function proof(token, role, clientNonce, serverNonce) {
-  return createHmac("sha256", token)
-    .update(labels[role])
-    .update(clientNonce)
-    .update("\n")
-    .update(serverNonce)
-    .digest("hex");
+/**
+ * HMAC-SHA256 over `len ‖ label` then each `len ‖ field` (u32 big-endian
+ * lengths). Fields: nonces (hex text), then request/response SHA-256 digests.
+ */
+export function mac(token, role, ...fields) {
+  const hmac = createHmac("sha256", token);
+  for (const part of [labels[role], ...fields].map((v) => Buffer.from(v))) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(part.length);
+    hmac.update(length).update(part);
+  }
+  return hmac.digest("hex");
 }
+
+export const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
 
 export function proofMatches(actual, expected) {
   return (
@@ -135,16 +143,18 @@ function frame(value) {
 /**
  * Mutually authenticated exchange. The listener must first prove possession
  * of the capability for a fresh client nonce; until it does, the client has
- * sent only that nonce. The raw capability never crosses the socket.
+ * sent only that nonce. The raw capability never crosses the socket. The
+ * request proof covers the exact request bytes sent, and the response proof
+ * covers those and the exact response bytes, so a relay can alter neither.
  */
 export function exchange(address, request, timeout = 120_000) {
   const nonce = randomBytes(32).toString("hex");
   const hello = frame({ protocol, nonce });
-  // Same encoded size as the authenticated request frame.
-  if (
-    frame({ protocol, proof: "0".repeat(64), request }).length - 12 >
-    maxFrame
-  )
+  const raw = Buffer.from(JSON.stringify(request));
+  const digest = sha256(raw);
+  const body = (proof) =>
+    frame({ protocol, proof, request: raw.toString("base64") });
+  if (body("0".repeat(64)).length - 12 > maxFrame)
     return Promise.reject(failure("request_too_large"));
   return new Promise((resolve, reject) => {
     const client = net.createConnection({
@@ -152,7 +162,7 @@ export function exchange(address, request, timeout = 120_000) {
       port: address.port,
     });
     let received = Buffer.alloc(0);
-    let verified = false;
+    let server;
     let sent = false;
     const lost = () =>
       failure(sent ? "outcome_unknown" : "unavailable", {
@@ -170,55 +180,70 @@ export function exchange(address, request, timeout = 120_000) {
       if (error) reject(error);
       else resolve(value);
     };
+    const exact = (value, keys) =>
+      value !== null &&
+      typeof value === "object" &&
+      Object.keys(value).sort().join() === keys &&
+      value.protocol === protocol;
     client.on("connect", () => client.write(hello));
     const reply = (bytes) => {
-      if (!verified) {
-        const challenge = JSON.parse(bytes.toString("utf8"));
-        const keys = Object.keys(challenge ?? {})
-          .sort()
-          .join();
+      const value = JSON.parse(bytes.toString("utf8"));
+      if (!sent) {
         if (
-          keys !== "nonce,proof,protocol" ||
-          challenge.protocol !== protocol ||
-          !hex64.test(challenge.nonce) ||
+          !exact(value, "nonce,proof,protocol") ||
+          !hex64.test(value.nonce) ||
           !proofMatches(
-            challenge.proof,
-            proof(address.token, "server", nonce, challenge.nonce),
+            value.proof,
+            mac(address.token, "challenge", nonce, value.nonce),
           )
         )
-          throw failure("unavailable");
-        verified = true;
+          throw new Error();
+        server = value.nonce;
         clearTimeout(timer);
         timer = expire(timeout);
         sent = true;
         client.write(
-          frame({
-            protocol,
-            proof: proof(address.token, "client", nonce, challenge.nonce),
-            request,
-          }),
+          body(mac(address.token, "request", nonce, server, digest)),
         );
         return;
       }
-      const value = JSON.parse(bytes.toString("utf8"));
-      if (value.protocol !== protocol || typeof value.ok !== "boolean")
-        throw failure("invalid_response");
-      done(null, value);
+      if (!exact(value, "proof,protocol,response")) throw new Error();
+      const response = Buffer.from(value.response, "base64");
+      if (
+        response.toString("base64") !== value.response ||
+        !proofMatches(
+          value.proof,
+          mac(
+            address.token,
+            "response",
+            nonce,
+            server,
+            digest,
+            sha256(response),
+          ),
+        )
+      )
+        throw new Error();
+      const result = JSON.parse(response.toString("utf8"));
+      if (result?.protocol !== protocol || typeof result.ok !== "boolean")
+        throw new Error();
+      done(null, result);
     };
     client.on("data", (bytes) => {
       received = Buffer.concat([received, bytes]);
       while (received.length >= 4) {
         const length = received.readUInt32BE(0);
         if (length > maxFrame)
-          return done(failure(verified ? "response_too_large" : "unavailable"));
+          return done(failure(sent ? "response_too_large" : "unavailable"));
         if (received.length < length + 4) return;
         const next = received.subarray(4, length + 4);
         received = received.subarray(length + 4);
         try {
           reply(next);
         } catch {
-          // Before the server's proof, every failure means "not the app".
-          return done(failure(verified ? "invalid_response" : "unavailable"));
+          // Before the app's proof: not the app. After sending: the request
+          // may have run, but no reply bytes are trusted without the proof.
+          return done(lost());
         }
       }
     });

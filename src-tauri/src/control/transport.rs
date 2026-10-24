@@ -1,5 +1,6 @@
 use super::Error;
 use crate::storage::private_fs;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -14,10 +15,11 @@ use std::{
 pub const PROTOCOL: u32 = 2;
 pub const MAX_FRAME: usize = 1024 * 1024;
 const MAGIC: &[u8; 8] = b"SNIPER1\n";
-// Distinct labels keep a server proof from ever being reusable as a client
-// proof (and vice versa) even though both are keyed by the same capability.
-const SERVER_PROOF: &[u8] = b"pr-sniper control 2 server\n";
-const CLIENT_PROOF: &[u8] = b"pr-sniper control 2 client\n";
+// Distinct labels keep each proof from ever being reusable in another role
+// even though all are keyed by the same capability.
+const CHALLENGE_PROOF: &[u8] = b"pr-sniper/control/2/challenge";
+const REQUEST_PROOF: &[u8] = b"pr-sniper/control/2/request";
+const RESPONSE_PROOF: &[u8] = b"pr-sniper/control/2/response";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,7 +44,8 @@ struct Hello {
 struct Envelope {
     protocol: u32,
     proof: String,
-    request: Value,
+    /// Base64 of the exact request bytes the proof covers.
+    request: String,
 }
 
 pub(crate) struct Server {
@@ -200,42 +203,88 @@ fn serve_diagnosed(
     // Mutual authentication: the app proves capability possession for the
     // client's fresh nonce before the client reveals anything sensitive.
     let hello = read_frame(&mut stream, deadline, "hello")?;
-    let result = match serde_json::from_slice::<Hello>(&hello) {
-        Ok(hello) if hello.protocol == PROTOCOL && is_nonce(&hello.nonce) => {
-            let nonce = new_nonce();
-            let challenge = proof(&endpoint.token, SERVER_PROOF, &hello.nonce, &nonce);
-            write_frame(
-                &mut stream,
-                &json!({"protocol": PROTOCOL, "nonce": nonce, "proof": challenge}),
-                "challenge",
-            )?;
-            let bytes = read_frame(&mut stream, deadline, "request")?;
-            let expected = proof(&endpoint.token, CLIENT_PROOF, &hello.nonce, &nonce);
-            match serde_json::from_slice::<Envelope>(&bytes) {
-                Ok(envelope) if authenticated(&envelope.proof, &expected) => {
-                    if envelope.protocol != PROTOCOL {
-                        Err(incompatible())
-                    } else {
-                        execute(envelope.request)
-                    }
-                }
-                _ => Err(Error::new("unauthorized", Value::Null)),
-            }
+    let client = match serde_json::from_slice::<Hello>(&hello) {
+        Ok(hello) if hello.protocol == PROTOCOL && is_nonce(&hello.nonce) => hello.nonce,
+        _ => {
+            let error = if serde_json::from_slice::<Value>(&hello)
+                .ok()
+                .and_then(|value| value.get("protocol")?.as_u64())
+                .is_some_and(|protocol| protocol != u64::from(PROTOCOL))
+            {
+                incompatible()
+            } else {
+                Error::new("unauthorized", Value::Null)
+            };
+            let bytes = encode(&json!({"protocol": PROTOCOL, "ok": false, "error": error}));
+            return write_frame(&mut stream, &bytes, "response");
         }
-        _ if serde_json::from_slice::<Value>(&hello)
-            .ok()
-            .and_then(|value| value.get("protocol")?.as_u64())
-            .is_some_and(|protocol| protocol != u64::from(PROTOCOL)) =>
+    };
+    let server = new_nonce();
+    let nonces = [client.as_bytes(), server.as_bytes()];
+    let challenge = mac(&endpoint.token, CHALLENGE_PROOF, &nonces);
+    write_frame(
+        &mut stream,
+        &encode(&json!({"protocol": PROTOCOL, "nonce": server, "proof": challenge})),
+        "challenge",
+    )?;
+    let bytes = read_frame(&mut stream, deadline, "request")?;
+    // The proof covers the exact transmitted request bytes; a relay that
+    // forwards a valid proof with any other request is rejected undispatched.
+    let envelope = serde_json::from_slice::<Envelope>(&bytes).ok();
+    let raw = envelope
+        .as_ref()
+        .and_then(|envelope| BASE64.decode(&envelope.request).ok())
+        .unwrap_or_default();
+    let digest = Sha256::digest(&raw);
+    let result = match envelope {
+        Some(envelope)
+            if authenticated(
+                &envelope.proof,
+                &mac(
+                    &endpoint.token,
+                    REQUEST_PROOF,
+                    &[nonces[0], nonces[1], &digest],
+                ),
+            ) =>
         {
-            Err(incompatible())
+            if envelope.protocol != PROTOCOL {
+                Err(incompatible())
+            } else {
+                match serde_json::from_slice::<Value>(&raw) {
+                    Ok(request) => execute(request),
+                    Err(_) => Err(Error::new("invalid_request", Value::Null)),
+                }
+            }
         }
         _ => Err(Error::new("unauthorized", Value::Null)),
     };
-    let response = match result {
+    let mut response = encode(&match result {
         Ok(value) => json!({"protocol": PROTOCOL, "ok": true, "result": value}),
         Err(error) => json!({"protocol": PROTOCOL, "ok": false, "error": error}),
-    };
-    write_frame(&mut stream, &response, "response")
+    });
+    // Base64 plus the envelope must still fit one frame.
+    if response.len() > (MAX_FRAME - 256) / 4 * 3 {
+        response = encode(&json!({
+            "protocol": PROTOCOL, "ok": false,
+            "error": {"code": "response_too_large", "detail": null}
+        }));
+    }
+    let proof = mac(
+        &endpoint.token,
+        RESPONSE_PROOF,
+        &[nonces[0], nonces[1], &digest, &Sha256::digest(&response)],
+    );
+    write_frame(
+        &mut stream,
+        &encode(&json!({
+            "protocol": PROTOCOL, "proof": proof, "response": BASE64.encode(&response)
+        })),
+        "response",
+    )
+}
+
+fn encode(value: &Value) -> Vec<u8> {
+    serde_json::to_vec(value).expect("JSON values always serialize")
 }
 
 fn incompatible() -> Error {
@@ -263,22 +312,11 @@ fn read_frame(
 
 fn write_frame(
     stream: &mut TcpStream,
-    value: &Value,
+    bytes: &[u8],
     name: &'static str,
 ) -> Result<(), TransportFailure> {
-    let mut bytes = stage(
-        "response_encode",
-        serde_json::to_vec(value).map_err(std::io::Error::other),
-    )?;
-    if bytes.len() > MAX_FRAME {
-        bytes = serde_json::to_vec(&json!({
-            "protocol": PROTOCOL, "ok": false,
-            "error": {"code": "response_too_large", "detail": null}
-        }))
-        .unwrap();
-    }
     stage(name, stream.write_all(&(bytes.len() as u32).to_be_bytes()))?;
-    stage(name, stream.write_all(&bytes))
+    stage(name, stream.write_all(bytes))
 }
 
 fn new_nonce() -> String {
@@ -296,12 +334,15 @@ fn is_nonce(value: &str) -> bool {
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// HMAC-SHA256 (RFC 2104) over `label ‖ client nonce ‖ "\n" ‖ server nonce`.
-pub(crate) fn proof(token: &str, label: &[u8], client: &str, server: &str) -> String {
-    hmac(
-        token.as_bytes(),
-        &[label, client.as_bytes(), b"\n", server.as_bytes()],
-    )
+/// HMAC-SHA256 over `len ‖ label` then each `len ‖ field` (u32 big-endian
+/// lengths), so no two distinct label/field sequences share an input.
+pub(crate) fn mac(token: &str, label: &[u8], fields: &[&[u8]]) -> String {
+    let mut framed = Vec::new();
+    for part in std::iter::once(label).chain(fields.iter().copied()) {
+        framed.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        framed.extend_from_slice(part);
+    }
+    hmac(token.as_bytes(), &[&framed])
 }
 
 pub(crate) fn hmac(secret: &[u8], parts: &[&[u8]]) -> String {
@@ -323,34 +364,64 @@ pub(crate) fn hmac(secret: &[u8], parts: &[&[u8]]) -> String {
 }
 
 /// Test-only reference client: performs the mutual handshake against
-/// `serve_connection` and returns the final reply.
+/// `serve_connection`, optionally tampering with the exact request bytes after
+/// computing the proof (an active relay), and returns the verified reply.
 #[cfg(test)]
-pub(crate) fn client_exchange(stream: &mut TcpStream, token: &str, request: Value) -> Value {
+pub(crate) fn client_exchange_with(
+    stream: &mut TcpStream,
+    token: &str,
+    request: Value,
+    tamper: impl FnOnce(&mut Vec<u8>),
+) -> Result<Value, Value> {
     let nonce = new_nonce();
-    let send = |stream: &mut TcpStream, value: Value| {
-        let bytes = serde_json::to_vec(&value).unwrap();
-        stream.write_all(MAGIC).unwrap();
-        stream
-            .write_all(&(bytes.len() as u32).to_be_bytes())
-            .unwrap();
-        stream.write_all(&bytes).unwrap();
-    };
-    send(stream, json!({"protocol": PROTOCOL, "nonce": nonce}));
+    client_send(stream, &json!({"protocol": PROTOCOL, "nonce": nonce}));
     let challenge = client_read(stream);
     let server = challenge["nonce"].as_str().unwrap().to_owned();
+    let nonces = [nonce.as_bytes(), server.as_bytes()];
     assert!(authenticated(
         challenge["proof"].as_str().unwrap(),
-        &proof(token, SERVER_PROOF, &nonce, &server)
+        &mac(token, CHALLENGE_PROOF, &nonces)
     ));
-    send(
+    let mut raw = encode(&request);
+    let digest = Sha256::digest(&raw);
+    let proof = mac(token, REQUEST_PROOF, &[nonces[0], nonces[1], &digest]);
+    tamper(&mut raw);
+    client_send(
         stream,
-        json!({"protocol": PROTOCOL, "proof": proof(token, CLIENT_PROOF, &nonce, &server), "request": request}),
+        &json!({"protocol": PROTOCOL, "proof": proof, "request": BASE64.encode(&raw)}),
     );
-    client_read(stream)
+    let frame = client_frame(stream);
+    let response = BASE64.decode(frame["response"].as_str().unwrap()).unwrap();
+    let expected = mac(
+        token,
+        RESPONSE_PROOF,
+        &[nonces[0], nonces[1], &digest, &Sha256::digest(&response)],
+    );
+    let reply = serde_json::from_slice(&response).unwrap();
+    if authenticated(frame["proof"].as_str().unwrap(), &expected) {
+        Ok(reply)
+    } else {
+        Err(reply)
+    }
 }
 
 #[cfg(test)]
-pub(crate) fn client_read(stream: &mut TcpStream) -> Value {
+pub(crate) fn client_exchange(stream: &mut TcpStream, token: &str, request: Value) -> Value {
+    client_exchange_with(stream, token, request, |_| {}).expect("Verified native response")
+}
+
+#[cfg(test)]
+pub(crate) fn client_send(stream: &mut TcpStream, value: &Value) {
+    let bytes = encode(value);
+    stream.write_all(MAGIC).unwrap();
+    stream
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&bytes).unwrap();
+}
+
+#[cfg(test)]
+pub(crate) fn client_frame(stream: &mut TcpStream) -> Value {
     let mut size = [0; 4];
     stream.read_exact(&mut size).unwrap();
     let size = u32::from_be_bytes(size) as usize;
@@ -360,8 +431,18 @@ pub(crate) fn client_read(stream: &mut TcpStream) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Reads one reply frame; a signed response is unwrapped without verification.
 #[cfg(test)]
-pub(crate) const PROOF_LABELS: (&[u8], &[u8]) = (SERVER_PROOF, CLIENT_PROOF);
+pub(crate) fn client_read(stream: &mut TcpStream) -> Value {
+    let frame = client_frame(stream);
+    match frame["response"].as_str() {
+        Some(response) => serde_json::from_slice(&BASE64.decode(response).unwrap()).unwrap(),
+        None => frame,
+    }
+}
+
+#[cfg(test)]
+pub(crate) const PROOF_LABELS: [&[u8]; 3] = [CHALLENGE_PROOF, REQUEST_PROOF, RESPONSE_PROOF];
 
 fn authenticated(actual: &str, expected: &str) -> bool {
     if actual.len() != expected.len() {

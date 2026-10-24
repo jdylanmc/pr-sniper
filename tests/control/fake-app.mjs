@@ -4,9 +4,10 @@
 import net from "node:net";
 import { randomBytes } from "node:crypto";
 import {
-  proof,
+  mac,
   proofMatches,
   protocol,
+  sha256,
 } from "../../src-control/control-client.mjs";
 
 function frames(socket, onFrame) {
@@ -32,6 +33,16 @@ export function reply(socket, value, end = true) {
   socket[end ? "end" : "write"](Buffer.concat([header, payload]));
 }
 
+/** Signed response frame exactly as the native server writes it. */
+export function signed(token, client, server, digest, value) {
+  const raw = Buffer.from(JSON.stringify(value));
+  return {
+    protocol,
+    proof: mac(token, "response", client, server, digest, sha256(raw)),
+    response: raw.toString("base64"),
+  };
+}
+
 /** `handler(request, socket)` returns a reply object, or handles the socket itself. */
 export async function fakeApp(token, handler) {
   const listener = net.createServer((socket) => {
@@ -46,22 +57,29 @@ export async function fakeApp(token, handler) {
           {
             protocol,
             nonce: server,
-            proof: proof(token, "server", hello.nonce, server),
+            proof: mac(token, "challenge", hello.nonce, server),
           },
           false,
         );
         return;
       }
+      const raw = Buffer.from(body.request ?? "", "base64");
+      const digest = sha256(raw);
+      const respond = (value) =>
+        reply(socket, signed(token, hello.nonce, server, digest, value));
       if (
-        !proofMatches(body.proof, proof(token, "client", hello.nonce, server))
+        !proofMatches(
+          body.proof,
+          mac(token, "request", hello.nonce, server, digest),
+        )
       )
-        return reply(socket, {
+        return respond({
           protocol,
           ok: false,
           error: { code: "unauthorized", detail: null },
         });
-      const value = handler(body.request, socket);
-      if (value) reply(socket, value);
+      const value = handler(JSON.parse(raw), socket);
+      if (value) respond(value);
     });
   });
   await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
@@ -69,6 +87,63 @@ export async function fakeApp(token, handler) {
     port: listener.address().port,
     close: () => new Promise((resolve) => listener.close(resolve)),
   };
+}
+
+/**
+ * Active relay between a client and an upstream listener. `mutate(direction,
+ * index, json)` may return a replacement frame body.
+ */
+export async function relay(upstream, mutate) {
+  const listener = net.createServer((inbound) => {
+    const outbound = net.createConnection({
+      host: "127.0.0.1",
+      port: upstream,
+    });
+    inbound.on("error", () => outbound.destroy());
+    outbound.on("error", () => inbound.destroy());
+    inbound.on("close", () => outbound.destroy());
+    outbound.on("close", () => inbound.destroy());
+    const pump = (from, to, direction, headerSize) => {
+      let input = Buffer.alloc(0);
+      let index = 0;
+      from.on("data", (bytes) => {
+        input = Buffer.concat([input, bytes]);
+        while (
+          input.length >= headerSize &&
+          input.length >= input.readUInt32BE(headerSize - 4) + headerSize
+        ) {
+          const length = input.readUInt32BE(headerSize - 4);
+          const body = JSON.parse(
+            input.subarray(headerSize, length + headerSize),
+          );
+          input = input.subarray(length + headerSize);
+          const payload = Buffer.from(
+            JSON.stringify(mutate(direction, index++, body) ?? body),
+          );
+          const header = Buffer.alloc(headerSize);
+          if (headerSize === 12) Buffer.from("SNIPER1\n").copy(header);
+          header.writeUInt32BE(payload.length, headerSize - 4);
+          to.write(Buffer.concat([header, payload]));
+        }
+      });
+    };
+    pump(inbound, outbound, "request", 12);
+    pump(outbound, inbound, "response", 4);
+  });
+  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  return {
+    port: listener.address().port,
+    close: () => new Promise((resolve) => listener.close(resolve)),
+  };
+}
+
+/** Flips one byte inside a base64 field's decoded bytes. */
+export function flip(field, pattern) {
+  const raw = Buffer.from(field, "base64");
+  const index = raw.lastIndexOf(pattern);
+  if (index < 0) throw new Error(`No ${pattern} to flip`);
+  raw[index] ^= 0x20;
+  return raw.toString("base64");
 }
 
 /** Records every byte an unauthenticated listener receives; optionally lies. */
