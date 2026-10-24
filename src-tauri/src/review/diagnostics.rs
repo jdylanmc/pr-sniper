@@ -340,6 +340,21 @@ pub(crate) fn attempt(job: &QueueJob, operation: &JobOperation, model: &str) -> 
     }
 }
 
+/// A host panic, a Rubber Duck's included, also lands in the host log,
+/// correlated by the primary attempt.
+pub(crate) fn log_host_panic(store: &crate::storage::Store, record: &Record) -> Result<(), String> {
+    fn panic_of(event: &Event) -> Option<&crate::host_panic::HostPanic> {
+        match event {
+            Event::HostPanic { panic } => Some(panic),
+            Event::DuckEvent { event, .. } => panic_of(event),
+            _ => None,
+        }
+    }
+    panic_of(&record.event).map_or(Ok(()), |panic| {
+        store.record_host_panic(&record.attempt.id, panic)
+    })
+}
+
 pub(crate) fn native(
     app: &tauri::AppHandle,
     job: &QueueJob,
@@ -356,13 +371,7 @@ pub(crate) fn native(
                 .lock()
                 .map_err(|_| "Attempt diagnostic storage unavailable.".to_string())
                 .and_then(|store| {
-                    // A host panic also lands in the host log, correlated by attempt.
-                    let logged = match &record.event {
-                        Event::HostPanic { panic } => {
-                            store.record_host_panic(&record.attempt.id, panic)
-                        }
-                        _ => Ok(()),
-                    };
+                    let logged = log_host_panic(&store, &record);
                     if matches!(record.event, Event::Started) {
                         store.record_attempt_start(record)
                     } else {

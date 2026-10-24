@@ -1092,3 +1092,75 @@ async fn a_host_panic_in_a_duck_call_ends_the_primary_run_with_its_location() {
     assert_eq!(panics[0]["event"]["panic"]["line"], line);
     stopped(root.path());
 }
+
+/// A verdict whose `nano` makes the test build's duck verdict gate panic.
+pub(super) const PANIC_VERDICT: &str = "host panic probe";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_panic_in_a_duck_exit_ends_the_primary_now_and_reaches_the_host_log() {
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-panic-silent",
+        limits(8, 30),
+        false,
+    );
+    let profile = root.path().join("profile");
+    let sink = profile.clone();
+    let trace = crate::review::diagnostics::Trace::new(
+        crate::storage::diagnostics::Attempt {
+            id: "primary-attempt".into(),
+            operation_id: "operation".into(),
+            work_id: "work".into(),
+            number: 1,
+            head: "a".repeat(40),
+            model: "review-model".into(),
+            started_at_ms: Some(1),
+            session_id: None,
+            runtime_version: None,
+        },
+        Arc::new(move |record| {
+            let store = crate::storage::Store::new(sink.clone());
+            store.record_attempt(record.clone())?;
+            crate::review::diagnostics::log_host_panic(&store, &record)
+        }),
+    );
+    let request = Request {
+        diagnostics: Some(trace),
+        ..primary_request(duck.setup)
+    };
+    let started = Instant::now();
+    let error = execute(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &operation(600),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+    assert!(error.message.contains("duck_tool.rs:"), "{}", error.message);
+    let records = diagnostic_records(root.path());
+    let nested: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            r["event"]["kind"] == "duck_event" && r["event"]["event"]["kind"] == "host_panic"
+        })
+        .collect();
+    assert_eq!(nested.len(), 1, "{records:?}");
+    let file = nested[0]["event"]["event"]["panic"]["file"]
+        .as_str()
+        .unwrap();
+    assert!(file.ends_with("duck_tool.rs"), "{file}");
+    let logged: Vec<_> = crate::storage::Store::new(profile)
+        .diagnostics()
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| entry.panic)
+        .collect();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0].attempt, "primary-attempt");
+    assert!(logged[0].file.ends_with("duck_tool.rs") && logged[0].line > 0);
+    stopped(root.path());
+}

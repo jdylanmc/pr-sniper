@@ -503,6 +503,11 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 let ExitCall::SubmitVerdict { verdict } = exit else {
                     return Ok(());
                 };
+                #[cfg(test)]
+                if verdict.nano == super::duck_tests::PANIC_VERDICT {
+                    let empty: Vec<bool> = Vec::new();
+                    let _ = empty[1];
+                }
                 match unproven(
                     &input,
                     verdict,
@@ -521,11 +526,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 }
             })
         };
-        let exits = Arc::new(ExitTools::new(
-            vec![Exit::SubmitVerdict],
-            verdict_gate,
-            diagnostics.clone(),
-        ));
+        let exits = Arc::new(
+            ExitTools::new(vec![Exit::SubmitVerdict], verdict_gate, diagnostics.clone())
+                .with_host_failure(self.host_failure.clone()),
+        );
         let create = self.engine.client.create_session(config_with(
             &setup.selection,
             reads.clone(),

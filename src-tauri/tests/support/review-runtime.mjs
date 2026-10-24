@@ -24,7 +24,7 @@ const exitScenarios = [
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
   "exit-approve", "exit-merge", "exit-approve-denied-self", "exit-refused-then-panic",
-  "verdict-ok", "verdict-revise-bad-then-ok",
+  "verdict-ok", "verdict-revise-bad-then-ok", "verdict-panic-silent",
 ];
 // Primary scenarios that call rubber_duck: [calls in parallel, args].
 const duckArgs = { kind: "line", path: "source.rs", line: 1, claim: "answer may overflow", proposed_body: "Use a checked add." };
@@ -76,6 +76,8 @@ const firstExit = {
   "exit-malformed-forever": ["submit_report", badReport],
   "verdict-ok": ["submit_verdict", { verdict: "confirmed", nano: "real overflow", evidence: [{ path: "source.rs", line: 1 }] }],
   "verdict-revise-bad-then-ok": ["submit_verdict", { verdict: "revise", nano: "wrong body" }],
+  // The host's test build panics judging this verdict.
+  "verdict-panic-silent": ["submit_verdict", { verdict: "rejected", nano: "host panic probe" }],
 };
 let exitCount = 0;
 let exitEnded = false;
@@ -397,6 +399,8 @@ process.stdin.on("data", (chunk) => {
             }
             break;
           }
+          // The exit failed in the host; the duck session never goes idle.
+          if (scenario === "verdict-panic-silent") break;
           if (!failed) {
             endTurn();
           } else if (scenario === "exit-approve-denied-self") {

@@ -36,7 +36,7 @@ Reference ([ADR-0019](adr/0019-bounded-content-free-diagnostics.md)) for retaine
 ## Failures
 
 - `failure: panic` is the agent's own `panic_exit`; its reason stays in the review run, not the log.
-- `failure: host_panic` is a host code panic caught at the attempt, preparation, review-worker, tool, Rubber Duck call or blocking-step (pre-invocation gate, final eligibility, local-exit check) boundary. The attempt's `host_panic` event and a `host_panic` line in `diagnostics.jsonl` (with the attempt id) carry the source file, line and column only. The run fails as permanent; a read-tool or Rubber Duck panic ends it at once.
+- `failure: host_panic` is a host code panic caught at the attempt, preparation, review-worker, tool, Rubber Duck call or blocking-step (pre-invocation gate, final eligibility, local-exit check) boundary. The attempt's `host_panic` event and a `host_panic` line in `diagnostics.jsonl` (with the attempt id) carry the source file, line and column only. A Rubber Duck panic is itemized in its nested `duck_event`; its `diagnostics.jsonl` line carries the primary attempt id. The run fails as permanent; a read-tool or Rubber Duck (call, read or exit tool) panic ends it at once.
 - `exit_refused` records why each refused exit call was refused (`not_offered`, `malformed`, `already_taken`, `unavailable`, `findings`, `gate`, `moved`, `provider_read`, `host_panic`), never the refusal text. `provider_read` carries the typed `provider_error` and ends the run with that provider failure.
 
 ## Never recorded

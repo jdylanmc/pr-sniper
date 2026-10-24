@@ -67,6 +67,9 @@ pub(super) struct ExitTools {
     pub calls: AtomicU64,
     pub(super) finding_gate: Option<FindingGate>,
     pub(super) require_finding_identity: bool,
+    /// A Rubber Duck's exits: the primary attempt's latch, so a host panic here
+    /// ends the primary run instead of reading as a missing verdict.
+    host_failure: Option<Arc<super::HostFailure>>,
 }
 
 fn error(message: &str) -> ToolResult {
@@ -98,7 +101,13 @@ impl ExitTools {
             calls: AtomicU64::new(0),
             finding_gate: None,
             require_finding_identity: false,
+            host_failure: None,
         }
+    }
+
+    pub(super) fn with_host_failure(mut self, host_failure: Arc<super::HostFailure>) -> Self {
+        self.host_failure = Some(host_failure);
+        self
     }
 
     fn reject(&self, message: String) -> ToolResult {
@@ -207,6 +216,9 @@ impl ExitTools {
                 trace.host_panic(&panic);
             }
             self.state.fail(Failure::host_panic(&panic));
+            if let Some(host_failure) = &self.host_failure {
+                host_failure.raise(Failure::host_panic(&panic));
+            }
             Err(refused(
                 ExitRefusal::HostPanic,
                 error("Host fault. The host ends this run. Stop."),

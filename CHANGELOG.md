@@ -140,7 +140,8 @@ efficiency, merge-path and reliability fixes.
     review tool, a Rubber Duck call or a blocking step (pre-invocation gate,
     final eligibility, local-exit check) fails the run as a host fault with its
     source location instead of killing the worker; a read-tool or Rubber Duck
-    panic ends the run at once, never as a timeout. Only
+    (call, read or exit tool) panic ends the run at once, never as a timeout or
+    a missing verdict. Only
     the location is recorded in the attempt log and `diagnostics.jsonl`, never
     the panic message.
   - A failed or pending feedback observation no longer fails a finished review
