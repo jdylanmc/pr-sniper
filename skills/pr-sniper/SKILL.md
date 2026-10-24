@@ -16,7 +16,7 @@ Use the **pr-sniper MCP server's discovered typed tools**, starting with `inspec
 The PR Sniper app ships and registers that server; this skill contains no server
 code. If the tools are missing, ask the human to open PR Sniper → Settings →
 Preferences → Copilot CLI → Install (or Repair), then restart Copilot CLI.
-Every reply carries `protocol`; this skill supports protocol `1`. If `protocol`
+Every reply carries `protocol`; this skill supports protocol `2`. If `protocol`
 differs, a tool is missing, or the error is `unsupported_protocol`/unknown
 operation, stop and ask the human to update the PR Sniper app (or this skill
 with `npx skills update pr-sniper`). Never work around a mismatch.

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { protocol } from "./control-client.mjs";
 
 export const id = z.string().min(1);
 export const uuid = z.string().uuid();
@@ -380,7 +381,7 @@ export const readiness = z.object({
 });
 export const envelope = (result) =>
   z.object({
-    protocol: z.literal(1),
+    protocol: z.literal(protocol),
     ok: z.boolean(),
     result: result.optional(),
     error: z.object({ code: id, detail: z.unknown() }).optional(),

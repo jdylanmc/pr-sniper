@@ -20,6 +20,9 @@ node tests/control/native-acceptance.mjs --executable "src-tauri/target/debug/bu
 - A deliberately fragmented authenticated request also reaches the real native
   listener and must return a typed rejection; the original CLI rejection
   assertions remain unchanged.
+- After a real process kill, the stale descriptor is pointed at an impostor
+  listener (stale port when free) with a live PID. The impostor must receive
+  only the client nonce, and the CLI must relaunch the real app.
 - Fresh run-owned profile and credential-service namespace. No Copilot install,
   sign-in, inference, provider effects, skill files or login-item changes.
 - Stop uses exact observed PID plus creation identity for the run-owned copied

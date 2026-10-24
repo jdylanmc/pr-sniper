@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::json;
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::{TcpListener, TcpStream},
     process::{Command, Stdio},
 };
@@ -541,44 +541,55 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
     assert_eq!(jobs[1].work.as_ref().unwrap().state_seq, 2);
 }
 
+fn fixture_endpoint(port: u16) -> Endpoint {
+    Endpoint {
+        protocol: PROTOCOL,
+        port,
+        token: "a".repeat(64),
+        app_version: "fixture".into(),
+        pid: std::process::id(),
+    }
+}
+
+fn send_frame(stream: &mut TcpStream, magic: &[u8; 8], value: &Value) {
+    let payload = serde_json::to_vec(value).unwrap();
+    stream.write_all(magic).unwrap();
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(&payload).unwrap();
+}
+
 #[test]
 fn unauthenticated_and_http_clients_never_reach_app_operations() {
     for valid_magic in [true, false] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
-            let endpoint = Endpoint {
-                protocol: 1,
-                port,
-                token: "a".repeat(64),
-                app_version: "fixture".into(),
-            };
+            let endpoint = fixture_endpoint(port);
             let (stream, _) = listener.accept().unwrap();
             serve_connection(stream, &endpoint, &mut |_| panic!("Unauthorized operation"))
         });
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let payload = serde_json::to_vec(
-            &json!({"protocol":1,"token":"b".repeat(64),"request":{"operation":"inspect"}}),
-        )
-        .unwrap();
-        stream
-            .write_all(if valid_magic {
+        send_frame(
+            &mut stream,
+            if valid_magic {
                 b"SNIPER1\n"
             } else {
                 b"POST / H"
-            })
-            .unwrap();
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .unwrap();
-        stream.write_all(&payload).unwrap();
+            },
+            &json!({"protocol":PROTOCOL,"nonce":"b".repeat(64)}),
+        );
         if valid_magic {
-            let mut size = [0; 4];
-            stream.read_exact(&mut size).unwrap();
-            let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
-            stream.read_exact(&mut bytes).unwrap();
+            let challenge = transport::client_read(&mut stream);
+            assert_eq!(challenge["nonce"].as_str().unwrap().len(), 64);
+            send_frame(
+                &mut stream,
+                b"SNIPER1\n",
+                &json!({"protocol":PROTOCOL,"proof":"c".repeat(64),"request":{"operation":"inspect"}}),
+            );
             assert_eq!(
-                serde_json::from_slice::<Value>(&bytes).unwrap()["error"]["code"],
+                transport::client_read(&mut stream)["error"]["code"],
                 "unauthorized"
             );
             server.join().unwrap().unwrap();
@@ -586,6 +597,131 @@ fn unauthenticated_and_http_clients_never_reach_app_operations() {
             assert!(server.join().unwrap().is_err());
         }
     }
+}
+
+#[test]
+fn control_proofs_are_domain_separated_hmac_sha256() {
+    // RFC 4231 test case 2.
+    assert_eq!(
+        transport::hmac(b"Jefe", &[b"what do ya ", b"want for nothing?"]),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+    // Pinned with Node's crypto.createHmac in tests/control/cli.test.mjs.
+    let (server, client) = transport::PROOF_LABELS;
+    let token = "a".repeat(64);
+    let (a, b) = ("b".repeat(64), "c".repeat(64));
+    assert_eq!(
+        transport::proof(&token, server, &a, &b),
+        "a83260e7589091cf80635cc6b9b516846f8a12625769899220f850f578146f8b"
+    );
+    assert_eq!(
+        transport::proof(&token, client, &a, &b),
+        "11fb03febf717d5898d5e3caeca82858bc5a77144b445f4287eefbb24129e530"
+    );
+}
+
+#[test]
+fn server_proves_capability_before_client_reveals_anything() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let endpoint = fixture_endpoint(port);
+        let (stream, _) = listener.accept().unwrap();
+        serve_connection(stream, &endpoint, &mut |request| Ok(request)).unwrap();
+    });
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let reply =
+        transport::client_exchange(&mut stream, &"a".repeat(64), json!({"operation":"inspect"}));
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["result"]["operation"], "inspect");
+    server.join().unwrap();
+}
+
+#[test]
+fn replayed_and_raw_token_client_proofs_are_rejected() {
+    let (server_label, client_label) = transport::PROOF_LABELS;
+    let token = "a".repeat(64);
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let endpoint = fixture_endpoint(port);
+        let mut calls = 0;
+        for _ in 0..4 {
+            let (stream, _) = listener.accept().unwrap();
+            serve_connection(stream, &endpoint, &mut |request| {
+                calls += 1;
+                Ok(request)
+            })
+            .unwrap();
+        }
+        calls
+    });
+    // The same client nonce each time: only the server's fresh nonce defeats replay.
+    let nonce = "d".repeat(64);
+    let mut recorded: Option<(String, String)> = None;
+    for attempt in ["valid", "replay", "raw_token", "server_proof"] {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        send_frame(
+            &mut stream,
+            b"SNIPER1\n",
+            &json!({"protocol":PROTOCOL,"nonce":nonce}),
+        );
+        let challenge = transport::client_read(&mut stream);
+        let fresh = challenge["nonce"].as_str().unwrap().to_owned();
+        assert_eq!(
+            challenge["proof"],
+            transport::proof(&token, server_label, &nonce, &fresh)
+        );
+        let proof = match attempt {
+            "valid" => {
+                let valid = transport::proof(&token, client_label, &nonce, &fresh);
+                recorded = Some((fresh.clone(), valid.clone()));
+                valid
+            }
+            "replay" => {
+                let (old, valid) = recorded.clone().unwrap();
+                assert_ne!(old, fresh, "Server nonce must be fresh per connection");
+                valid
+            }
+            "raw_token" => token.clone(),
+            _ => challenge["proof"].as_str().unwrap().to_owned(),
+        };
+        send_frame(
+            &mut stream,
+            b"SNIPER1\n",
+            &json!({"protocol":PROTOCOL,"proof":proof,"request":{"operation":"inspect"}}),
+        );
+        let reply = transport::client_read(&mut stream);
+        if attempt == "valid" {
+            assert_eq!(reply["ok"], true);
+        } else {
+            assert_eq!(reply["error"]["code"], "unauthorized", "{attempt}");
+        }
+    }
+    assert_eq!(server.join().unwrap(), 1);
+}
+
+#[test]
+fn previous_protocol_envelopes_fail_before_dispatch() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        serve_connection(stream, &fixture_endpoint(port), &mut |_| {
+            panic!("Unauthorized operation")
+        })
+        .unwrap();
+    });
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    send_frame(
+        &mut stream,
+        b"SNIPER1\n",
+        &json!({"protocol":1,"token":"a".repeat(64),"request":{"operation":"inspect"}}),
+    );
+    let reply = transport::client_read(&mut stream);
+    assert_eq!(reply["error"]["code"], "incompatible_protocol");
+    assert_eq!(reply["error"]["detail"]["supported"], PROTOCOL);
+    server.join().unwrap();
 }
 
 #[test]
@@ -663,12 +799,7 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
                 Err(error) => panic!("{error}"),
             }
         };
-        let endpoint = Endpoint {
-            protocol: 1,
-            port,
-            token: "a".repeat(64),
-            app_version: "fixture".into(),
-        };
+        let endpoint = fixture_endpoint(port);
         let mut calls = 0;
         serve_connection(stream, &endpoint, &mut |request| {
             calls += 1;
@@ -682,8 +813,22 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
+    let (_, client_label) = transport::PROOF_LABELS;
+    let nonce = "b".repeat(64);
+    send_frame(
+        &mut stream,
+        b"SNIPER1\n",
+        &json!({"protocol":PROTOCOL,"nonce":nonce}),
+    );
+    let challenge = transport::client_read(&mut stream);
+    let proof = transport::proof(
+        &"a".repeat(64),
+        client_label,
+        &nonce,
+        challenge["nonce"].as_str().unwrap(),
+    );
     let payload = serde_json::to_vec(
-        &json!({"protocol":1,"token":"a".repeat(64),"request":{"operation":"login"}}),
+        &json!({"protocol":PROTOCOL,"proof":proof,"request":{"operation":"login"}}),
     )
     .unwrap();
     stream.write_all(b"SNIPER1\n").unwrap();
@@ -693,12 +838,8 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
         .unwrap();
     std::thread::sleep(Duration::from_millis(40));
     stream.write_all(&payload).unwrap();
-    let mut size = [0; 4];
-    stream.read_exact(&mut size).unwrap();
-    let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
-    stream.read_exact(&mut bytes).unwrap();
     assert_eq!(
-        serde_json::from_slice::<Value>(&bytes).unwrap()["error"]["code"],
+        transport::client_read(&mut stream)["error"]["code"],
         "invalid_request"
     );
     server.join().unwrap();

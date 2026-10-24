@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import net from "node:net";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { proof, protocol } from "../../src-control/control-client.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -236,23 +237,21 @@ async function fragmentedRejection() {
   const endpoint = JSON.parse(
     await fs.readFile(path.join(root, "data/control/endpoint.json"), "utf8"),
   );
-  const payload = Buffer.from(
-    JSON.stringify({
-      protocol: 1,
-      token: endpoint.token,
-      request: {
-        operation: "login",
-        request_id: randomUUID(),
-        issued_at: Math.floor(Date.now() / 1000),
-      },
-    }),
-  );
+  const nonce = randomBytes(32).toString("hex");
+  const frame = (value) => {
+    const payload = Buffer.from(JSON.stringify(value));
+    const header = Buffer.alloc(12);
+    Buffer.from("SNIPER1\n").copy(header);
+    header.writeUInt32BE(payload.length, 8);
+    return [header, payload];
+  };
   const response = await new Promise((resolve, reject) => {
     const socket = net.createConnection({
       host: "127.0.0.1",
       port: endpoint.port,
     });
     let received = Buffer.alloc(0);
+    let challenge;
     const deadline = setTimeout(() => {
       socket.destroy();
       reject(new Error("Fragmented native request timed out"));
@@ -265,44 +264,117 @@ async function fragmentedRejection() {
       if (error) reject(error);
       else resolve(value);
     };
-    socket.on("connect", () => {
-      const header = Buffer.alloc(12);
-      Buffer.from("SNIPER1\n").copy(header);
-      header.writeUInt32BE(payload.length, 8);
-      socket.write(header);
-      write = setTimeout(() => socket.write(payload), 100);
-    });
+    socket.on("connect", () =>
+      socket.write(Buffer.concat(frame({ protocol, nonce }))),
+    );
     socket.on("data", (bytes) => {
       received = Buffer.concat([received, bytes]);
       if (received.length > 1024 * 1024 + 4)
         return done(new Error("Oversized native reply"));
-      if (
-        received.length >= 4 &&
-        received.length === received.readUInt32BE(0) + 4
-      ) {
-        try {
-          done(null, JSON.parse(received.subarray(4)));
-        } catch {
-          done(new Error("Invalid native reply"));
-        }
+      if (received.length < 4 || received.length < received.readUInt32BE(0) + 4)
+        return;
+      let value;
+      try {
+        value = JSON.parse(received.subarray(4, received.readUInt32BE(0) + 4));
+      } catch {
+        return done(new Error("Invalid native reply"));
       }
+      received = received.subarray(received.readUInt32BE(0) + 4);
+      if (challenge) return done(null, value);
+      challenge = value;
+      if (
+        challenge.proof !==
+        proof(endpoint.token, "server", nonce, challenge.nonce)
+      )
+        return done(new Error("Native listener failed its server proof"));
+      const [header, payload] = frame({
+        protocol,
+        proof: proof(endpoint.token, "client", nonce, challenge.nonce),
+        request: {
+          operation: "login",
+          request_id: randomUUID(),
+          issued_at: Math.floor(Date.now() / 1000),
+        },
+      });
+      socket.write(header);
+      write = setTimeout(() => socket.write(payload), 100);
     });
     socket.on("error", () =>
       done(new Error("Fragmented native request lost its connection")),
     );
-    socket.on("end", () => {
-      if (
-        received.length < 4 ||
-        received.length !== received.readUInt32BE(0) + 4
-      )
-        done(new Error("Fragmented native request lost its reply"));
-    });
+    socket.on("end", () =>
+      done(new Error("Fragmented native request lost its reply")),
+    );
   });
   assert.equal(response.ok, false);
   assert.equal(response.error?.code, "invalid_request");
   receipt.checks.push(
-    "actual native listener accepts a fragmented frame and returns typed rejection",
+    "actual native listener proves its capability, accepts a fragmented authenticated frame and returns typed rejection",
   );
+}
+
+// Unauthenticated listener in a separate process (the CLI call below is
+// synchronous). It records every byte and lies with a native success reply.
+const impostorSource = `
+const [port, log] = process.argv.slice(1);
+const fs = require("node:fs");
+const server = require("node:net").createServer((socket) => {
+  socket.on("error", () => {});
+  socket.on("data", (bytes) => {
+    fs.appendFileSync(log, bytes);
+    const payload = Buffer.from(JSON.stringify({ protocol: ${protocol}, ok: true, result: {} }));
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(payload.length);
+    socket.end(Buffer.concat([header, payload]));
+  });
+});
+const listen = (value) => server.listen(Number(value), "127.0.0.1", () =>
+  console.log(server.address().port));
+server.once("error", () => listen(0));
+listen(port);
+`;
+
+/** A crashed app's descriptor survives; an impostor binds its free port. */
+async function staleEndpointImpostor() {
+  const file = path.join(root, "data/control/endpoint.json");
+  const stale = JSON.parse(await fs.readFile(file, "utf8"));
+  const log = path.join(root, "impostor.bin");
+  await fs.writeFile(log, "");
+  const child = spawn(
+    process.execPath,
+    ["-e", impostorSource, String(stale.port), log],
+    { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
+  );
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Impostor not ready")),
+        10_000,
+      );
+      child.stdout.once("data", (bytes) => {
+        clearTimeout(timer);
+        resolve(Number(String(bytes).trim()));
+      });
+      child.once("exit", () => reject(new Error("Impostor exited")));
+    });
+    receipt.impostor_bound_stale_port = port === stale.port;
+    // A live (reused) PID defeats liveness checks: only the proof remains.
+    await fs.writeFile(
+      file,
+      JSON.stringify({ ...stale, port, pid: process.pid }),
+    );
+    const restored = okay({ operation: "inspect" });
+    const bytes = await fs.readFile(log);
+    assert(bytes.length > 0, "Client must have contacted the impostor");
+    assert(!bytes.includes(stale.token), "Impostor received the capability");
+    assert.doesNotMatch(bytes.toString(), /operation|inspect|request_id/);
+    receipt.checks.push(
+      "stale descriptor with impostor on its port: impostor received only a nonce; CLI relaunched the real app",
+    );
+    return restored;
+  } finally {
+    child.kill();
+  }
 }
 
 try {
@@ -421,7 +493,7 @@ try {
   await fragmentedRejection();
   const before = observedProcesses()[0];
   await stopOwned();
-  const restored = okay({ operation: "inspect" });
+  const restored = await staleEndpointImpostor();
   assert.equal(observedProcesses().length, 1);
   assert.notDeepEqual(
     observedProcesses()[0],

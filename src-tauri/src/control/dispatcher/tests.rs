@@ -8,10 +8,7 @@ use crate::{
     monitoring::OperationState,
     publication::{Phase, Publication, Receipt, RemoteState},
 };
-use std::{
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-};
+use std::net::{TcpListener, TcpStream};
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -90,10 +87,11 @@ impl Fixture {
         std::thread::scope(|scope| {
             let server = scope.spawn(|| {
                 let endpoint = super::super::Endpoint {
-                    protocol: 1,
+                    protocol: super::super::PROTOCOL,
                     port,
                     token: "a".repeat(64),
                     app_version: "fixture".into(),
+                    pid: std::process::id(),
                 };
                 let (stream, _) = listener.accept().unwrap();
                 super::super::serve_connection(stream, &endpoint, &mut |input| {
@@ -128,22 +126,10 @@ impl Fixture {
                 .unwrap();
             });
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let bytes =
-                serde_json::to_vec(&json!({"protocol":1,"token":"a".repeat(64),"request":input}))
-                    .unwrap();
-            stream.write_all(b"SNIPER1\n").unwrap();
-            stream
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .unwrap();
-            stream.write_all(&bytes).unwrap();
-            let mut size = [0; 4];
-            stream.read_exact(&mut size).unwrap();
-            let size = u32::from_be_bytes(size) as usize;
-            assert!(size <= super::super::MAX_FRAME);
-            let mut bytes = vec![0; size];
-            stream.read_exact(&mut bytes).unwrap();
+            let reply =
+                super::super::transport::client_exchange(&mut stream, &"a".repeat(64), input);
             server.join().unwrap();
-            serde_json::from_slice(&bytes).unwrap()
+            reply
         })
     }
     fn complete(&self) -> crate::review::ReviewRun {

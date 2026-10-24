@@ -23,7 +23,7 @@ test("skills CLI package is thin orchestration with no bundled server", async ()
   assert.ok(frontmatter, "SKILL.md needs YAML frontmatter");
   assert.match(frontmatter, /^name: pr-sniper$/m);
   assert.match(frontmatter, /^description: \S.{20,1024}$/m);
-  assert.match(skill, /protocol `1`/);
+  assert.match(skill, /protocol `2`/);
   assert.match(skill, /update the PR Sniper app/);
   for (const [, target] of skill.matchAll(/\]\(([^)#]+)\)/g))
     await fs.access(path.join(root, target));

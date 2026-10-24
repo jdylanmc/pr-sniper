@@ -32,7 +32,7 @@ operations as the desktop UI; annotations never grant app permissions.
   register itself or edit another server. The skill is installed separately
   (`npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`).
 
-## Internal diagnostic protocol 1
+## Internal diagnostic protocol 2
 
 The CLI below is retained for diagnostics/acceptance, **not** the primary agent API.
 

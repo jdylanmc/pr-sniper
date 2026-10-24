@@ -4,7 +4,7 @@ import {
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import { randomUUID } from "node:crypto";
-import { invoke, useExecutable } from "./control-client.mjs";
+import { invoke, protocol, useExecutable } from "./control-client.mjs";
 import * as s from "./schemas.mjs";
 
 const { z } = s;
@@ -84,7 +84,7 @@ export function createServer() {
           reply = await invoke(command(args));
         } catch (error) {
           reply = {
-            protocol: 1,
+            protocol,
             ok: false,
             error: {
               code: error.code ?? "bridge_unavailable",

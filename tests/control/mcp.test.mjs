@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { protocol } from "../../src-control/control-client.mjs";
+import { fakeApp } from "./fake-app.mjs";
 
 const source = path.resolve("src-tauri/resources/mcp/mcp-server.mjs");
 // The exact native queue shape, pinned by the app's dispatcher tests.
@@ -23,63 +24,48 @@ async function fixture(mode) {
   const calls = [];
   const token =
     randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
-  const listener = net.createServer((socket) => {
-    let input = Buffer.alloc(0);
-    socket.on("error", () => {});
-    socket.on("data", (bytes) => {
-      input = Buffer.concat([input, bytes]);
-      if (input.length < 12 || input.length < input.readUInt32BE(8) + 12)
-        return;
-      assert.equal(input.subarray(0, 8).toString(), "SNIPER1\n");
-      const message = JSON.parse(input.subarray(12));
-      assert.equal(message.token, token);
-      calls.push(message.request);
-      const request = message.request;
-      const result =
-        request.operation === "resources"
+  const listener = await fakeApp(token, (request) => {
+    calls.push(request);
+    const result =
+      request.operation === "resources"
+        ? {
+            values: [],
+            total: 0,
+            next_offset: null,
+            revision: "a".repeat(64),
+          }
+        : request.operation === "queue"
           ? {
-              values: [],
-              total: 0,
+              values: [queueItem],
+              total: 1,
               next_offset: null,
-              revision: "a".repeat(64),
             }
-          : request.operation === "queue"
+          : request.operation === "watch"
             ? {
-                values: [queueItem],
-                total: 1,
-                next_offset: null,
+                state: "waiting",
+                reason: "paused",
+                paused: true,
+                prioritized: 0,
+                item_id: null,
+                replayed: false,
               }
-            : request.operation === "watch"
-              ? {
-                  state: "waiting",
-                  reason: "paused",
-                  paused: true,
-                  prioritized: 0,
-                  item_id: null,
-                  replayed: false,
-                }
-              : null;
-      const reply = result
-        ? { protocol: 1, ok: true, result }
-        : {
-            protocol: 1,
-            ok: false,
-            error: { code: "conflict", detail: "Synthetic native conflict." },
-          };
-      const output = Buffer.from(JSON.stringify(reply));
-      const header = Buffer.alloc(4);
-      header.writeUInt32BE(output.length);
-      socket.end(Buffer.concat([header, output]));
-    });
+            : null;
+    return result
+      ? { protocol, ok: true, result }
+      : {
+          protocol,
+          ok: false,
+          error: { code: "conflict", detail: "Synthetic native conflict." },
+        };
   });
-  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
   await fs.writeFile(
     path.join(root, "control", "endpoint.json"),
     JSON.stringify({
-      protocol: 1,
+      protocol,
       token,
-      port: listener.address().port,
+      port: listener.port,
       app_version: "fixture",
+      pid: process.pid,
     }),
     { mode: 0o600 },
   );
@@ -103,7 +89,7 @@ async function fixture(mode) {
     await client.connect(transport, { timeout: 10000 });
   } catch (error) {
     await transport.close();
-    await new Promise((resolve) => listener.close(resolve));
+    await listener.close();
     await fs.rm(root, { recursive: true });
     throw new Error(`${error}; ${stderr}`);
   }
@@ -112,7 +98,7 @@ async function fixture(mode) {
     calls,
     async close() {
       await client.close();
-      await new Promise((resolve) => listener.close(resolve));
+      await listener.close();
       await fs.rm(root, { recursive: true, force: true });
     },
   };

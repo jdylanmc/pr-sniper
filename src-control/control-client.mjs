@@ -3,11 +3,23 @@ import path from "node:path";
 import os from "node:os";
 import net from "node:net";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import {
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 
-export const protocol = 1;
+export const protocol = 2;
 const maxFrame = 1024 * 1024;
 const magic = Buffer.from("SNIPER1\n");
+const hex64 = /^[a-f0-9]{64}$/;
+const handshakeTimeout = 5_000;
+// Domain-separated labels: a server proof is never valid as a client proof.
+const labels = {
+  server: "pr-sniper control 2 server\n",
+  client: "pr-sniper control 2 client\n",
+};
 
 function failure(code, detail = null) {
   return Object.assign(new Error(code), { code, detail });
@@ -64,22 +76,75 @@ async function endpoint(root) {
   )
     throw failure("unsafe_endpoint");
   const value = JSON.parse(await fs.readFile(file, "utf8"));
-  if (value.protocol !== protocol) throw failure("incompatible_protocol");
+  if (value.protocol !== protocol) {
+    // A crashed app of another version leaves a descriptor with no listener.
+    if (Number.isInteger(value.pid) && value.pid > 0 && !alive(value.pid))
+      throw failure("unavailable");
+    throw failure("incompatible_protocol");
+  }
   if (
     !Number.isInteger(value.port) ||
     value.port < 1 ||
     value.port > 65535 ||
-    !/^[a-f0-9]{64}$/.test(value.token)
+    !Number.isInteger(value.pid) ||
+    value.pid < 1 ||
+    !hex64.test(value.token)
   )
     throw failure("invalid_endpoint");
+  // A crashed app leaves its descriptor behind; never contact its old port.
+  if (!alive(value.pid)) throw failure("unavailable");
   return value;
 }
 
-export function exchange(address, request, timeout = 120_000) {
-  const payload = Buffer.from(
-    JSON.stringify({ protocol, token: address.token, request }),
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** HMAC-SHA256 over `label ‖ client nonce ‖ "\n" ‖ server nonce`. */
+export function proof(token, role, clientNonce, serverNonce) {
+  return createHmac("sha256", token)
+    .update(labels[role])
+    .update(clientNonce)
+    .update("\n")
+    .update(serverNonce)
+    .digest("hex");
+}
+
+export function proofMatches(actual, expected) {
+  return (
+    typeof actual === "string" &&
+    hex64.test(actual) &&
+    hex64.test(expected) &&
+    timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"))
   );
-  if (payload.length > maxFrame)
+}
+
+function frame(value) {
+  const payload = Buffer.from(JSON.stringify(value));
+  const header = Buffer.alloc(12);
+  magic.copy(header);
+  header.writeUInt32BE(payload.length, 8);
+  return Buffer.concat([header, payload]);
+}
+
+/**
+ * Mutually authenticated exchange. The listener must first prove possession
+ * of the capability for a fresh client nonce; until it does, the client has
+ * sent only that nonce. The raw capability never crosses the socket.
+ */
+export function exchange(address, request, timeout = 120_000) {
+  const nonce = randomBytes(32).toString("hex");
+  const hello = frame({ protocol, nonce });
+  // Same encoded size as the authenticated request frame.
+  if (
+    frame({ protocol, proof: "0".repeat(64), request }).length - 12 >
+    maxFrame
+  )
     return Promise.reject(failure("request_too_large"));
   return new Promise((resolve, reject) => {
     const client = net.createConnection({
@@ -87,60 +152,78 @@ export function exchange(address, request, timeout = 120_000) {
       port: address.port,
     });
     let received = Buffer.alloc(0);
+    let verified = false;
     let sent = false;
-    const timer = setTimeout(() => {
-      client.destroy();
-      reject(
-        failure(sent ? "outcome_unknown" : "unavailable", {
-          request_id: request.request_id,
-        }),
-      );
-    }, timeout);
+    const lost = () =>
+      failure(sent ? "outcome_unknown" : "unavailable", {
+        request_id: request.request_id,
+      });
+    const expire = (ms) =>
+      setTimeout(() => {
+        client.destroy();
+        reject(lost());
+      }, ms);
+    let timer = expire(Math.min(timeout, handshakeTimeout));
     const done = (error, value) => {
       clearTimeout(timer);
       client.destroy();
       if (error) reject(error);
       else resolve(value);
     };
-    client.on("connect", () => {
-      const header = Buffer.alloc(12);
-      magic.copy(header);
-      header.writeUInt32BE(payload.length, 8);
-      sent = true;
-      client.write(Buffer.concat([header, payload]));
-    });
+    client.on("connect", () => client.write(hello));
+    const reply = (bytes) => {
+      if (!verified) {
+        const challenge = JSON.parse(bytes.toString("utf8"));
+        const keys = Object.keys(challenge ?? {})
+          .sort()
+          .join();
+        if (
+          keys !== "nonce,proof,protocol" ||
+          challenge.protocol !== protocol ||
+          !hex64.test(challenge.nonce) ||
+          !proofMatches(
+            challenge.proof,
+            proof(address.token, "server", nonce, challenge.nonce),
+          )
+        )
+          throw failure("unavailable");
+        verified = true;
+        clearTimeout(timer);
+        timer = expire(timeout);
+        sent = true;
+        client.write(
+          frame({
+            protocol,
+            proof: proof(address.token, "client", nonce, challenge.nonce),
+            request,
+          }),
+        );
+        return;
+      }
+      const value = JSON.parse(bytes.toString("utf8"));
+      if (value.protocol !== protocol || typeof value.ok !== "boolean")
+        throw failure("invalid_response");
+      done(null, value);
+    };
     client.on("data", (bytes) => {
-      if (received.length + bytes.length > maxFrame + 4)
-        return done(failure("response_too_large"));
       received = Buffer.concat([received, bytes]);
-      if (received.length < 4) return;
-      const length = received.readUInt32BE(0);
-      if (length > maxFrame) return done(failure("response_too_large"));
-      if (received.length === length + 4) {
+      while (received.length >= 4) {
+        const length = received.readUInt32BE(0);
+        if (length > maxFrame)
+          return done(failure(verified ? "response_too_large" : "unavailable"));
+        if (received.length < length + 4) return;
+        const next = received.subarray(4, length + 4);
+        received = received.subarray(length + 4);
         try {
-          const reply = JSON.parse(received.subarray(4).toString("utf8"));
-          if (reply.protocol !== protocol || typeof reply.ok !== "boolean")
-            throw failure("invalid_response");
-          done(null, reply);
+          reply(next);
         } catch {
-          done(failure("invalid_response"));
+          // Before the server's proof, every failure means "not the app".
+          return done(failure(verified ? "invalid_response" : "unavailable"));
         }
       }
     });
-    client.on("error", () =>
-      done(
-        failure(sent ? "outcome_unknown" : "unavailable", {
-          request_id: request.request_id,
-        }),
-      ),
-    );
-    client.on("end", () => {
-      if (
-        received.length < 4 ||
-        received.length !== received.readUInt32BE(0) + 4
-      )
-        done(failure("outcome_unknown", { request_id: request.request_id }));
-    });
+    client.on("error", () => done(lost()));
+    client.on("end", () => done(lost()));
   });
 }
 

@@ -33,8 +33,18 @@
   annotations. No sampling, login, credential export or review implementation.
 
 - Bind only `127.0.0.1`, ephemeral port. No HTTP, URL dispatcher or shell RPC.
-- Private `control/endpoint.json`: protocol, port, per-launch random capability.
-  Never included in diagnostics, command output or account enumeration.
+- Private `control/endpoint.json`: protocol, port, app PID, per-launch random
+  capability. Never included in diagnostics, command output or account enumeration.
+- Protocol 2 mutual authentication; the capability never crosses the socket.
+  Client sends a fresh 32-byte nonce only. App replies with its own fresh nonce
+  and HMAC-SHA256(capability, server label ‖ client nonce ‖ server nonce). The
+  client verifies in constant time, then sends the request with the
+  client-labelled HMAC over the same nonces. Distinct labels prevent reflection;
+  fresh nonces prevent replay. A failed or absent app proof is `unavailable`:
+  nothing sensitive was sent and the normal launch path runs.
+- A crash leaves the descriptor and frees its port. A descriptor whose PID is
+  not a live current-user process is stale and never contacted; the app proof
+  still guards a reused PID.
 - Eight-byte magic, four-byte length, at most 1 MiB per frame; two-second
   total request-read deadline; authenticated native operation budget 90 seconds.
 - Listener polling is nonblocking; each accepted connection explicitly switches
