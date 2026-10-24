@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 use pr_sniper_lib::storage::diagnostics::{
-    Attempt, CompletionStage, Connectivity, Coverage, Event, FailureKind, Outcome, Paths,
-    PublicationStage, Record, RetryDecision, StopReason, ToolName, VerificationField,
+    Attempt, CompletionStage, Connectivity, Coverage, Event, ExitRefusal, FailureKind, Outcome,
+    Paths, PublicationStage, Record, RetryDecision, StopReason, ToolName, VerificationField,
 };
 use support::Fixture;
 
@@ -347,6 +347,71 @@ fn corrupt_or_oversized_attempt_logs_fail_visibly_without_echoing_content() {
 }
 
 #[test]
+fn host_panics_and_exit_refusals_keep_typed_cause_in_both_logs() {
+    let fixture = Fixture::new();
+    let panic = pr_sniper_lib::host_panic::HostPanic {
+        message: "index out of bounds: the len is 0 but the index is 3".into(),
+        file: "src/review/findings.rs".into(),
+        line: 42,
+        column: 9,
+    };
+    let store = fixture.store();
+    store
+        .record_attempt(attempt_record(
+            "refused",
+            Event::ExitRefused {
+                call: 1,
+                refusal: ExitRefusal::ProviderRead,
+                provider_error: Some(pr_sniper_lib::github::ConnectionError::RateLimitedAfter(30)),
+            },
+        ))
+        .unwrap();
+    store
+        .record_attempt(attempt_record(
+            "refused",
+            Event::HostPanic {
+                panic: panic.clone(),
+            },
+        ))
+        .unwrap();
+    store.record_host_panic("refused", &panic).unwrap();
+    let secret = pr_sniper_lib::host_panic::HostPanic {
+        message: "token ghp_abcdef leaked".into(),
+        ..panic.clone()
+    };
+    store.record_host_panic("refused", &secret).unwrap();
+
+    let attempts = attempt_values(&fixture);
+    assert_eq!(
+        attempts[0]["event"],
+        serde_json::json!({"kind":"exit_refused","call":1,"refusal":"provider_read",
+            "provider_error":{"rate_limited_after":30}})
+    );
+    assert_eq!(
+        attempts[1]["event"]["panic"]["file"],
+        "src/review/findings.rs"
+    );
+    assert_eq!(attempts[1]["event"]["panic"]["line"], 42);
+    let records = serde_json::to_value(store.diagnostics().unwrap()).unwrap();
+    let host: Vec<_> = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["event"] == "host_panic")
+        .collect();
+    assert_eq!(host.len(), 2);
+    assert_eq!(
+        host[0]["panic"],
+        serde_json::json!({"attempt":"refused","message":panic.message,
+            "file":"src/review/findings.rs","line":42,"column":9})
+    );
+    let redacted = host[1]["panic"]["message"].as_str().unwrap();
+    assert!(redacted.starts_with("[redacted:") && !redacted.contains("ghp_"));
+    // A host panic marker cannot be written without its typed record.
+    assert!(store.record(DiagnosticEvent::HostPanic).is_err());
+}
+
+#[test]
 fn diagnostics_append_and_survive_a_fresh_reader() {
     let fixture = Fixture::new();
     let before = SystemTime::now()
@@ -656,6 +721,7 @@ fn compact_and_legacy_attempt_lines_read_back_identically() {
             timestamp_secs: 1,
             event: DiagnosticEvent::Attempt,
             attempt: Some(record),
+            panic: None,
         })
         .unwrap();
         line.push('\n');

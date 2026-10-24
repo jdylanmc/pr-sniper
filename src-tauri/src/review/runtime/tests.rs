@@ -1872,6 +1872,24 @@ mod exits {
         assert!(!error.kind.transient() && error.kind.resumable());
     }
 
+    // Live #220: the exit-time PR re-read failed three times; the agent was told to
+    // "try again", then gave up with panic_exit and the run parked as a Panic.
+    #[tokio::test]
+    async fn an_unreadable_pr_at_exit_time_ends_the_run_with_the_typed_provider_failure() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let gate: ExitGate = Arc::new(move |_| {
+            seen.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(Refusal::Unreadable(crate::github::ConnectionError::Network))
+        });
+        let (result, root) = run_exit("exit-refused-then-panic", gate).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Network);
+        assert!(error.kind.transient());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(failures(root.path())[0]);
+    }
+
     #[tokio::test]
     async fn a_moved_state_at_exit_time_tosses_the_run_through_the_budget() {
         let gate: ExitGate = Arc::new(|_| Err(Refusal::Moved("PR state moved.".into())));

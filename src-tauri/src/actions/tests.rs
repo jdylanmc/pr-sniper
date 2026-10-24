@@ -471,6 +471,13 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         action: crate::exits::LgtmAction::Merge,
         dismissed_teammate_findings: vec![],
     };
+    // The exit-time re-read fails: a typed provider failure, never a "try again" loop.
+    env.wire.0.lock().unwrap().unreadable = Some(ConnectionError::Network);
+    assert_eq!(
+        (prepared.setup.gate)(&approve),
+        Err(Refusal::Unreadable(ConnectionError::Network))
+    );
+    env.wire.0.lock().unwrap().unreadable = None;
     // CI turns red between packet and exit: that exit is denied, the run continues.
     env.wire.0.lock().unwrap().observation.checks = Some("FAILURE".into());
     assert!(matches!(
@@ -873,6 +880,7 @@ struct Server {
     writes: Vec<(String, Value)>,
     lost: bool,
     reject: bool,
+    unreadable: Option<ConnectionError>,
 }
 impl Transport for Wire {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
@@ -903,7 +911,11 @@ impl QueryTransport for Wire {
     fn query(&self, query: &str, _: Value) -> Result<Response, ConnectionError> {
         assert!(!query.contains("viewerCanMergeAsAdmin"));
         assert!(!query.starts_with("mutation"));
-        let o = &self.0.lock().unwrap().observation;
+        let server = self.0.lock().unwrap();
+        if let Some(error) = server.unreadable {
+            return Err(error);
+        }
+        let o = &server.observation;
         let mut pull = json!({"id":o.node_id,"fullDatabaseId":9,"baseRefOid":o.base,"headRefOid":o.head,"isDraft":o.draft,"state":o.state,
                 "mergeStateStatus":o.merge_state,"mergeable":o.mergeable,"reviewDecision":o.review_decision,"isInMergeQueue":o.in_merge_queue,
                 "author":{"databaseId":o.author_id.parse::<u64>().unwrap()},"mergedBy":o.merged_by.as_ref().map(|id|json!({"databaseId":id.parse::<u64>().unwrap()})),
@@ -1094,6 +1106,7 @@ fn env(store: &Store) -> Env<'_> {
             observation: observed(),
             writes: vec![],
             lost: false,
+            unreadable: None,
             reject: false,
         }))),
         now: NOW + 20,
@@ -1791,6 +1804,7 @@ fn approval_already_given_on_the_head_is_never_posted_again() {
         writes: vec![],
         lost: false,
         reject: false,
+        unreadable: None,
     })));
     let repo = RemoteRepository {
         id: "100".into(),
