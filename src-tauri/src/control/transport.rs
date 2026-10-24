@@ -59,6 +59,7 @@ pub(crate) struct Server {
     path: PathBuf,
     /// The descriptor this server wrote; only that file is ever withdrawn.
     file: file_identity::Identity,
+    queue_wait: Duration,
 }
 
 /// Fail closed rather than repair a publicly readable control directory.
@@ -118,7 +119,14 @@ impl Server {
             endpoint,
             path,
             file,
+            queue_wait: QUEUE_WAIT,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_queue_wait(mut self, wait: Duration) -> Self {
+        self.queue_wait = wait;
+        self
     }
 
     /// The calling thread is the single native executor. A separate acceptor
@@ -156,13 +164,18 @@ impl Server {
         };
         let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
         let acceptor = {
-            let (stop, failures) = (stop.clone(), failures.clone());
-            let endpoint = Arc::new(self.endpoint);
-            let path = self.path.clone();
+            let stop = stop.clone();
+            let connection = Connection {
+                endpoint: Arc::new(self.endpoint),
+                path: self.path.clone(),
+                jobs,
+                wait: self.queue_wait,
+                failures: failures.clone(),
+            };
             let listener = self.listener;
             std::thread::Builder::new()
                 .name("local-control-accept".into())
-                .spawn(move || accept(listener, endpoint, path, jobs, stop, active, failures))
+                .spawn(move || accept(listener, connection, stop, active))
         };
         let Ok(acceptor) = acceptor else {
             return;
@@ -172,6 +185,10 @@ impl Server {
         let mut exit = None;
         while !quitting() {
             match queue.recv_timeout(Duration::from_millis(25)) {
+                Ok(job) if Instant::now() > job.deadline => {
+                    // The client can no longer wait for it: never execute.
+                    let _ = job.reply.send(Err(expired()));
+                }
                 Ok(job) => {
                     let started = Instant::now();
                     match std::panic::catch_unwind(AssertUnwindSafe(|| execute(job.request))) {
@@ -355,20 +372,42 @@ impl Drop for Teardown {
 const CONNECTIONS: usize = 16;
 /// Authenticated requests waiting behind the running native operation.
 pub(crate) const QUEUE: usize = 4;
+/// Clients wait `CLIENT_WAIT` after sending a request; native operations are
+/// budgeted `OPERATION_BUDGET`. A request must start within the difference
+/// (less a margin) or it is rejected unexecuted, so nothing runs after its
+/// client has given up and reported `outcome_unknown`.
+const CLIENT_WAIT: Duration = Duration::from_secs(120);
+const OPERATION_BUDGET: Duration = Duration::from_secs(90);
+const QUEUE_WAIT: Duration = CLIENT_WAIT
+    .saturating_sub(OPERATION_BUDGET)
+    .saturating_sub(Duration::from_secs(5));
 
 struct Job {
     request: Value,
     reply: mpsc::Sender<Result<Value, Error>>,
+    /// Latest start time; later the job is dropped unexecuted.
+    deadline: Instant,
+}
+
+fn expired() -> Error {
+    Error::new("control_busy", json!({"queue": QUEUE, "reason": "expired"}))
+}
+
+/// What each connection thread needs from the acceptor.
+#[derive(Clone)]
+struct Connection {
+    endpoint: Arc<Endpoint>,
+    path: PathBuf,
+    jobs: mpsc::SyncSender<Job>,
+    wait: Duration,
+    failures: Arc<Mutex<Vec<Value>>>,
 }
 
 fn accept(
     listener: TcpListener,
-    endpoint: Arc<Endpoint>,
-    path: PathBuf,
-    jobs: mpsc::SyncSender<Job>,
+    connection: Connection,
     stop: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
-    failures: Arc<Mutex<Vec<Value>>>,
 ) {
     while !stop.load(Ordering::SeqCst) {
         // At capacity, further clients wait in the OS backlog.
@@ -380,22 +419,18 @@ fn accept(
             Ok((stream, address)) if address.ip().is_loopback() => {
                 // Released when the connection ends or its thread never starts.
                 let slot = Slot::take(&active);
-                let (endpoint, jobs, failures, path) = (
-                    endpoint.clone(),
-                    jobs.clone(),
-                    failures.clone(),
-                    path.clone(),
-                );
+                let connection = connection.clone();
                 let _ = std::thread::Builder::new()
                     .name("local-control-connection".into())
                     .spawn(move || {
                         let _slot = slot;
                         let started = Instant::now();
-                        let result = serve_diagnosed(stream, &endpoint, &mut |request| {
-                            submit(&jobs, request)
-                        });
+                        let result =
+                            serve_diagnosed(stream, &connection.endpoint, &mut |request| {
+                                submit(&connection.jobs, request, connection.wait)
+                            });
                         if let Err(failure) = result {
-                            record(&failures, &path, failure, started);
+                            record(&connection.failures, &connection.path, failure, started);
                         }
                     });
             }
@@ -422,9 +457,14 @@ impl Drop for Slot {
 }
 
 /// Backpressure: a full queue is a typed, unexecuted rejection.
-fn submit(jobs: &mpsc::SyncSender<Job>, request: Value) -> Result<Value, Error> {
+fn submit(jobs: &mpsc::SyncSender<Job>, request: Value, wait: Duration) -> Result<Value, Error> {
     let (reply, result) = mpsc::channel();
-    match jobs.try_send(Job { request, reply }) {
+    let deadline = Instant::now() + wait;
+    match jobs.try_send(Job {
+        request,
+        reply,
+        deadline,
+    }) {
         Ok(()) => result
             .recv()
             .unwrap_or_else(|_| Err(Error::new("app_quitting", Value::Null))),

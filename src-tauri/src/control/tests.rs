@@ -963,6 +963,119 @@ fn panicking_operation_is_outcome_unknown_and_fatal() {
 }
 
 #[test]
+fn panic_on_the_blocking_dispatch_pool_is_fatal() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let (root, store) = capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory).unwrap();
+    let endpoint = read_endpoint(&directory);
+    let exited = Arc::new(AtomicBool::new(false));
+    let host = {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            server.run(
+                || false,
+                // The production request path; only the AppHandle-bound
+                // dispatcher body is replaced by a panicking one.
+                |request| {
+                    tauri::async_runtime::block_on(operations::execute_request(
+                        &store,
+                        request,
+                        |_| operations::blocking(|| panic!("synthetic dispatcher panic")),
+                    ))
+                },
+                move || move || exited.store(true, Ordering::SeqCst),
+            )
+        })
+    };
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    let reply = transport::client_exchange(
+        &mut stream,
+        &endpoint.token,
+        json!({"operation":"inspect","request_id":uuid::Uuid::new_v4().to_string(),
+            "issued_at":crate::now_seconds().unwrap()}),
+    );
+    assert_eq!(reply["error"]["code"], "outcome_unknown");
+    host.join().unwrap();
+    assert!(exited.load(Ordering::SeqCst), "Fail-stop and exit ran");
+    assert!(
+        !directory.join("endpoint.json").exists(),
+        "Endpoint withdrawn"
+    );
+    wait_closed(endpoint.port);
+}
+
+#[test]
+fn queued_requests_past_their_start_deadline_never_execute() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    };
+    use std::time::Duration;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory)
+        .unwrap()
+        .with_queue_wait(Duration::from_millis(400));
+    let endpoint = read_endpoint(&directory);
+    let quit = Arc::new(AtomicBool::new(false));
+    let executed = Arc::new(Mutex::new(Vec::new()));
+    let (started, running) = mpsc::channel();
+    let host = {
+        let (quit, executed) = (quit.clone(), executed.clone());
+        std::thread::spawn(move || {
+            server.run(
+                || quit.load(Ordering::SeqCst),
+                |request| {
+                    let operation = request["operation"].as_str().unwrap().to_owned();
+                    executed.lock().unwrap().push(operation.clone());
+                    match operation.as_str() {
+                        "long" => {
+                            started.send(()).unwrap();
+                            std::thread::sleep(Duration::from_millis(1200));
+                        }
+                        "short" => {
+                            started.send(()).unwrap();
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        _ => {}
+                    }
+                    Ok(request)
+                },
+                not_fatal,
+            )
+        })
+    };
+    let call = |operation: &'static str| {
+        let (port, token) = (endpoint.port, endpoint.token.clone());
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            transport::client_exchange(&mut stream, &token, json!({ "operation": operation }))
+        })
+    };
+    // Queued behind an operation that outlasts its start deadline.
+    let long = call("long");
+    running.recv_timeout(Duration::from_secs(5)).unwrap();
+    let late = call("late").join().unwrap();
+    assert_eq!(late["error"]["code"], "control_busy");
+    assert_eq!(late["error"]["detail"]["reason"], "expired");
+    assert_eq!(long.join().unwrap()["result"]["operation"], "long");
+    // Queued behind a short operation: starts in time and executes.
+    let short = call("short");
+    running.recv_timeout(Duration::from_secs(5)).unwrap();
+    let timely = call("timely").join().unwrap();
+    assert_eq!(timely["result"]["operation"], "timely");
+    short.join().unwrap();
+    assert_eq!(*executed.lock().unwrap(), ["long", "short", "timely"]);
+    quit.store(true, Ordering::SeqCst);
+    host.join().unwrap();
+}
+
+#[test]
 fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("control");

@@ -536,10 +536,25 @@ where
     dispatch(command).await
 }
 
+/// Runs native work on the blocking pool. A panic there is re-raised on the
+/// control executor so its fail-stop runs (shared state may be poisoned);
+/// only a cancelled task is an ordinary `outcome_unknown`.
+pub(super) async fn blocking(
+    work: impl FnOnce() -> Result<Value, Error> + Send + 'static,
+) -> Result<Value, Error> {
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(tauri::Error::JoinError(error)) if error.is_panic() => {
+            std::panic::resume_unwind(error.into_panic())
+        }
+        Err(_) => Err(Error::new("outcome_unknown", ())),
+    }
+}
+
 async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Result<Value, Error> {
     if super::dispatcher::handles(&command) {
         let app = app.clone();
-        return tauri::async_runtime::spawn_blocking(move || {
+        return blocking(move || {
             let host = app.state::<Host>();
             super::dispatcher::dispatch(
                 &super::dispatcher::Native {
@@ -549,8 +564,7 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
                 command,
             )
         })
-        .await
-        .map_err(|_| Error::new("outcome_unknown", ()))?;
+        .await;
     }
     match command {
         Command::Accounts { .. }

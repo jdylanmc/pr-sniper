@@ -60,6 +60,12 @@
   challenge stays prompt while a native operation runs; further clients wait in
   the OS backlog. Only authenticated requests enter a four-slot queue to one
   native executor (single writer). A full queue returns `control_busy`, unexecuted.
+  Clients wait 120 seconds after sending a request; the native budget is 90.
+  A queued request must start within 25 seconds of receipt, else it is
+  rejected unexecuted (`control_busy`, `reason: expired`), so nothing starts
+  after its client may have reported `outcome_unknown`. A panic on the
+  blocking dispatch pool is re-raised on the executor and is fatal like any
+  other operation panic; only a cancelled task is plain `outcome_unknown`.
   A panicking operation is fatal: shared state may be poisoned or partly
   committed. Fail-stop begins at once (app quitting, Copilot work cancelled),
   then the request returns `outcome_unknown`, a content-free diagnostic is
