@@ -69,7 +69,8 @@
   process. However the executor ends, it withdraws only its own descriptor
   (PID, capability and file identity; moved aside and re-verified). A
   successor's file moved by a race is restored without overwriting, or kept
-  aside and reported; it is deleted only once a newer descriptor exists.
+  aside and reported; it is deleted only once a regular, valid descriptor
+  of a live process with a different file identity holds the name.
   Unsupported methods, unknown fields, authentication and protocol mismatches
   fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.

@@ -256,14 +256,76 @@ impl Owned {
         if fs::rename(&self.path, &aside).is_err() {
             return;
         }
-        if !self.matches(&aside)
-            && restore(&aside, &self.path).is_err()
-            && fs::symlink_metadata(&self.path).is_err()
+        if !self.matches(&aside) && restore(&aside, &self.path).is_err() && !self.superseded(&aside)
         {
             eprintln!("PR Sniper: kept a successor control endpoint that could not be restored.");
             return;
         }
         let _ = fs::remove_file(&aside);
+    }
+
+    /// A distinct, regular, valid descriptor of a live process now holds the
+    /// public name. Anything else (missing, link, malformed, stale) is not.
+    fn superseded(&self, aside: &Path) -> bool {
+        let Ok(metadata) = fs::symlink_metadata(&self.path) else {
+            return false;
+        };
+        if !metadata.file_type().is_file() || metadata.len() > 4096 {
+            return false;
+        }
+        let (Ok(Some(current)), Ok(Some(moved))) = (
+            file_identity::identity(&self.path),
+            file_identity::identity(aside),
+        ) else {
+            return false;
+        };
+        !current.same_file(&moved)
+            && fs::read(&self.path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Endpoint>(&bytes).ok())
+                .is_some_and(|endpoint| {
+                    endpoint.protocol == PROTOCOL
+                        && endpoint.port != 0
+                        && is_nonce(&endpoint.token)
+                        && live(endpoint.pid)
+                })
+    }
+}
+
+/// Whether `pid` is a running process this user can observe.
+fn live(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // Positive PIDs only: zero/negative values address process groups.
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 performs only the existence/permission check.
+        unsafe { kill(pid, 0) == 0 }
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            },
+        };
+        const STILL_ACTIVE: u32 = 259;
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE;
+        let _ = CloseHandle(process);
+        running
     }
 }
 
@@ -780,6 +842,51 @@ mod withdraw_tests {
         );
         assert!(newest.unwrap().matches(&root.path().join("endpoint.json")));
         assert!(retired(root.path()).is_empty());
+
+        // Restore fails and the public name holds something that is not a
+        // valid live descriptor: keep the moved successor.
+        type Occupy = Box<dyn Fn(&Path)>;
+        let occupants: Vec<(&str, Occupy)> = vec![
+            (
+                "malformed",
+                Box::new(|path: &Path| fs::write(path, b"{not an endpoint").unwrap()),
+            ),
+            (
+                "foreign protocol",
+                Box::new(|path: &Path| {
+                    fs::write(
+                        path,
+                        br#"{"protocol":1,"port":1,"token":"x","app_version":"0","pid":1}"#,
+                    )
+                    .unwrap()
+                }),
+            ),
+            #[cfg(unix)]
+            (
+                "symlink to a valid descriptor",
+                Box::new(|path: &Path| {
+                    let target = path.with_file_name("elsewhere.json");
+                    publish(path.parent().unwrap(), 'd');
+                    fs::rename(path, &target).unwrap();
+                    std::os::unix::fs::symlink(&target, path).unwrap();
+                }),
+            ),
+        ];
+        for (name, occupy) in occupants {
+            let root = tempfile::tempdir().unwrap();
+            let own = publish(root.path(), 'a');
+            let mut successor = None;
+            own.withdraw_with(
+                || successor = Some(publish(root.path(), 'b')),
+                |_, path| {
+                    occupy(path);
+                    Err(std::io::ErrorKind::AlreadyExists.into())
+                },
+            );
+            let kept = retired(root.path());
+            assert_eq!(kept.len(), 1, "{name}: successor kept aside");
+            assert!(successor.unwrap().matches(&kept[0]), "{name}");
+        }
 
         // Unraced: only this server's own descriptor is removed.
         let root = tempfile::tempdir().unwrap();
