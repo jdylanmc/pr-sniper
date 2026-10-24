@@ -283,7 +283,7 @@ fn wait_pause_disable_and_removed_assignment_never_admit_work() {
 }
 
 #[test]
-fn wait_exit_rechecks_ci_and_disabled_tool_never_grants_wait() {
+fn wait_exit_rechecks_ci_and_any_primary_may_wait_for_ci() {
     for custom in [false, true] {
         let (_root, store, _) = fixture(1, true, true);
         store.save_reviews(&[]).unwrap();
@@ -303,30 +303,17 @@ fn wait_exit_rechecks_ci_and_disabled_tool_never_grants_wait() {
         let env = env(&store);
         env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
         let (_, prepared) = prepare(&store, &env, &state, true, NOW + 12);
-        assert_eq!(prepared.setup.offered.contains(&Exit::Wait), !custom);
+        // Pending CI alone blocks the sign-off: Wait is offered without the tool.
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{custom}");
         let call = ExitCall::Wait {
             reason: crate::exits::WaitReason::Ci,
         };
-        if custom {
+        for rollup in ["SUCCESS", "FAILURE"] {
+            env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
             assert!(matches!(
                 (prepared.setup.gate)(&call),
                 Err(Refusal::Denied(_))
             ));
-            assert!(
-                !store.load_settings().unwrap().repositories[0].assignments[0]
-                    .tools
-                    .as_ref()
-                    .unwrap()
-                    .contains(&"wait".into())
-            );
-        } else {
-            for rollup in ["SUCCESS", "FAILURE"] {
-                env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
-                assert!(matches!(
-                    (prepared.setup.gate)(&call),
-                    Err(Refusal::Denied(_))
-                ));
-            }
         }
         assert!(env.wire.0.lock().unwrap().writes.is_empty());
     }
@@ -534,6 +521,317 @@ fn wait_green_resume_can_approve_and_merge_only_through_existing_action_gates() 
     let server = env.wire.0.lock().unwrap();
     assert_eq!(server.observation.state, "MERGED");
     assert_eq!(server.writes.len(), 2);
+}
+
+#[test]
+fn approve_only_and_no_permission_primaries_wait_for_ci_then_sign_off() {
+    use crate::exits::LgtmAction;
+    for (approve, action) in [(true, LgtmAction::Approve), (false, LgtmAction::Ready)] {
+        let (_root, store, item) = fixture(1, approve, false);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0].tools = Some(vec![
+            "read_changes".into(),
+            "ready_for_human".into(),
+            "panic_exit".into(),
+        ]);
+        store.save_settings(&settings).unwrap();
+        store.save_reviews(&[]).unwrap();
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let mut env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        // Denied in the packet; callable only so CI settling mid-run can sign off.
+        assert!(prepared
+            .packet
+            .record
+            .exits_denied
+            .iter()
+            .any(|denial| denial.exit == Exit::Lgtm));
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
+        assert!(prepared.packet.text.contains("clean_review_exit: wait"));
+        complete(
+            &store,
+            &run,
+            &prepared,
+            ExitCall::Wait {
+                reason: crate::exits::WaitReason::Ci,
+            },
+            NOW + 13,
+        );
+        let binding = Binding::job(&run.job);
+        let waited = store.load_pr_states().unwrap().state_seq(&binding);
+        // The wait survives polling with its configuration and holds while CI runs.
+        poll(&store, &state, NOW + 15);
+        let states = store.load_pr_states().unwrap();
+        assert!(states.get(&binding).unwrap().external_wait.is_some());
+        assert_eq!(states.state_seq(&binding), waited);
+        assert!(crate::capacity::candidates(&store, NOW + 16)
+            .unwrap()
+            .is_empty());
+
+        let green = snapshot(false, "SUCCESS");
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        poll(&store, &green, NOW + 20);
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            waited + 1
+        );
+        let (run, prepared) = prepare(&store, &env, &green, true, NOW + 22);
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        complete(
+            &store,
+            &run,
+            &prepared,
+            ExitCall::Lgtm {
+                comment: "Reviewed; CI green.".into(),
+                resolve_own_threads: vec![],
+                action,
+                dismissed_teammate_findings: vec![],
+            },
+            NOW + 23,
+        );
+        synchronize(
+            &store,
+            &item,
+            Ok(env.wire.0.lock().unwrap().observation.clone()),
+            NOW + 24,
+        )
+        .unwrap();
+        packet::adopt(&store, &item).unwrap();
+        let next = host::prepare_next_effect(&store, &item, NOW + 25).unwrap();
+        if approve {
+            let approval = next.unwrap();
+            assert_eq!(approval.action, Action::Approve);
+            env.now = NOW + 25;
+            host::execute_action(&mut env, &approval).unwrap();
+            assert_eq!(env.wire.0.lock().unwrap().writes.len(), 1);
+        } else {
+            assert!(next.is_none());
+            assert!(env.wire.0.lock().unwrap().writes.is_empty());
+            let record = store.load_pr_states().unwrap();
+            let record = record.get(&binding).unwrap();
+            assert!(record.local_summary.is_some(), "local Ready sign-off");
+            assert!(record.external_wait.is_none());
+        }
+    }
+}
+
+fn read_only_primary(approve: bool) -> (tempfile::TempDir, Store, String) {
+    let (root, store, item) = fixture(1, approve, false);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].tools = Some(vec![
+        "read_changes".into(),
+        "ready_for_human".into(),
+        "panic_exit".into(),
+    ]);
+    store.save_settings(&settings).unwrap();
+    store.save_reviews(&[]).unwrap();
+    (root, store, item)
+}
+
+fn sign_off(action: crate::exits::LgtmAction) -> ExitCall {
+    ExitCall::Lgtm {
+        comment: "Reviewed; CI green.".into(),
+        resolve_own_threads: vec![],
+        action,
+        dismissed_teammate_findings: vec![],
+    }
+}
+
+#[test]
+fn ci_turning_green_mid_run_leaves_the_primary_its_sign_off() {
+    use crate::exits::LgtmAction;
+    for (approve, action) in [(true, LgtmAction::Approve), (false, LgtmAction::Ready)] {
+        let (_root, store, _) = read_only_primary(approve);
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (_, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        assert!(prepared.setup.tool_set.iter().any(|t| t == "lgtm"));
+        assert!(prepared
+            .packet
+            .text
+            .contains(crate::exits::gates::CI_PENDING_SIGN_OFF));
+        assert!(matches!(
+            (prepared.setup.gate)(&sign_off(action)),
+            Err(Refusal::Denied(reason)) if reason == crate::exits::gates::CI_PENDING_SIGN_OFF
+        ));
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        assert_eq!(
+            (prepared.setup.gate)(&sign_off(action)),
+            Ok(()),
+            "{action:?}"
+        );
+        assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[test]
+fn wait_offered_beside_a_primarys_own_open_thread_is_accepted_at_exit() {
+    use crate::github::actions::HumanThread;
+    for approve in [true, false] {
+        let (_root, store, _) = read_only_primary(approve);
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            server.observation.checks = Some("PENDING".into());
+            server.observation.threads = vec![HumanThread {
+                id: "own".into(),
+                resolved: false,
+                outdated: false,
+                resolved_by: None,
+                comments: vec![
+                    json!({"fullDatabaseId":41,"body":"Finding.","path":"source.rs","line":1}),
+                ],
+            }];
+        }
+        let proof = |run: &ReviewRun| crate::github::threads::Ownership {
+            publication_id: "publication".into(),
+            configuration_id: "configuration".into(),
+            account_id: run.job.account_id.clone(),
+            repository_id: "100".into(),
+            repository_name: "example/repo".into(),
+            pull_request_id: run.job.pull_request_id.clone(),
+            number: run.job.number,
+            head_sha: "a".repeat(40),
+            assignment_id: run.assignment_id.clone(),
+            agent_id: "agent".into(),
+            review_id: "review".into(),
+            root_ids: vec!["41".into()],
+            body_hashes: Default::default(),
+        };
+        let wait = ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        };
+        let (_, prepared) =
+            prepare_owned(&store, &env, &state, true, NOW + 12, |run| vec![proof(run)]);
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{approve}");
+        assert_eq!((prepared.setup.gate)(&wait), Ok(()), "{approve}");
+        // Someone else's open thread: neither offered nor accepted.
+        store.save_reviews(&[]).unwrap();
+        let (_, prepared) = prepare(&store, &env, &state, true, NOW + 14);
+        assert!(!prepared.setup.offered.contains(&Exit::Wait), "{approve}");
+        assert!((prepared.setup.gate)(&wait).is_err(), "{approve}");
+    }
+}
+
+#[test]
+fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
+    let (_root, store, _) = read_only_primary(false);
+    let green = snapshot(false, "SUCCESS");
+    poll(&store, &green, NOW + 10);
+    let env = env(&store);
+    let (run, _) = prepare(&store, &env, &green, true, NOW + 12);
+    let finalize = |state: PrSnapshot| {
+        let mut result = output();
+        result.output = ReviewOutput::from_exit(
+            sign_off(crate::exits::LgtmAction::Ready)
+                .outcome()
+                .unwrap()
+                .0,
+            None,
+        );
+        review_host::finalize_local_exit(
+            &GithubClient::new(SnapshotWire {
+                state,
+                required: vec![],
+            }),
+            &RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            },
+            run.job.number,
+            run.packet.as_ref().unwrap(),
+            &mut result,
+        )
+    };
+    assert!(finalize(green.clone()).is_ok());
+    // A check re-ran after the exit call: the review revision holds, CI does not.
+    for rerun in [snapshot(false, ""), snapshot(false, "FAILURE")] {
+        assert_eq!(
+            finalize(rerun).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed
+        );
+    }
+}
+
+#[test]
+fn ready_sign_off_resolving_own_threads_retries_when_ci_is_pending_at_write_completion() {
+    use crate::github::state::{SnapshotComment, SnapshotThread};
+    let thread = |resolved| SnapshotThread {
+        id: "own".into(),
+        resolved,
+        outdated: false,
+        comments: vec![SnapshotComment {
+            id: "41".into(),
+            body: "Finding.".into(),
+            commit: None,
+        }],
+        comment_total: 1,
+    };
+    let with = |conclusion: &str, resolved| PrSnapshot {
+        threads: vec![thread(resolved)],
+        thread_total: 1,
+        ..snapshot(false, conclusion)
+    };
+    for (conclusion, retried) in [("SUCCESS", false), ("", true), ("FAILURE", true)] {
+        let (_root, store, _) = read_only_primary(false);
+        let read = with("SUCCESS", false);
+        poll(&store, &read, NOW + 10);
+        let env = env(&store);
+        let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
+        let mut result = output();
+        result.output = ReviewOutput::from_exit(
+            crate::exits::ExitOutcome::Lgtm {
+                comment: "Reviewed; CI green.".into(),
+                resolve_own_threads: vec!["own".into()],
+                action: crate::exits::LgtmAction::Ready,
+                dismissed_teammate_findings: vec![],
+            },
+            None,
+        );
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 13).unwrap();
+        assert_eq!(crate::exit_writes::admit(&store, NOW + 14).unwrap(), 1);
+        let mut ledger = store.load_feedback().unwrap();
+        let write = &mut ledger.exit_writes[0];
+        assert_eq!(write.sign_off, Some(crate::exits::LgtmAction::Ready));
+        for step in &mut write.steps {
+            step.state = crate::exit_writes::StepState::Done;
+        }
+        write.phase = crate::exit_writes::Phase::Completed;
+        write.operation.state = OperationState::Completed;
+        write.consumed = true;
+        store.save_feedback(&ledger).unwrap();
+        // Only the own resolution and CI changed during the write window.
+        let fresh = with(conclusion, true);
+        crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
+        let baseline = store
+            .load_pr_states()
+            .unwrap()
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .baseline_hash
+            .clone()
+            .unwrap();
+        let expected = if retried {
+            run.packet.as_ref().unwrap().state_hash.clone().unwrap()
+        } else {
+            fresh.normalize().hash()
+        };
+        assert_eq!(baseline, expected, "{conclusion:?}");
+        assert_ne!(read.normalize().hash(), fresh.normalize().hash());
+        if retried {
+            // The next heartbeat dispatches the primary again.
+            poll(&store, &fresh, NOW + 30);
+            prepare(&store, &env, &fresh, true, NOW + 32);
+        }
+    }
 }
 
 struct SnapshotWire {
@@ -782,7 +1080,6 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
         "base",
         "body",
         "comment",
-        "label",
         "failure",
         "green",
         "required_checks",
@@ -816,6 +1113,13 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
             "{change}"
         );
     }
+    let mut labelled = state.clone();
+    labelled.labels.push("changed".into());
+    labelled.mergeable = "CONFLICTING".into();
+    assert!(
+        final_wait_read(&run, labelled, vec![]).is_ok(),
+        "labels and mergeability are not review changes"
+    );
     let mut result = output();
     result.output = ReviewOutput::from_exit(
         crate::exits::ExitOutcome::Wait {
@@ -860,6 +1164,17 @@ fn prepare(
     primary: bool,
     now: i64,
 ) -> (ReviewRun, packet_run::Prepared) {
+    prepare_owned(store, env, state, primary, now, |_| vec![])
+}
+
+fn prepare_owned(
+    store: &Store,
+    env: &Env<'_>,
+    state: &PrSnapshot,
+    primary: bool,
+    now: i64,
+    ownership: impl FnOnce(&ReviewRun) -> Vec<crate::github::threads::Ownership>,
+) -> (ReviewRun, packet_run::Prepared) {
     let assignment = store.load_settings().unwrap().repositories[0].assignments
         [usize::from(!primary)]
     .id
@@ -899,7 +1214,7 @@ fn prepare(
             acting_login: "actor",
             write_capability: true,
             teammates: crate::review::teammates::entries(store, &run).unwrap(),
-            ownership: vec![],
+            ownership: ownership(&run),
             iterations: &[],
             last_consumed_at: None,
         },
@@ -1021,7 +1336,7 @@ fn readiness_include_self_reaches_the_agent_and_merges_without_an_approval_vote(
 }
 
 #[test]
-fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merge() {
+fn readiness_draft_then_ready_waits_then_green_wakes_the_primary_and_merges() {
     let (_root, store, item) = fixture(2, true, true);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].review_drafts = true;
@@ -1053,22 +1368,31 @@ fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merg
         let seq = store.load_pr_states().unwrap().state_seq(&binding);
         assert_eq!(seq, i as u64 + 1);
         let work = crate::capacity::candidates(&store, now + 2).unwrap();
-        assert_eq!(work.len(), 2, "each changed state needs both assignments");
+        // Green CI wakes the primary's CI wait on the same review revision:
+        // the teammate's report for it still holds.
+        let woken = conclusion == "SUCCESS";
+        assert_eq!(
+            work.len(),
+            if woken { 1 } else { 2 },
+            "a changed review state needs both assignments"
+        );
         assert_eq!(
             work.iter().filter(|w| w.blocked_by.is_some()).count(),
-            1,
+            usize::from(!woken),
             "the prior state's report must not bypass the primary barrier"
         );
-        let (teammate, prepared) = prepare(&store, &env, &state, false, now + 2);
-        complete(
-            &store,
-            &teammate,
-            &prepared,
-            ExitCall::SubmitReport {
-                report: crate::exits::TeammateReport { findings: vec![] },
-            },
-            now + 3,
-        );
+        if !woken {
+            let (teammate, prepared) = prepare(&store, &env, &state, false, now + 2);
+            complete(
+                &store,
+                &teammate,
+                &prepared,
+                ExitCall::SubmitReport {
+                    report: crate::exits::TeammateReport { findings: vec![] },
+                },
+                now + 3,
+            );
+        }
         let (primary, prepared) = prepare(&store, &env, &state, true, now + 4);
         assert_eq!(primary.job.work.as_ref().unwrap().state_seq, seq);
         assert!(prepared.packet.text.contains("Agent 2"));
@@ -1080,8 +1404,16 @@ fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merg
                 .exits_denied
                 .iter()
                 .any(|denial| denial.exit == Exit::ApproveAndMerge && denial.reason == blocker));
-            ExitCall::ReadyForHuman {
-                summary: "No code concerns; merge gate not yet satisfied.".into(),
+            if draft {
+                ExitCall::ReadyForHuman {
+                    summary: "No code concerns; merge gate not yet satisfied.".into(),
+                }
+            } else {
+                // CI alone is no new state: the primary holds on it instead.
+                assert!(prepared.setup.offered.contains(&Exit::Wait));
+                ExitCall::Wait {
+                    reason: crate::exits::WaitReason::Ci,
+                }
             }
         } else {
             assert!(prepared.setup.offered.contains(&Exit::ApproveAndMerge));
@@ -1141,6 +1473,73 @@ fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merg
         .unwrap()
         .is_empty());
     assert!(!packet::open(&store.load_actions().unwrap(), &item));
+}
+
+#[test]
+fn readiness_ci_green_after_ready_for_human_wakes_only_the_primary_once() {
+    for (rollup, conclusion) in [(None, None), (Some("FAILURE"), Some("FAILURE"))] {
+        let (_root, store, _item) = fixture(2, true, true);
+        store.save_reviews(&[]).unwrap();
+        let env = env(&store);
+        let mut state = snapshot(false, conclusion.unwrap_or_default());
+        if conclusion.is_none() {
+            // Right after a push GitHub may report no check rollup at all.
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        env.wire.0.lock().unwrap().observation.checks = rollup.map(String::from);
+        poll(&store, &state, NOW + 10);
+        let binding = Binding::job(&store.load_queue().unwrap()[0]);
+        let (teammate, prepared) = prepare(&store, &env, &state, false, NOW + 12);
+        complete(
+            &store,
+            &teammate,
+            &prepared,
+            ExitCall::SubmitReport {
+                report: crate::exits::TeammateReport { findings: vec![] },
+            },
+            NOW + 13,
+        );
+        let (primary, prepared) = prepare(&store, &env, &state, true, NOW + 14);
+        assert!(!prepared.setup.offered.contains(&Exit::Wait), "{rollup:?}");
+        complete(
+            &store,
+            &primary,
+            &prepared,
+            ExitCall::ReadyForHuman {
+                summary: "CI not verified green.".into(),
+            },
+            NOW + 15,
+        );
+        poll(&store, &state, NOW + 16);
+        assert!(crate::capacity::candidates(&store, NOW + 17)
+            .unwrap()
+            .is_empty());
+
+        let green = snapshot(false, "SUCCESS");
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        poll(&store, &green, NOW + 20);
+        let work = crate::capacity::candidates(&store, NOW + 21).unwrap();
+        assert_eq!(work.len(), 1, "{rollup:?}: the primary only");
+        assert!(work[0].blocked_by.is_none(), "teammate report holds");
+        let (primary, prepared) = prepare(&store, &env, &green, true, NOW + 22);
+        assert_eq!(primary.job.work.as_ref().unwrap().state_seq, 2);
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm));
+        complete(
+            &store,
+            &primary,
+            &prepared,
+            ExitCall::ReadyForHuman {
+                summary: "Human judgment needed.".into(),
+            },
+            NOW + 23,
+        );
+        poll(&store, &green, NOW + 24);
+        assert_eq!(store.load_pr_states().unwrap().state_seq(&binding), 2);
+        assert!(crate::capacity::candidates(&store, NOW + 25)
+            .unwrap()
+            .is_empty());
+    }
 }
 
 #[test]

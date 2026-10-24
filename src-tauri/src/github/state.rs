@@ -204,7 +204,28 @@ fn check_status(status: &str) -> &'static str {
 
 impl NormalizedSnapshot {
     pub fn ci_pending(&self) -> bool {
-        !self.checks.iter().any(|(_, _, conclusion)| {
+        !self.ci_failed()
+            && (self.checks.iter().any(|(_, status, _)| status == "pending")
+                || self
+                    .required_checks
+                    .iter()
+                    .any(|required| !self.checks.iter().any(|(name, _, _)| name == required)))
+    }
+
+    /// No check reported and none required: CI not created yet, or no CI at all.
+    /// Not pending: a local sign-off judged on it (conflicts) must not toss.
+    pub fn ci_unknown(&self) -> bool {
+        self.checks.is_empty() && self.required_checks.is_empty()
+    }
+
+    /// CI settled green: checks reported, none pending or failed.
+    pub fn ci_green(&self) -> bool {
+        !self.checks.is_empty() && !self.ci_failed() && !self.ci_pending()
+    }
+
+    /// CI failed on the head: any check concluded as a failure.
+    pub fn ci_failed(&self) -> bool {
+        self.checks.iter().any(|(_, _, conclusion)| {
             matches!(
                 conclusion.as_str(),
                 "failure"
@@ -214,14 +235,31 @@ impl NormalizedSnapshot {
                     | "action_required"
                     | "startup_failure"
             )
-        }) && (self.checks.iter().any(|(_, status, _)| status == "pending")
-            || self
-                .required_checks
-                .iter()
-                .any(|required| !self.checks.iter().any(|(name, _, _)| name == required)))
+        })
     }
 
+    /// The review revision: what a review reads. CI progress and results,
+    /// mergeability and labels are provider metadata for the same code and
+    /// conversation; exit gates read them fresh instead.
+    pub fn review_view(&self) -> Self {
+        Self {
+            mergeable: String::new(),
+            labels: Vec::new(),
+            checks: Vec::new(),
+            required_checks: Vec::new(),
+            check_total: 0,
+            ..self.clone()
+        }
+    }
+
+    /// Hash of the review revision ([`Self::review_view`]); what the heartbeat compares.
     pub fn hash(&self) -> String {
+        digest(&serde_json::to_string(&self.review_view()).expect("normalized snapshot serializes"))
+    }
+
+    /// Hash of the whole snapshot, as baselines were recorded before
+    /// [`Self::hash`] left out CI and metadata. Only translates stored hashes.
+    pub fn legacy_hash(&self) -> String {
         digest(&serde_json::to_string(self).expect("normalized snapshot serializes"))
     }
 }
@@ -232,7 +270,8 @@ impl NormalizedSnapshot {
 pub struct StateMarks {
     /// Acting account login: its approval is an own write.
     pub actor: String,
-    /// Digest of every non-conversation field except the review decision and own approval.
+    /// Digest of the review revision's non-conversation fields except the review
+    /// decision and own approval. CI, mergeability and labels are not review changes.
     pub fields: String,
     pub review_decision: Option<String>,
     /// The acting account approved the head.
@@ -254,24 +293,8 @@ impl StateMarks {
     pub fn of(snapshot: &PrSnapshot, actor: &str) -> Self {
         let n = snapshot.normalize();
         let approvals: Vec<_> = n.approvals.iter().filter(|(a, _)| a != actor).collect();
-        let mut fields = json!([
-            n.head,
-            n.base,
-            n.text_hash,
-            n.lifecycle,
-            n.mergeable,
-            n.labels,
-            n.checks,
-            n.check_total,
-            approvals
-        ]);
-        if !n.required_checks.is_empty() {
-            fields
-                .as_array_mut()
-                .unwrap()
-                .push(json!(n.required_checks));
-        }
-        let fields = digest(&fields.to_string());
+        let fields =
+            digest(&json!([n.head, n.base, n.text_hash, n.lifecycle, approvals]).to_string());
         let comments = snapshot
             .comments
             .iter()
@@ -628,14 +651,32 @@ mod tests {
             edit(&mut s);
             assert_ne!(s.normalize().hash(), hash);
         };
-        moved(|s| s.checks[0].conclusion = "FAILURE".into());
         moved(|s| s.comments[0].body = "edited".into());
         moved(|s| s.threads[0].resolved = true);
         moved(|s| s.body = "new".into());
         moved(|s| s.head = "other".into());
+        moved(|s| s.base = "other".into());
         moved(|s| s.draft = true);
-        moved(|s| s.mergeable = "CONFLICTING".into());
-        moved(|s| s.labels.push("c".into()));
+    }
+
+    #[test]
+    fn ci_and_metadata_do_not_move_the_hash() {
+        let hash = base().normalize().hash();
+        let kept = |edit: fn(&mut PrSnapshot)| {
+            let mut s = base();
+            edit(&mut s);
+            assert_eq!(s.normalize().hash(), hash);
+            assert_ne!(
+                s.normalize().legacy_hash(),
+                base().normalize().legacy_hash()
+            );
+        };
+        kept(|s| s.checks[0].conclusion = "FAILURE".into());
+        kept(|s| s.checks[0].status = "IN_PROGRESS".into());
+        kept(|s| s.check_total += 1);
+        kept(|s| s.required_checks.push("macos".into()));
+        kept(|s| s.mergeable = "CONFLICTING".into());
+        kept(|s| s.labels.push("c".into()));
     }
 
     struct Wire;

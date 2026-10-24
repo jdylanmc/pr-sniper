@@ -931,3 +931,248 @@ fn superseded_and_merged_entries_leave_running_but_keep_their_history() {
     assert_eq!(in_flight.len(), 1);
     assert!(work.is_empty());
 }
+
+fn snapshot(
+    head: char,
+    checks: &[(&str, &str, &str)],
+    comments: &[&str],
+) -> crate::github::state::PrSnapshot {
+    use crate::github::state::{SnapshotCheck, SnapshotComment};
+    crate::github::state::PrSnapshot {
+        number: 297,
+        pull_request_id: "9".into(),
+        title: "docs: remove stray merge marker".into(),
+        head_ref: "feature".into(),
+        head: head.to_string().repeat(40),
+        base: "f".repeat(40),
+        state: "OPEN".into(),
+        mergeable: "MERGEABLE".into(),
+        checks: checks
+            .iter()
+            .map(|(name, status, conclusion)| SnapshotCheck {
+                name: (*name).into(),
+                status: (*status).into(),
+                conclusion: (*conclusion).into(),
+            })
+            .collect(),
+        check_total: checks.len() as u64,
+        comments: comments
+            .iter()
+            .map(|id| SnapshotComment {
+                id: (*id).into(),
+                body: "human".into(),
+                commit: None,
+            })
+            .collect(),
+        comment_total: comments.len() as u64,
+        ..Default::default()
+    }
+}
+
+fn scan_state(
+    monitor: &mut Monitor,
+    store: &Store,
+    state: crate::github::state::PrSnapshot,
+    at: i64,
+) {
+    let ticket = monitor.prepare_checks(store, at, true).unwrap().remove(0);
+    let mut result = poll_result(vec![pull(state.head.chars().next().unwrap())]);
+    result.states.insert("9".into(), state);
+    monitor.finish(store, ticket, Ok(result), at + 1).unwrap();
+}
+
+fn finished(output: serde_json::Value) -> crate::review::ReviewResult {
+    serde_json::from_value(json!({
+        "reviewed_base_sha":"f".repeat(40),"output":output,
+        "session_id":"fixture","model":"fixture-model","runtime_version":"fixture",
+        "input_tokens":1,"output_tokens":1,"tool_calls":1
+    }))
+    .unwrap()
+}
+
+fn teammate_report() -> crate::review::ReviewResult {
+    let mut result = finished(json!({}));
+    result.output = crate::review::ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::SubmitReport,
+        Some(crate::exits::TeammateReport { findings: vec![] }),
+    );
+    result
+}
+
+fn teammate_entries(store: &Store) -> usize {
+    store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .filter(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .count()
+}
+
+fn seq(store: &Store, run: &ReviewRun) -> u64 {
+    store
+        .load_pr_states()
+        .unwrap()
+        .state_seq(&crate::retention::Binding::job(&run.job))
+}
+
+const PENDING: [(&str, &str, &str); 2] = [
+    ("macos-native", "IN_PROGRESS", ""),
+    ("browser (3/4)", "QUEUED", ""),
+];
+const ONE_DONE: [(&str, &str, &str); 2] = [
+    ("macos-native", "COMPLETED", "SUCCESS"),
+    ("browser (3/4)", "IN_PROGRESS", ""),
+];
+const GREEN: [(&str, &str, &str); 2] = [
+    ("macos-native", "COMPLETED", "SUCCESS"),
+    ("browser (3/4)", "COMPLETED", "SUCCESS"),
+];
+
+#[test]
+fn check_runs_completing_on_an_unchanged_head_never_supersede_or_rerun_teammates() {
+    let (_root, store, mut monitor) = configured(false);
+    scan_state(&mut monitor, &store, snapshot('a', &PENDING, &[]), NOW);
+    let teammate = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(
+        &store,
+        &teammate.operation.id,
+        Ok(teammate_report()),
+        NOW + 3,
+    )
+    .unwrap();
+    let primary = dispatch(&store, PRIMARY, NOW + 4);
+    let read = seq(&store, &primary);
+    assert_eq!(primary.job.work.as_ref().unwrap().state_seq, read);
+
+    for (at, checks) in [(NOW + 10, &ONE_DONE), (NOW + 20, &GREEN)] {
+        let mut state = snapshot('a', checks, &[]);
+        state.mergeable = "UNKNOWN".into();
+        state.labels = vec!["ci-done".into()];
+        scan_state(&mut monitor, &store, state, at);
+        assert_eq!(seq(&store, &primary), read, "CI is not a new review state");
+        assert_eq!(teammate_entries(&store), 1, "no teammate re-run");
+        let running = stored(&store, &primary.operation.id);
+        assert_eq!(running.operation.state, OperationState::Running);
+        assert_eq!(running.operation.failure, None);
+        assert_quiet(&store, &monitor);
+    }
+    // The primary's exit consumes the state it read: nothing moved under it.
+    assert_eq!(
+        crate::exits::consume::consume(&store, &primary.job, "after").unwrap(),
+        crate::pr_state::Consumed::Consumed
+    );
+
+    // A head push still supersedes.
+    let settings = store.load_settings().unwrap();
+    let error = pull_gate(&settings, &primary.job, &pull('b')).unwrap_err();
+    assert_eq!(error.kind, OperationFailure::Superseded);
+}
+
+#[test]
+fn a_new_human_comment_is_a_new_state_that_reruns_teammates() {
+    let (_root, store, mut monitor) = configured(false);
+    scan_state(&mut monitor, &store, snapshot('a', &PENDING, &[]), NOW);
+    let teammate = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(
+        &store,
+        &teammate.operation.id,
+        Ok(teammate_report()),
+        NOW + 3,
+    )
+    .unwrap();
+    let primary = dispatch(&store, PRIMARY, NOW + 4);
+    let read = seq(&store, &primary);
+    scan_state(
+        &mut monitor,
+        &store,
+        snapshot('a', &PENDING, &["501"]),
+        NOW + 10,
+    );
+    assert_eq!(seq(&store, &primary), read + 1);
+    assert_eq!(
+        teammate_entries(&store),
+        2,
+        "the teammate reviews the comment"
+    );
+    assert_eq!(
+        crate::exits::consume::consume(&store, &primary.job, "after").unwrap(),
+        crate::pr_state::Consumed::Moved
+    );
+}
+
+#[test]
+fn a_ci_wait_that_wakes_on_green_reuses_teammate_reports() {
+    let (_root, store, _) = configured(false);
+    let mut settings = store.load_settings().unwrap();
+    let primary_assignment = &mut settings.repositories[0].assignments[0];
+    primary_assignment.tools = Some(vec![
+        "ready_for_human".into(),
+        "approve_and_merge".into(),
+        "wait".into(),
+    ]);
+    primary_assignment.actions =
+        serde_json::from_value(json!({"reply":false,"approve":true,"merge":true})).unwrap();
+    store.save_settings(&settings).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let pending = snapshot('a', &PENDING, &[]);
+    scan_state(&mut monitor, &store, pending.clone(), NOW);
+    let teammate = dispatch(&store, TEAMMATE, NOW + 2);
+    complete(
+        &store,
+        &teammate.operation.id,
+        Ok(teammate_report()),
+        NOW + 3,
+    )
+    .unwrap();
+    let primary = dispatch(&store, PRIMARY, NOW + 4);
+    complete(
+        &store,
+        &primary.operation.id,
+        Ok(finished(json!({}))),
+        NOW + 5,
+    )
+    .unwrap();
+    let binding = crate::retention::Binding::job(&primary.job);
+    let mut states = store.load_pr_states().unwrap();
+    let normalized = pending.normalize();
+    assert_eq!(
+        states.wait(
+            &binding,
+            &normalized.hash(),
+            crate::pr_state::ExternalWait {
+                reason: crate::exits::WaitReason::Ci,
+                state_seq: seq(&store, &primary),
+                assignment_id: PRIMARY.into(),
+                agent_id: primary.selection.agent.id.clone(),
+                snapshot: normalized,
+            },
+        ),
+        crate::pr_state::Consumed::Consumed
+    );
+    store.save_pr_states(&states).unwrap();
+    let waited = seq(&store, &primary);
+
+    scan_state(
+        &mut monitor,
+        &store,
+        snapshot('a', &ONE_DONE, &[]),
+        NOW + 10,
+    );
+    assert_eq!(seq(&store, &primary), waited, "progress keeps the wait");
+    scan_state(&mut monitor, &store, snapshot('a', &GREEN, &[]), NOW + 20);
+    assert_eq!(seq(&store, &primary), waited + 1, "green wakes the primary");
+    assert_eq!(teammate_entries(&store), 1, "teammate report still holds");
+    let settings = store.load_settings().unwrap();
+    let candidates = candidates(&store).unwrap();
+    let woken = candidates
+        .iter()
+        .find(|c| {
+            c.assignment_id == PRIMARY
+                && c.job.work.as_ref().unwrap().state_seq == waited + 1
+                && c.run.is_none()
+        })
+        .expect("the primary gets one fresh pass");
+    assert!(
+        crate::review::teammates::blocker(&settings.repositories[0], &candidates, woken).is_none()
+    );
+}

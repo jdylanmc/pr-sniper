@@ -77,14 +77,22 @@ fn observe(states: &mut PrStates, snapshot: &PrSnapshot, reviewed: bool) -> Chan
 #[test]
 fn diff_table_queues_only_real_changes() {
     type Edit = fn(&mut PrSnapshot);
-    let table: [(&str, Edit, bool); 7] = [
+    let table: [(&str, Edit, bool); 11] = [
         ("no change", |_| {}, false),
         ("provider reorder", |s| s.reviews.reverse(), false),
         (
             "ci conclusion",
             |s| s.checks[0].conclusion = "FAILURE".into(),
-            true,
+            false,
         ),
+        (
+            "check started",
+            |s| s.checks[0].status = "IN_PROGRESS".into(),
+            false,
+        ),
+        ("mergeable", |s| s.mergeable = "CONFLICTING".into(), false),
+        ("label", |s| s.labels.push("ready".into()), false),
+        ("base moved", |s| s.base = "s2".into(), true),
         (
             "comment edit",
             |s| s.comments[0].body = "edited".into(),
@@ -307,4 +315,167 @@ fn external_wait_draft_and_required_reviews_wake_on_observed_changes() {
         assert_eq!(observe(&mut states, &state, true), Change::None);
         assert!(states.get(&binding()).unwrap().exit.is_none());
     }
+}
+
+#[test]
+fn legacy_full_snapshot_hashes_translate_without_a_new_state() {
+    let mut states = PrStates::default();
+    assert_eq!(observe(&mut states, &snapshot(), true), Change::Adopted);
+    let record = states.records.first_mut().unwrap();
+    let old = snapshot().normalize().legacy_hash();
+    record.baseline_hash = Some(old.clone());
+    record.hash = Some(old);
+    let mut next = snapshot();
+    next.checks[0].status = "IN_PROGRESS".into();
+    assert_eq!(observe(&mut states, &next, true), Change::None);
+    let record = states.get(&binding()).unwrap();
+    assert_eq!(record.baseline_hash, Some(next.normalize().hash()));
+    assert_eq!(states.state_seq(&binding()), 0);
+}
+
+#[test]
+fn a_ci_wait_woken_by_green_keeps_the_review_revision() {
+    let wait = |states: &mut PrStates, state: &PrSnapshot| {
+        let seq = states.state_seq(&binding());
+        states.wait(
+            &binding(),
+            &state.normalize().hash(),
+            ExternalWait {
+                state_seq: seq,
+                reason: crate::exits::WaitReason::Ci,
+                assignment_id: "primary".into(),
+                agent_id: "agent".into(),
+                snapshot: state.normalize(),
+            },
+        )
+    };
+    let mut states = PrStates::default();
+    let mut state = snapshot();
+    state.checks[0].status = "QUEUED".into();
+    state.checks[0].conclusion.clear();
+    assert_eq!(observe(&mut states, &state, false), Change::Pending(1));
+    assert_eq!(wait(&mut states, &state), Consumed::Consumed);
+    state.labels.push("noise".into());
+    state.mergeable = "UNKNOWN".into();
+    assert_eq!(observe(&mut states, &state, true), Change::None);
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
+    assert_eq!(
+        states.revision_seq(&binding()),
+        1,
+        "teammate reports from seq 1 hold"
+    );
+
+    // A wake that also carries a review change is a new revision.
+    let mut states = PrStates::default();
+    state.checks[0].status = "QUEUED".into();
+    state.checks[0].conclusion.clear();
+    observe(&mut states, &state, false);
+    assert_eq!(wait(&mut states, &state), Consumed::Consumed);
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    state.comment_total += 1;
+    assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
+    assert_eq!(states.revision_seq(&binding()), 2);
+}
+
+fn with_ci(ci: &str) -> PrSnapshot {
+    let mut state = snapshot();
+    match ci {
+        "none" => {
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        "pending" => {
+            state.checks[0].status = "IN_PROGRESS".into();
+            state.checks[0].conclusion.clear();
+        }
+        "red" => state.checks[0].conclusion = "FAILURE".into(),
+        _ => {}
+    }
+    state
+}
+
+fn consume_exit(states: &mut PrStates, sign_off: bool, fresh: &PrSnapshot) -> Consumed {
+    let seq = states.state_seq(&binding());
+    let fresh = fresh.normalize();
+    states.consume_exit(
+        &binding(),
+        seq,
+        &fresh.hash(),
+        Some(ExitCi {
+            sign_off,
+            fresh: Some(&fresh),
+        }),
+    )
+}
+
+#[test]
+fn green_ci_after_an_exit_without_it_wakes_the_primary_once() {
+    for start in ["none", "red"] {
+        let mut states = PrStates::default();
+        assert_eq!(
+            observe(&mut states, &with_ci(start), false),
+            Change::Pending(1)
+        );
+        assert_eq!(
+            consume_exit(&mut states, false, &with_ci(start)),
+            Consumed::Consumed
+        );
+        assert_eq!(
+            observe(&mut states, &with_ci("pending"), true),
+            Change::None
+        );
+        assert_eq!(
+            observe(&mut states, &with_ci("green"), true),
+            Change::Pending(2),
+            "{start}"
+        );
+        assert_eq!(states.revision_seq(&binding()), 1, "teammate reports hold");
+        // The primary's next exit saw green: nothing re-arms, so no loop.
+        assert_eq!(
+            consume_exit(&mut states, false, &with_ci("green")),
+            Consumed::Consumed
+        );
+        for ci in ["red", "green", "pending", "green"] {
+            assert_eq!(
+                observe(&mut states, &with_ci(ci), true),
+                Change::None,
+                "{start}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_sign_off_or_a_repository_without_ci_never_wakes_on_ci() {
+    // Sign-off: it acted already.
+    let mut states = PrStates::default();
+    observe(&mut states, &with_ci("pending"), false);
+    consume_exit(&mut states, true, &with_ci("pending"));
+    assert_eq!(observe(&mut states, &with_ci("green"), true), Change::None);
+
+    // No CI at all: one ready_for_human, then nothing however often it polls.
+    let mut states = PrStates::default();
+    observe(&mut states, &with_ci("none"), false);
+    consume_exit(&mut states, false, &with_ci("none"));
+    for _ in 0..3 {
+        assert_eq!(observe(&mut states, &with_ci("none"), true), Change::None);
+    }
+}
+
+#[test]
+fn a_ci_wait_holds_while_no_check_is_reported() {
+    let pending = with_ci("pending").normalize();
+    let wait = ExternalWait {
+        reason: crate::exits::WaitReason::Ci,
+        state_seq: 1,
+        assignment_id: "primary".into(),
+        agent_id: "agent".into(),
+        snapshot: pending.clone(),
+    };
+    assert!(wait.pending(&with_ci("none").normalize()));
+    assert!(!wait.pending(&with_ci("green").normalize()));
+    assert!(!wait.pending(&with_ci("red").normalize()));
 }

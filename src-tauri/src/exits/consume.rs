@@ -60,23 +60,41 @@ pub fn consume_after<T: QueryTransport>(
 /// state (a heartbeat that already saw those writes is absorbed). Any other change:
 /// consume the packet state with the packet hash as baseline, so the next heartbeat
 /// queues one review of that change. Runs without packet marks keep the plain rule.
+/// A Ready sign-off has no later action to re-check CI, and CI is not in the hash:
+/// CI pending or failed here counts as a change, so the primary runs again.
 pub fn settle_fresh(
     store: &Store,
     job: &QueueJob,
     review_operation_id: &str,
     fresh: &PrSnapshot,
 ) -> Result<Consumed, String> {
-    let fresh_hash = fresh.normalize().hash();
-    let packet = store
+    let normalized = fresh.normalize();
+    let fresh_hash = normalized.hash();
+    let run = store
         .review_evidence()?
         .into_iter()
-        .find(|r| r.operation.id == review_operation_id)
-        .and_then(|r| r.packet);
+        .find(|r| r.operation.id == review_operation_id);
+    let sign_off = run
+        .as_ref()
+        .and_then(|r| r.result.as_ref())
+        .and_then(|r| r.output.exit.as_ref())
+        .map(|exit| {
+            matches!(
+                exit,
+                ExitOutcome::Lgtm { .. }
+                    | ExitOutcome::Approve { .. }
+                    | ExitOutcome::ApproveAndMerge { .. }
+            )
+        });
+    let packet = run.and_then(|r| r.packet);
     let Some((marks, read_hash)) = packet.and_then(|p| Some((p.state_marks?, p.state_hash?)))
     else {
         return settle(store, job, &fresh_hash);
     };
-    if marks.external(fresh, &own_writes(store, review_operation_id)?) {
+    if marks.external(fresh, &own_writes(store, review_operation_id)?)
+        || (ready_sign_off(store, review_operation_id)?
+            && (normalized.ci_failed() || normalized.ci_pending()))
+    {
         return settle(store, job, &read_hash);
     }
     let binding = Binding::job(job);
@@ -84,11 +102,23 @@ pub fn settle_fresh(
         .load_pr_states()?
         .state_seq(&binding)
         .max(state_seq(job));
-    let outcome = pr_state::consume(store, &binding, seq, &fresh_hash)?;
+    // An exit of unknown kind arms nothing.
+    let ci = sign_off.map(|sign_off| pr_state::ExitCi {
+        sign_off,
+        fresh: Some(&normalized),
+    });
+    let outcome = pr_state::consume_exit(store, &binding, seq, &fresh_hash, ci)?;
     if outcome == Consumed::Moved {
         pr_state::toss(store, &binding)?;
     }
     Ok(outcome)
+}
+
+/// The exit of `review_operation_id` is a Ready sign-off that writes to its own threads.
+fn ready_sign_off(store: &Store, review_operation_id: &str) -> Result<bool, String> {
+    Ok(store.load_feedback()?.exit_writes.iter().any(|w| {
+        w.review_operation_id == review_operation_id && w.sign_off == Some(super::LgtmAction::Ready)
+    }))
 }
 
 /// Comment ids and resolved thread ids the exit of `review_operation_id` wrote.
@@ -328,10 +358,10 @@ pub fn honour_local(
         }
         return Ok(outcome);
     }
-    let summary = match &result.output.exit {
-        Some(ExitOutcome::ReadyForHuman { summary }) => summary,
+    let (summary, sign_off) = match &result.output.exit {
+        Some(ExitOutcome::ReadyForHuman { summary }) => (summary, false),
         exit => match local_sign_off(exit.as_ref()) {
-            Some(comment) => comment,
+            Some(comment) => (comment, true),
             None => return Ok(Consumed::Consumed),
         },
     };
@@ -340,7 +370,16 @@ pub fn honour_local(
         .as_ref()
         .and_then(|p| p.state_hash.as_deref())
         .ok_or("The packet record has no state hash.")?;
-    let outcome = consume(store, &run.job, baseline)?;
+    let outcome = pr_state::consume_exit(
+        store,
+        &Binding::job(&run.job),
+        state_seq(&run.job),
+        baseline,
+        Some(pr_state::ExitCi {
+            sign_off,
+            fresh: result.wait_snapshot.as_ref(),
+        }),
+    )?;
     if outcome == Consumed::Consumed {
         pr_state::set_local_summary(store, &Binding::job(&run.job), Some(summary.clone()))?;
     }

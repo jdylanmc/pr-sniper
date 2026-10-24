@@ -104,28 +104,15 @@ where
         );
     }
     let mut facts = Facts::from_observation(&observation);
-    let own_open = {
-        let mut threads = reads::conversation(&observation).threads;
-        super::findings::stamp_ownership(
-            &mut threads,
-            &ownership,
-            &run.assignment_id,
-            &run.job.account_id,
-        );
-        threads
-            .into_iter()
-            .filter(|t| t.mine && !t.resolved)
-            .map(|t| t.id)
-            .collect::<Vec<_>>()
-    };
-    facts.sign_off = Some(Box::new(gates::sign_off_facts(&observation, &own_open)));
+    facts.sign_off = Some(Box::new(own_sign_off_facts(
+        &observation,
+        &ownership,
+        &run.assignment_id,
+        &run.job.account_id,
+    )));
     let base = gate_input(run, facts)?;
     let exits = gates::offered(&base);
-    let offered: Vec<_> = exits
-        .iter()
-        .filter(|(_, offer)| offer.is_offered())
-        .map(|(exit, _)| *exit)
-        .collect();
+    let offered = gates::callable(&base, &exits);
     if offered
         .iter()
         .all(|exit| *exit == crate::exits::Exit::PanicExit)
@@ -315,6 +302,24 @@ where
     })
 }
 
+/// The facts after a sign-off resolved this assignment's verified own open threads.
+/// Packet build and exit time judge the same state, so an offered exit stays callable.
+fn own_sign_off_facts(
+    observation: &Observation,
+    ownership: &[crate::github::threads::Ownership],
+    assignment: &str,
+    account: &str,
+) -> Facts {
+    let mut threads = reads::conversation(observation).threads;
+    super::findings::stamp_ownership(&mut threads, ownership, assignment, account);
+    let own_open: Vec<_> = threads
+        .into_iter()
+        .filter(|t| t.mine && !t.resolved)
+        .map(|t| t.id)
+        .collect();
+    gates::sign_off_facts(observation, &own_open)
+}
+
 /// Re-read the PR at exit time: a moved state tosses the run, a gate may deny the exit.
 fn exit_gate<T>(
     client: Arc<GithubClient<T>>,
@@ -332,6 +337,7 @@ where
     let pull_request_id = run.job.pull_request_id.clone();
     let (head, target) = (context.pull.head_sha.clone(), context.pull.base_sha.clone());
     let files = context.files.clone();
+    let (assignment, account) = (run.assignment_id.clone(), run.job.account_id.clone());
     Ok(Arc::new(move |call| {
         let mut observation: Observation = client
             .action_observation(&repo, number)
@@ -384,6 +390,14 @@ where
             input.facts.sign_off = Some(Box::new(gates::sign_off_facts(
                 &observation,
                 resolve_own_threads,
+            )));
+        } else {
+            // Other exits (`wait`) are judged on the facts the packet offered them on.
+            input.facts.sign_off = Some(Box::new(own_sign_off_facts(
+                &observation,
+                &ownership,
+                &assignment,
+                &account,
             )));
         }
         gates::check_call(&input, call).map_err(Refusal::Denied)?;

@@ -2951,6 +2951,13 @@ impl Monitor {
                 },
             );
             let state_seq = pr_states.state_seq(&binding);
+            let revision_seq = pr_states.revision_seq(&binding);
+            let primary = settings
+                .repositories
+                .iter()
+                .find(|r| r.id == ticket.repository_id)
+                .filter(|r| r.assignments.len() >= 2)
+                .and_then(|r| r.primary_assignment_id());
             for assignment in &ticket.assignments {
                 if !configuration.assignments.contains(assignment) {
                     continue;
@@ -2971,9 +2978,12 @@ impl Monitor {
                     .map(|(i, _)| i);
                 // A completed entry is history; a newer state gets one new
                 // entry. An unfinished entry already covers the newest state.
+                // A teammate's report covers every state of its review revision.
+                let teammate = primary.is_some_and(|primary| primary != assignment.assignment_id);
+                let needed = if teammate { revision_seq } else { state_seq };
                 if let Some(i) = existing {
                     let job = &queue.jobs[i];
-                    let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= state_seq);
+                    let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= needed);
                     let completed = reviews.iter().any(|r| {
                         r.matches_job(job) && r.operation.state == OperationState::Completed
                     });
