@@ -113,6 +113,18 @@ efficiency, merge-path and reliability fixes.
     own finding (≤`max_calls`, ≤120 min). Failed calls record tokens, tool calls
     and reason.
 - **Review reliability**
+  - An exit whose exit-time PR re-read failed was refused with "PR state
+    unreadable now. Try again."; the provider error was discarded, the agent
+    retried, gave up with `panic_exit` and the run parked as **Panic** (seen
+    reviewing #220). The run now ends with the typed provider failure (network,
+    rate limit, ...) and its retry policy; the attempt log records each refused
+    exit's typed cause.
+  - A host panic in a review attempt, its preparation, a review tool or a
+    blocking step (pre-invocation gate, final eligibility, local-exit check)
+    fails the run as a host fault with its source location instead of killing
+    the worker; a read-tool panic ends the run at once, never as a timeout. Only
+    the location is recorded in the attempt log and `diagnostics.jsonl`, never
+    the panic message.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on

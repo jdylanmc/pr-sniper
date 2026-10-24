@@ -335,7 +335,7 @@ where
     Ok(Arc::new(move |call| {
         let mut observation: Observation = client
             .action_observation(&repo, number)
-            .map_err(|_| Refusal::Denied("PR state unreadable now. Try again.".into()))?;
+            .map_err(Refusal::Unreadable)?;
         observation.write_capability = write_capability;
         if observation.head != head || observation.base != target {
             return Err(Refusal::Moved(
@@ -371,9 +371,7 @@ where
             for id in resolve_own_threads {
                 let thread = client
                     .review_thread(&repo.id, &pull_request_id, id)
-                    .map_err(|_| {
-                        Refusal::Denied("Thread ownership unreadable now. Try again.".into())
-                    })?
+                    .map_err(Refusal::Unreadable)?
                     .ok_or_else(|| Refusal::Denied("Thread unavailable now.".into()))?;
                 if !thread.owned_by_any(&ownership) {
                     return Err(Refusal::Denied(
@@ -409,9 +407,7 @@ where
             for id in resolve_own_threads {
                 let thread = client
                     .review_thread(&repo.id, &pull_request_id, id)
-                    .map_err(|_| {
-                        Refusal::Denied("Thread ownership unreadable now. Try again.".into())
-                    })?
+                    .map_err(Refusal::Unreadable)?
                     .ok_or_else(|| Refusal::Denied("Thread unavailable now.".into()))?;
                 if !thread.owned_by_any(&ownership) {
                     return Err(Refusal::Denied(

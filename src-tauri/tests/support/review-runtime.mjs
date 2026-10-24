@@ -23,7 +23,7 @@ const exitScenarios = [
   "exit-wait",
   "exit-ready", "exit-comments", "exit-denied-then-ok", "exit-none", "exit-double",
   "exit-malformed-forever", "exit-catalog-mismatch", "panic", "report-ok", "report-too-long",
-  "exit-approve", "exit-merge", "exit-approve-denied-self",
+  "exit-approve", "exit-merge", "exit-approve-denied-self", "exit-refused-then-panic",
   "verdict-ok", "verdict-revise-bad-then-ok",
 ];
 // Primary scenarios that call rubber_duck: [calls in parallel, args].
@@ -65,6 +65,7 @@ const firstExit = {
   "exit-ready": ["ready_for_human", { summary: "No findings." }],
   "exit-comments": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-denied-then-ok": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
+  "exit-refused-then-panic": ["leave_comments", { new_comments: [{ path: "source.rs", line: 1, body: "Use a constant." }] }],
   "exit-catalog-mismatch": ["ready_for_human", { summary: "No findings." }],
   "exit-approve": ["approve_pull_request", { comment: "Reviewed. Approving." }],
   "exit-merge": ["approve_and_merge", { comment: "Reviewed. Approving and merging." }],
@@ -318,7 +319,7 @@ process.stdin.on("data", (chunk) => {
           }, 10);
           break;
         }
-        if (["read-full", "read-source-only", "tool-invalid-path"].includes(scenario)) {
+        if (["read-full", "read-panic-silent", "read-source-only", "tool-invalid-path"].includes(scenario)) {
           const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
           event("tool.execution_start", { toolName });
           event("external_tool.requested", {
@@ -400,6 +401,10 @@ process.stdin.on("data", (chunk) => {
             endTurn();
           } else if (scenario === "exit-approve-denied-self") {
             toolCall("ready_for_human", { summary: "Own PR; handing over." });
+          } else if (scenario === "exit-refused-then-panic") {
+            // Live #220: three refused exits, then the agent gives up with panic_exit.
+            if (exitCount < 3) toolCall("leave_comments", { body: `Attempt ${exitCount + 1}.` });
+            else toolCall("panic_exit", { reason: "host_state_unreadable", detail: "Exit refused three times." });
           } else if (scenario === "exit-denied-then-ok") {
             toolCall("ready_for_human", { summary: "Comments refused; handing over." });
           } else if (scenario === "report-too-long") {
@@ -413,6 +418,8 @@ process.stdin.on("data", (chunk) => {
           }
           break;
         }
+        // The read failed in the host; the session never goes idle.
+        if (scenario === "read-panic-silent") break;
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
           // The tool call (served or rejected) does not decide the review.
           handOver();

@@ -10,6 +10,7 @@ pub mod exits;
 pub mod feedback;
 pub mod follow_up;
 pub mod github;
+pub mod host_panic;
 pub mod monitoring;
 pub mod notifications;
 pub mod packet;

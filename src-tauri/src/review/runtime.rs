@@ -193,6 +193,28 @@ struct ReadTools<T: Transport> {
     /// Paths whose search_code matches were returned to the agent.
     searched: Mutex<BTreeSet<String>>,
     limit_failure: Mutex<Option<Failure>>,
+    host_failure: Arc<HostFailure>,
+}
+
+/// A read tool's host panic, latched so the attempt monitor ends the run with it at
+/// once instead of letting the agent continue or a later timeout replace its cause.
+#[derive(Default)]
+struct HostFailure {
+    slot: Mutex<Option<Failure>>,
+    raised: tokio::sync::Notify,
+}
+
+impl HostFailure {
+    fn raise(&self, failure: Failure) {
+        if let Ok(mut slot) = self.slot.lock() {
+            slot.get_or_insert(failure);
+        }
+        self.raised.notify_one();
+    }
+
+    fn take(&self) -> Option<Failure> {
+        self.slot.lock().ok().and_then(|mut slot| slot.take())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -504,7 +526,13 @@ impl<T: Transport> ReadTools<T> {
             gate,
             source_failure: Mutex::new(None),
             limit_failure: Mutex::new(None),
+            host_failure: Arc::default(),
         }
+    }
+
+    fn with_host_failure(mut self, host_failure: Arc<HostFailure>) -> Self {
+        self.host_failure = host_failure;
+        self
     }
 
     fn with_facts(mut self, facts: Arc<ToolFacts>) -> Self {
@@ -925,11 +953,14 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for ReadTools<T> {
         // HTTP is synchronous but runs only in the dedicated review runtime, never the UI.
         Ok(
             match off_runtime(|| {
-                self.execute_call(
-                    &invocation.tool_name,
-                    invocation.arguments,
-                    Some(&invocation.tool_call_id),
-                )
+                crate::host_panic::catch(|| {
+                    self.execute_call(
+                        &invocation.tool_name,
+                        invocation.arguments,
+                        Some(&invocation.tool_call_id),
+                    )
+                })
+                .unwrap_or_else(|panic| Err(self.host_panic(&panic)))
             }) {
                 Ok(value) => ToolResult::Text(value.to_string()),
                 Err(error) => ToolResult::Expanded(
@@ -937,6 +968,21 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for ReadTools<T> {
                 ),
             },
         )
+    }
+}
+
+impl<T: Transport> ReadTools<T> {
+    /// A read tool's host panic: recorded, and the run's failure now.
+    fn host_panic(&self, panic: &crate::host_panic::HostPanic) -> Failure {
+        if let Some(trace) = &self.diagnostics {
+            trace.host_panic(panic);
+        }
+        let failure = Failure::host_panic(panic);
+        if let Ok(mut slot) = self.source_failure.lock() {
+            slot.get_or_insert(failure.clone());
+        }
+        self.host_failure.raise(failure.clone());
+        failure
     }
 }
 
@@ -1172,11 +1218,13 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             connectivity_transitions: true,
         });
     }
+    let host_failure = Arc::new(HostFailure::default());
     let monitor = monitor_attempt(
         &progress,
         operation,
         &request.local_gate,
         diagnostics.as_deref(),
+        &host_failure,
     );
     tokio::pin!(monitor);
     let client = decide(failure_commit.as_ref(), async {
@@ -1303,7 +1351,8 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 }),
             )
             .with_facts(tool_facts.clone())
-            .with_progress(Some(progress.clone())),
+            .with_progress(Some(progress.clone()))
+            .with_host_failure(host_failure.clone()),
         );
         let mut exit_tools = exit_tools::ExitTools::new(
             exits.offered.clone(),
@@ -1392,7 +1441,8 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
             verify_catalog(session, &tool_names).await?;
             (request.local_gate)()?;
             let gate = request.before_send.clone();
-            tokio::task::spawn_blocking(move || gate())
+            let gate_trace = diagnostics.clone();
+            tokio::task::spawn_blocking(move || Failure::caught(gate_trace.as_deref(), || gate()))
                 .await
                 .map_err(|_| Failure::permanent("Pre-invocation eligibility check failed."))??;
             operation.check().map_err(Failure::operation)?;
@@ -1583,8 +1633,13 @@ async fn monitor_attempt(
     operation: &Operation,
     gate: &Gate,
     diagnostics: Option<&super::diagnostics::Trace>,
+    host_failure: &HostFailure,
 ) -> Failure {
     loop {
+        // A host panic is the cause, even when a deadline expired since.
+        if let Some(failure) = host_failure.take() {
+            return failure;
+        }
         if let Some((failure, idle_ms, total_ms)) = progress.expiry() {
             if let Some(trace) = diagnostics {
                 trace.fail(failure);
@@ -1602,7 +1657,10 @@ async fn monitor_attempt(
         if let Err(error) = gate() {
             return error;
         }
-        tokio::time::sleep_until(progress.next_check()).await;
+        tokio::select! {
+            () = tokio::time::sleep_until(progress.next_check()) => {}
+            () = host_failure.raised.notified() => {}
+        }
     }
 }
 

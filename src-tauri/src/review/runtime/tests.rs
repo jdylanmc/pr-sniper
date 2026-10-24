@@ -1412,6 +1412,102 @@ async fn blocked_host_read_expires_and_cannot_return_a_late_result() {
     stopped(root.path());
 }
 
+fn host_panic_records(root: &Path) -> Vec<Value> {
+    diagnostic_records(root)
+        .into_iter()
+        .filter(|r| r["event"]["kind"] == "host_panic")
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_tool_host_panic_ends_a_silent_session_now_not_as_a_timeout() {
+    struct PanicRead;
+    impl Transport for PanicRead {
+        fn get(&self, _: &str) -> Result<Response, ConnectionError> {
+            let empty: Vec<u8> = Vec::new();
+            let _ = empty[2];
+            unreachable!()
+        }
+    }
+    let line = line!() - 4;
+    let root = tempfile::tempdir().unwrap();
+    let base = request(true);
+    let request = Request {
+        inactivity: Duration::from_secs(20),
+        failure_commit: None,
+        client: Arc::new(GithubClient::new(PanicRead)),
+        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
+        context: base.context,
+        repository_name: base.repository_name,
+        selection: base.selection,
+        before_send: base.before_send,
+        local_gate: base.local_gate,
+        task: base.task,
+        exits: base.exits,
+        duck: None,
+    };
+    let started = Instant::now();
+    let error = execute(
+        options(root.path(), "read-panic-silent"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(60),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+    assert!(
+        error.message.ends_with(&format!("tests.rs:{line}.")),
+        "{}",
+        error.message
+    );
+    assert_eq!(host_panic_records(root.path()).len(), 1);
+    assert!(!diagnostic_records(root.path())
+        .iter()
+        .any(|r| r["event"]["kind"] == "watchdog"));
+    stopped(root.path());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_panic_in_the_pre_invocation_gate_keeps_its_location() {
+    let root = tempfile::tempdir().unwrap();
+    let line = line!() + 4;
+    let request = Request {
+        before_send: Arc::new(|| {
+            let empty: Vec<u8> = Vec::new();
+            let _ = empty[1];
+            Ok(())
+        }),
+        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
+        ..request(false)
+    };
+    let error = execute(
+        options(root.path(), "exit-ready"),
+        &Identity {
+            id: "33".into(),
+            login: "review-account".into(),
+        },
+        &operation(30),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+    assert!(
+        error.message.ends_with(&format!("tests.rs:{line}.")),
+        "{}",
+        error.message
+    );
+    let panics = host_panic_records(root.path());
+    assert_eq!(panics.len(), 1);
+    assert_eq!(panics[0]["event"]["panic"]["line"], line);
+    stopped(root.path());
+}
+
 #[test]
 fn late_tool_completion_is_rejected_before_success_diagnostics() {
     struct RetiringRead(Arc<Watchdog>);
@@ -1870,6 +1966,24 @@ mod exits {
         let error = result.unwrap_err();
         assert_eq!(error.kind, OperationFailure::Panic);
         assert!(!error.kind.transient() && error.kind.resumable());
+    }
+
+    // Live #220: the exit-time PR re-read failed three times; the agent was told to
+    // "try again", then gave up with panic_exit and the run parked as a Panic.
+    #[tokio::test]
+    async fn an_unreadable_pr_at_exit_time_ends_the_run_with_the_typed_provider_failure() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let gate: ExitGate = Arc::new(move |_| {
+            seen.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(Refusal::Unreadable(crate::github::ConnectionError::Network))
+        });
+        let (result, root) = run_exit("exit-refused-then-panic", gate).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, OperationFailure::Network);
+        assert!(error.kind.transient());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(failures(root.path())[0]);
     }
 
     #[tokio::test]
