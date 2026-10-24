@@ -38,6 +38,13 @@ efficiency, merge-path and reliability fixes.
 - Set up SOLID and Security teammates feeding a Maintainer primary using a
   shipped preset that preserves customized components.
 
+### Changed
+
+- Notifications are short and state-first: **Approved · repo#123** with the PR
+  title as the body and at most one reason (e.g. **Needs your review**). Each
+  carries a state badge: green check, amber `!`, blue crosshair or red `×`
+  (macOS thumbnail, Windows app logo).
+
 ### Fixed
 
 - **Efficiency & resource use**

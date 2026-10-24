@@ -52,7 +52,7 @@ impl Adapter for Wire {
     fn request_permission(&self) -> Result<Permission, String> {
         self.permission()
     }
-    fn send(&self, notice: &Notice) -> Result<(), SendError> {
+    fn send(&self, notice: &Notice, _message: &Message) -> Result<(), SendError> {
         assert_eq!(
             self.store
                 .load_notifications()
@@ -111,7 +111,10 @@ fn failed_initial_save_recovers_only_from_the_exact_persisted_profile() {
     let notice = prepare(&store, &[], &id, 102).unwrap();
     registration.notice_id(&notice.id).unwrap();
     assert_eq!(notice.id, id);
-    assert_eq!(submit(&wire, &notice), (Phase::AcceptedUnconfirmed, None));
+    assert_eq!(
+        submit(&wire, &notice, &render(&notice, None)),
+        (Phase::AcceptedUnconfirmed, None)
+    );
     assert_eq!(wire.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         persisted_ledger(&wire.store).unwrap().profile_id,
@@ -160,7 +163,7 @@ fn unchanged_poll_and_restart_do_not_repeat_a_transition() {
         calls: AtomicUsize::new(0),
         failure: None,
     };
-    let (phase, error) = submit(&wire, &notice);
+    let (phase, error) = submit(&wire, &notice, &render(&notice, None));
     assert_eq!(phase, Phase::AcceptedUnconfirmed);
     complete(&store, &id, phase, error).unwrap();
     for _ in 0..3 {
@@ -216,7 +219,7 @@ fn interrupted_and_timed_out_submissions_remain_unknown_without_retries() {
                 calls: AtomicUsize::new(0),
                 failure: Some(uncertain),
             };
-            let (phase, error) = submit(&wire, &notice);
+            let (phase, error) = submit(&wire, &notice, &render(&notice, None));
             complete(&store, &id, phase, error).unwrap();
         }
         restore(&Store::new(root.path().into())).unwrap();
@@ -292,7 +295,7 @@ fn native_failures_and_permission_denial_remain_visible_without_acknowledgment()
         calls: AtomicUsize::new(0),
         failure: Some(false),
     };
-    let (phase, error) = submit(&wire, &notice);
+    let (phase, error) = submit(&wire, &notice, &render(&notice, None));
     complete(&store, &id, phase, error).unwrap();
     assert_eq!(phase, Phase::Failed);
     let id = admit(&store, &[frame(Category::Failure, "new-operation")]);
@@ -718,8 +721,19 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
         let frame = frames(&snapshot).pop().unwrap();
         assert_eq!(frame.event.as_ref().map(|e| e.category), category);
         if let Some(event) = frame.event {
-            assert!(!event.category.title().contains("Sensitive"));
-            assert!(!event.category.body().contains("example/repo"));
+            // The persisted ledger keeps only digests; PR text is rendered at send time.
+            let saved = serde_json::to_string(&event).unwrap();
+            assert!(!saved.contains("Sensitive") && !saved.contains("example/repo"));
+            let message = render(
+                &queue_notice(event.category),
+                Some(&Subject::of(&snapshot.items[0])),
+            );
+            assert_eq!(
+                message.title,
+                format!("{} · repo#9", event.category.state())
+            );
+            assert!(message.body.starts_with("Sensitive PR title"));
+            assert!(!message.body.contains("example/repo"));
         }
     }
 }
@@ -1048,4 +1062,253 @@ fn superseded_opt_in_saves_nothing_and_queues_no_confirmation() {
         .unwrap()
         .muted
         .contains(&Category::Ready));
+}
+
+fn notice(category: Category, destination: Destination) -> Notice {
+    Notice {
+        id: "pr-sniper:profile:notice".into(),
+        source: "queue:item".into(),
+        fingerprint: "fingerprint".into(),
+        episode: 1,
+        event: Event {
+            category,
+            destination,
+            cause: "cause".into(),
+            group: "group".into(),
+        },
+        phase: Phase::Submitting,
+        created_at: 100,
+        error: None,
+        opened_at: None,
+        navigation_error: None,
+    }
+}
+
+fn subject(title: &str, failure_cause: Option<&'static str>) -> Subject {
+    Subject {
+        repository: "jdylanmc/pr-sniper".into(),
+        number: 219,
+        title: title.into(),
+        failure_cause,
+    }
+}
+
+fn queue_notice(category: Category) -> Notice {
+    notice(
+        category,
+        Destination::QueueItem {
+            item_id: "item".into(),
+        },
+    )
+}
+
+#[test]
+fn copy_is_state_first_and_names_the_pr_once() {
+    let pr = subject("Fix flaky intake test", None);
+    let cases = [
+        (
+            Category::Confirmation,
+            "Confirm · pr-sniper#219",
+            "Fix flaky intake test",
+        ),
+        (
+            Category::HumanInput,
+            "Needs you · pr-sniper#219",
+            "Fix flaky intake test",
+        ),
+        (
+            Category::Ready,
+            "Ready · pr-sniper#219",
+            "Fix flaky intake test · Needs your review",
+        ),
+        (
+            Category::FinalReviewCleared,
+            "Cleared · pr-sniper#219",
+            "Fix flaky intake test · Needs your review",
+        ),
+        (
+            Category::Approved,
+            "Approved · pr-sniper#219",
+            "Fix flaky intake test · Needs your review",
+        ),
+        (
+            Category::Merged,
+            "Merged · pr-sniper#219",
+            "Fix flaky intake test",
+        ),
+        (
+            Category::Failure,
+            "Failed · pr-sniper#219",
+            "Fix flaky intake test",
+        ),
+    ];
+    for (category, title, body) in cases {
+        let message = render(&queue_notice(category), Some(&pr));
+        assert_eq!(
+            (message.title.as_str(), message.body.as_str()),
+            (title, body)
+        );
+    }
+    let failed = render(
+        &queue_notice(Category::Failure),
+        Some(&subject(
+            "Fix flaky intake test",
+            Some("publication_failed"),
+        )),
+    );
+    assert_eq!(failed.body, "Fix flaky intake test · Publish failed");
+    let test = render(&notice(Category::Test, Destination::Settings), None);
+    assert_eq!(
+        (test.title.as_str(), test.body.as_str()),
+        ("Notifications on", "PR alerts show here")
+    );
+    let health = render(&notice(Category::Failure, Destination::Settings), None);
+    assert_eq!(
+        (health.title.as_str(), health.body.as_str()),
+        ("Failed · Repo check", "Open Settings")
+    );
+    let missing = render(&queue_notice(Category::HumanInput), None);
+    assert_eq!(
+        (missing.title.as_str(), missing.body.as_str()),
+        ("Needs you", "Open the queue")
+    );
+}
+
+#[test]
+fn every_message_fits_limits_and_starts_with_its_state_word() {
+    let long = subject(
+        &"Refactor the monitoring scheduler so it never ".repeat(5),
+        Some(queue::CAUSE_TOSSED),
+    );
+    let mut long_repository = long.clone();
+    long_repository.repository = format!("org/{}", "very-long-repository-name-".repeat(4));
+    long_repository.number = u64::MAX;
+    let empty = subject("", None);
+    let banned = [
+        "PR Sniper",
+        "Automated",
+        "exit",
+        "packet",
+        "disposition",
+        "operation",
+    ];
+    for category in [Category::Test].into_iter().chain(Category::SELECTABLE) {
+        for destination in [
+            Destination::Settings,
+            Destination::QueueItem {
+                item_id: "item".into(),
+            },
+        ] {
+            for pr in [None, Some(&long), Some(&long_repository), Some(&empty)] {
+                let message = render(&notice(category, destination.clone()), pr);
+                assert!(message.title.starts_with(category.state()), "{message:?}");
+                assert!(message.title.chars().count() <= TITLE_MAX, "{message:?}");
+                assert!(message.body.chars().count() <= BODY_MAX, "{message:?}");
+                assert!(
+                    !message.body.is_empty() && !message.body.starts_with(' '),
+                    "{message:?}"
+                );
+                assert_eq!(message.badge, category.badge());
+                for word in banned {
+                    assert!(
+                        !message.title.contains(word) && !message.body.contains(word),
+                        "{message:?}"
+                    );
+                }
+            }
+        }
+    }
+    let message = render(&queue_notice(Category::Ready), Some(&long));
+    assert!(
+        message.body.ends_with("… · Needs your review"),
+        "{message:?}"
+    );
+}
+
+#[test]
+fn provider_text_cannot_break_lines_or_reorder_the_notification() {
+    let mut pr = subject("Fix\nthe\u{202E}gnp.exe\u{2066} \t thing\u{7}", None);
+    pr.repository = "o/re\u{202E}po\nx".into();
+    let message = render(&queue_notice(Category::Merged), Some(&pr));
+    assert_eq!(message.title, "Merged · repo x#219");
+    assert_eq!(message.body, "Fix thegnp.exe thing");
+}
+
+#[test]
+fn live_queue_item_supplies_the_subject() {
+    let snapshot = merged_snapshot(1);
+    let item = &snapshot.items[0];
+    let found = Subject::find(
+        &snapshot,
+        &notice(
+            Category::Merged,
+            Destination::QueueItem {
+                item_id: item.id.clone(),
+            },
+        ),
+    )
+    .unwrap();
+    assert_eq!(found, Subject::of(item));
+    let message = render(&queue_notice(Category::Merged), Some(&found));
+    assert_eq!(message.title, "Merged · repo#9");
+    assert_eq!(message.body, "Sensitive PR title");
+    assert!(Subject::find(&snapshot, &queue_notice(Category::Merged)).is_none());
+    assert!(Subject::find(&snapshot, &notice(Category::Failure, Destination::Settings)).is_none());
+}
+
+#[test]
+fn states_map_to_bundled_distinct_badges() {
+    use Category::*;
+    for (category, badge) in [
+        (Approved, Badge::Success),
+        (Merged, Badge::Success),
+        (Confirmation, Badge::Attention),
+        (HumanInput, Badge::Attention),
+        (Ready, Badge::Ready),
+        (FinalReviewCleared, Badge::Ready),
+        (Test, Badge::Ready),
+        (Failure, Badge::Failure),
+    ] {
+        assert_eq!(category.badge(), badge, "{category:?}");
+    }
+    let mut seen = BTreeSet::new();
+    for badge in Badge::ALL {
+        let png = badge.png();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "{badge:?}");
+        assert_eq!(&png[12..16], b"IHDR");
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (256, 256), "{badge:?}");
+        assert_eq!(png[25], 6, "{badge:?} must be RGBA");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("icons/notifications")
+            .join(badge.file_name());
+        assert_eq!(std::fs::read(source).unwrap(), png);
+        assert!(seen.insert(png), "{badge:?} duplicates another badge");
+    }
+}
+
+#[test]
+fn badge_write_is_idempotent_and_repairs_changed_files() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = badge_directory(root.path());
+    let path = Badge::Failure.write(&directory, "failure.png").unwrap();
+    assert_eq!(path, directory.join("failure.png"));
+    std::fs::write(&path, b"tampered").unwrap();
+    Badge::Failure.write(&directory, "failure.png").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), Badge::Failure.png());
+}
+
+#[test]
+fn windows_badge_uris_drop_verbatim_prefixes_and_escape_paths() {
+    use super::message::windows_file_uri;
+    assert_eq!(
+        windows_file_uri(r"\\?\C:\Users\A B\AppData\notification-badges\ready.png"),
+        "file:///C:/Users/A%20B/AppData/notification-badges/ready.png"
+    );
+    assert_eq!(
+        windows_file_uri(r"\\?\UNC\server\share\é#.png"),
+        "file://server/share/%C3%A9%23.png"
+    );
+    assert_eq!(windows_file_uri(r"D:\x\y.png"), "file:///D:/x/y.png");
 }

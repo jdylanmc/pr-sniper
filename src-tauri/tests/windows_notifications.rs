@@ -72,7 +72,7 @@ fn rejects_foreign_notice_and_noncanonical_payloads() {
 #[test]
 fn xml_is_native_parseable_and_contains_only_supplied_private_text() {
     let _apartment = Apartment::new().unwrap();
-    let xml = native::toast_xml("a<&\"'", "Private <title>", "No repo & no code");
+    let xml = native::toast_xml("a<&\"'", "Private <title>", "No repo & no code", None);
     let document = windows::Data::Xml::Dom::XmlDocument::new().unwrap();
     document
         .LoadXml(&windows::core::HSTRING::from(&xml))
@@ -82,6 +82,16 @@ fn xml_is_native_parseable_and_contains_only_supplied_private_text() {
     assert!(!xml.contains("<actions>"));
     assert!(!xml.contains("scenario="));
     assert!(!xml.contains("protocol"));
+    assert!(!xml.contains("<image"));
+    let logo = "file:///C:/Users/A%20B/notification-badges/ready.png?a=1&b=\"";
+    let xml = native::toast_xml("id", "Ready · repo#1", "Title", Some(logo));
+    let document = windows::Data::Xml::Dom::XmlDocument::new().unwrap();
+    document
+        .LoadXml(&windows::core::HSTRING::from(&xml))
+        .unwrap();
+    assert!(xml.contains(
+        "<image placement=\"appLogoOverride\" hint-crop=\"circle\" src=\"file:///C:/Users/A%20B/notification-badges/ready.png?a=1&amp;b=&quot;\"/>"
+    ));
 }
 
 #[test]
@@ -180,7 +190,8 @@ fn invalid_native_xml_is_a_definite_pre_submission_failure() {
         registration.profile,
         uuid::Uuid::new_v4()
     );
-    let (error, uncertain) = native::send(&registration, &id, "\u{1}", "Private text").unwrap_err();
+    let (error, uncertain) =
+        native::send(&registration, &id, "\u{1}", "Private text", None).unwrap_err();
     assert!(error.contains("XML preparation"));
     assert!(!uncertain);
 }
