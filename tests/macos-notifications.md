@@ -38,12 +38,14 @@ not prove OS banner presentation or the notification-center callback.
    displayed native authorization/banner/Notification Center status. Denial or
    timeout must remain visible, must not claim opt-in success and must queue no
    confirmation.
-2. Observe exactly one **PR Sniper notifications are on** banner (opens
-   Settings) and none for the pre-existing items. Then seed a new attention
-   transition for a specific synthetic queue item, recording its saved ID and
-   the resulting notification request ID from the private ledger. Observe the
-   real banner or Notification Center item: test-app identity and generic text,
-   with no PR/repository title or code.
+2. Observe exactly one **Notifications on** banner (opens Settings) and none
+   for the pre-existing items. Then seed a new attention transition for a
+   specific synthetic queue item, recording its saved ID and the resulting
+   notification request ID from the private ledger. Observe the real banner or
+   Notification Center item: test-app identity, **Needs you · repo#N** title,
+   synthetic PR title body (owner-approved 2026-10-23: repo and PR title
+   may show in banners), amber badge thumbnail, no code or model text. The
+   ledger holds no PR text and `notification-badges/` holds no leftover copy.
 3. Open an unsaved Settings editor, hide the panel, then click that exact OS
    notification. Verify the same native panel opens the single detail layer
    for that provider/account/repository/PR/iteration identity, without a reload.

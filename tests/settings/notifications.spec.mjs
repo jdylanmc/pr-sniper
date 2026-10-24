@@ -40,7 +40,7 @@ test("notification opt-in is immediate, independent and confirms once without re
   expect(notice.event.category).toBe("test");
   expect(notice.event.destination).toEqual({ kind: "settings" });
   expect(notice.phase).toBe("queued");
-  expect(notice.title).toBe("PR Sniper notifications are on");
+  expect(notice.title).toBe("Notifications on");
   expect(notice.body).not.toContain("example/repo");
   const observed = await store("observe_notifications");
   expect(observed.notices.map((n) => n.id)).toEqual([notice.id]);

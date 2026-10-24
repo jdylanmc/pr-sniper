@@ -1,4 +1,4 @@
-use super::{Adapter, Notice, Permission, SendError};
+use super::{badge_directory, Adapter, Message, Notice, Permission, SendError};
 use block2::{DynBlock, RcBlock};
 use objc2::{
     define_class, msg_send,
@@ -6,9 +6,14 @@ use objc2::{
     runtime::{Bool, ProtocolObject},
     AnyThread, DefinedClass,
 };
-use objc2_foundation::{NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_user_notifications::*;
-use std::{ptr::NonNull, sync::mpsc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    ptr::NonNull,
+    sync::mpsc,
+    time::Duration,
+};
 
 struct DelegateIvars {
     app: tauri::AppHandle,
@@ -64,10 +69,11 @@ unsafe impl Sync for Delegate {}
 
 pub(super) struct Native {
     _delegate: Retained<Delegate>,
+    badges: PathBuf,
 }
 
 impl Native {
-    pub(super) fn new(app: &tauri::AppHandle) -> Result<Self, String> {
+    pub(super) fn new(app: &tauri::AppHandle, root: &Path) -> Result<Self, String> {
         let bundle = NSBundle::mainBundle();
         if bundle
             .bundleIdentifier()
@@ -85,6 +91,7 @@ impl Native {
             .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         Ok(Self {
             _delegate: delegate,
+            badges: badge_directory(root),
         })
     }
 }
@@ -143,10 +150,32 @@ impl Adapter for Native {
         self.permission()
     }
 
-    fn send(&self, notice: &Notice) -> Result<(), SendError> {
+    fn send(&self, notice: &Notice, message: &Message) -> Result<(), SendError> {
         let content = UNMutableNotificationContent::new();
-        content.setTitle(&NSString::from_str(notice.event.category.title()));
-        content.setBody(&NSString::from_str(notice.event.category.body()));
+        content.setTitle(&NSString::from_str(&message.title));
+        content.setBody(&NSString::from_str(&message.body));
+        // UserNotifications moves a valid attachment into its own store, so each
+        // request gets its own copy; the badge is cosmetic and never blocks a send.
+        let badge = message
+            .badge
+            .write(
+                &self.badges,
+                &format!("{}-{}", uuid::Uuid::new_v4(), message.badge.file_name()),
+            )
+            .ok();
+        if let Some(attachment) = badge.as_deref().and_then(|path| {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            unsafe {
+                UNNotificationAttachment::attachmentWithIdentifier_URL_options_error(
+                    &NSString::from_str("badge"),
+                    &url,
+                    None,
+                )
+            }
+            .ok()
+        }) {
+            content.setAttachments(&NSArray::from_retained_slice(&[attachment]));
+        }
         content.setThreadIdentifier(&NSString::from_str(&notice.event.group));
         content.setInterruptionLevel(UNNotificationInterruptionLevel::Active);
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
@@ -169,7 +198,11 @@ impl Adapter for Native {
         });
         UNUserNotificationCenter::currentNotificationCenter()
             .addNotificationRequest_withCompletionHandler(&request, Some(&completion));
-        rx.recv_timeout(Duration::from_secs(10))
+        let outcome = rx.recv_timeout(Duration::from_secs(10));
+        if let Some(path) = badge {
+            let _ = std::fs::remove_file(path);
+        }
+        outcome
             .map_err(|_| SendError { message: "macOS did not confirm the request. Delivery is unknown; it will not be repeated.".into(), uncertain: true })?
             .map_err(|message| SendError { message, uncertain: false })
     }

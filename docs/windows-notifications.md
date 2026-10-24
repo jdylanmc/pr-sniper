@@ -54,6 +54,12 @@ per-channel switches and other OS behavior can suppress a visible banner even
 when the aggregate setting allows submission. Inspect Windows Settings > System >
 Notifications > PR Sniper for those controls.
 
+Toasts carry the [state badge](review-queue.md#notifications) as
+`appLogoOverride` (`hint-crop="circle"`), a `file:///` URI to
+`<data root>\notification-badges\<state>.png`. Windows loads it at render
+time, so the files stay in place and are rewritten only when missing or
+changed. The opt-in setup toast has no badge.
+
 The common ledger still persists intent before sending. A successful `Show`
 means `accepted_unconfirmed`, **not observed delivery**. Failure during `Show`
 is conservatively `outcome_unknown`, never an automatic retry. Preparation
