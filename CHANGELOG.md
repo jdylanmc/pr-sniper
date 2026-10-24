@@ -5,8 +5,24 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-22
+
+Agentic control over local MCP, a stricter `lgtm` sign-off, and a large set of
+efficiency, merge-path and reliability fixes.
+
 ### Added
 
+- Configure and control PR Sniper through local MCP tools and the human-invoked
+  `/pr-sniper` Copilot CLI skill on macOS and Windows. The app ships the MCP
+  server and Settings registers only its owned entry; install the skill with
+  `npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`.
+  Settings shows whether the skill is detected; login setup stays human-managed.
+- MCP queue views report each item's exit, progress and typed merge pending,
+  each review's exit and denied exits with reasons, saved retry times, finding
+  dispositions (`author_wont_fix`, `no_longer_applies`, `signed_off`,
+  `carried_forward`), typed Rubber Duck failure reasons and feedback-observation
+  waits; evidence detail includes exit writes, and a pruned PR answers from its
+  tombstone.
 - `lgtm` sign-off exit for the primary: it accounts for every own open thread
   (`fixed` with evidence, `author_wont_fix`, `withdrawn` or `no_longer_applies`
   on a changed head), dismisses every teammate finding with a rationale,
@@ -16,74 +32,113 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   finding refuses it, listing the ids. Refused while another reviewer's thread
   is open, CI is red or pending, or the PR is draft; approve/merge wait for the
   resolutions and re-check fresh state.
-- A branch behind its base or with conflicts no longer blocks approval: the
-  sign-off approves, shows **Approved — merge pending (behind base/conflicts)**
-  and keeps monitoring; the merge waits for the author to update the branch.
-  PR Sniper never updates a branch.
+- Watch exact PRs with persistent queue priority, explicit review-again and
+  request-only Agent/doctrine selections; preserve pause, prerequisites and
+  existing grants.
+- Set up SOLID and Security teammates feeding a Maintainer primary using a
+  shipped preset that preserves customized components.
 
 ### Fixed
 
-- Settings editors (repository detail, Agent, assignment) no longer show a
-  second scrollbar beside their own when the Settings list behind them is long;
-  the editor body is the panel's only scroll container.
-- `fixed` was refused ("evidence actually read in this attempt") for a ref with
-  no line or an `end_line` past the last line, even after the head file was
-  read, and the error never named the thread or ref. Whole-file refs count once
-  every page was served, past-end ranges run to the end, refusals list each
-  unserved ref with its reason, and a `verify_fixed` duck call that could not
-  back `fixed` is refused before it is spent.
-- A host marker or signature counts as PR Sniper's only from the acting
-  account; a marked comment from anyone else is no longer skipped when checking
-  the PR author's latest reply.
-- Saving a running review's progress no longer rewrites every saved review:
-  `reviews.json` is a manifest of per-run files that store repeated agent and
-  feedback snapshots once (the live 72 MB profile saves about 13 MB). Saved
-  state is decoded once per change and shared by the panel's snapshots, and
-  the automation snapshot no longer holds the storage lock. Older review files
-  migrate on the next save.
-- Closed and merged PRs are pruned automatically (reviews, publications,
-  conversations, actions, notices, queue entries), a few per pass once their
-  work settles; **Clean** still prunes on demand. Retired poll operations are
-  capped at 64 instead of growing with every poll.
-- The primary may resolve its own finding when the PR author replied won't-fix and
-  the primary accepts that rationale (`author_wont_fix`). The host verifies the
-  reply is the PR author's latest by provider identity, that no one else spoke
-  after it, and rechecks the unedited reply, thread and PR author at preflight,
-  after persisting the resolve intent (undoing the resolution if it changed while
-  landing) and after persisting the merge intent; the acceptance is replied on the
-  thread.
-- Findings PR Sniper already resolved are carried forward while the thread stays
-  resolved with unedited comments and no new non-PR-Sniper ones, the base and
-  every non-source/doc/test file are unchanged, and every cited, read or searched
-  file keeps its head blob: no reclassification and no Rubber Duck call. Any
-  change re-opens it.
-- Rubber Duck `verify_fixed`: the original thread is served inside the duck packet
-  when small; an unproven `confirmed` is refused at `submit_verdict` so the duck
-  can read and resubmit, and otherwise ends `unverified` with a typed reason
-  (`thread_unread`, `evidence_unserved`, …) the primary sees. Duck rules ask for a
-  verdict, not coaching. Calls on 40+/100+ file PRs get 1.5x/2x the call timeout
-  (≤600 s); the primary window grows one applied call timeout per own finding (≤`max_calls`,
-  ≤120 min). Failed calls record tokens, tool calls and reason.
-- A failed or pending feedback observation no longer fails a finished review
-  permanently: the result is tossed and retried through the normal budget, and no
-  new attempt starts until a clean poll. Old permanent failures recover on upgrade.
-- Reviews retry with fresh context when owned-feedback observations change during
-  analysis, instead of failing permanently after one attempt. Recovery remains
-  bounded, rejects stale results and restores affected failures after upgrade.
-- Attempt diagnostics write about a tenth of their former volume: each file
-  records an attempt header and Duck identity once, unrecognized runtime
-  chatter and successful nested Duck tool calls are counted, and coverage
-  repeats are dropped. Failures stay itemized; older logs still read.
-- Large profiles no longer pin a CPU core or starve the panel. Coordinators
-  run on saved transitions and saved retry times (60 s heartbeat), not on
-  running-review progress; scans parse a frozen copy outside the storage lock;
-  unchanged passes write nothing; Queue projection and publication scans stay
-  linear in history; unneeded retired Queue entries are compacted.
-- Backlog catch-up no longer pins a core or grows memory. Review attempts
-  revalidate saved state only after its files change, not on every GitHub
-  read; idle provider-action items are re-read once per heartbeat; probe
-  planning reuses its last result until state changes; concurrent state
-  snapshots share unchanged file bytes.
+- **Efficiency & resource use**
+  - Saving a running review's progress no longer rewrites every saved review:
+    `reviews.json` is a manifest of per-run files that store repeated agent and
+    feedback snapshots once (the live 72 MB profile saves about 13 MB). Older
+    review files migrate on the next save.
+  - Far fewer disk writes: progress-only saves (phase label, duck calls) stay in
+    memory and are written at most every 30 s, with the next transition or at
+    quit; unchanged passes write nothing; a failed write is retried, never
+    coalesced as progress.
+  - Saved state is parsed once per change and shared: the panel and MCP read
+    the same decoded snapshots, repeated selection and feedback snapshots are
+    sent to the panel once (was 73 MB per 5 s poll at live size), unchanged
+    activity hashes are reused, and the automation snapshot no longer holds the
+    storage lock.
+  - Closed and merged PRs are pruned automatically (reviews, publications,
+    conversations, actions, notices, queue entries), one per pass once their
+    work settles, never around an in-flight provider write or before an
+    approval or merge-pending outcome is recorded; **Clean** still
+    prunes on demand. Retention receipts keep 30 days of detail (newest 500)
+    and a one-year per-PR safety tombstone; retired poll operations are capped
+    at 64.
+  - Large profiles no longer pin a CPU core or starve the panel. Coordinators
+    run on saved transitions and saved retry times (60 s heartbeat), not on
+    running-review progress; scans parse a frozen copy outside the storage
+    lock; Queue projection and publication scans stay linear in history;
+    unneeded retired Queue entries are compacted.
+  - Backlog catch-up no longer pins a core or grows memory. Review attempts
+    revalidate saved state only after its files change, not on every GitHub
+    read; idle provider-action items are re-read once per heartbeat; probe
+    planning reuses its last result until state changes; concurrent state
+    snapshots share unchanged file bytes.
+  - Attempt diagnostics write about a tenth of their former volume: each file
+    records an attempt header and Duck identity once, unrecognized runtime
+    chatter and successful nested Duck tool calls are counted, and coverage
+    repeats are dropped. Failures stay itemized; older logs still read.
+- **Merge path**
+  - A branch behind its base or with conflicts no longer blocks approval: the
+    sign-off approves, shows **Approved — merge pending (behind base/conflicts)**
+    and keeps monitoring; the merge waits for the author to update the branch
+    and the new head is reviewed, approved and merged afresh. PR Sniper never
+    updates a branch.
+  - Approve first reads the PR's reviews and reuses this account's approval on
+    the head instead of posting another.
+  - `fixed` was refused ("evidence actually read in this attempt") for a ref
+    with no line or an `end_line` past the last line, even after the head file
+    was read, and the error never named the thread or ref. Whole-file refs count
+    once every page was served, past-end ranges run to the end, refusals list
+    each unserved ref with its reason, and a `verify_fixed` duck call that could
+    not back `fixed` is refused before it is spent.
+  - A host marker or signature counts as PR Sniper's only from the acting
+    account; a marked comment from anyone else is no longer skipped when
+    checking the PR author's latest reply.
+  - The primary may resolve its own finding when the PR author replied won't-fix
+    and the primary accepts that rationale (`author_wont_fix`). The host verifies
+    the reply is the PR author's latest by provider identity, that no one else
+    spoke after it, and rechecks the unedited reply, thread and PR author at
+    preflight, after persisting the resolve intent (undoing the resolution if it
+    changed while landing) and after persisting the merge intent; the acceptance
+    is replied on the thread.
+  - Findings PR Sniper already resolved are carried forward while the thread
+    stays resolved with unedited comments and no new non-PR-Sniper ones, the base
+    and every non-source/doc/test file are unchanged, and every cited, read or
+    searched file keeps its head blob: no reclassification and no Rubber Duck
+    call. Any change re-opens it.
+  - Rubber Duck `verify_fixed`: the original thread is served inside the duck
+    packet when small; an unproven `confirmed` is refused at `submit_verdict` so
+    the duck can read and resubmit, and otherwise ends `unverified` with a typed
+    reason (`thread_unread`, `evidence_unserved`, …) the primary sees. Duck rules
+    ask for a verdict, not coaching. Calls on 40+/100+ file PRs get 1.5x/2x the
+    call timeout (≤600 s); the primary window grows one applied call timeout per
+    own finding (≤`max_calls`, ≤120 min). Failed calls record tokens, tool calls
+    and reason.
+- **Review reliability**
+  - A failed or pending feedback observation no longer fails a finished review
+    permanently: the result is tossed and retried through the normal budget, and
+    no new attempt starts until a clean poll. Old permanent failures recover on
+    upgrade.
+  - Reviews retry with fresh context when owned-feedback observations change
+    during analysis, instead of failing permanently after one attempt. Recovery
+    remains bounded, rejects stale results and restores affected failures after
+    upgrade.
+  - Poll and lifecycle reads of the same second are ordered by sequence, so an
+    older Closed read can no longer undo a newer reopen.
+- **Startup and Copilot CLI**
+  - A login item left pointing at a moved or deleted build no longer stays
+    "registration invalid": an installed app re-registers itself at launch while
+    Open at login is on, and Settings offers **Repair**. Dev builds never rewrite
+    it; Off never registers.
+  - The Copilot MCP entry follows a moved or updated app the same way.
+  - A symlinked `~/.copilot` or `mcp-config.json` (for example, dotfiles) no
+    longer shows Unavailable/Conflict on macOS: the real file is updated, the
+    link is kept, and a retargeted link conflicts instead of writing blindly.
+  - The `/pr-sniper` skill installs and updates through the skills CLI
+    (`~/.agents/skills` or `~/.copilot/skills`) instead of being written by the
+    app, so Settings never overwrites or deletes a customized skill.
+- **Settings**
+  - Settings editors (repository detail, Agent, assignment) no longer show a
+    second scrollbar beside their own when the Settings list behind them is
+    long; the editor body is the panel's only scroll container.
 
 ## 0.4.2 - 2026-10-20
 

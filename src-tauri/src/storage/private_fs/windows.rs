@@ -37,6 +37,35 @@ fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     Ok(value)
 }
 
+/// Raw Win32 calls bypass std's long-path conversion; without it, a path at
+/// MAX_PATH fails here even though std created it. Mirror std: absolute,
+/// normalized, extended-length form; existing verbatim/device paths pass through.
+pub(super) fn extended_path(path: &Path) -> io::Result<Vec<u16>> {
+    const VERBATIM: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const DEVICE: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16];
+    let raw: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if raw.starts_with(&VERBATIM) || raw.starts_with(&DEVICE) {
+        return wide(path.as_os_str());
+    }
+    let absolute: Vec<u16> = std::path::absolute(path)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let mut extended: Vec<u16> = if let Some(share) = absolute.strip_prefix(&VERBATIM[..2]) {
+        r"\\?\UNC\"
+            .encode_utf16()
+            .chain(share.iter().copied())
+            .collect()
+    } else {
+        r"\\?\".encode_utf16().chain(absolute).collect()
+    };
+    if extended.contains(&0) {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    extended.push(0);
+    Ok(extended)
+}
+
 fn check(result: i32) -> io::Result<()> {
     if result == 0 {
         Err(io::Error::last_os_error())
@@ -103,7 +132,7 @@ fn descriptor(directory: bool) -> io::Result<LocalAllocation> {
 }
 
 pub(super) fn create_directory(path: &Path) -> io::Result<()> {
-    let path = wide(path.as_os_str())?;
+    let path = extended_path(path)?;
     let descriptor = descriptor(true)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -114,7 +143,7 @@ pub(super) fn create_directory(path: &Path) -> io::Result<()> {
 }
 
 pub(super) fn protect(path: &Path, directory: bool) -> io::Result<()> {
-    let path = wide(path.as_os_str())?;
+    let path = extended_path(path)?;
     let descriptor = descriptor(directory)?;
     unsafe {
         check(SetFileSecurityW(

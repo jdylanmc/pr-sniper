@@ -1,0 +1,38 @@
+{
+  "disposition": [
+    "still_applies",
+    "fixed",
+    "withdrawn",
+    "unverifiable",
+    "author_wont_fix",
+    "signed_off",
+    "no_longer_applies",
+    "carried_forward"
+  ],
+  "exit": [
+    "leave_comments",
+    "ready_for_human",
+    "wait",
+    "approve_pull_request",
+    "approve_and_merge",
+    "panic_exit",
+    "submit_report",
+    "submit_verdict",
+    "lgtm"
+  ],
+  "merge_block": [
+    "behind_base",
+    "conflicts"
+  ],
+  "merge_pending": {
+    "ci_not_run": true,
+    "reason": "conflicts"
+  },
+  "progress": [
+    "approving",
+    "merging",
+    "merge_pending_behind_base",
+    "merge_pending_conflicts",
+    "publishing"
+  ]
+}

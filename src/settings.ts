@@ -56,6 +56,7 @@ import {
 import "./settings.css";
 import { createDialogs } from "./dialogs";
 import { mountNotificationSettings } from "./notifications";
+import { mountControlInstallation } from "./control-installation";
 import { copyDiagnostics } from "./diagnostics";
 import type { AutomationSnapshot } from "./automation";
 import { applyTheme, currentTheme, isTheme, themeOptions } from "./theme";
@@ -3357,7 +3358,7 @@ export async function mountSettings(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(repository.provider === "github" ? `GitHub / ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Unavailable" : "No account")}` : "Azure DevOps")}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
-        <section class="repository-group admission-group"><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
+        <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
@@ -3771,6 +3772,9 @@ export async function mountSettings(
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
 
     function setupAdmission() {
+      const explicitInput = modal.querySelector<HTMLInputElement>(
+        "[data-admission-explicit]",
+      )!;
       const allInput = modal.querySelector<HTMLInputElement>(
         "[data-admission-all-input]",
       )!;
@@ -3782,10 +3786,17 @@ export async function mountSettings(
       const sync = () => {
         const a = admission();
         allInput.checked = a.mode === "all";
-        openFilters.disabled = a.mode === "all";
+        explicitInput.checked = a.mode === "explicit";
+        allInput.disabled = a.mode === "explicit";
+        openFilters.disabled = a.mode !== "filtered";
         const on = a.rules.filter((r) => r.enabled).length;
         modal.querySelector("[data-filter-summary]")!.textContent =
-          a.mode === "all" ? "" : `${on} on`;
+          a.mode === "filtered" ? `${on} on` : "";
+      };
+      explicitInput.onchange = () => {
+        editAdmission().mode = explicitInput.checked ? "explicit" : "filtered";
+        changed();
+        sync();
       };
       const dropTop = () => {
         for (let i = editorStack.length - 1; i >= 0; i--)
@@ -4417,7 +4428,13 @@ export async function mountSettings(
     const checkbox = content.querySelector<HTMLInputElement>("#login");
     const status = content.querySelector<HTMLElement>("#login-status");
     const error = content.querySelector<HTMLElement>("#login-error");
-    if (!checkbox || !status || !error) return;
+    const repair = content.querySelector<HTMLButtonElement>("#login-repair");
+    if (!checkbox || !status || !error || !repair) return;
+    repair.hidden = !(
+      snapshot.login_registration === "invalid" ||
+      (saved.launch_at_login && snapshot.login_registration === "absent")
+    );
+    repair.disabled = startupPending || snapshot.isolated;
     error.textContent = startupError;
     error.hidden = !startupError;
     checkbox.checked = saved.launch_at_login;
@@ -4499,10 +4516,14 @@ export async function mountSettings(
       <div class="preferences-boundary"><h2>Immediate controls</h2></div>
       <div class="settings-group"><fieldset aria-label="Appearance"><legend>Appearance</legend><label class="setting-row"><span>Theme</span><select id="theme" aria-label="Theme">${themeOptions.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label><p id="theme-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group" id="notification-settings"></div>
-      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><p id="login-error" role="alert" hidden></p></fieldset></div>
+      <div class="settings-group" id="control-installation"></div>
+      <div class="settings-group"><fieldset aria-label="Startup"><legend>Startup</legend><label class="setting-row"><span>Open PR Sniper at login</span><input id="login" type="checkbox" role="switch" aria-describedby="login-status" disabled /></label><p id="login-status" role="status"></p><div class="resource-actions"><button type="button" id="login-repair" hidden>Repair</button></div><p id="login-error" role="alert" hidden></p></fieldset></div>
       <div class="settings-group"><fieldset aria-label="Diagnostics"><legend>Diagnostics</legend><button id="copy-diagnostics" class="copy-diagnostics" type="button" aria-label="Copy diagnostics" title="Copy diagnostics">${icon("copy")}<span>Copy diagnostics</span></button>
       <details id="preferences-readiness" class="preferences-readiness"><summary>Saved setup readiness</summary><p data-readiness role="status">Loading</p></details></fieldset></div></div>`;
     updateStartup();
+    mountControlInstallation(
+      content.querySelector<HTMLElement>("#control-installation")!,
+    );
     updateTheme();
     content.querySelector<HTMLSelectElement>("#theme")!.onchange = (event) =>
       void saveTheme((event.target as HTMLSelectElement).value);
@@ -4569,18 +4590,17 @@ export async function mountSettings(
           else preferenceDisclosures.delete(details.id);
         };
       });
-    content.querySelector<HTMLInputElement>("#login")!.onchange = async (
-      event,
+    const applyStartup = async (
+      command: string,
+      args?: { enabled: boolean },
     ) => {
       if (startupPending) return;
-      const checkbox = event.target as HTMLInputElement;
-      const enabled = checkbox.checked;
       const errors: string[] = [];
       startupPending = true;
       startupError = "";
       updateStartup();
       try {
-        await invoke("save_login", { enabled });
+        await invoke(command, args);
       } catch (cause) {
         errors.push(
           typeof cause === "string" ? cause : "Startup change failed",
@@ -4607,6 +4627,12 @@ export async function mountSettings(
         if (errors.length) showError(errors.join("\n"));
       }
     };
+    content.querySelector<HTMLInputElement>("#login")!.onchange = (event) =>
+      void applyStartup("save_login", {
+        enabled: (event.target as HTMLInputElement).checked,
+      });
+    content.querySelector<HTMLButtonElement>("#login-repair")!.onclick = () =>
+      void applyStartup("repair_login");
     const copy = content.querySelector<HTMLButtonElement>("#copy-diagnostics")!;
     copy.onclick = async () => {
       if (copy.getAttribute("aria-busy") === "true") return;

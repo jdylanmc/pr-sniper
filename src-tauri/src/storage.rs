@@ -1762,6 +1762,7 @@ impl Store {
                 | "result-index.json"
                 | "result-index-pending.json"
                 | "queue-selection.json"
+                | "control-receipts.json"
         );
         if !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint) {
             counter.transitions += 1;
@@ -2100,11 +2101,12 @@ impl Store {
                     }
                 }
                 if value.is_none()
-                    && settings.repositories.iter().any(|r| {
-                        r.assignments.iter().any(|a| {
-                            a.agent_id == id || a.rubber_duck.as_deref() == Some(id.as_str())
-                        })
-                    })
+                    && (crate::control::work::references(self, &id, false)?
+                        || settings.repositories.iter().any(|r| {
+                            r.assignments.iter().any(|a| {
+                                a.agent_id == id || a.rubber_duck.as_deref() == Some(id.as_str())
+                            })
+                        }))
                 {
                     return Err("This Agent is assigned to a repository. Remove or replace its assignments explicitly before deleting it.".into());
                 }
@@ -2123,7 +2125,8 @@ impl Store {
                 expected,
                 value,
             } => {
-                let referenced = settings.agents.iter().any(|a| a.doctrine_ids.contains(&id));
+                let referenced = settings.agents.iter().any(|a| a.doctrine_ids.contains(&id))
+                    || value.is_none() && crate::control::work::references(self, &id, true)?;
                 replace_entry(
                     &mut settings.doctrines,
                     &id,

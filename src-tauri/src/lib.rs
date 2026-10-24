@@ -3,6 +3,7 @@ pub mod admission;
 pub mod backpressure;
 pub mod capacity;
 pub mod connectivity;
+pub mod control;
 mod copilot;
 pub mod exit_writes;
 pub mod exits;
@@ -3653,6 +3654,19 @@ fn save_login(host: State<'_, Host>, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Reapply the saved preference to a missing, stale or broken registration.
+#[tauri::command]
+fn repair_login(host: State<'_, Host>) -> Result<(), String> {
+    if host.isolated {
+        return Err("Launch at login cannot be changed in an isolated development run.".into());
+    }
+    let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+    let enabled = store.load_settings()?.launch_at_login;
+    host.registration.set_enabled(&store, enabled)?;
+    store.record(DiagnosticEvent::SettingsSaved)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn save_theme(host: State<'_, Host>, theme: storage::Theme) -> Result<(), String> {
     let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
@@ -4351,6 +4365,9 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _| {
+            if _args.iter().any(|arg| arg == "--background") {
+                return;
+            }
             #[cfg(windows)]
             notifications::windows::forward(app, &_args);
             // Launching the app again (Finder, Spotlight) opens the panel.
@@ -4358,6 +4375,9 @@ pub fn run() {
             show_queue_panel(app);
         }))
         .invoke_handler(tauri::generate_handler![
+            control::installer::control_installation,
+            control::installer::control_install,
+            control::installer::control_uninstall,
             result_page,
             result_detail,
             clean_reviewed,
@@ -4379,6 +4399,7 @@ pub fn run() {
             resolve_provider_repository,
             admit_explicit_pull_request,
             save_login,
+            repair_login,
             save_theme,
             save_defaults,
             save_repository_policy,
@@ -4498,7 +4519,10 @@ pub fn run() {
                 error: Mutex::new(None),
                 isolated,
                 quitting: AtomicBool::new(false),
-                registration: LoginRegistration::for_app(app.path().home_dir()?, executable),
+                registration: LoginRegistration::for_app(
+                    app.path().home_dir()?,
+                    executable.clone(),
+                ),
                 github_auth: Mutex::new(github_auth),
                 github_generations: Mutex::new(BTreeMap::new()),
                 github_credentials,
@@ -4511,6 +4535,9 @@ pub fn run() {
                 mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
+            if let Err(error) = control::start(app.handle(), &root) {
+                report(app.handle(), error);
+            }
             #[cfg(windows)]
             notifications::windows::ready(app.handle());
             if let Err(error) = notification_restore {
@@ -4518,6 +4545,24 @@ pub fn run() {
             }
             if let Err(error) = compaction {
                 report(app.handle(), error);
+            }
+            if !isolated {
+                let host = app.state::<Host>();
+                let enabled = host
+                    .store
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.load_settings().ok())
+                    .is_some_and(|settings| settings.launch_at_login);
+                let installed = startup::installed_executable(&executable, &app.path().home_dir()?);
+                if host
+                    .registration
+                    .repair_on_launch(enabled, installed)
+                    .is_err()
+                {
+                    eprintln!("PR Sniper: launch-at-login repair skipped");
+                }
+                control::installer::repair_on_launch(app.handle());
             }
             record(app.handle(), DiagnosticEvent::SessionStarted);
             let scheduler_app = app.handle().clone();

@@ -1,5 +1,5 @@
 pub(crate) mod host;
-mod packet;
+pub(crate) mod packet;
 
 use crate::{
     feedback,

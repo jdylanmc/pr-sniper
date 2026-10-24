@@ -1,6 +1,7 @@
 use pr_sniper_lib::storage::{Settings, Store, Theme};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -423,6 +424,54 @@ fn explicit_intake_fixture(store: &Store, args: &Value) -> Result<Value, String>
         1_800_000_000,
     )?;
     serde_json::to_value(result).map_err(|_| "Cannot encode synthetic PR intake.".into())
+}
+
+/// Copilot CLI setup against the isolated fixture home.
+fn control_fixture(request: &Request) -> Result<Value, Value> {
+    let root = PathBuf::from(std::env::args().nth(1).unwrap()).join("skill-host");
+    // This bridge receives only the isolated browser fixture root.
+    let resources = root.join("fixture-app-resources");
+    fs::create_dir_all(&resources).map_err(|_| Value::from("Cannot create fixture app."))?;
+    let script = resources.join("mcp-server.mjs");
+    if !script.exists() {
+        fs::write(&script, "// fixture").map_err(|_| Value::from("Cannot create fixture app."))?;
+    }
+    let server = pr_sniper_lib::control::Server {
+        script: request.args["script"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or(script),
+        executable: request.args["executable"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("fixture-app")),
+        // A fixture marker stands in for a dev or temporary build.
+        installed: !root.join("fixture-app-transient").exists(),
+    };
+    let result = match request.command.as_str() {
+        "control_installation" => pr_sniper_lib::control::integration_at(&root, &server),
+        "control_install" => pr_sniper_lib::control::install_integration_at(
+            &root,
+            &server,
+            request.args["expected"].as_str(),
+        ),
+        _ => pr_sniper_lib::control::remove_integration_at(
+            &root,
+            &server,
+            request.args["expected"]
+                .as_str()
+                .ok_or_else(|| Value::from("Installation revision required."))?,
+        ),
+    };
+    result
+        .and_then(|r| {
+            serde_json::to_value(r).map_err(|_| pr_sniper_lib::control::Error {
+                code: "encoding".into(),
+                detail: Value::Null,
+            })
+        })
+        // Tauri rejects with the serialized command error.
+        .map_err(|e| serde_json::to_value(e).unwrap_or(Value::Null))
 }
 
 fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
@@ -873,7 +922,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let request: Request = serde_json::from_str(&input)?;
     let store = Store::new(root.clone());
-    let result = if request.command == "fixture_repository_browser" && probe.is_none() {
+    let result = if matches!(
+        request.command.as_str(),
+        "control_installation" | "control_install" | "control_uninstall"
+    ) && probe.is_none()
+    {
+        control_fixture(&request)
+    } else if request.command == "fixture_repository_browser" && probe.is_none() {
         repository_browser_fixture(&request.args).map_err(|error| {
             serde_json::to_value(error).expect("Connection errors are serializable")
         })

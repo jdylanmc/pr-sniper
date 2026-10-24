@@ -1,0 +1,56 @@
+{
+  "next_offset": null,
+  "total": 1,
+  "values": [
+    {
+      "configuration_id": "bbbbbbbb-bbbb-4bbb-8bbb-000000000001",
+      "dismiss_token": null,
+      "exit": null,
+      "failure_cause": null,
+      "failure_class": null,
+      "id": "item-1",
+      "merge_pending": null,
+      "number": 1,
+      "progress": null,
+      "resume_at": null,
+      "review_count": 1,
+      "reviews": [
+        {
+          "candidate_key": "normal-1",
+          "dispositions": {
+            "author_wont_fix": 2,
+            "carried_forward": 1,
+            "fixed": 1,
+            "no_longer_applies": 1,
+            "signed_off": 1
+          },
+          "duck_failures": [
+            {
+              "failure": "unverified",
+              "ordinal": 1,
+              "reason": "thread_unread"
+            },
+            {
+              "failure": "failed",
+              "ordinal": 2,
+              "reason": "stream_lost"
+            }
+          ],
+          "error": "Feedback observation failed; no clearance accepted.",
+          "exit": null,
+          "exits_denied": [
+            {
+              "exit": "approve_and_merge",
+              "reason": "CI is pending. Cannot merge yet."
+            }
+          ],
+          "next_attempt_at": 1800000000,
+          "operation_id": "operation",
+          "state": "queued"
+        }
+      ],
+      "state": "queued",
+      "title": "Fixture PR"
+    }
+  ]
+}

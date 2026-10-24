@@ -298,6 +298,8 @@ pub struct Admission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NormalWork {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_override: Option<crate::control::RequestOverride>,
     pub id: String,
     pub item_id: String,
     pub iteration_id: String,
@@ -1568,7 +1570,7 @@ impl Monitor {
                 message: format!("PR #{} is not queued: this repository is disabled. Enable it and save to queue the requested PR.", pull.number),
             });
         }
-        if pull.state != Lifecycle::Open || pull.draft {
+        if pull.state != Lifecycle::Open || (pull.draft && !expected.review_drafts) {
             return Err(format!("PR #{} is not ready for review: it must be open and not a draft. Update it on GitHub and retry.", pull.number));
         }
         if expected.assignments.is_empty() {
@@ -3051,6 +3053,7 @@ impl Monitor {
                     let order = queue.allocate_order().map_err(MonitoringError::Storage)?;
                     let legacy = existing.map(|i| &queue.jobs[i]);
                     NormalWork {
+                        request_override: None,
                         id: legacy
                             .map(|j| crate::review::key(j, &assignment.assignment_id))
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),

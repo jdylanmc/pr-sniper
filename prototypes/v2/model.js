@@ -229,6 +229,7 @@
   const admits = (repo, review) => {
     const admission = repo.admission;
     if (admission.mode === "all") return true;
+    if (admission.mode === "explicit") return false;
     const paths = (review.files ?? []).map((file) => file.path);
     for (const rule of admission.rules) {
       if (!rule.enabled) continue;
@@ -635,7 +636,7 @@
     const invalid = "Invalid pull request filters.";
     requireValue(
       admission &&
-        ["all", "filtered"].includes(admission.mode) &&
+        ["all", "filtered", "explicit"].includes(admission.mode) &&
         Array.isArray(admission.rules) &&
         admission.rules.length === ruleKinds.length &&
         ruleKinds.every((kind) =>

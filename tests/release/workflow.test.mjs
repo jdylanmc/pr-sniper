@@ -39,6 +39,7 @@ const aggregators = {
       "windows-browser",
       "windows-package",
       "windows-upgrade-fixture",
+      "windows-control-acceptance",
     ],
   ],
 };
@@ -55,10 +56,14 @@ const acceptanceGate = [
   "",
 ].join("\n");
 const settle = "node scripts/ci-settle-codegen.mjs";
+const bridgeBuild =
+  "cargo build --manifest-path src-tauri\\Cargo.toml --locked --example settings_bridge";
+const controlAcceptance =
+  "node tests/control/native-acceptance.mjs --executable src-tauri/target/release/pr-sniper.exe";
 const windowsCargo =
   "cargo test --manifest-path src-tauri\\Cargo.toml --locked";
 const isolated = "cancelled_or_failed_startup_does_not_leave_a_child";
-const libPartition = ["retention::", "actions::"];
+const libPartition = ["retention::", "actions::", "control::installer::"];
 const libFirst = `${windowsCargo} --lib -- ${libPartition.join(" ")} --nocapture --test-threads=2 --skip ${isolated}`;
 const libRest = `${windowsCargo} --lib -- --nocapture --test-threads=2 --skip ${isolated} ${libPartition.map((filter) => `--skip ${filter}`).join(" ")}`;
 const runs = (job) => job.steps.filter((step) => step.run).map((s) => s.run);
@@ -242,6 +247,7 @@ test("Windows native application checks run on every PR and main push with read-
     "windows-browser",
     "windows-package",
     "windows-upgrade-fixture",
+    "windows-control-acceptance",
     "windows-installer-acceptance",
     "windows",
   ]);
@@ -462,7 +468,10 @@ test("Windows checks have no release credentials, privileged environment or fail
       assert.equal(step["continue-on-error"], undefined, name);
       assert.equal(
         step.if,
-        step.name === "Retain native installer diagnostics"
+        [
+          "Retain native installer diagnostics",
+          "Retain native control acceptance receipts",
+        ].includes(step.name)
           ? "${{ always() }}"
           : undefined,
         name,
@@ -495,6 +504,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       ...prepare,
       "actions/setup-python",
       "Swatinem/rust-cache",
+      "actions/upload-artifact",
     ],
     "windows-native-lib": [...prepare, "Swatinem/rust-cache"],
     "windows-native-lib-rest": [...prepare, "Swatinem/rust-cache"],
@@ -509,6 +519,12 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
     "windows-upgrade-fixture": [
       ...prepare,
       "Swatinem/rust-cache",
+      "actions/upload-artifact",
+    ],
+    "windows-control-acceptance": [
+      ...prepare,
+      "actions/download-artifact",
+      "actions/download-artifact",
       "actions/upload-artifact",
     ],
     "windows-installer-acceptance": [
@@ -553,6 +569,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       `${windowsCargo} ${targets} --no-run`,
       settle,
       `${windowsCargo} ${targets} -- --nocapture --test-threads=2`,
+      bridgeBuild,
     ],
     "windows-native-lib": [
       "npm ci",
@@ -593,6 +610,7 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
       "rustup show active-toolchain",
       ".\\scripts\\windows-upgrade-fixture.ps1",
     ],
+    "windows-control-acceptance": ["npm ci", controlAcceptance],
     "windows-installer-acceptance": [
       acceptanceGate,
       ".\\scripts\\windows-installer-acceptance.ps1 -Candidate src-tauri\\target\\candidate -Upgrade src-tauri\\target\\upgrade-fixture",
@@ -623,7 +641,14 @@ test("Windows uses pinned Node and real fail-fast frontend and portable release 
     ".\\scripts\\windows-upgrade-fixture.ps1",
   ])
     assert.ok(lanesRun.has(run), run);
-  assert.equal(scripts.build, "tsc --noEmit && vite build");
+  assert.equal(
+    scripts.build,
+    "npm run build:control-mcp && tsc --noEmit && vite build",
+  );
+  assert.equal(
+    scripts["build:control-mcp"],
+    "node scripts/build-control-mcp.mjs",
+  );
 });
 
 test("both native workflows execute exact offline Intelligence acceptance without skip or live tests", () => {
@@ -687,8 +712,11 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
       steps.findIndex((s) => s.run === ".\\scripts\\windows-artifact.ps1"),
     "Create the installer before recording separate standalone and payload provenance",
   );
-  const uploads = steps.filter((s) =>
-    s.uses?.startsWith("actions/upload-artifact@"),
+  // Control acceptance receipts are diagnostics, never installer assets.
+  const uploads = steps.filter(
+    (s) =>
+      s.uses?.startsWith("actions/upload-artifact@") &&
+      s.id !== "control-native-artifacts",
   );
   assert.equal(uploads.length, 2);
   assert.equal(
@@ -1174,12 +1202,15 @@ test("macOS native checks run every former macOS command except the sharded brow
     "npm run bundle",
   ]);
   assert.deepEqual(
-    job.steps.slice(-4).map((step) => step.name ?? step.uses),
+    job.steps.slice(-7).map((step) => step.name ?? step.uses),
     [
       "Verify native notification bundle identity",
       "Compile native acceptance harness",
       "Archive bundle with executable permissions",
       "actions/upload-artifact@v4",
+      "Build separate-identifier native control acceptance app",
+      "Exercise installed MCP and CLI against the real isolated native app",
+      "Retain native control acceptance receipts",
     ],
   );
   assert.ok(!runs(job).some((run) => /playwright|test:settings/.test(run)));
@@ -1548,4 +1579,82 @@ test("CI keeps line tables but drops full debuginfo without changing local profi
   );
   assert.equal(existsSync(".cargo/config.toml"), false);
   assert.equal(existsSync("src-tauri/.cargo/config.toml"), false);
+});
+
+test("both native lanes run bounded real-app MCP acceptance and retain only safe receipts", () => {
+  const lanes = [
+    ci.jobs["macos-native"],
+    windows.jobs["windows-control-acceptance"],
+  ];
+  for (const job of lanes) {
+    const check = job.steps.find(
+      (step) => step.id === "control-native-acceptance",
+    );
+    assert.match(
+      check.run,
+      /^node tests\/control\/native-acceptance\.mjs --executable /,
+    );
+    assert.equal(check.if, undefined);
+    assert.equal(check["continue-on-error"], undefined);
+    assert.equal(check["timeout-minutes"], 4);
+    const artifacts = job.steps.find(
+      (step) => step.id === "control-native-artifacts",
+    );
+    assert.equal(artifacts.if, "${{ always() }}");
+    assert.equal(
+      artifacts.with.path,
+      "src-tauri/target/control-native-acceptance/**/receipt.json",
+    );
+    assert.equal(artifacts.with["if-no-files-found"], "warn");
+    assert(job.steps.indexOf(artifacts) > job.steps.indexOf(check));
+  }
+  // Both lanes gate their required checks.
+  assert(aggregators.macos[1].includes("macos-native"));
+  assert(aggregators.windows[1].includes("windows-control-acceptance"));
+  // Windows runs the exact packaged executable and the checks lane's Store
+  // bridge on a fresh hosted VM, never a rebuild.
+  const control = windows.jobs["windows-control-acceptance"];
+  assert.deepEqual(control.needs, ["windows-checks", "windows-package"]);
+  assert.equal(control.if, undefined);
+  const downloads = control.steps.filter((step) =>
+    step.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.deepEqual(
+    downloads.map((step) => [step.with.name, step.with.path]),
+    [
+      ["pr-sniper-windows-x64-${{ github.sha }}", "src-tauri/target/release"],
+      [
+        "pr-sniper-windows-settings-bridge-test-only-${{ github.sha }}",
+        "src-tauri/target/debug/examples",
+      ],
+    ],
+  );
+  assert.ok(
+    !runs(control).some((run) =>
+      /^(?:cargo |npm run (?:build|tauri))/.test(run),
+    ),
+  );
+  const bridge = windows.jobs["windows-checks"].steps.find((step) =>
+    step.with?.name?.startsWith("pr-sniper-windows-settings-bridge-test-only-"),
+  );
+  assert.equal(
+    bridge.with.path,
+    "src-tauri/target/debug/examples/settings_bridge.exe",
+  );
+  assert.equal(bridge.with["retention-days"], 1);
+  const mac = ci.jobs["macos-native"].steps;
+  const macBuild = mac.find((step) =>
+    step.run?.includes("--config tests/control/tauri.acceptance.conf.json"),
+  );
+  assert(macBuild.run.includes("--debug --bundles app"));
+  assert.equal(macBuild["timeout-minutes"], 10);
+  assert(
+    mac.indexOf(macBuild) <
+      mac.findIndex((step) => step.id === "control-native-acceptance"),
+  );
+  assert.equal(
+    JSON.parse(readFileSync("tests/control/tauri.acceptance.conf.json"))
+      .identifier,
+    "com.jdylanmc.pr-sniper.tests.control-ci",
+  );
 });

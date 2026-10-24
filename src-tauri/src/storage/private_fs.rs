@@ -25,7 +25,7 @@ fn reject_link(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn existing_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn existing_directory(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::new(ErrorKind::InvalidInput, "relative storage"));
     }
@@ -50,13 +50,7 @@ pub(crate) fn directory(path: &Path) -> io::Result<()> {
             if !parent.exists() {
                 directory(parent)?;
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                fs::DirBuilder::new().mode(0o700).create(path)?;
-            }
-            #[cfg(windows)]
-            windows::create_directory(path)?;
+            create_directory(path)?;
         }
         Err(error) => return Err(error),
     }
@@ -65,7 +59,24 @@ pub(crate) fn directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn existing_file(path: &Path) -> io::Result<()> {
+pub(crate) fn create_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(windows)]
+    windows::create_directory(path)
+}
+
+pub(crate) fn create_file(path: &Path) -> io::Result<File> {
+    let file = create_stage(path)?;
+    #[cfg(windows)]
+    windows::protect(path, false)?;
+    Ok(file)
+}
+
+pub(crate) fn existing_file(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     reject_link(&metadata)?;
     if !metadata.is_file() {
@@ -142,7 +153,7 @@ impl Drop for ClaimGuard {
     }
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
     // File sync and rename cover process interruption on Windows. Do not claim
@@ -296,7 +307,7 @@ pub(super) fn sync_entries(directory: &Path) -> io::Result<()> {
     sync_directory(directory)
 }
 
-pub(super) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+pub(crate) fn replace(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())

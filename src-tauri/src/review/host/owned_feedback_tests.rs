@@ -985,6 +985,12 @@ fn failed_feedback_observation_is_a_bounded_toss_and_holds_dispatch_until_a_clea
         Some(crate::feedback::WAITING_FOR_OBSERVATION)
     );
     assert_eq!(store.load_reviews().unwrap()[0].operation.attempt_count, 1);
+    let watched =
+        crate::control::work::result(&store, &run.job.configuration_id, run.job.number, 0).unwrap();
+    assert_eq!(
+        (watched.state, watched.reason),
+        ("waiting", Some("feedback_observation"))
+    );
 
     set_observation(&store, &run.job, None);
     assert_eq!(waiting_reason(&store, &run.key, next), None);

@@ -154,6 +154,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let tracked = store.load_queue_state()?.tracked;
     let states = store.load_pr_states()?;
     let monitoring = store.load_monitoring_state()?;
+    let control_holds = crate::control::work::holds(store)?;
     let barriers: BTreeMap<String, review::teammates::TeammateRef> = reviews
         .iter()
         .filter(|c| {
@@ -196,6 +197,17 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         }
         let mut blocked_by = None;
         let mut reason = candidate.blocked;
+        if reason.is_none()
+            && candidate
+                .run
+                .as_ref()
+                .is_none_or(|r| r.operation.state != OperationState::Running)
+            && control_holds.iter().any(|(id, number)| {
+                id == &candidate.job.configuration_id && *number == candidate.job.number
+            })
+        {
+            reason = Some("Pending explicit watch configuration.".into());
+        }
         if reason.is_none() {
             if let Some(selection) = &candidate.planned_selection {
                 reason = match crate::feedback::contexts(store, &candidate.job, &selection.agent.id)

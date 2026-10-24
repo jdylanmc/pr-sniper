@@ -77,6 +77,21 @@ jobs:
           name: pr-sniper-macos-local
           path: ${{ runner.temp }}/PR-Sniper-macos.zip
           if-no-files-found: error
+      - name: Build separate-identifier native control acceptance app
+        run: npm run tauri -- build --debug --bundles app --config tests/control/tauri.acceptance.conf.json -- --locked
+        timeout-minutes: 10
+      - name: Exercise installed MCP and CLI against the real isolated native app
+        id: control-native-acceptance
+        run: node tests/control/native-acceptance.mjs --executable "src-tauri/target/debug/bundle/macos/PR Sniper Control Acceptance.app/Contents/MacOS/pr-sniper"
+        timeout-minutes: 4
+      - name: Retain native control acceptance receipts
+        id: control-native-artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-sniper-control-macos-${{ github.sha }}
+          path: src-tauri/target/control-native-acceptance/**/receipt.json
+          if-no-files-found: warn
   browser:
     name: browser (${{ matrix.shard }}/4)
     runs-on: macos-15

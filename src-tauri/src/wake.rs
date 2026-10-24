@@ -69,6 +69,8 @@ impl Coordinator {
                 "connectivity.json",
                 "backpressure.json",
                 "monitoring.json",
+                // Explicit watch holds released by native control.
+                "control-watch-holds.json",
             ],
             Coordinator::Publication => &[
                 "reviews.json",

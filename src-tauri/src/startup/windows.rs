@@ -195,14 +195,24 @@ impl LoginRegistration {
         }
     }
 
+    fn registration(&self) -> Result<Value, String> {
+        if !self.executable_exists()? {
+            return Err("Launch at login requires an existing application executable.".into());
+        }
+        self.command()
+    }
+
+    /// Point the Run value at this executable, with the same validation as an
+    /// explicit save; the saved preference is unchanged.
+    pub(super) fn register(&self) -> Result<(), String> {
+        self.replace(Some(&self.registration()?))
+    }
+
     pub fn set_enabled(&self, store: &Store, enabled: bool) -> Result<(), String> {
         let mut settings = store.load_settings()?;
         let previous = self.read()?;
         let next = if enabled {
-            if !self.executable_exists()? {
-                return Err("Launch at login requires an existing application executable.".into());
-            }
-            Some(self.command()?)
+            Some(self.registration()?)
         } else {
             None
         };

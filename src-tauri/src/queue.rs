@@ -1055,7 +1055,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
 }
 
 /// The exit a packet run ended on; a panic leaves no outcome, only its typed failure.
-fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
+pub(crate) fn run_exit(run: &review::ReviewRun) -> Option<crate::exits::Exit> {
     use crate::exits::{Exit, ExitOutcome};
     if run.operation.failure == Some(monitoring::OperationFailure::Panic) && failed(&run.operation)
     {

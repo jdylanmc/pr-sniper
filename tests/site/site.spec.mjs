@@ -207,10 +207,21 @@ test("header anchors scroll to their sections", async ({ page }) => {
     await expect.poll(() => new URL(page.url()).hash).toBe(`#${name}`);
     const target = page.locator(`#${name}`);
     await expect(target).toBeInViewport();
-    // Lands near the top, with the heading in view.
+    // A short final section can reach the document end before top alignment.
     await expect
-      .poll(async () => Math.round((await target.boundingBox()).y))
-      .toBeLessThan(80);
+      .poll(() =>
+        target.evaluate((node) => {
+          const top = node.getBoundingClientRect().top + window.scrollY;
+          const margin = Number.parseFloat(
+            getComputedStyle(node).scrollMarginTop,
+          );
+          const maxScroll =
+            document.documentElement.scrollHeight - window.innerHeight;
+          const expected = Math.min(Math.max(0, top - margin), maxScroll);
+          return Math.abs(window.scrollY - expected);
+        }),
+      )
+      .toBeLessThanOrEqual(1);
     expect((await target.boundingBox()).y).toBeGreaterThanOrEqual(0);
   }
   await page.locator('.hero a[href="#install"]').click();

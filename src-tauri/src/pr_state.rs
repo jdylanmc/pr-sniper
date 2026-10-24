@@ -147,6 +147,26 @@ pub enum Consumed {
 }
 
 impl PrStates {
+    pub(crate) fn review_again(&mut self, binding: &Binding, now: i64) -> Result<u64, String> {
+        let record = self
+            .records
+            .iter_mut()
+            .find(|r| &r.binding == binding)
+            .ok_or("PR state is unavailable; check this PR first.")?;
+        if record.external_wait.is_some() {
+            return Err("This PR is waiting for an external prerequisite.".into());
+        }
+        if record.pending.is_some() {
+            return Err("This PR already has pending work.".into());
+        }
+        record
+            .state_seq
+            .checked_add(1)
+            .ok_or("PR state sequence exhausted.")?;
+        record.baseline_hash = None;
+        Self::bump(record, record.hash.clone(), now);
+        Ok(record.state_seq)
+    }
     pub fn get(&self, binding: &Binding) -> Option<&PrStateRecord> {
         self.records.iter().find(|r| &r.binding == binding)
     }
