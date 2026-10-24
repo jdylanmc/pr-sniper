@@ -121,26 +121,6 @@ efficiency, merge-path and reliability fixes.
     during analysis, instead of failing permanently after one attempt. Recovery
     remains bounded, rejects stale results and restores affected failures after
     upgrade.
-- **CPU and memory**
-  - Large profiles no longer pin a CPU core or starve the panel. Coordinators run
-    on saved transitions and saved retry times (60 s heartbeat), not on
-    running-review progress; scans parse a frozen copy outside the storage lock;
-    unchanged passes write nothing; Queue projection and publication scans stay
-    linear in history; unneeded retired Queue entries are compacted.
-  - Backlog catch-up no longer pins a core or grows memory. Review attempts
-    revalidate saved state only after its files change, not on every GitHub read;
-    idle provider-action items are re-read once per heartbeat; probe planning
-    reuses its last result until state changes; concurrent state snapshots share
-    unchanged file bytes.
-- **Diagnostics**
-  - Attempt diagnostics write about a tenth of their former volume: each file
-    records an attempt header and Duck identity once, unrecognized runtime
-    chatter and successful nested Duck tool calls are counted, and coverage
-    repeats are dropped. Failures stay itemized; older logs still read.
-- **Settings**
-  - Settings editors (repository detail, Agent, assignment) no longer show a
-    second scrollbar beside their own when the Settings list behind them is
-    long; the editor body is the panel's only scroll container.
   - Poll and lifecycle reads of the same second are ordered by sequence, so an
     older Closed read can no longer undo a newer reopen.
 - **Startup and Copilot CLI**
@@ -155,6 +135,10 @@ efficiency, merge-path and reliability fixes.
   - The `/pr-sniper` skill installs and updates through the skills CLI
     (`~/.agents/skills` or `~/.copilot/skills`) instead of being written by the
     app, so Settings never overwrites or deletes a customized skill.
+- **Settings**
+  - Settings editors (repository detail, Agent, assignment) no longer show a
+    second scrollbar beside their own when the Settings list behind them is
+    long; the editor body is the panel's only scroll container.
 
 ## 0.4.2 - 2026-10-20
 
