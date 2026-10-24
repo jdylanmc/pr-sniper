@@ -1,6 +1,7 @@
 //! Persisted PR state (`pr-state.json`): the heartbeat baseline per PR.
 //!
-//! The heartbeat compares hashes, suppressing pending CI progress during an external wait.
+//! The heartbeat compares review-revision hashes: CI, mergeability and labels
+//! never queue a review, and an external CI wait wakes only when CI settles.
 //! A different actionable state records a `pending`
 //! state and bumps `state_seq`; a successful exit consumes it into a new
 //! baseline. There is one record per PR, so a state that moves while queued
@@ -40,16 +41,11 @@ impl ExternalWait {
                 Some("APPROVED" | "CHANGES_REQUESTED")
             ),
         };
-        let mut before = snapshot.clone();
-        let mut after = next.clone();
-        if reason == WaitReason::Ci {
-            // Check progress and fan-out are observation, not another AI review.
-            before.checks.clear();
-            after.checks.clear();
-            before.check_total = 0;
-            after.check_total = 0;
-        }
-        pending && before == after
+        // Check progress, mergeability and labels are observation, not another AI
+        // review; a required-check policy change still wakes the wait.
+        pending
+            && snapshot.review_view() == next.review_view()
+            && snapshot.required_checks == next.required_checks
     }
 
     pub fn configured(&self, repository: &crate::storage::Repository) -> bool {
@@ -60,11 +56,13 @@ impl ExternalWait {
             a.id == self.assignment_id
                 && a.agent_id == self.agent_id
                 && authority.primary
-                && tools.iter().any(|t| t == "wait")
-                && ((authority.merge && tools.iter().any(|t| t == "approve_and_merge"))
-                    || (self.reason == WaitReason::Draft
-                        && authority.approve
-                        && tools.iter().any(|t| t == "approve_pull_request")))
+                // Any primary may hold for CI; it re-runs when CI settles.
+                && (self.reason == WaitReason::Ci
+                    || (tools.iter().any(|t| t == "wait")
+                        && ((authority.merge && tools.iter().any(|t| t == "approve_and_merge"))
+                            || (self.reason == WaitReason::Draft
+                                && authority.approve
+                                && tools.iter().any(|t| t == "approve_pull_request")))))
         })
     }
 }
@@ -110,6 +108,10 @@ pub struct PrStateRecord {
     /// When a state of this PR was last consumed (unix seconds); kept across heads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_at: Option<i64>,
+    /// First `state_seq` of the current review revision. Later sequences that only
+    /// woke a CI wait keep it, so teammate reports from it still hold. `None`: this seq.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +192,7 @@ impl PrStates {
                     exit: None,
                     external_wait: None,
                     consumed_at: None,
+                    revision_seq: None,
                 });
                 self.records.len() - 1
             });
@@ -206,6 +209,9 @@ impl PrStates {
     pub fn observe(&mut self, binding: &Binding, observation: Observation) -> Change {
         let record = self.entry(binding, observation.iteration_id);
         record.iteration_id = observation.iteration_id.into();
+        if let Some(snapshot) = observation.snapshot {
+            translate_legacy(record, snapshot);
+        }
         let hash = observation.snapshot.map(NormalizedSnapshot::hash);
         if let Some(snapshot) = observation.snapshot {
             record.snapshot = Some(snapshot.clone());
@@ -225,7 +231,22 @@ impl PrStates {
             if observation.snapshot.is_some_and(|s| wait.pending(s)) {
                 return Change::None;
             }
-            return Self::bump(record, Some(hash), observation.now);
+            // CI settled on the same revision: the primary acts again, teammates' reports hold.
+            let revision = (wait.reason == crate::exits::WaitReason::Ci
+                && observation
+                    .snapshot
+                    .is_some_and(|s| s.review_view() == wait.snapshot.review_view()))
+            .then(|| {
+                record
+                    .revision_seq
+                    .unwrap_or(wait.state_seq)
+                    .min(wait.state_seq)
+            });
+            let change = Self::bump(record, Some(hash), observation.now);
+            if revision.is_some() {
+                record.revision_seq = revision;
+            }
+            return change;
         }
         if record.baseline_hash.as_deref() == Some(&hash) {
             record.pending = None;
@@ -253,6 +274,7 @@ impl PrStates {
         record.exit = None;
         record.local_summary = None;
         record.state_seq += 1;
+        record.revision_seq = Some(record.state_seq);
         record.pending = Some(Pending {
             seq: record.state_seq,
             hash,
@@ -343,9 +365,46 @@ impl PrStates {
         }
     }
 
+    /// First seq of the review revision current at `state_seq`: teammate reports from
+    /// any seq in `revision_seq..=state_seq` cover it.
+    pub fn revision_seq(&self, binding: &Binding) -> u64 {
+        self.get(binding).map_or(0, |r| {
+            r.revision_seq
+                .filter(|seq| *seq <= r.state_seq)
+                .unwrap_or(r.state_seq)
+        })
+    }
+
     /// Seq a run starting now would read.
     pub fn state_seq(&self, binding: &Binding) -> u64 {
         self.get(binding).map_or(0, |r| r.state_seq)
+    }
+}
+
+/// Hashes stored before CI and metadata left the review hash: translate those
+/// that match the last observed or the fresh snapshot, so an upgrade queues nothing.
+fn translate_legacy(record: &mut PrStateRecord, fresh: &NormalizedSnapshot) {
+    let known: Vec<_> = record
+        .snapshot
+        .iter()
+        .chain([fresh])
+        .map(|s| (s.legacy_hash(), s.hash()))
+        .collect();
+    let translate = |hash: &mut String| {
+        if let Some((_, new)) = known.iter().find(|(legacy, _)| legacy == hash) {
+            *hash = new.clone();
+        }
+    };
+    for hash in [
+        record.baseline_hash.as_mut(),
+        record.hash.as_mut(),
+        record.pending.as_mut().and_then(|p| p.hash.as_mut()),
+        record.exit.as_mut().map(|e| &mut e.baseline_hash),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        translate(hash);
     }
 }
 

@@ -1103,7 +1103,12 @@ pub(crate) fn finalize_local_exit<T: crate::github::threads::QueryTransport>(
                 && crate::pr_state::ExternalWait::pending_snapshot(*reason, read, &fresh)
         })
     } else {
+        // The review revision must hold; CI progress is not a move. A local
+        // sign-off was judged green at its exit call: CI must still be settled
+        // green, since a later check result no longer wakes another review.
         fresh.hash() == read_hash
+            && !(crate::exits::consume::local_sign_off(result.output.exit.as_ref()).is_some()
+                && (fresh.ci_failed() || fresh.ci_pending()))
     };
     if !valid {
         return Err(Failure::tossed(
