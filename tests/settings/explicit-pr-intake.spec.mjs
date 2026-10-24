@@ -270,6 +270,8 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
+      // Ordinary Save closes the editor where an explicit Save would admit.
+      await expect(editor).toBeHidden();
       await page.evaluate(() => window.__settingsIdle());
       expect(
         fixture.calls.filter(
@@ -277,7 +279,6 @@ for (const genie of [false, true]) {
         ),
       ).toEqual([]);
       expect((await store("monitoring_snapshot")).jobs).toEqual([]);
-      await expect(editor).toBeHidden();
     });
   }
 
@@ -338,6 +339,10 @@ for (const genie of [false, true]) {
       await editor
         .getByRole("button", { name: "Save repository", exact: true })
         .click();
+      // Save admits only after its Store commit settles; wait for that outcome.
+      await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+        "PR #303 queued",
+      );
       await page.evaluate(() => window.__settingsIdle());
       expect(
         fixture.calls
@@ -373,9 +378,18 @@ for (const genie of [false, true]) {
     await held.arrived;
     try {
       editor = await replaceUrl(page, editor, 303);
+      // Release only once the replacement intent owns the open editor; an
+      // earlier failure arriving with no current editor uses #error instead.
+      await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
+        "PR #303",
+      );
       held.release();
       await page.evaluate(() => window.__settingsIdle());
-      await expect(page.locator("#error")).toContainText("PR #302");
+      await expect(editor.locator("[data-earlier-intake-error]")).toContainText(
+        "PR #302",
+      );
+      await expect(editor.locator("[data-earlier-intake-error]")).toBeVisible();
+      await expect(page.locator("#error")).toBeHidden();
       await expect(editor.locator("[data-explicit-pr-status]")).toContainText(
         "PR #303",
       );
