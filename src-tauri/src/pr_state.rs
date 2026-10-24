@@ -34,7 +34,10 @@ impl ExternalWait {
             return false;
         }
         let pending = match reason {
-            WaitReason::Ci => next.ci_pending(),
+            // No check reported yet is not settled: GitHub may not have created the
+            // checks for a fresh push. A CI wait is only taken while CI is pending,
+            // so a repository with no CI never holds one.
+            WaitReason::Ci => next.ci_pending() || next.ci_unknown(),
             WaitReason::Draft => next.lifecycle == "draft",
             WaitReason::RequiredReviews => !matches!(
                 next.review_decision.as_deref(),
@@ -75,6 +78,15 @@ pub struct Pending {
     pub observed_at: i64,
 }
 
+/// CI as a consumed exit saw it, for [`PrStates::consume_exit`].
+#[derive(Debug, Clone, Copy)]
+pub struct ExitCi<'a> {
+    /// Lgtm, approve or merge: it acted on green CI and needs no wake.
+    pub sign_off: bool,
+    /// The read after the exit, when there is one.
+    pub fresh: Option<&'a NormalizedSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsumedExit {
     pub state_seq: u64,
@@ -112,6 +124,10 @@ pub struct PrStateRecord {
     /// woke a CI wait keep it, so teammate reports from it still hold. `None`: this seq.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_seq: Option<u64>,
+    /// The consumed exit was not a sign-off and CI was not settled green: CI turning
+    /// green on the same review revision wakes the primary once (teammate reports hold).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ci_wake: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +209,7 @@ impl PrStates {
                     external_wait: None,
                     consumed_at: None,
                     revision_seq: None,
+                    ci_wake: false,
                 });
                 self.records.len() - 1
             });
@@ -250,6 +267,21 @@ impl PrStates {
         }
         if record.baseline_hash.as_deref() == Some(&hash) {
             record.pending = None;
+            if record.ci_wake
+                && observation
+                    .snapshot
+                    .is_some_and(NormalizedSnapshot::ci_green)
+            {
+                // CI settled green after an exit judged without it: the primary acts
+                // again on the same revision, once.
+                let revision = record
+                    .revision_seq
+                    .filter(|seq| *seq <= record.state_seq)
+                    .unwrap_or(record.state_seq);
+                let change = Self::bump(record, Some(hash), observation.now);
+                record.revision_seq = Some(revision);
+                return change;
+            }
             return Change::None;
         }
         match &mut record.pending {
@@ -273,6 +305,7 @@ impl PrStates {
         record.external_wait = None;
         record.exit = None;
         record.local_summary = None;
+        record.ci_wake = false;
         record.state_seq += 1;
         record.revision_seq = Some(record.state_seq);
         record.pending = Some(Pending {
@@ -287,6 +320,18 @@ impl PrStates {
     /// hash of the state after the host's own writes, so those writes never
     /// retrigger. A state that moved meanwhile is not consumed.
     pub fn consume(&mut self, binding: &Binding, state_seq: u64, new_baseline: &str) -> Consumed {
+        self.consume_exit(binding, state_seq, new_baseline, None)
+    }
+
+    /// [`Self::consume`] that arms the CI wake when `ci` is a non-sign-off exit whose
+    /// CI was not settled green: on the fresh read it carries, or the last poll.
+    pub fn consume_exit(
+        &mut self,
+        binding: &Binding,
+        state_seq: u64,
+        new_baseline: &str,
+        ci: Option<ExitCi>,
+    ) -> Consumed {
         if state_seq != 0 && self.get(binding).is_none() {
             return Consumed::Moved;
         }
@@ -298,6 +343,14 @@ impl PrStates {
         record.external_wait = None;
         record.pending = None;
         record.error_count = 0;
+        record.ci_wake = ci.is_some_and(|ci| {
+            !ci.sign_off
+                && !(record
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(NormalizedSnapshot::ci_green)
+                    && ci.fresh.is_none_or(NormalizedSnapshot::ci_green))
+        });
         record.exit = Some(ConsumedExit {
             state_seq,
             baseline_hash: new_baseline.into(),
@@ -332,6 +385,7 @@ impl PrStates {
         record.error_count = 0;
         record.local_summary = None;
         record.exit = None; // Waiting never grants action clearance.
+        record.ci_wake = false;
         record.external_wait = Some(wait);
         Consumed::Consumed
     }
@@ -415,8 +469,19 @@ pub fn consume(
     state_seq: u64,
     new_baseline: &str,
 ) -> Result<Consumed, String> {
+    consume_exit(store, binding, state_seq, new_baseline, None)
+}
+
+/// [`consume`] arming the CI wake ([`PrStates::consume_exit`]).
+pub fn consume_exit(
+    store: &Store,
+    binding: &Binding,
+    state_seq: u64,
+    new_baseline: &str,
+    ci: Option<ExitCi>,
+) -> Result<Consumed, String> {
     let mut states = store.load_pr_states()?;
-    let outcome = states.consume(binding, state_seq, new_baseline);
+    let outcome = states.consume_exit(binding, state_seq, new_baseline, ci);
     if outcome == Consumed::Consumed {
         if let Some(record) = states.records.iter_mut().find(|r| &r.binding == binding) {
             record.consumed_at = Some(chrono::Utc::now().timestamp());

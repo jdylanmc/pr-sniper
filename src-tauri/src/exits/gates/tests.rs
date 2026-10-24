@@ -359,6 +359,10 @@ fn lgtm_needs_verified_green_ci_for_every_action() {
                 .unwrap_or_else(|| panic!("{name}: {:?} signed off", lgtm_action(&input)));
             assert!(reason.contains("CI"), "{name}: {reason}");
             assert!(!is_offered(&input, Exit::Lgtm), "{name}");
+            // A repository with no CI never holds a wait; green CI wakes it later.
+            if ci == Ci::Unknown {
+                assert!(wait_reasons(&input).is_empty(), "{name}");
+            }
         }
     }
 }

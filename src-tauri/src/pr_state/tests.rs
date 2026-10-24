@@ -379,3 +379,103 @@ fn a_ci_wait_woken_by_green_keeps_the_review_revision() {
     assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
     assert_eq!(states.revision_seq(&binding()), 2);
 }
+
+fn with_ci(ci: &str) -> PrSnapshot {
+    let mut state = snapshot();
+    match ci {
+        "none" => {
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        "pending" => {
+            state.checks[0].status = "IN_PROGRESS".into();
+            state.checks[0].conclusion.clear();
+        }
+        "red" => state.checks[0].conclusion = "FAILURE".into(),
+        _ => {}
+    }
+    state
+}
+
+fn consume_exit(states: &mut PrStates, sign_off: bool, fresh: &PrSnapshot) -> Consumed {
+    let seq = states.state_seq(&binding());
+    let fresh = fresh.normalize();
+    states.consume_exit(
+        &binding(),
+        seq,
+        &fresh.hash(),
+        Some(ExitCi {
+            sign_off,
+            fresh: Some(&fresh),
+        }),
+    )
+}
+
+#[test]
+fn green_ci_after_an_exit_without_it_wakes_the_primary_once() {
+    for start in ["none", "red"] {
+        let mut states = PrStates::default();
+        assert_eq!(
+            observe(&mut states, &with_ci(start), false),
+            Change::Pending(1)
+        );
+        assert_eq!(
+            consume_exit(&mut states, false, &with_ci(start)),
+            Consumed::Consumed
+        );
+        assert_eq!(
+            observe(&mut states, &with_ci("pending"), true),
+            Change::None
+        );
+        assert_eq!(
+            observe(&mut states, &with_ci("green"), true),
+            Change::Pending(2),
+            "{start}"
+        );
+        assert_eq!(states.revision_seq(&binding()), 1, "teammate reports hold");
+        // The primary's next exit saw green: nothing re-arms, so no loop.
+        assert_eq!(
+            consume_exit(&mut states, false, &with_ci("green")),
+            Consumed::Consumed
+        );
+        for ci in ["red", "green", "pending", "green"] {
+            assert_eq!(
+                observe(&mut states, &with_ci(ci), true),
+                Change::None,
+                "{start}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_sign_off_or_a_repository_without_ci_never_wakes_on_ci() {
+    // Sign-off: it acted already.
+    let mut states = PrStates::default();
+    observe(&mut states, &with_ci("pending"), false);
+    consume_exit(&mut states, true, &with_ci("pending"));
+    assert_eq!(observe(&mut states, &with_ci("green"), true), Change::None);
+
+    // No CI at all: one ready_for_human, then nothing however often it polls.
+    let mut states = PrStates::default();
+    observe(&mut states, &with_ci("none"), false);
+    consume_exit(&mut states, false, &with_ci("none"));
+    for _ in 0..3 {
+        assert_eq!(observe(&mut states, &with_ci("none"), true), Change::None);
+    }
+}
+
+#[test]
+fn a_ci_wait_holds_while_no_check_is_reported() {
+    let pending = with_ci("pending").normalize();
+    let wait = ExternalWait {
+        reason: crate::exits::WaitReason::Ci,
+        state_seq: 1,
+        assignment_id: "primary".into(),
+        agent_id: "agent".into(),
+        snapshot: pending.clone(),
+    };
+    assert!(wait.pending(&with_ci("none").normalize()));
+    assert!(!wait.pending(&with_ci("green").normalize()));
+    assert!(!wait.pending(&with_ci("red").normalize()));
+}

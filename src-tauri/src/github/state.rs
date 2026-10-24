@@ -212,6 +212,17 @@ impl NormalizedSnapshot {
                     .any(|required| !self.checks.iter().any(|(name, _, _)| name == required)))
     }
 
+    /// No check reported and none required: CI not created yet, or no CI at all.
+    /// Not pending: a local sign-off judged on it (conflicts) must not toss.
+    pub fn ci_unknown(&self) -> bool {
+        self.checks.is_empty() && self.required_checks.is_empty()
+    }
+
+    /// CI settled green: checks reported, none pending or failed.
+    pub fn ci_green(&self) -> bool {
+        !self.checks.is_empty() && !self.ci_failed() && !self.ci_pending()
+    }
+
     /// CI failed on the head: any check concluded as a failure.
     pub fn ci_failed(&self) -> bool {
         self.checks.iter().any(|(_, _, conclusion)| {

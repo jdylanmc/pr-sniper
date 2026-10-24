@@ -1122,6 +1122,11 @@ pub(crate) fn finalize_local_exit<T: crate::github::threads::QueryTransport>(
         crate::review::findings::action_clearance(&result.finding_dispositions)
             .map_err(Failure::permanent)?;
         result.wait_snapshot = Some(fresh);
+    } else if matches!(
+        result.output.exit,
+        Some(crate::exits::ExitOutcome::ReadyForHuman { .. })
+    ) {
+        result.wait_snapshot = Some(fresh);
     }
     Ok(())
 }

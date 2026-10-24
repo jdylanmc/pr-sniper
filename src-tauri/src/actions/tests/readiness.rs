@@ -1476,6 +1476,73 @@ fn readiness_draft_then_ready_waits_then_green_wakes_the_primary_and_merges() {
 }
 
 #[test]
+fn readiness_ci_green_after_ready_for_human_wakes_only_the_primary_once() {
+    for (rollup, conclusion) in [(None, None), (Some("FAILURE"), Some("FAILURE"))] {
+        let (_root, store, _item) = fixture(2, true, true);
+        store.save_reviews(&[]).unwrap();
+        let env = env(&store);
+        let mut state = snapshot(false, conclusion.unwrap_or_default());
+        if conclusion.is_none() {
+            // Right after a push GitHub may report no check rollup at all.
+            state.checks.clear();
+            state.check_total = 0;
+        }
+        env.wire.0.lock().unwrap().observation.checks = rollup.map(String::from);
+        poll(&store, &state, NOW + 10);
+        let binding = Binding::job(&store.load_queue().unwrap()[0]);
+        let (teammate, prepared) = prepare(&store, &env, &state, false, NOW + 12);
+        complete(
+            &store,
+            &teammate,
+            &prepared,
+            ExitCall::SubmitReport {
+                report: crate::exits::TeammateReport { findings: vec![] },
+            },
+            NOW + 13,
+        );
+        let (primary, prepared) = prepare(&store, &env, &state, true, NOW + 14);
+        assert!(!prepared.setup.offered.contains(&Exit::Wait), "{rollup:?}");
+        complete(
+            &store,
+            &primary,
+            &prepared,
+            ExitCall::ReadyForHuman {
+                summary: "CI not verified green.".into(),
+            },
+            NOW + 15,
+        );
+        poll(&store, &state, NOW + 16);
+        assert!(crate::capacity::candidates(&store, NOW + 17)
+            .unwrap()
+            .is_empty());
+
+        let green = snapshot(false, "SUCCESS");
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        poll(&store, &green, NOW + 20);
+        let work = crate::capacity::candidates(&store, NOW + 21).unwrap();
+        assert_eq!(work.len(), 1, "{rollup:?}: the primary only");
+        assert!(work[0].blocked_by.is_none(), "teammate report holds");
+        let (primary, prepared) = prepare(&store, &env, &green, true, NOW + 22);
+        assert_eq!(primary.job.work.as_ref().unwrap().state_seq, 2);
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm));
+        complete(
+            &store,
+            &primary,
+            &prepared,
+            ExitCall::ReadyForHuman {
+                summary: "Human judgment needed.".into(),
+            },
+            NOW + 23,
+        );
+        poll(&store, &green, NOW + 24);
+        assert_eq!(store.load_pr_states().unwrap().state_seq(&binding), 2);
+        assert!(crate::capacity::candidates(&store, NOW + 25)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
 fn readiness_green_does_not_override_the_primarys_ready_for_human_exit() {
     let (_root, store, item) = fixture(1, true, true);
     store.save_reviews(&[]).unwrap();

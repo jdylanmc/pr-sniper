@@ -838,7 +838,8 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// Standing resolutions this run relied on without reclassifying (carried forward).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carried_findings: Vec<findings::Assessment>,
-    /// Host-validated final observation for Wait; packet evidence stays immutable.
+    /// Host-validated final observation for Wait and ready_for_human (its CI arms the
+    /// CI wake); packet evidence stays immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
 }

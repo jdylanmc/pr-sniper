@@ -126,6 +126,10 @@ efficiency, merge-path and reliability fixes.
     pending again at the final read is tossed. A Ready sign-off that resolves
     its own threads and finds CI pending or red after its writes runs the
     primary again instead of consuming the state.
+  - CI turning green after a primary's non-sign-off exit judged without it (no
+    checks yet after a push, still pending, or red then re-run green) wakes the
+    primary once on the same head; teammates do not re-run. Repositories with no
+    CI never wait for it.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on

@@ -70,11 +70,23 @@ pub fn settle_fresh(
 ) -> Result<Consumed, String> {
     let normalized = fresh.normalize();
     let fresh_hash = normalized.hash();
-    let packet = store
+    let run = store
         .review_evidence()?
         .into_iter()
-        .find(|r| r.operation.id == review_operation_id)
-        .and_then(|r| r.packet);
+        .find(|r| r.operation.id == review_operation_id);
+    let sign_off = run
+        .as_ref()
+        .and_then(|r| r.result.as_ref())
+        .and_then(|r| r.output.exit.as_ref())
+        .map(|exit| {
+            matches!(
+                exit,
+                ExitOutcome::Lgtm { .. }
+                    | ExitOutcome::Approve { .. }
+                    | ExitOutcome::ApproveAndMerge { .. }
+            )
+        });
+    let packet = run.and_then(|r| r.packet);
     let Some((marks, read_hash)) = packet.and_then(|p| Some((p.state_marks?, p.state_hash?)))
     else {
         return settle(store, job, &fresh_hash);
@@ -90,7 +102,12 @@ pub fn settle_fresh(
         .load_pr_states()?
         .state_seq(&binding)
         .max(state_seq(job));
-    let outcome = pr_state::consume(store, &binding, seq, &fresh_hash)?;
+    // An exit of unknown kind arms nothing.
+    let ci = sign_off.map(|sign_off| pr_state::ExitCi {
+        sign_off,
+        fresh: Some(&normalized),
+    });
+    let outcome = pr_state::consume_exit(store, &binding, seq, &fresh_hash, ci)?;
     if outcome == Consumed::Moved {
         pr_state::toss(store, &binding)?;
     }
@@ -341,10 +358,10 @@ pub fn honour_local(
         }
         return Ok(outcome);
     }
-    let summary = match &result.output.exit {
-        Some(ExitOutcome::ReadyForHuman { summary }) => summary,
+    let (summary, sign_off) = match &result.output.exit {
+        Some(ExitOutcome::ReadyForHuman { summary }) => (summary, false),
         exit => match local_sign_off(exit.as_ref()) {
-            Some(comment) => comment,
+            Some(comment) => (comment, true),
             None => return Ok(Consumed::Consumed),
         },
     };
@@ -353,7 +370,16 @@ pub fn honour_local(
         .as_ref()
         .and_then(|p| p.state_hash.as_deref())
         .ok_or("The packet record has no state hash.")?;
-    let outcome = consume(store, &run.job, baseline)?;
+    let outcome = pr_state::consume_exit(
+        store,
+        &Binding::job(&run.job),
+        state_seq(&run.job),
+        baseline,
+        Some(pr_state::ExitCi {
+            sign_off,
+            fresh: result.wait_snapshot.as_ref(),
+        }),
+    )?;
     if outcome == Consumed::Consumed {
         pr_state::set_local_summary(store, &Binding::job(&run.job), Some(summary.clone()))?;
     }
