@@ -1,11 +1,13 @@
 pub(crate) mod host;
 #[cfg(target_os = "macos")]
 mod macos;
+mod message;
 #[cfg(windows)]
 pub(crate) mod windows;
 #[cfg(windows)]
 mod windows_native;
 pub use host::{view as snapshot, Snapshot};
+pub use message::{badge_directory, render, Badge, Message, Subject, BODY_MAX, TITLE_MAX};
 
 use crate::{queue, storage::Store};
 use serde::{Deserialize, Serialize};
@@ -26,32 +28,6 @@ pub enum Category {
 }
 
 impl Category {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Confirmation => "Review needs your confirmation",
-            Self::HumanInput => "Review needs your input",
-            Self::Ready => "Ready for your final review",
-            Self::Failure => "PR Sniper needs attention",
-            Self::Test => "PR Sniper notifications are on",
-            Self::Approved => "Automated approval confirmed; personal review remains",
-            Self::Merged => "PR merged on GitHub",
-            Self::FinalReviewCleared => "Primary final full review cleared",
-        }
-    }
-
-    pub fn body(self) -> &'static str {
-        match self {
-            Self::Confirmation => "Open the exact queue item to confirm the next action. Opening this alert does not start or publish a review.",
-            Self::HumanInput => "Automated review needs your judgment. Open the exact queue item for the conversation and evidence.",
-            Self::Ready => "Automated review completed. Open the exact queue item for your final review and merge decision. This is not approval.",
-            Self::Failure => "A review or monitoring operation needs recovery. Open the saved destination for details; no success is implied.",
-            Self::Test => "Alerts for review events will appear here.",
-            Self::Approved => "GitHub recorded the acting account's automated approval. This unmerged PR still needs your personal review; one account is one vote.",
-            Self::Merged => "GitHub confirmed merge. Open saved evidence for action attribution; human review is not inferred.",
-            Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
-        }
-    }
-
     /// Event categories a user can turn off; `Test` confirms opt-in and always sends.
     pub const SELECTABLE: [Self; 7] = [
         Self::Confirmation,
@@ -746,17 +722,21 @@ pub struct SendError {
 pub trait Adapter: Send + Sync {
     fn permission(&self) -> Result<Permission, String>;
     fn request_permission(&self) -> Result<Permission, String>;
-    fn send(&self, notice: &Notice) -> Result<(), SendError>;
+    fn send(&self, notice: &Notice, message: &Message) -> Result<(), SendError>;
 }
 
-pub fn submit(adapter: &dyn Adapter, notice: &Notice) -> (Phase, Option<String>) {
+pub fn submit(
+    adapter: &dyn Adapter,
+    notice: &Notice,
+    message: &Message,
+) -> (Phase, Option<String>) {
     if notice.phase != Phase::Submitting {
         return (
             Phase::Failed,
             Some("Native notification intent must be persisted before submission.".into()),
         );
     }
-    match adapter.send(notice) {
+    match adapter.send(notice, message) {
         Ok(()) => (Phase::AcceptedUnconfirmed, None),
         Err(error) => (
             if error.uncertain {

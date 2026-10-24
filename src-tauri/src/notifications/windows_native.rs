@@ -692,7 +692,7 @@ pub fn remove_setup(registration: &Registration, id: &str) -> Result<(), String>
 pub fn setup_toast(id: &str, title: &str, body: &str) -> Result<ToastNotification, String> {
     let xml = XmlDocument::new()
         .and_then(|xml| {
-            xml.LoadXml(&HSTRING::from(toast_xml(id, title, body)))?;
+            xml.LoadXml(&HSTRING::from(toast_xml(id, title, body, None)))?;
             Ok(xml)
         })
         .map_err(|e| native_error("setup XML", e))?;
@@ -762,9 +762,16 @@ fn escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-pub fn toast_xml(id: &str, title: &str, body: &str) -> String {
+/// `logo` is a `file:///` URI for the per-state app-logo badge.
+pub fn toast_xml(id: &str, title: &str, body: &str, logo: Option<&str>) -> String {
+    let logo = logo.map_or(String::new(), |uri| {
+        format!(
+            "<image placement=\"appLogoOverride\" hint-crop=\"circle\" src=\"{}\"/>",
+            escape(uri)
+        )
+    });
     format!(
-        "<toast activationType=\"foreground\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><audio silent=\"true\"/></toast>",
+        "<toast activationType=\"foreground\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text>{logo}</binding></visual><audio silent=\"true\"/></toast>",
         escape(id), escape(title), escape(body)
     )
 }
@@ -775,11 +782,12 @@ pub fn send(
     id: &str,
     title: &str,
     body: &str,
+    logo: Option<&str>,
 ) -> Result<(), (String, bool)> {
     registration.notice_id(id).map_err(|e| (e, false))?;
     let xml = XmlDocument::new()
         .and_then(|xml| {
-            xml.LoadXml(&HSTRING::from(toast_xml(id, title, body)))?;
+            xml.LoadXml(&HSTRING::from(toast_xml(id, title, body, logo)))?;
             Ok(xml)
         })
         .map_err(|e| (native_error("XML preparation", e), false))?;
