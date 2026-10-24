@@ -43,6 +43,18 @@ pub enum DiagnosticEvent {
     NotificationOpened,
     NotificationActivated,
     ThreadSkipped,
+    HostPanic,
+}
+
+/// A host panic caught at a review boundary, correlated to its attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPanicRecord {
+    pub attempt: String,
+    pub message: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,6 +64,8 @@ pub struct Diagnostic {
     pub event: DiagnosticEvent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<diagnostics::Record>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panic: Option<HostPanicRecord>,
 }
 
 fn diagnostic_time() -> Result<u64, String> {
@@ -2669,17 +2683,42 @@ impl Store {
     }
 
     pub fn record(&self, event: DiagnosticEvent) -> Result<(), String> {
-        if event == DiagnosticEvent::Attempt {
+        if matches!(event, DiagnosticEvent::Attempt | DiagnosticEvent::HostPanic) {
             return Err("Attempt diagnostics require a typed attempt record.".into());
         }
-        let directory = self
-            .directory("state")
-            .map_err(|_| "Cannot create diagnostics directory.".to_string())?;
-        let diagnostic = Diagnostic {
+        self.write_diagnostic(Diagnostic {
             timestamp_secs: diagnostic_time()?,
             event,
             attempt: None,
-        };
+            panic: None,
+        })
+    }
+
+    /// Host log entry for a caught host panic: bounded, sanitized message and location.
+    pub fn record_host_panic(
+        &self,
+        attempt: &str,
+        panic: &crate::host_panic::HostPanic,
+    ) -> Result<(), String> {
+        let text = |value: &str| diagnostics::safe_text(value);
+        self.write_diagnostic(Diagnostic {
+            timestamp_secs: diagnostic_time()?,
+            event: DiagnosticEvent::HostPanic,
+            attempt: None,
+            panic: Some(HostPanicRecord {
+                attempt: text(attempt),
+                message: text(&panic.message),
+                file: text(&panic.file),
+                line: panic.line,
+                column: panic.column,
+            }),
+        })
+    }
+
+    fn write_diagnostic(&self, diagnostic: Diagnostic) -> Result<(), String> {
+        let directory = self
+            .directory("state")
+            .map_err(|_| "Cannot create diagnostics directory.".to_string())?;
         let mut bytes = serde_json::to_vec(&diagnostic)
             .map_err(|_| "Cannot encode diagnostics.".to_string())?;
         bytes.push(b'\n');
@@ -2712,7 +2751,10 @@ impl Store {
             .map(|line| {
                 let record: Diagnostic = serde_json::from_str(line)
                     .map_err(|_| "Diagnostics contain invalid data.".to_string())?;
-                if record.attempt.is_some() || record.event == DiagnosticEvent::Attempt {
+                if record.attempt.is_some()
+                    || record.event == DiagnosticEvent::Attempt
+                    || record.panic.is_some() != (record.event == DiagnosticEvent::HostPanic)
+                {
                     return Err("Host diagnostics contain invalid attempt data.".into());
                 }
                 Ok(record)

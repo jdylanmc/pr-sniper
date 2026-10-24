@@ -925,11 +925,14 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for ReadTools<T> {
         // HTTP is synchronous but runs only in the dedicated review runtime, never the UI.
         Ok(
             match off_runtime(|| {
-                self.execute_call(
-                    &invocation.tool_name,
-                    invocation.arguments,
-                    Some(&invocation.tool_call_id),
-                )
+                crate::host_panic::catch(|| {
+                    self.execute_call(
+                        &invocation.tool_name,
+                        invocation.arguments,
+                        Some(&invocation.tool_call_id),
+                    )
+                })
+                .unwrap_or_else(|panic| Err(self.host_panic(&panic)))
             }) {
                 Ok(value) => ToolResult::Text(value.to_string()),
                 Err(error) => ToolResult::Expanded(
@@ -937,6 +940,20 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for ReadTools<T> {
                 ),
             },
         )
+    }
+}
+
+impl<T: Transport> ReadTools<T> {
+    /// A read tool's host panic: recorded, and the run's failure once it ends.
+    fn host_panic(&self, panic: &crate::host_panic::HostPanic) -> Failure {
+        if let Some(trace) = &self.diagnostics {
+            trace.host_panic(panic);
+        }
+        let failure = Failure::host_panic(panic);
+        if let Ok(mut slot) = self.source_failure.lock() {
+            slot.get_or_insert(failure.clone());
+        }
+        failure
     }
 }
 

@@ -127,6 +127,14 @@ impl Trace {
         });
     }
 
+    /// Records a caught host panic and makes it the attempt's failure kind.
+    pub(crate) fn host_panic(&self, panic: &crate::host_panic::HostPanic) {
+        self.fail(FailureKind::HostPanic);
+        self.emit(Event::HostPanic {
+            panic: panic.clone(),
+        });
+    }
+
     pub(crate) fn tool_calls(&self) -> u64 {
         self.state
             .lock()
@@ -348,11 +356,19 @@ pub(crate) fn native(
                 .lock()
                 .map_err(|_| "Attempt diagnostic storage unavailable.".to_string())
                 .and_then(|store| {
+                    // A host panic also lands in the host log, correlated by attempt.
+                    let logged = match &record.event {
+                        Event::HostPanic { panic } => {
+                            store.record_host_panic(&record.attempt.id, panic)
+                        }
+                        _ => Ok(()),
+                    };
                     if matches!(record.event, Event::Started) {
                         store.record_attempt_start(record)
                     } else {
                         store.record_attempt(record)
                     }
+                    .and(logged)
                 });
             if let Err(error) = &result {
                 crate::report(&app, error.clone());

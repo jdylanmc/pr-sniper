@@ -606,14 +606,20 @@ pub(crate) async fn execute(
     diagnostics.emit(crate::storage::diagnostics::Event::Phase {
         phase: crate::storage::diagnostics::Phase::PreparingContext,
     });
-    let result = execute_attempt(
+    // A host panic fails this attempt with its location instead of killing the
+    // worker and leaving the run stuck as running.
+    let result = crate::host_panic::catch_future(execute_attempt(
         app.clone(),
         run.clone(),
         cancelled,
         diagnostics.clone(),
         ducks,
-    )
-    .await;
+    ))
+    .await
+    .unwrap_or_else(|panic| {
+        diagnostics.host_panic(&panic);
+        Err(Failure::host_panic(&panic))
+    });
     if let Err(error) = &result {
         if let Err(error) = crate::connectivity::confirm_failure(&app, &run, error).await {
             crate::report(&app, error);
@@ -695,115 +701,123 @@ async fn execute_attempt(
         let preparation_run = run.clone();
         let preparation_gate = gate.clone();
         let preparation_attempt = attempt.clone();
+        let preparation_trace = diagnostics.clone();
         let prepared = tauri::async_runtime::spawn_blocking(move || {
-            preparation_gate()?;
-            remote_gate(&preparation_app, &preparation_run)?;
-            let host = preparation_app.state::<Host>();
-            let (identity, client) = crate::github_session(&host, &preparation_run.job.account_id)
-                .map_err(Failure::from)?;
-            preparation_attempt.prepare(client, |client| {
-                let repo = RemoteRepository {
-                    id: preparation_run.job.repository_id.clone(),
-                    name: preparation_run.job.repository_name.clone(),
-                };
-                // Packet runs read the PR fresh at consume time. A head that moved since the
-                // work was queued is superseded (free); any other change is simply the new state.
-                if preparation_run.mode != super::RunMode::Packet {
-                    return Err(Failure::permanent(super::LEGACY_RETIRED));
-                }
-                let snapshot = client
-                    .pr_snapshot(&repo, preparation_run.job.number)
-                    .map_err(Failure::from)?;
-                {
-                    let settings = host
-                        .store
-                        .lock()
-                        .map_err(|_| Failure::permanent("Review storage unavailable."))?
-                        .load_settings()
-                        .map_err(Failure::permanent)?;
-                    snapshot_gate(&settings, &preparation_run.job, &snapshot)?;
-                }
-                let context = client
-                    .review_context(
-                        &repo,
-                        preparation_run.job.number,
-                        &preparation_run.job.head_sha,
-                    )
-                    .map_err(Failure::from)?;
-                let client = Arc::new(client);
-                let packet = {
-                    let write_capability = client
-                        .connect(&repo.name, Some(&preparation_run.job.account_id))
-                        .map_err(Failure::from)?
-                        .capabilities
-                        .comment
-                        == crate::github::provider::CommentCapability::Available;
-                    let (
-                        teammates,
-                        iterations,
-                        last_consumed_at,
-                        ownership,
-                        (corrections, resolutions, receipts),
-                    ) = {
-                        let store = host
+            let prepare_packet = move || {
+                preparation_gate()?;
+                remote_gate(&preparation_app, &preparation_run)?;
+                let host = preparation_app.state::<Host>();
+                let (identity, client) =
+                    crate::github_session(&host, &preparation_run.job.account_id)
+                        .map_err(Failure::from)?;
+                preparation_attempt.prepare(client, |client| {
+                    let repo = RemoteRepository {
+                        id: preparation_run.job.repository_id.clone(),
+                        name: preparation_run.job.repository_name.clone(),
+                    };
+                    // Packet runs read the PR fresh at consume time. A head that moved since the
+                    // work was queued is superseded (free); any other change is simply the new state.
+                    if preparation_run.mode != super::RunMode::Packet {
+                        return Err(Failure::permanent(super::LEGACY_RETIRED));
+                    }
+                    let snapshot = client
+                        .pr_snapshot(&repo, preparation_run.job.number)
+                        .map_err(Failure::from)?;
+                    {
+                        let settings = host
                             .store
                             .lock()
-                            .map_err(|_| Failure::permanent("Review storage unavailable."))?;
-                        let writes = store
-                            .load_feedback()
-                            .map_err(Failure::permanent)?
-                            .exit_writes;
-                        (
-                            super::teammates::entries(&store, &preparation_run)?,
-                            crate::exit_writes::known_iterations(&store, &preparation_run.job)
-                                .unwrap_or_default(),
-                            store
-                                .load_pr_states()
-                                .map_err(Failure::permanent)?
-                                .get(&crate::retention::Binding::job(&preparation_run.job))
-                                .and_then(|r| r.consumed_at),
-                            super::findings::proofs(
-                                &store,
-                                &preparation_run.job,
-                                &preparation_run.assignment_id,
-                            )
-                            .map_err(Failure::permanent)?,
-                            (
-                                super::findings::corrections(
-                                    &writes,
-                                    &preparation_run.job,
-                                    &preparation_run.assignment_id,
-                                ),
-                                super::findings::resolutions(
-                                    &writes,
-                                    &preparation_run.job,
-                                    &preparation_run.assignment_id,
-                                ),
-                                super::findings::reply_receipts(&writes, &preparation_run.job),
-                            ),
+                            .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                            .load_settings()
+                            .map_err(Failure::permanent)?;
+                        snapshot_gate(&settings, &preparation_run.job, &snapshot)?;
+                    }
+                    let context = client
+                        .review_context(
+                            &repo,
+                            preparation_run.job.number,
+                            &preparation_run.job.head_sha,
                         )
-                    };
-                    let mut prepared = super::packet_run::prepare(
-                        &client,
-                        &repo,
-                        &preparation_run,
-                        &context,
-                        &snapshot,
-                        super::packet_run::Caller {
-                            acting_login: &identity.login,
-                            write_capability,
+                        .map_err(Failure::from)?;
+                    let client = Arc::new(client);
+                    let packet = {
+                        let write_capability = client
+                            .connect(&repo.name, Some(&preparation_run.job.account_id))
+                            .map_err(Failure::from)?
+                            .capabilities
+                            .comment
+                            == crate::github::provider::CommentCapability::Available;
+                        let (
                             teammates,
-                            iterations: &iterations,
+                            iterations,
                             last_consumed_at,
                             ownership,
-                            resolutions,
-                            receipts,
-                        },
-                    )?;
-                    Arc::make_mut(&mut prepared.setup.facts).corrections = corrections;
-                    prepared
-                };
-                Ok::<_, Failure>((context, client, packet))
+                            (corrections, resolutions, receipts),
+                        ) = {
+                            let store = host
+                                .store
+                                .lock()
+                                .map_err(|_| Failure::permanent("Review storage unavailable."))?;
+                            let writes = store
+                                .load_feedback()
+                                .map_err(Failure::permanent)?
+                                .exit_writes;
+                            (
+                                super::teammates::entries(&store, &preparation_run)?,
+                                crate::exit_writes::known_iterations(&store, &preparation_run.job)
+                                    .unwrap_or_default(),
+                                store
+                                    .load_pr_states()
+                                    .map_err(Failure::permanent)?
+                                    .get(&crate::retention::Binding::job(&preparation_run.job))
+                                    .and_then(|r| r.consumed_at),
+                                super::findings::proofs(
+                                    &store,
+                                    &preparation_run.job,
+                                    &preparation_run.assignment_id,
+                                )
+                                .map_err(Failure::permanent)?,
+                                (
+                                    super::findings::corrections(
+                                        &writes,
+                                        &preparation_run.job,
+                                        &preparation_run.assignment_id,
+                                    ),
+                                    super::findings::resolutions(
+                                        &writes,
+                                        &preparation_run.job,
+                                        &preparation_run.assignment_id,
+                                    ),
+                                    super::findings::reply_receipts(&writes, &preparation_run.job),
+                                ),
+                            )
+                        };
+                        let mut prepared = super::packet_run::prepare(
+                            &client,
+                            &repo,
+                            &preparation_run,
+                            &context,
+                            &snapshot,
+                            super::packet_run::Caller {
+                                acting_login: &identity.login,
+                                write_capability,
+                                teammates,
+                                iterations: &iterations,
+                                last_consumed_at,
+                                ownership,
+                                resolutions,
+                                receipts,
+                            },
+                        )?;
+                        Arc::make_mut(&mut prepared.setup.facts).corrections = corrections;
+                        prepared
+                    };
+                    Ok::<_, Failure>((context, client, packet))
+                })
+            };
+            crate::host_panic::catch(prepare_packet).unwrap_or_else(|panic| {
+                preparation_trace.host_panic(&panic);
+                Err(Failure::host_panic(&panic))
             })
         });
         // Join blocking preparation before releasing its capacity/workspace ownership.

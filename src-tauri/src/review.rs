@@ -926,6 +926,14 @@ impl Failure {
             ..Self::permanent(format!("Agent panic exit: {reason}"))
         }
     }
+    /// Host code panicked at a review boundary: a host defect, never the agent's
+    /// `panic_exit`. Permanent, with the panic's source location.
+    pub fn host_panic(panic: &crate::host_panic::HostPanic) -> Self {
+        Self::permanent(format!(
+            "Review host panicked at {}:{}.",
+            panic.file, panic.line
+        ))
+    }
     /// Repeated malformed or over-limit exit calls. Permanent, human needed.
     pub fn contract(message: impl Into<String>) -> Self {
         Self::permanent(message)

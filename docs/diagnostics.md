@@ -33,6 +33,12 @@ Reference ([ADR-0019](adr/0019-bounded-content-free-diagnostics.md)) for retaine
 - Byte counts = serialized JSON payload, not RPC framing. Failed or rejected reads = unavailable.
 - Response-limit flag = app limit (32,000 bytes per tool response). Separate from runtime tool failure and conversation truncation. Per-tool runtime truncation is not exposed by the pinned SDK. Stop-hook reasons are allowlisted, else `not_exposed`.
 
+## Failures
+
+- `failure: panic` is the agent's own `panic_exit`; its reason stays in the review run, not the log.
+- `failure: host_panic` is a host code panic caught at the attempt, preparation or tool boundary. The attempt's `host_panic` event and a `host_panic` line in `diagnostics.jsonl` (with the attempt id) carry the message (200 bytes max, sanitized) and source file, line and column. The run fails as permanent.
+- `exit_refused` records why each refused exit call was refused (`not_offered`, `malformed`, `already_taken`, `unavailable`, `findings`, `gate`, `moved`, `provider_read`, `host_panic`), never the refusal text. `provider_read` carries the typed `provider_error` and ends the run with that provider failure.
+
 ## Never recorded
 
 Raw arguments, search queries, prompts, source or comment bodies, transcripts, provider errors, credentials. Logging failure surfaces separately; it never turns a failed review into success or alters a publication decision.
