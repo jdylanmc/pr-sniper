@@ -761,6 +761,79 @@ fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
     }
 }
 
+#[test]
+fn ready_sign_off_resolving_own_threads_retries_when_ci_is_pending_at_write_completion() {
+    use crate::github::state::{SnapshotComment, SnapshotThread};
+    let thread = |resolved| SnapshotThread {
+        id: "own".into(),
+        resolved,
+        outdated: false,
+        comments: vec![SnapshotComment {
+            id: "41".into(),
+            body: "Finding.".into(),
+            commit: None,
+        }],
+        comment_total: 1,
+    };
+    let with = |conclusion: &str, resolved| PrSnapshot {
+        threads: vec![thread(resolved)],
+        thread_total: 1,
+        ..snapshot(false, conclusion)
+    };
+    for (conclusion, retried) in [("SUCCESS", false), ("", true), ("FAILURE", true)] {
+        let (_root, store, _) = read_only_primary(false);
+        let read = with("SUCCESS", false);
+        poll(&store, &read, NOW + 10);
+        let env = env(&store);
+        let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
+        let mut result = output();
+        result.output = ReviewOutput::from_exit(
+            crate::exits::ExitOutcome::Lgtm {
+                comment: "Reviewed; CI green.".into(),
+                resolve_own_threads: vec!["own".into()],
+                action: crate::exits::LgtmAction::Ready,
+                dismissed_teammate_findings: vec![],
+            },
+            None,
+        );
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 13).unwrap();
+        assert_eq!(crate::exit_writes::admit(&store, NOW + 14).unwrap(), 1);
+        let mut ledger = store.load_feedback().unwrap();
+        let write = &mut ledger.exit_writes[0];
+        assert_eq!(write.sign_off, Some(crate::exits::LgtmAction::Ready));
+        for step in &mut write.steps {
+            step.state = crate::exit_writes::StepState::Done;
+        }
+        write.phase = crate::exit_writes::Phase::Completed;
+        write.operation.state = OperationState::Completed;
+        write.consumed = true;
+        store.save_feedback(&ledger).unwrap();
+        // Only the own resolution and CI changed during the write window.
+        let fresh = with(conclusion, true);
+        crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
+        let baseline = store
+            .load_pr_states()
+            .unwrap()
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .baseline_hash
+            .clone()
+            .unwrap();
+        let expected = if retried {
+            run.packet.as_ref().unwrap().state_hash.clone().unwrap()
+        } else {
+            fresh.normalize().hash()
+        };
+        assert_eq!(baseline, expected, "{conclusion:?}");
+        assert_ne!(read.normalize().hash(), fresh.normalize().hash());
+        if retried {
+            // The next heartbeat dispatches the primary again.
+            poll(&store, &fresh, NOW + 30);
+            prepare(&store, &env, &fresh, true, NOW + 32);
+        }
+    }
+}
+
 struct SnapshotWire {
     state: PrSnapshot,
     required: Vec<String>,

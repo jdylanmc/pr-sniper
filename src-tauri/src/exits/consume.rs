@@ -60,13 +60,16 @@ pub fn consume_after<T: QueryTransport>(
 /// state (a heartbeat that already saw those writes is absorbed). Any other change:
 /// consume the packet state with the packet hash as baseline, so the next heartbeat
 /// queues one review of that change. Runs without packet marks keep the plain rule.
+/// A Ready sign-off has no later action to re-check CI, and CI is not in the hash:
+/// CI pending or failed here counts as a change, so the primary runs again.
 pub fn settle_fresh(
     store: &Store,
     job: &QueueJob,
     review_operation_id: &str,
     fresh: &PrSnapshot,
 ) -> Result<Consumed, String> {
-    let fresh_hash = fresh.normalize().hash();
+    let normalized = fresh.normalize();
+    let fresh_hash = normalized.hash();
     let packet = store
         .review_evidence()?
         .into_iter()
@@ -76,7 +79,10 @@ pub fn settle_fresh(
     else {
         return settle(store, job, &fresh_hash);
     };
-    if marks.external(fresh, &own_writes(store, review_operation_id)?) {
+    if marks.external(fresh, &own_writes(store, review_operation_id)?)
+        || (ready_sign_off(store, review_operation_id)?
+            && (normalized.ci_failed() || normalized.ci_pending()))
+    {
         return settle(store, job, &read_hash);
     }
     let binding = Binding::job(job);
@@ -89,6 +95,13 @@ pub fn settle_fresh(
         pr_state::toss(store, &binding)?;
     }
     Ok(outcome)
+}
+
+/// The exit of `review_operation_id` is a Ready sign-off that writes to its own threads.
+fn ready_sign_off(store: &Store, review_operation_id: &str) -> Result<bool, String> {
+    Ok(store.load_feedback()?.exit_writes.iter().any(|w| {
+        w.review_operation_id == review_operation_id && w.sign_off == Some(super::LgtmAction::Ready)
+    }))
 }
 
 /// Comment ids and resolved thread ids the exit of `review_operation_id` wrote.

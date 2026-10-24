@@ -46,7 +46,7 @@ Replaces head-SHA-only detection for tracked open PRs. Cadence is the repository
 | Own writes   | PR with an exit write in flight (packet batch posting, non-terminal exit write, approve/merge Prepared or Uncertain): no new state recorded. Head change or reopen still counts. |
 | Reused run   | A queued or interrupted run takes the queue job's current `state_seq` at dispatch, so its exit consumes the state it read.                                                       |
 
-Post-write consume (`exits::consume::settle_fresh`) compares the fresh read with the packet's `state_marks`. Only own writes (receipt comment ids, reply ids, threads we resolved, our approval): baseline = fresh, current state consumed, including a heartbeat bump that saw them. Any other change (new or edited comment, others' resolve, head, base, text, lifecycle, review decision, others' approvals): baseline = packet hash, so the next heartbeat queues one review. CI, mergeable and labels are not changes.
+Post-write consume (`exits::consume::settle_fresh`) compares the fresh read with the packet's `state_marks`. Only own writes (receipt comment ids, reply ids, threads we resolved, our approval): baseline = fresh, current state consumed, including a heartbeat bump that saw them. Any other change (new or edited comment, others' resolve, head, base, text, lifecycle, review decision, others' approvals): baseline = packet hash, so the next heartbeat queues one review. CI, mergeable and labels are not changes, except that a Ready sign-off (no later action to re-check CI) settles on the packet hash when the fresh read shows CI pending or failed.
 
 Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `pr_state::consume`, `pr_state::toss`.
 
