@@ -60,6 +60,10 @@
   challenge stays prompt while a native operation runs; further clients wait in
   the OS backlog. Only authenticated requests enter a four-slot queue to one
   native executor (single writer). A full queue returns `control_busy`, unexecuted.
+  A panicking operation returns `internal_error` and records a content-free
+  diagnostic; native commits are atomic, so the executor keeps serving. If the
+  executor itself ends, the listener closes and `endpoint.json` is removed so
+  clients relaunch.
   Unsupported methods, unknown fields, authentication and protocol mismatches
   fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.
@@ -97,7 +101,8 @@
   it contains no server code and stops on a protocol mismatch.
 - The app ships the bundled stdio server: macOS signed bundle resources
   (`Contents/Resources/mcp/`); Windows embedded bytes published to app data
-  (the NSIS installer owns only its executable and uninstaller).
+  (the NSIS installer owns only its executable and uninstaller) only by explicit
+  Install/Update/Repair or a launch with existing installer state.
 - Settings owns only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`:
   `node <server> --app <executable>`. No skill files are written.
 - Status and launch repair create nothing: until installer state exists they

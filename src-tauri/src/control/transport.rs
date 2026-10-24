@@ -8,6 +8,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -124,27 +125,59 @@ impl Server {
     ) {
         let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        // Stops accepting and withdraws the descriptor however this thread
+        // ends, so clients relaunch instead of reaching a dead executor.
+        let _teardown = Teardown {
+            stop: stop.clone(),
+            path: self.path.clone(),
+        };
         let acceptor = {
-            let stop = stop.clone();
+            let (stop, failures) = (stop.clone(), failures.clone());
             let endpoint = Arc::new(self.endpoint);
             let path = self.path.clone();
             let listener = self.listener;
             std::thread::Builder::new()
                 .name("local-control-accept".into())
-                .spawn(move || accept(listener, endpoint, path, jobs, stop))
+                .spawn(move || accept(listener, endpoint, path, jobs, stop, failures))
         };
-        if acceptor.is_ok() {
-            while !quitting() {
-                match queue.recv_timeout(Duration::from_millis(25)) {
-                    Ok(job) => {
-                        let _ = job.reply.send(execute(job.request));
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        if acceptor.is_err() {
+            return;
+        }
+        while !quitting() {
+            match queue.recv_timeout(Duration::from_millis(25)) {
+                Ok(job) => {
+                    let started = Instant::now();
+                    // Native commits are atomic replacements under the Store
+                    // mutex and receipts are reserved before execution, so a
+                    // panicking operation fails alone; the executor continues.
+                    let result =
+                        std::panic::catch_unwind(AssertUnwindSafe(|| execute(job.request)))
+                            .unwrap_or_else(|_| {
+                                note(
+                                    &failures,
+                                    &self.path,
+                                    json!({"stage":"execute","kind":"Panic",
+                                    "elapsed_ms":started.elapsed().as_millis()}),
+                                );
+                                Err(Error::new("internal_error", Value::Null))
+                            });
+                    let _ = job.reply.send(result);
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        stop.store(true, Ordering::SeqCst);
+    }
+}
+
+struct Teardown {
+    stop: Arc<AtomicBool>,
+    path: PathBuf,
+}
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -165,9 +198,9 @@ fn accept(
     path: PathBuf,
     jobs: mpsc::SyncSender<Job>,
     stop: Arc<AtomicBool>,
+    failures: Arc<Mutex<Vec<Value>>>,
 ) {
     let active = Arc::new(AtomicUsize::new(0));
-    let failures = Arc::new(Mutex::new(Vec::new()));
     while !stop.load(Ordering::SeqCst) {
         // At capacity, further clients wait in the OS backlog.
         if active.load(Ordering::SeqCst) >= CONNECTIONS {
@@ -234,17 +267,25 @@ fn submit(jobs: &mpsc::SyncSender<Job>, request: Value) -> Result<Value, Error> 
 }
 
 fn record(failures: &Mutex<Vec<Value>>, path: &Path, failure: TransportFailure, started: Instant) {
-    let Ok(mut failures) = failures.lock() else {
-        return;
-    };
-    failures.push(json!({
-        "stage":failure.stage,"kind":format!("{:?}",failure.error.kind()),
-        "elapsed_ms":started.elapsed().as_millis()
-    }));
+    note(
+        failures,
+        path,
+        json!({
+            "stage":failure.stage,"kind":format!("{:?}",failure.error.kind()),
+            "elapsed_ms":started.elapsed().as_millis()
+        }),
+    );
+}
+
+/// Content-free and bounded; never include frame, request or token bytes.
+fn note(failures: &Mutex<Vec<Value>>, path: &Path, entry: Value) {
+    let mut failures = failures
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    failures.push(entry);
     if failures.len() > 16 {
         failures.remove(0);
     }
-    // Content-free and bounded; never include frame/token bytes.
     let _ = private_fs::replace(
         &path.with_file_name("transport-errors.json"),
         &serde_json::to_vec(&*failures).unwrap(),

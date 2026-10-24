@@ -227,6 +227,63 @@ fn status_and_launch_repair_before_opt_in_create_nothing() {
     assert_eq!(config(&home), original);
 }
 
+/// Publishes the bundled server as the app does on Windows.
+#[cfg(windows)]
+fn publish_into(data: &Path) -> Result<PathBuf, Error> {
+    materialize(data)
+}
+
+/// Elsewhere the app's bundle is signed; an equivalent private file write.
+#[cfg(not(windows))]
+fn publish_into(data: &Path) -> Result<PathBuf, Error> {
+    let script = data.join("mcp").join("mcp-server.mjs");
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(&script, "// fixture server; never executed").unwrap();
+    Ok(script)
+}
+
+#[test]
+fn launch_and_status_publish_nothing_without_installer_state() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap().join("home");
+    let data = root.path().canonicalize().unwrap().join("app-data");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    #[cfg(windows)]
+    let script = bundled_script(&data);
+    #[cfg(not(windows))]
+    let script = data.join("mcp").join("mcp-server.mjs");
+    let server = Server {
+        script,
+        ..app(root.path(), "app")
+    };
+    let published = std::cell::Cell::new(0);
+    let publish = || {
+        published.set(published.get() + 1);
+        publish_into(&data).map(|_| ())
+    };
+    assert_eq!(integration_at(&home, &server).unwrap().state, "absent");
+    assert!(!launch_repair_at(&home, &server, publish).unwrap());
+    assert_eq!(published.get(), 0);
+    assert_eq!(fs::read_dir(&data).unwrap().count(), 0, "No bundled assets");
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "No ~/.copilot");
+
+    // Explicit Install publishes; afterwards launch refreshes and re-points.
+    assert_eq!(publish_into(&data).unwrap(), server.script);
+    install_integration_at(&home, &server, None).unwrap();
+    let moved = Server {
+        executable: root.path().join("moved").join("pr-sniper"),
+        ..server.clone()
+    };
+    let publish = || {
+        published.set(published.get() + 1);
+        publish_into(&data).map(|_| ())
+    };
+    assert!(launch_repair_at(&home, &moved, publish).unwrap());
+    assert_eq!(published.get(), 1);
+    assert_eq!(integration_at(&home, &moved).unwrap().state, "installed");
+}
+
 #[cfg(unix)]
 #[test]
 fn read_only_copilot_folder_still_reports_absent_and_installed() {

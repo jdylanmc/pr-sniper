@@ -643,18 +643,8 @@ fn installation(
 /// quarantine present, `None` selects the locked, recovering path.
 fn observe(home: &Path, server: &Server) -> Result<Option<Installation>, Error> {
     let paths = resolve(home)?;
-    let work = paths.copilot.join(WORK);
-    match fs::symlink_metadata(&work) {
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(_) => return Ok(None),
-        Ok(metadata) if !metadata.is_dir() => return Ok(None),
-        Ok(_) => {
-            for entry in fs::read_dir(&work).map_err(io_error)? {
-                if entry.map_err(io_error)?.file_name() != LOCK {
-                    return Ok(None);
-                }
-            }
-        }
+    if has_state(&paths)? {
+        return Ok(None);
     }
     let entry = read_config(&paths.config)?
         .1
@@ -662,6 +652,40 @@ fn observe(home: &Path, server: &Server) -> Result<Option<Installation>, Error> 
         .and_then(|s| s.get(NAME))
         .cloned();
     installation(home, server, None, entry).map(Some)
+}
+
+/// Receipts, intents, a quarantine or an interrupted write exist: only an
+/// earlier explicit opt-in creates anything besides the lock.
+fn has_state(paths: &Resolved) -> Result<bool, Error> {
+    let work = paths.copilot.join(WORK);
+    match fs::symlink_metadata(&work) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Ok(true),
+        Ok(metadata) if !metadata.is_dir() => Ok(true),
+        Ok(_) => {
+            for entry in fs::read_dir(&work).map_err(io_error)? {
+                if entry.map_err(io_error)?.file_name() != LOCK {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Launch: with no installer state nothing is published or written. With
+/// state, `publish` refreshes the bundled server before an owned entry is
+/// re-pointed.
+pub fn launch_repair_at(
+    home: &Path,
+    server: &Server,
+    publish: impl FnOnce() -> Result<(), Error>,
+) -> Result<bool, Error> {
+    if !server.installed || !has_state(&resolve(home)?)? {
+        return Ok(false);
+    }
+    publish()?;
+    repair_integration_at(home, server)
 }
 
 fn not_installed() -> Error {
@@ -775,9 +799,16 @@ pub fn materialize(root: &Path) -> Result<PathBuf, Error> {
             private_fs::replace(&path, bytes, "bundled MCP server").map_err(io_error)?;
         }
     }
-    Ok(directory.join("mcp-server.mjs"))
+    Ok(bundled_script(root))
 }
 
+/// Where `materialize` publishes the server; computing it writes nothing.
+#[cfg(windows)]
+pub fn bundled_script(root: &Path) -> PathBuf {
+    root.join("mcp").join("mcp-server.mjs")
+}
+
+/// Expected registration for this app. Never writes; see [`publish`].
 fn server(app: &tauri::AppHandle, home: &Path) -> Result<Server, Error> {
     use tauri::Manager;
     let executable = std::env::current_exe().map_err(io_error)?;
@@ -793,13 +824,26 @@ fn server(app: &tauri::AppHandle, home: &Path) -> Result<Server, Error> {
             .map_err(|_| Error::new("mcp_server_unavailable", ()))?,
     );
     #[cfg(windows)]
-    let script = materialize(&app.path().app_local_data_dir().map_err(io_error)?)?;
+    let script = bundled_script(&app.path().app_local_data_dir().map_err(io_error)?);
     let installed = crate::startup::installed_executable(&executable, home);
     Ok(Server {
         script,
         executable,
         installed,
     })
+}
+
+/// Windows publishes the embedded server only for explicit actions or
+/// existing installer state; macOS ships it signed in the bundle.
+fn publish(app: &tauri::AppHandle) -> Result<(), Error> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        materialize(&app.path().app_local_data_dir().map_err(io_error)?)?;
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    Ok(())
 }
 
 fn home(app: &tauri::AppHandle) -> Result<PathBuf, Error> {
@@ -812,7 +856,8 @@ fn home(app: &tauri::AppHandle) -> Result<PathBuf, Error> {
 
 /// Startup: follow a moved or updated installed app; dev builds never rewrite.
 pub(crate) fn repair_on_launch(app: &tauri::AppHandle) {
-    let result = home(app).and_then(|home| repair_integration_at(&home, &server(app, &home)?));
+    let result =
+        home(app).and_then(|home| launch_repair_at(&home, &server(app, &home)?, || publish(app)));
     if result.is_err() {
         eprintln!("PR Sniper: Copilot MCP registration repair skipped");
     }
@@ -834,7 +879,11 @@ pub(crate) fn control_install(
     if host != "copilot_cli" {
         return Err(Error::new("unsupported_host", ()));
     }
-    install_integration_at(&home, &server(&app, &home)?, expected.as_deref())
+    let server = server(&app, &home)?;
+    if server.installed {
+        publish(&app)?;
+    }
+    install_integration_at(&home, &server, expected.as_deref())
 }
 
 #[tauri::command]

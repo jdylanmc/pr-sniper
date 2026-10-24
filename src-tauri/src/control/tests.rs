@@ -870,6 +870,71 @@ fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
 }
 
 #[test]
+fn panicking_operation_fails_alone_and_executor_keeps_serving() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory).unwrap();
+    let endpoint: Endpoint =
+        serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap();
+    let quit = Arc::new(AtomicBool::new(false));
+    let host = {
+        let quit = quit.clone();
+        std::thread::spawn(move || {
+            server.run(
+                || quit.load(Ordering::SeqCst),
+                |request| {
+                    if request["operation"] == "boom" {
+                        panic!("synthetic native panic");
+                    }
+                    Ok(request)
+                },
+            )
+        })
+    };
+    let call = |operation: &str| {
+        let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+        transport::client_exchange(
+            &mut stream,
+            &endpoint.token,
+            json!({ "operation": operation }),
+        )
+    };
+    let failed = call("boom");
+    assert_eq!(failed["ok"], false);
+    assert_eq!(failed["error"]["code"], "internal_error");
+    assert_eq!(call("after")["result"]["operation"], "after");
+    let diagnostics = std::fs::read_to_string(directory.join("transport-errors.json")).unwrap();
+    assert!(diagnostics.contains("\"stage\":\"execute\""));
+    assert!(!diagnostics.contains("synthetic") && !diagnostics.contains("boom"));
+    assert!(directory.join("endpoint.json").exists());
+    quit.store(true, Ordering::SeqCst);
+    host.join().unwrap();
+    assert!(!directory.join("endpoint.json").exists());
+}
+
+#[test]
+fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory).unwrap();
+    let endpoint: Endpoint =
+        serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap();
+    // A failure outside an operation (here: the quit probe) ends the executor.
+    let host = std::thread::spawn(move || server.run(|| panic!("synthetic executor failure"), Ok));
+    assert!(host.join().is_err());
+    assert!(!directory.join("endpoint.json").exists());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", endpoint.port)).is_ok() {
+        assert!(std::time::Instant::now() < deadline, "Listener must close");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn previous_protocol_envelopes_fail_before_dispatch() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
