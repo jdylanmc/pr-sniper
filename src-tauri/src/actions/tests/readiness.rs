@@ -541,7 +541,13 @@ fn approve_only_and_no_permission_primaries_wait_for_ci_then_sign_off() {
         let mut env = env(&store);
         env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
         let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
-        assert!(!prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        // Denied in the packet; callable only so CI settling mid-run can sign off.
+        assert!(prepared
+            .packet
+            .record
+            .exits_denied
+            .iter()
+            .any(|denial| denial.exit == Exit::Lgtm));
         assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
         assert!(prepared.packet.text.contains("clean_review_exit: wait"));
         complete(
@@ -608,6 +614,150 @@ fn approve_only_and_no_permission_primaries_wait_for_ci_then_sign_off() {
             assert!(record.local_summary.is_some(), "local Ready sign-off");
             assert!(record.external_wait.is_none());
         }
+    }
+}
+
+fn read_only_primary(approve: bool) -> (tempfile::TempDir, Store, String) {
+    let (root, store, item) = fixture(1, approve, false);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].tools = Some(vec![
+        "read_changes".into(),
+        "ready_for_human".into(),
+        "panic_exit".into(),
+    ]);
+    store.save_settings(&settings).unwrap();
+    store.save_reviews(&[]).unwrap();
+    (root, store, item)
+}
+
+fn sign_off(action: crate::exits::LgtmAction) -> ExitCall {
+    ExitCall::Lgtm {
+        comment: "Reviewed; CI green.".into(),
+        resolve_own_threads: vec![],
+        action,
+        dismissed_teammate_findings: vec![],
+    }
+}
+
+#[test]
+fn ci_turning_green_mid_run_leaves_the_primary_its_sign_off() {
+    use crate::exits::LgtmAction;
+    for (approve, action) in [(true, LgtmAction::Approve), (false, LgtmAction::Ready)] {
+        let (_root, store, _) = read_only_primary(approve);
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (_, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        assert!(prepared.setup.tool_set.iter().any(|t| t == "lgtm"));
+        assert!(prepared
+            .packet
+            .text
+            .contains(crate::exits::gates::CI_PENDING_SIGN_OFF));
+        assert!(matches!(
+            (prepared.setup.gate)(&sign_off(action)),
+            Err(Refusal::Denied(reason)) if reason == crate::exits::gates::CI_PENDING_SIGN_OFF
+        ));
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        assert_eq!(
+            (prepared.setup.gate)(&sign_off(action)),
+            Ok(()),
+            "{action:?}"
+        );
+        assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
+#[test]
+fn wait_offered_beside_a_primarys_own_open_thread_is_accepted_at_exit() {
+    use crate::github::actions::HumanThread;
+    for approve in [true, false] {
+        let (_root, store, _) = read_only_primary(approve);
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            server.observation.checks = Some("PENDING".into());
+            server.observation.threads = vec![HumanThread {
+                id: "own".into(),
+                resolved: false,
+                outdated: false,
+                resolved_by: None,
+                comments: vec![
+                    json!({"fullDatabaseId":41,"body":"Finding.","path":"source.rs","line":1}),
+                ],
+            }];
+        }
+        let proof = |run: &ReviewRun| crate::github::threads::Ownership {
+            publication_id: "publication".into(),
+            configuration_id: "configuration".into(),
+            account_id: run.job.account_id.clone(),
+            repository_id: "100".into(),
+            repository_name: "example/repo".into(),
+            pull_request_id: run.job.pull_request_id.clone(),
+            number: run.job.number,
+            head_sha: "a".repeat(40),
+            assignment_id: run.assignment_id.clone(),
+            agent_id: "agent".into(),
+            review_id: "review".into(),
+            root_ids: vec!["41".into()],
+            body_hashes: Default::default(),
+        };
+        let wait = ExitCall::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        };
+        let (_, prepared) =
+            prepare_owned(&store, &env, &state, true, NOW + 12, |run| vec![proof(run)]);
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{approve}");
+        assert_eq!((prepared.setup.gate)(&wait), Ok(()), "{approve}");
+        // Someone else's open thread: neither offered nor accepted.
+        store.save_reviews(&[]).unwrap();
+        let (_, prepared) = prepare(&store, &env, &state, true, NOW + 14);
+        assert!(!prepared.setup.offered.contains(&Exit::Wait), "{approve}");
+        assert!((prepared.setup.gate)(&wait).is_err(), "{approve}");
+    }
+}
+
+#[test]
+fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
+    let (_root, store, _) = read_only_primary(false);
+    let green = snapshot(false, "SUCCESS");
+    poll(&store, &green, NOW + 10);
+    let env = env(&store);
+    let (run, _) = prepare(&store, &env, &green, true, NOW + 12);
+    let finalize = |state: PrSnapshot| {
+        let mut result = output();
+        result.output = ReviewOutput::from_exit(
+            sign_off(crate::exits::LgtmAction::Ready)
+                .outcome()
+                .unwrap()
+                .0,
+            None,
+        );
+        review_host::finalize_local_exit(
+            &GithubClient::new(SnapshotWire {
+                state,
+                required: vec![],
+            }),
+            &RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            },
+            run.job.number,
+            run.packet.as_ref().unwrap(),
+            &mut result,
+        )
+    };
+    assert!(finalize(green.clone()).is_ok());
+    // A check re-ran after the exit call: the review revision holds, CI does not.
+    for rerun in [snapshot(false, ""), snapshot(false, "FAILURE")] {
+        assert_eq!(
+            finalize(rerun).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed
+        );
     }
 }
 
@@ -941,6 +1091,17 @@ fn prepare(
     primary: bool,
     now: i64,
 ) -> (ReviewRun, packet_run::Prepared) {
+    prepare_owned(store, env, state, primary, now, |_| vec![])
+}
+
+fn prepare_owned(
+    store: &Store,
+    env: &Env<'_>,
+    state: &PrSnapshot,
+    primary: bool,
+    now: i64,
+    ownership: impl FnOnce(&ReviewRun) -> Vec<crate::github::threads::Ownership>,
+) -> (ReviewRun, packet_run::Prepared) {
     let assignment = store.load_settings().unwrap().repositories[0].assignments
         [usize::from(!primary)]
     .id
@@ -980,7 +1141,7 @@ fn prepare(
             acting_login: "actor",
             write_capability: true,
             teammates: crate::review::teammates::entries(store, &run).unwrap(),
-            ownership: vec![],
+            ownership: ownership(&run),
             iterations: &[],
             last_consumed_at: None,
         },

@@ -271,7 +271,14 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     if let Some(facts) = &f.sign_off {
                         after.facts = (**facts).clone();
                     }
-                    lgtm_denial(&after).map_or(Offer::Offered, Offer::Denied)
+                    match lgtm_denial(&after) {
+                        None => Offer::Offered,
+                        // Still callable: its exit-time gate re-reads CI.
+                        Some(_) if ci_blocks_only_sign_off(input) => {
+                            Offer::Denied(CI_PENDING_SIGN_OFF.into())
+                        }
+                        Some(reason) => Offer::Denied(reason),
+                    }
                 }
                 Exit::Wait => {
                     if wait_reasons(input).is_empty() {
@@ -298,11 +305,31 @@ pub fn ci_blocks_only_sign_off(input: &GateInput) -> bool {
     if let Some(facts) = &input.facts.sign_off {
         green.facts = (**facts).clone();
     }
-    // Provider blockers as they would read with CI green; other gates still deny.
+    // Provider blockers as they would read with CI green, on the same facts the
+    // sign-off is judged on; other gates still deny. The would-be-mergeable merge
+    // blocker drops its CI part too: behind base or conflicts never refuse a sign-off.
     green.facts.ci = Ci::Green;
-    green.facts.approve_blocker = input.facts.wait_approve_blocker.clone();
-    green.facts.merge_blocker = input.facts.wait_merge_blocker.clone();
+    green.facts.approve_blocker = green.facts.wait_approve_blocker.clone();
+    green.facts.merge_blocker = green.facts.wait_merge_blocker.clone();
+    green.facts.merge_blocker_if_mergeable = green.facts.wait_merge_blocker.clone();
     lgtm_denial(&green).is_none()
+}
+
+/// `lgtm`'s denial while pending CI alone blocks it. The exit stays callable so a
+/// run whose CI turns green before it exits can still sign off.
+pub const CI_PENDING_SIGN_OFF: &str =
+    "CI is pending. Wait for it, or call lgtm if it turns green before you exit.";
+
+/// The exits a run may call: the offered ones, plus `lgtm` while pending CI alone
+/// blocks it, so CI settling mid-run never strands the primary.
+pub fn callable(input: &GateInput, exits: &[(Exit, Offer)]) -> Vec<Exit> {
+    exits
+        .iter()
+        .filter(|(exit, offer)| {
+            offer.is_offered() || (*exit == Exit::Lgtm && ci_blocks_only_sign_off(input))
+        })
+        .map(|(exit, _)| *exit)
+        .collect()
 }
 
 pub fn wait_reasons(input: &GateInput) -> Vec<WaitReason> {

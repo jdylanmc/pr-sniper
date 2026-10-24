@@ -120,6 +120,10 @@ efficiency, merge-path and reliability fixes.
   - A primary whose sign-off is blocked only by pending CI can now `wait` for
     it whatever its permissions or tool list, so approve-only and no-permission
     primaries sign off (approve or Ready) once CI is green instead of stopping.
+    This holds beside its own open findings and for a merge primary behind base
+    or with conflicts. `lgtm` stays callable while only CI blocks it, so CI
+    turning green mid-run still signs off; a local Ready sign-off whose CI is
+    pending again at the final read is tossed.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on
