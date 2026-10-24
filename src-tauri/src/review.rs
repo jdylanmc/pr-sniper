@@ -934,6 +934,19 @@ impl Failure {
             panic.file, panic.line
         ))
     }
+    /// Runs host `work` at a review boundary. A panic in it is recorded on `trace`
+    /// and fails the attempt with its location instead of a generic join error.
+    pub(crate) fn caught<R>(
+        trace: Option<&diagnostics::Trace>,
+        work: impl FnOnce() -> Result<R, Self>,
+    ) -> Result<R, Self> {
+        crate::host_panic::catch(work).unwrap_or_else(|panic| {
+            if let Some(trace) = trace {
+                trace.host_panic(&panic);
+            }
+            Err(Self::host_panic(&panic))
+        })
+    }
     /// Repeated malformed or over-limit exit calls. Permanent, human needed.
     pub fn contract(message: impl Into<String>) -> Self {
         Self::permanent(message)

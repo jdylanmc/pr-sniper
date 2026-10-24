@@ -815,10 +815,7 @@ async fn execute_attempt(
                     Ok::<_, Failure>((context, client, packet))
                 })
             };
-            crate::host_panic::catch(prepare_packet).unwrap_or_else(|panic| {
-                preparation_trace.host_panic(&panic);
-                Err(Failure::host_panic(&panic))
-            })
+            Failure::caught(Some(&*preparation_trace), prepare_packet)
         });
         // Join blocking preparation before releasing its capacity/workspace ownership.
         let (context, client, packet) = prepared
@@ -918,10 +915,12 @@ async fn execute_attempt(
         });
         let final_app = app.clone();
         let final_run = run.clone();
-        let pull =
-            tauri::async_runtime::spawn_blocking(move || remote_gate(&final_app, &final_run))
-                .await
-                .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
+        let final_trace = diagnostics.clone();
+        let pull = tauri::async_runtime::spawn_blocking(move || {
+            Failure::caught(Some(&*final_trace), || remote_gate(&final_app, &final_run))
+        })
+        .await
+        .map_err(|_| Failure::permanent("Final eligibility check could not finish."))??;
         if pull.base_sha != expected_base {
             return Err(base_changed(Some(&expected_base)));
         }
@@ -939,9 +938,12 @@ async fn execute_attempt(
                 name: run.job.repository_name.clone(),
             };
             let number = run.job.number;
+            let local_trace = diagnostics.clone();
             result = tauri::async_runtime::spawn_blocking(move || {
-                finalize_local_exit(&client_after, &repo, number, &final_packet, &mut result)?;
-                Ok::<_, Failure>(result)
+                Failure::caught(Some(&*local_trace), || {
+                    finalize_local_exit(&client_after, &repo, number, &final_packet, &mut result)?;
+                    Ok(result)
+                })
             })
             .await
             .map_err(|_| Failure::permanent("State check could not finish."))??;
