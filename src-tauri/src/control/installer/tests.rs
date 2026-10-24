@@ -207,6 +207,51 @@ fn launch_repair_follows_only_an_owned_unmodified_entry() {
 }
 
 #[test]
+fn status_and_launch_repair_before_opt_in_create_nothing() {
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let server = app(&home, "app");
+    assert_eq!(integration_at(&home, &server).unwrap().state, "absent");
+    assert!(!repair_integration_at(&home, &server).unwrap());
+    assert!(!home.join(".copilot").exists());
+
+    let original = json!({"mcpServers":{"other":{"command":"keep"}}});
+    write_config(&home, &original);
+    assert_eq!(integration_at(&home, &server).unwrap().state, "absent");
+    assert!(!repair_integration_at(&home, &server).unwrap());
+    let names: Vec<_> = fs::read_dir(home.join(".copilot"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["mcp-config.json"]);
+    assert_eq!(config(&home), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn read_only_copilot_folder_still_reports_absent_and_installed() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = root();
+    let home = root.path().canonicalize().unwrap();
+    let server = app(&home, "app");
+    let copilot = home.join(".copilot");
+    write_config(&home, &json!({"mcpServers":{}}));
+    let lock = |mode| fs::set_permissions(&copilot, fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o500);
+    let absent = integration_at(&home, &server);
+    lock(0o700);
+    assert_eq!(absent.unwrap().state, "absent");
+
+    install_integration_at(&home, &server, None).unwrap();
+    lock(0o500);
+    let installed = integration_at(&home, &server);
+    let repaired = repair_integration_at(&home, &server);
+    lock(0o700);
+    assert_eq!(installed.unwrap().state, "installed");
+    assert!(!repaired.unwrap());
+}
+
+#[test]
 fn foreign_or_customized_entry_is_never_adopted_or_removed() {
     for owned in [false, true] {
         let root = root();
@@ -345,6 +390,7 @@ fn skill_detection_is_read_only_and_follows_links() {
     #[cfg(unix)]
     {
         // A git-managed skills folder linked as ~/.copilot/skills.
+        fs::create_dir_all(home.join(".copilot")).unwrap();
         let repository = home.join("agent-skills/skills/pr-sniper");
         fs::create_dir_all(&repository).unwrap();
         fs::write(repository.join("SKILL.md"), skill).unwrap();

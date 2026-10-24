@@ -775,6 +775,101 @@ fn relayed_request_with_one_changed_byte_is_rejected_undispatched() {
 }
 
 #[test]
+fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Arc,
+    };
+    use std::time::{Duration, Instant};
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory).unwrap();
+    let endpoint: Endpoint =
+        serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap();
+    let quit = Arc::new(AtomicBool::new(false));
+    let (started, running) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let (current, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let host = {
+        let (quit, current, peak) = (quit.clone(), current.clone(), peak.clone());
+        std::thread::spawn(move || {
+            server.run(
+                || quit.load(Ordering::SeqCst),
+                |request| {
+                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    if request["operation"] == "slow" {
+                        started.send(()).unwrap();
+                        released.recv().unwrap();
+                    }
+                    current.fetch_sub(1, Ordering::SeqCst);
+                    Ok(request)
+                },
+            )
+        })
+    };
+    let call = |operation: &'static str| {
+        let (port, token) = (endpoint.port, endpoint.token.clone());
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            transport::client_exchange(&mut stream, &token, json!({ "operation": operation }))
+        })
+    };
+    let slow = call("slow");
+    running.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The native operation is busy; a new client still gets its challenge
+    // well inside the client's 5-second pre-challenge window.
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let nonce = "b".repeat(64);
+    let asked = Instant::now();
+    send_frame(
+        &mut stream,
+        b"SNIPER1\n",
+        &json!({"protocol":PROTOCOL,"nonce":nonce}),
+    );
+    let challenge = transport::client_read(&mut stream);
+    assert!(asked.elapsed() < Duration::from_secs(1));
+    stream.set_read_timeout(None).unwrap();
+    let raw = br#"{"operation":"second"}"#;
+    send_frame(
+        &mut stream,
+        b"SNIPER1\n",
+        &request_frame(
+            &endpoint.token,
+            &nonce,
+            challenge["nonce"].as_str().unwrap(),
+            raw,
+        ),
+    );
+    let second = std::thread::spawn(move || transport::client_read(&mut stream));
+    let queued: Vec<_> = (1..transport::QUEUE).map(|_| call("queued")).collect();
+    std::thread::sleep(Duration::from_millis(1500));
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    let busy =
+        transport::client_exchange(&mut stream, &endpoint.token, json!({"operation":"over"}));
+    assert_eq!(busy["error"]["code"], "control_busy");
+    // Held longer than the client's pre-challenge timeout.
+    std::thread::sleep(Duration::from_millis(4000));
+    release.send(()).unwrap();
+    assert_eq!(slow.join().unwrap()["result"]["operation"], "slow");
+    assert_eq!(second.join().unwrap()["result"]["operation"], "second");
+    for call in queued {
+        assert_eq!(call.join().unwrap()["result"]["operation"], "queued");
+    }
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "Native execution stays serialized"
+    );
+    quit.store(true, Ordering::SeqCst);
+    host.join().unwrap();
+    assert!(!directory.join("endpoint.json").exists());
+}
+
+#[test]
 fn previous_protocol_envelopes_fail_before_dispatch() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

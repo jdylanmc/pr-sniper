@@ -22,6 +22,7 @@ const OWNER: &str = "copilot-mcp-owner.json";
 const LEGACY_OWNER: &str = "copilot-entry.json";
 const INTENT: &str = "copilot-mcp-intent.json";
 const LOCK: &str = "copilot-mcp.lock";
+const WORK: &str = ".pr-sniper-installer";
 const MAX_CONFIG: u64 = 8 * 1024 * 1024;
 const MAX_SKILL: u64 = 256 * 1024;
 
@@ -402,17 +403,12 @@ fn parent_identity(config: &Path) -> Result<(u64, u128), Error> {
 impl Scope {
     fn new(home: &Path) -> Result<Self, Error> {
         let paths = resolve(home)?;
-        let work = paths.copilot.join(".pr-sniper-installer");
+        let work = paths.copilot.join(WORK);
         private_directory(&work).map_err(io_error)?;
-        for name in [OWNER, INTENT] {
-            private_fs::recover(&work, Some(name)).map_err(io_error)?;
-        }
-        let config = &paths.config;
-        if let Some(parent) = config.parent().filter(|parent| parent.exists()) {
-            private_fs::recover(parent, config.file_name().and_then(|name| name.to_str()))
-                .map_err(io_error)?;
-        }
-        let parent = parent_identity(config)?;
+        // Committed reads skip stage housekeeping: `private_fs::replace`
+        // recovers its own stages before each write, so a read-only
+        // `~/.copilot` still reports status.
+        let parent = parent_identity(&paths.config)?;
         Ok(Self {
             home: home.into(),
             paths,
@@ -489,25 +485,7 @@ impl Scope {
             .map(|owner| owner.entry))
     }
     fn config(&self) -> Result<(Option<Vec<u8>>, Value), Error> {
-        let path = &self.paths.config;
-        match private_fs::existing_file(path) {
-            Ok(()) => {
-                if fs::metadata(path).map_err(io_error)?.len() > MAX_CONFIG {
-                    return Err(Error::new("mcp_config_too_large", ()));
-                }
-                let bytes = fs::read(path).map_err(io_error)?;
-                let value: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| Error::new("mcp_config_invalid", ()))?;
-                if !value.is_object() || value.get("mcpServers").is_some_and(|s| !s.is_object()) {
-                    return Err(Error::new("mcp_config_invalid", ()));
-                }
-                Ok((Some(bytes), value))
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                Ok((None, json!({"mcpServers":{}})))
-            }
-            Err(_) => Err(conflict()),
-        }
+        read_config(&self.paths.config)
     }
     fn entry(&self) -> Result<Option<Value>, Error> {
         Ok(self
@@ -602,23 +580,7 @@ impl Scope {
         self.clear(INTENT)
     }
     fn status(&self, server: &Server) -> Result<Installation, Error> {
-        let entry = self.entry()?;
-        let owner = self.owner()?;
-        let state = match (&owner, &entry) {
-            (None, None) => "absent",
-            (None, Some(_)) => return Err(conflict()),
-            (Some(owned), Some(entry)) if owned != entry => return Err(conflict()),
-            (Some(_), Some(entry)) if *entry == desired(server) => "installed",
-            // Owned but stale (moved app) or removed from the host file.
-            _ => "incomplete",
-        };
-        Ok(Installation {
-            state,
-            revision: (state != "absent").then(|| revision(&json!({ "entry": entry }))),
-            mcp_registered: entry.is_some(),
-            skill_detected: skill_detected(&self.home),
-            skill_command: SKILL_COMMAND,
-        })
+        installation(&self.home, server, self.owner()?, self.entry()?)
     }
     fn apply(&self, after: Option<Value>) -> Result<(), Error> {
         self.write(
@@ -632,6 +594,74 @@ impl Scope {
         checkpoint("mcp-intent-written")?;
         self.recover()
     }
+}
+
+fn read_config(path: &Path) -> Result<(Option<Vec<u8>>, Value), Error> {
+    match private_fs::existing_file(path) {
+        Ok(()) => {
+            if fs::metadata(path).map_err(io_error)?.len() > MAX_CONFIG {
+                return Err(Error::new("mcp_config_too_large", ()));
+            }
+            let bytes = fs::read(path).map_err(io_error)?;
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| Error::new("mcp_config_invalid", ()))?;
+            if !value.is_object() || value.get("mcpServers").is_some_and(|s| !s.is_object()) {
+                return Err(Error::new("mcp_config_invalid", ()));
+            }
+            Ok((Some(bytes), value))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((None, json!({"mcpServers":{}}))),
+        Err(_) => Err(conflict()),
+    }
+}
+
+fn installation(
+    home: &Path,
+    server: &Server,
+    owner: Option<Value>,
+    entry: Option<Value>,
+) -> Result<Installation, Error> {
+    let state = match (&owner, &entry) {
+        (None, None) => "absent",
+        (None, Some(_)) => return Err(conflict()),
+        (Some(owned), Some(entry)) if owned != entry => return Err(conflict()),
+        (Some(_), Some(entry)) if *entry == desired(server) => "installed",
+        // Owned but stale (moved app) or removed from the host file.
+        _ => "incomplete",
+    };
+    Ok(Installation {
+        state,
+        revision: (state != "absent").then(|| revision(&json!({ "entry": entry }))),
+        mcp_registered: entry.is_some(),
+        skill_detected: skill_detected(home),
+        skill_command: SKILL_COMMAND,
+    })
+}
+
+/// Read-only status while no installer state exists. Before any opt-in the
+/// app creates nothing under `~/.copilot`; with receipts, intents or a
+/// quarantine present, `None` selects the locked, recovering path.
+fn observe(home: &Path, server: &Server) -> Result<Option<Installation>, Error> {
+    let paths = resolve(home)?;
+    let work = paths.copilot.join(WORK);
+    match fs::symlink_metadata(&work) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(_) => return Ok(None),
+        Ok(metadata) if !metadata.is_dir() => return Ok(None),
+        Ok(_) => {
+            for entry in fs::read_dir(&work).map_err(io_error)? {
+                if entry.map_err(io_error)?.file_name() != LOCK {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    let entry = read_config(&paths.config)?
+        .1
+        .get("mcpServers")
+        .and_then(|s| s.get(NAME))
+        .cloned();
+    installation(home, server, None, entry).map(Some)
 }
 
 fn not_installed() -> Error {
@@ -652,6 +682,9 @@ fn validate(server: &Server) -> Result<(), Error> {
 }
 
 pub fn integration_at(home: &Path, server: &Server) -> Result<Installation, Error> {
+    if let Some(status) = observe(home, server)? {
+        return Ok(status);
+    }
     let scope = Scope::new(home)?;
     let _guard = scope.lock()?;
     scope.recover()?;
@@ -699,6 +732,10 @@ pub fn repair_integration_at(home: &Path, server: &Server) -> Result<bool, Error
         return Ok(false);
     }
     validate(server)?;
+    // Nothing owned: never create installer state on launch.
+    if observe(home, server)?.is_some() {
+        return Ok(false);
+    }
     let scope = Scope::new(home)?;
     let _guard = scope.lock()?;
     scope.recover()?;

@@ -9,6 +9,10 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -109,43 +113,143 @@ impl Server {
         })
     }
 
+    /// The calling thread is the single native executor. A separate acceptor
+    /// hands each connection to a bounded pool that completes the handshake
+    /// promptly, even while a long operation runs; only authenticated
+    /// requests reach the executor's bounded queue.
     pub(crate) fn run(
         self,
         quitting: impl Fn() -> bool,
         mut execute: impl FnMut(Value) -> Result<Value, Error>,
     ) {
-        let mut failures = Vec::new();
-        while !quitting() {
-            match self.listener.accept() {
-                Ok((stream, address)) if address.ip().is_loopback() => {
-                    // A single bounded reader: unauthenticated clients never
-                    // allocate workers or reach any application operation.
-                    let started = Instant::now();
-                    if let Err(failure) = serve_diagnosed(stream, &self.endpoint, &mut execute) {
-                        failures.push(json!({
-                            "stage":failure.stage,"kind":format!("{:?}",failure.error.kind()),
-                            "elapsed_ms":started.elapsed().as_millis()
-                        }));
-                        if failures.len() > 16 {
-                            failures.remove(0);
-                        }
-                        // Content-free and bounded; never include frame/token bytes.
-                        let _ = private_fs::replace(
-                            &self.path.with_file_name("transport-errors.json"),
-                            &serde_json::to_vec(&failures).unwrap(),
-                            "control transport diagnostics",
-                        );
+        let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
+        let stop = Arc::new(AtomicBool::new(false));
+        let acceptor = {
+            let stop = stop.clone();
+            let endpoint = Arc::new(self.endpoint);
+            let path = self.path.clone();
+            let listener = self.listener;
+            std::thread::Builder::new()
+                .name("local-control-accept".into())
+                .spawn(move || accept(listener, endpoint, path, jobs, stop))
+        };
+        if acceptor.is_ok() {
+            while !quitting() {
+                match queue.recv_timeout(Duration::from_millis(25)) {
+                    Ok(job) => {
+                        let _ = job.reply.send(execute(job.request));
                     }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(_) => break,
             }
         }
+        stop.store(true, Ordering::SeqCst);
         let _ = fs::remove_file(&self.path);
     }
+}
+
+/// Maximum concurrent connections (handshaking, queued or awaiting a reply).
+const CONNECTIONS: usize = 16;
+/// Authenticated requests waiting behind the running native operation.
+pub(crate) const QUEUE: usize = 4;
+
+struct Job {
+    request: Value,
+    reply: mpsc::Sender<Result<Value, Error>>,
+}
+
+fn accept(
+    listener: TcpListener,
+    endpoint: Arc<Endpoint>,
+    path: PathBuf,
+    jobs: mpsc::SyncSender<Job>,
+    stop: Arc<AtomicBool>,
+) {
+    let active = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    while !stop.load(Ordering::SeqCst) {
+        // At capacity, further clients wait in the OS backlog.
+        if active.load(Ordering::SeqCst) >= CONNECTIONS {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        match listener.accept() {
+            Ok((stream, address)) if address.ip().is_loopback() => {
+                // Released when the connection ends or its thread never starts.
+                let slot = Slot::take(&active);
+                let (endpoint, jobs, failures, path) = (
+                    endpoint.clone(),
+                    jobs.clone(),
+                    failures.clone(),
+                    path.clone(),
+                );
+                let _ = std::thread::Builder::new()
+                    .name("local-control-connection".into())
+                    .spawn(move || {
+                        let _slot = slot;
+                        let started = Instant::now();
+                        let result = serve_diagnosed(stream, &endpoint, &mut |request| {
+                            submit(&jobs, request)
+                        });
+                        if let Err(failure) = result {
+                            record(&failures, &path, failure, started);
+                        }
+                    });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+struct Slot(Arc<AtomicUsize>);
+impl Slot {
+    fn take(active: &Arc<AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::SeqCst);
+        Self(active.clone())
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Backpressure: a full queue is a typed, unexecuted rejection.
+fn submit(jobs: &mpsc::SyncSender<Job>, request: Value) -> Result<Value, Error> {
+    let (reply, result) = mpsc::channel();
+    match jobs.try_send(Job { request, reply }) {
+        Ok(()) => result
+            .recv()
+            .unwrap_or_else(|_| Err(Error::new("app_quitting", Value::Null))),
+        Err(mpsc::TrySendError::Full(_)) => {
+            Err(Error::new("control_busy", json!({"queue": QUEUE})))
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => Err(Error::new("app_quitting", Value::Null)),
+    }
+}
+
+fn record(failures: &Mutex<Vec<Value>>, path: &Path, failure: TransportFailure, started: Instant) {
+    let Ok(mut failures) = failures.lock() else {
+        return;
+    };
+    failures.push(json!({
+        "stage":failure.stage,"kind":format!("{:?}",failure.error.kind()),
+        "elapsed_ms":started.elapsed().as_millis()
+    }));
+    if failures.len() > 16 {
+        failures.remove(0);
+    }
+    // Content-free and bounded; never include frame/token bytes.
+    let _ = private_fs::replace(
+        &path.with_file_name("transport-errors.json"),
+        &serde_json::to_vec(&*failures).unwrap(),
+        "control transport diagnostics",
+    );
 }
 
 fn read_deadline(

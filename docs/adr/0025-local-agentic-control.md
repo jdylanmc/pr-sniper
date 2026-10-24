@@ -56,8 +56,12 @@
 - Listener polling is nonblocking; each accepted connection explicitly switches
   to bounded blocking I/O so inherited socket flags cannot discard split frames.
   Failed frames produce only a bounded private phase/IO-kind/timing diagnostic.
-- One control reader; unsupported methods, unknown fields, authentication and
-  protocol mismatches fail before application dispatch.
+- An acceptor hands connections to at most 16 connection threads, so the
+  challenge stays prompt while a native operation runs; further clients wait in
+  the OS backlog. Only authenticated requests enter a four-slot queue to one
+  native executor (single writer). A full queue returns `control_busy`, unexecuted.
+  Unsupported methods, unknown fields, authentication and protocol mismatches
+  fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.
   Configuration revision plus resource expected-value protects stale saves.
 - Inspect returns bounded counts/control state; accounts/resources/queue are
@@ -96,6 +100,9 @@
   (the NSIS installer owns only its executable and uninstaller).
 - Settings owns only `mcpServers.pr-sniper` in `~/.copilot/mcp-config.json`:
   `node <server> --app <executable>`. No skill files are written.
+- Status and launch repair create nothing: until installer state exists they
+  only read `mcp-config.json`. The private work directory and lock are created
+  by explicit Install/Update/Repair/Remove, or used when receipts/intents exist.
 - A lock and durable intent make registration/removal recoverable. Other
   entries and root configuration are merged from the latest read. Custom own
   entries and malformed config conflict; no force/adoption. Not a global lock
