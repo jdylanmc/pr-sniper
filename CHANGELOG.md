@@ -43,7 +43,9 @@ efficiency, merge-path and reliability fixes.
 - Notifications are short and state-first: **Approved · repo#123** with the PR
   title as the body and at most one reason (e.g. **Needs your review**). Each
   carries a state badge: green check, amber `!`, blue crosshair or red `×`
-  (macOS thumbnail, Windows app logo).
+  (macOS thumbnail, Windows app logo). Provider text drops every bidi control
+  and the XML-invalid U+FFFE/U+FFFF, and a notice under a legacy item id still
+  names its PR.
 
 ### Fixed
 

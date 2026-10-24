@@ -120,7 +120,7 @@ impl Subject {
         snapshot
             .items
             .iter()
-            .find(|item| &item.id == item_id)
+            .find(|item| &item.id == item_id || item.aliases.contains(item_id))
             .map(Self::of)
     }
 }
@@ -143,15 +143,19 @@ fn failure_reason(cause: &str) -> Option<&'static str> {
     }
 }
 
-/// Single-line text without control or bidi-override characters, so a
-/// provider-supplied title cannot reorder or spoof the notification.
+/// Single-line text without control, bidi-control or XML-invalid characters, so a
+/// provider-supplied title cannot reorder or spoof the notification, or make a
+/// Windows toast's XML unloadable.
 fn clean(value: &str) -> String {
     value
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .filter(|c| {
             !c.is_control()
-                && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+                // Every Unicode Bidi_Control character.
+                && !matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+                // The only XML 1.0-invalid chars left after `is_control`.
+                && !matches!(c, '\u{FFFE}' | '\u{FFFF}')
         })
         .collect::<String>()
         .split_whitespace()
