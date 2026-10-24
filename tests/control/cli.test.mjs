@@ -318,6 +318,28 @@ test("a descriptor whose process exited is stale and never contacted", async (t)
   }
 });
 
+test("a withdrawn descriptor after a fatal app exit relaunches a fresh app", async (t) => {
+  const write = await profile(t);
+  const app = await fakeApp(token, (input) => ({
+    protocol,
+    ok: true,
+    result: input,
+  }));
+  // No endpoint.json: the old process withdrew it before exiting.
+  const relaunch = setTimeout(
+    () => write({ port: app.port, token, pid: process.pid }),
+    100,
+  );
+  try {
+    const reply = await invoke({ operation: "inspect" });
+    assert.equal(reply.ok, true);
+    assert.equal(reply.result.operation, "inspect");
+  } finally {
+    clearTimeout(relaunch);
+    await app.close();
+  }
+});
+
 test("relative isolated profiles fail rather than selecting production data", () => {
   assert.throws(() => dataRoot({ PR_SNIPER_DATA_DIR: "relative" }), {
     code: "invalid_data_directory",

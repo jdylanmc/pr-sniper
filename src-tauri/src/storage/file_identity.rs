@@ -23,6 +23,11 @@ pub(crate) struct Identity {
 }
 
 impl Identity {
+    /// Same file object (volume and inode/file ID), whatever its metadata.
+    pub(crate) fn same_file(&self, other: &Identity) -> bool {
+        self.volume == other.volume && self.file == other.file
+    }
+
     /// Whether the file last changed long enough before `now` that any later
     /// change gets a different change time.
     pub(crate) fn settled(&self, now: SystemTime) -> bool {

@@ -60,10 +60,13 @@
   challenge stays prompt while a native operation runs; further clients wait in
   the OS backlog. Only authenticated requests enter a four-slot queue to one
   native executor (single writer). A full queue returns `control_busy`, unexecuted.
-  A panicking operation returns `internal_error` and records a content-free
-  diagnostic; native commits are atomic, so the executor keeps serving. If the
-  executor itself ends, the listener closes and `endpoint.json` is removed so
-  clients relaunch.
+  A panicking operation is fatal: shared state may be poisoned or partly
+  committed. The request returns `outcome_unknown`, a content-free diagnostic
+  is recorded, queued requests are rejected unexecuted, the listener stops, the
+  descriptor is withdrawn and the app exits without the store-flushing Quit
+  path; the next client launch starts a clean process. However the executor
+  ends, it withdraws only its own descriptor (PID, capability and file
+  identity; moved aside and re-verified), never a successor's.
   Unsupported methods, unknown fields, authentication and protocol mismatches
   fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.

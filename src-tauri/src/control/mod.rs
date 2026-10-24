@@ -64,6 +64,17 @@ pub(crate) fn start(app: &tauri::AppHandle, root: &Path) -> Result<(), String> {
                         .load(std::sync::atomic::Ordering::SeqCst)
                 },
                 |request| tauri::async_runtime::block_on(operations::execute(&app, request)),
+                || {
+                    // Shared state may be poisoned or partly committed: stop
+                    // new work and exit without the store-flushing Quit path,
+                    // so the next client launch starts a clean process.
+                    let host = app.state::<crate::Host>();
+                    host.quitting
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    host.copilot.request_shutdown();
+                    eprintln!("PR Sniper: local control operation failed; exiting.");
+                    app.exit(70);
+                },
             );
         })
         .map_err(|_| "Local control could not start.".to_string())?;

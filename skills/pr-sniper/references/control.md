@@ -85,8 +85,9 @@ seconds). The CLI supplies these once if absent. Keep them when retrying a lost
 reply. Receipts last five minutes; older requests fail `expired_request`.
 An interrupted request remains `outcome_unknown`, never re-executed.
 `control_busy` means the request was not executed (native queue full); retry it
-later with the same identity. `internal_error` means the operation failed
-unexpectedly; read current state before any retry.
+later with the same identity. An operation that crashes the app also returns
+`outcome_unknown`; the app exits and relaunches on the next call. Inspect the
+receipt (same request ID) and current state before any retry.
 Mutation success includes `replayed`; a replay is the original observation,
 not live status. Read `queue` again for current queue state. CLI responses include
 the exact request ID and timestamp needed to retry a lost reply.

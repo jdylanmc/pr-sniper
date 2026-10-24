@@ -805,6 +805,7 @@ fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
                     current.fetch_sub(1, Ordering::SeqCst);
                     Ok(request)
                 },
+                || panic!("No operation panics here"),
             )
         })
     };
@@ -869,8 +870,20 @@ fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
     assert!(!directory.join("endpoint.json").exists());
 }
 
+fn read_endpoint(directory: &std::path::Path) -> Endpoint {
+    serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap()
+}
+
+fn wait_closed(port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(std::time::Instant::now() < deadline, "Listener must close");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[test]
-fn panicking_operation_fails_alone_and_executor_keeps_serving() {
+fn panicking_operation_is_outcome_unknown_and_fatal() {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -878,42 +891,56 @@ fn panicking_operation_fails_alone_and_executor_keeps_serving() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("control");
     let server = transport::Server::bind(&directory).unwrap();
-    let endpoint: Endpoint =
-        serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap();
-    let quit = Arc::new(AtomicBool::new(false));
+    let endpoint = read_endpoint(&directory);
+    let exited = Arc::new(AtomicBool::new(false));
     let host = {
-        let quit = quit.clone();
+        let exited = exited.clone();
         std::thread::spawn(move || {
             server.run(
-                || quit.load(Ordering::SeqCst),
+                || false,
                 |request| {
                     if request["operation"] == "boom" {
                         panic!("synthetic native panic");
                     }
                     Ok(request)
                 },
+                // Injectable application exit.
+                || exited.store(true, Ordering::SeqCst),
             )
         })
     };
-    let call = |operation: &str| {
-        let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
-        transport::client_exchange(
-            &mut stream,
-            &endpoint.token,
-            json!({ "operation": operation }),
-        )
-    };
-    let failed = call("boom");
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    let failed =
+        transport::client_exchange(&mut stream, &endpoint.token, json!({"operation":"boom"}));
     assert_eq!(failed["ok"], false);
-    assert_eq!(failed["error"]["code"], "internal_error");
-    assert_eq!(call("after")["result"]["operation"], "after");
+    assert_eq!(failed["error"]["code"], "outcome_unknown");
+    host.join().unwrap();
+    assert!(exited.load(Ordering::SeqCst), "App exit requested");
+    assert!(
+        !directory.join("endpoint.json").exists(),
+        "Endpoint withdrawn"
+    );
+    wait_closed(endpoint.port);
     let diagnostics = std::fs::read_to_string(directory.join("transport-errors.json")).unwrap();
     assert!(diagnostics.contains("\"stage\":\"execute\""));
     assert!(!diagnostics.contains("synthetic") && !diagnostics.contains("boom"));
-    assert!(directory.join("endpoint.json").exists());
+
+    // The relaunched process serves from a fresh descriptor.
+    let fresh = transport::Server::bind(&directory).unwrap();
+    let next = read_endpoint(&directory);
+    assert_ne!(next.token, endpoint.token);
+    let quit = Arc::new(AtomicBool::new(false));
+    let host = {
+        let quit = quit.clone();
+        std::thread::spawn(move || {
+            fresh.run(|| quit.load(Ordering::SeqCst), Ok, || panic!("Not fatal"))
+        })
+    };
+    let mut stream = TcpStream::connect(("127.0.0.1", next.port)).unwrap();
+    let reply = transport::client_exchange(&mut stream, &next.token, json!({"operation":"after"}));
+    assert_eq!(reply["result"]["operation"], "after");
     quit.store(true, Ordering::SeqCst);
     host.join().unwrap();
-    assert!(!directory.join("endpoint.json").exists());
 }
 
 #[test]
@@ -921,17 +948,42 @@ fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("control");
     let server = transport::Server::bind(&directory).unwrap();
-    let endpoint: Endpoint =
-        serde_json::from_slice(&std::fs::read(directory.join("endpoint.json")).unwrap()).unwrap();
+    let endpoint = read_endpoint(&directory);
     // A failure outside an operation (here: the quit probe) ends the executor.
-    let host = std::thread::spawn(move || server.run(|| panic!("synthetic executor failure"), Ok));
+    let host =
+        std::thread::spawn(move || server.run(|| panic!("synthetic executor failure"), Ok, || {}));
     assert!(host.join().is_err());
     assert!(!directory.join("endpoint.json").exists());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", endpoint.port)).is_ok() {
-        assert!(std::time::Instant::now() < deadline, "Listener must close");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    wait_closed(endpoint.port);
+}
+
+#[test]
+fn teardown_never_removes_a_successor_descriptor() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("control");
+    let old = transport::Server::bind(&directory).unwrap();
+    // A successor publishes before the old server tears down.
+    let successor = transport::Server::bind(&directory).unwrap();
+    let published = std::fs::read(directory.join("endpoint.json")).unwrap();
+    std::thread::spawn(move || old.run(|| true, Ok, || {}))
+        .join()
+        .unwrap();
+    assert_eq!(
+        std::fs::read(directory.join("endpoint.json")).unwrap(),
+        published,
+        "Successor descriptor survives"
+    );
+    let names: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.contains("retired"))
+        .collect();
+    assert!(names.is_empty(), "{names:?}");
+    // The successor still withdraws its own.
+    std::thread::spawn(move || successor.run(|| true, Ok, || {}))
+        .join()
+        .unwrap();
+    assert!(!directory.join("endpoint.json").exists());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::Error;
-use crate::storage::private_fs;
+use crate::storage::{file_identity, private_fs};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -57,6 +57,8 @@ pub(crate) struct Server {
     listener: TcpListener,
     endpoint: Endpoint,
     path: PathBuf,
+    /// The descriptor this server wrote; only that file is ever withdrawn.
+    file: file_identity::Identity,
 }
 
 /// Fail closed rather than repair a publicly readable control directory.
@@ -107,10 +109,15 @@ impl Server {
             &serde_json::to_vec(&endpoint).unwrap(),
             "control endpoint",
         )?;
+        let file = file_identity::identity(&path)
+            .ok()
+            .flatten()
+            .ok_or("Local control unavailable.")?;
         Ok(Self {
             listener,
             endpoint,
             path,
+            file,
         })
     }
 
@@ -118,20 +125,34 @@ impl Server {
     /// hands each connection to a bounded pool that completes the handshake
     /// promptly, even while a long operation runs; only authenticated
     /// requests reach the executor's bounded queue.
+    ///
+    /// A panicking operation may have poisoned shared state or followed a
+    /// partial commit, so it is fatal: the request is `outcome_unknown`, the
+    /// listener stops, this server's descriptor is withdrawn and `fatal` asks
+    /// the application to exit so the next client relaunches a clean process.
     pub(crate) fn run(
         self,
         quitting: impl Fn() -> bool,
         mut execute: impl FnMut(Value) -> Result<Value, Error>,
+        fatal: impl FnOnce(),
     ) {
-        let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
         let failures = Arc::new(Mutex::new(Vec::new()));
-        // Stops accepting and withdraws the descriptor however this thread
-        // ends, so clients relaunch instead of reaching a dead executor.
-        let _teardown = Teardown {
+        // Declared before the queue so an unwinding executor first releases
+        // queued waiters, then stops accepting and withdraws the descriptor.
+        let mut teardown = Teardown {
             stop: stop.clone(),
-            path: self.path.clone(),
+            active: active.clone(),
+            acceptor: None,
+            owned: Owned {
+                path: self.path.clone(),
+                token: self.endpoint.token.clone(),
+                pid: self.endpoint.pid,
+                file: self.file,
+            },
         };
+        let (jobs, queue) = mpsc::sync_channel::<Job>(QUEUE);
         let acceptor = {
             let (stop, failures) = (stop.clone(), failures.clone());
             let endpoint = Arc::new(self.endpoint);
@@ -139,46 +160,115 @@ impl Server {
             let listener = self.listener;
             std::thread::Builder::new()
                 .name("local-control-accept".into())
-                .spawn(move || accept(listener, endpoint, path, jobs, stop, failures))
+                .spawn(move || accept(listener, endpoint, path, jobs, stop, active, failures))
         };
-        if acceptor.is_err() {
+        let Ok(acceptor) = acceptor else {
             return;
-        }
+        };
+        teardown.acceptor = Some(acceptor);
+        let mut failed = false;
         while !quitting() {
             match queue.recv_timeout(Duration::from_millis(25)) {
                 Ok(job) => {
                     let started = Instant::now();
-                    // Native commits are atomic replacements under the Store
-                    // mutex and receipts are reserved before execution, so a
-                    // panicking operation fails alone; the executor continues.
-                    let result =
-                        std::panic::catch_unwind(AssertUnwindSafe(|| execute(job.request)))
-                            .unwrap_or_else(|_| {
-                                note(
-                                    &failures,
-                                    &self.path,
-                                    json!({"stage":"execute","kind":"Panic",
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| execute(job.request))) {
+                        Ok(result) => {
+                            let _ = job.reply.send(result);
+                        }
+                        Err(_) => {
+                            note(
+                                &failures,
+                                &self.path,
+                                json!({"stage":"execute","kind":"Panic",
                                     "elapsed_ms":started.elapsed().as_millis()}),
-                                );
-                                Err(Error::new("internal_error", Value::Null))
-                            });
-                    let _ = job.reply.send(result);
+                            );
+                            // The operation may have partly committed: neither
+                            // success nor failure.
+                            let _ = job
+                                .reply
+                                .send(Err(Error::new("outcome_unknown", Value::Null)));
+                            failed = true;
+                            break;
+                        }
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
+        // Queued requests never ran; their clients get a typed rejection.
+        drop(queue);
+        drop(teardown);
+        if failed {
+            fatal();
+        }
     }
 }
 
+/// Identity of the descriptor a server wrote.
+struct Owned {
+    path: PathBuf,
+    token: String,
+    pid: u32,
+    file: file_identity::Identity,
+}
+
+impl Owned {
+    fn matches(&self, path: &Path) -> bool {
+        file_identity::identity(path)
+            .ok()
+            .flatten()
+            .is_some_and(|file| file.same_file(&self.file))
+            && fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Endpoint>(&bytes).ok())
+                .is_some_and(|endpoint| {
+                    endpoint.pid == self.pid && authenticated(&endpoint.token, &self.token)
+                })
+    }
+
+    /// Removes the descriptor only while it is still this server's. A
+    /// successor's replacement is never deleted: the file is first moved
+    /// aside and re-verified, and one moved aside by a race is restored
+    /// unless an even newer descriptor already exists.
+    fn withdraw(&self) {
+        if !self.matches(&self.path) {
+            return;
+        }
+        let aside = self.path.with_file_name(format!(
+            "endpoint.{}.retired",
+            uuid::Uuid::new_v4().simple()
+        ));
+        if fs::rename(&self.path, &aside).is_err() {
+            return;
+        }
+        if !self.matches(&aside) {
+            // No-clobber restore: a hard link fails if a newer file exists.
+            let _ = fs::hard_link(&aside, &self.path);
+        }
+        let _ = fs::remove_file(&aside);
+    }
+}
+
+/// Stops accepting, waits briefly for in-flight replies, then withdraws this
+/// server's descriptor, however the executor ends.
 struct Teardown {
     stop: Arc<AtomicBool>,
-    path: PathBuf,
+    active: Arc<AtomicUsize>,
+    acceptor: Option<std::thread::JoinHandle<()>>,
+    owned: Owned,
 }
 impl Drop for Teardown {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = fs::remove_file(&self.path);
+        if let Some(acceptor) = self.acceptor.take() {
+            let _ = acceptor.join();
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while self.active.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.owned.withdraw();
     }
 }
 
@@ -198,9 +288,9 @@ fn accept(
     path: PathBuf,
     jobs: mpsc::SyncSender<Job>,
     stop: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
     failures: Arc<Mutex<Vec<Value>>>,
 ) {
-    let active = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
         // At capacity, further clients wait in the OS backlog.
         if active.load(Ordering::SeqCst) >= CONNECTIONS {
