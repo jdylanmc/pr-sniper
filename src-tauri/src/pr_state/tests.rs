@@ -77,14 +77,22 @@ fn observe(states: &mut PrStates, snapshot: &PrSnapshot, reviewed: bool) -> Chan
 #[test]
 fn diff_table_queues_only_real_changes() {
     type Edit = fn(&mut PrSnapshot);
-    let table: [(&str, Edit, bool); 7] = [
+    let table: [(&str, Edit, bool); 11] = [
         ("no change", |_| {}, false),
         ("provider reorder", |s| s.reviews.reverse(), false),
         (
             "ci conclusion",
             |s| s.checks[0].conclusion = "FAILURE".into(),
-            true,
+            false,
         ),
+        (
+            "check started",
+            |s| s.checks[0].status = "IN_PROGRESS".into(),
+            false,
+        ),
+        ("mergeable", |s| s.mergeable = "CONFLICTING".into(), false),
+        ("label", |s| s.labels.push("ready".into()), false),
+        ("base moved", |s| s.base = "s2".into(), true),
         (
             "comment edit",
             |s| s.comments[0].body = "edited".into(),
@@ -307,4 +315,67 @@ fn external_wait_draft_and_required_reviews_wake_on_observed_changes() {
         assert_eq!(observe(&mut states, &state, true), Change::None);
         assert!(states.get(&binding()).unwrap().exit.is_none());
     }
+}
+
+#[test]
+fn legacy_full_snapshot_hashes_translate_without_a_new_state() {
+    let mut states = PrStates::default();
+    assert_eq!(observe(&mut states, &snapshot(), true), Change::Adopted);
+    let record = states.records.first_mut().unwrap();
+    let old = snapshot().normalize().legacy_hash();
+    record.baseline_hash = Some(old.clone());
+    record.hash = Some(old);
+    let mut next = snapshot();
+    next.checks[0].status = "IN_PROGRESS".into();
+    assert_eq!(observe(&mut states, &next, true), Change::None);
+    let record = states.get(&binding()).unwrap();
+    assert_eq!(record.baseline_hash, Some(next.normalize().hash()));
+    assert_eq!(states.state_seq(&binding()), 0);
+}
+
+#[test]
+fn a_ci_wait_woken_by_green_keeps_the_review_revision() {
+    let wait = |states: &mut PrStates, state: &PrSnapshot| {
+        let seq = states.state_seq(&binding());
+        states.wait(
+            &binding(),
+            &state.normalize().hash(),
+            ExternalWait {
+                state_seq: seq,
+                reason: crate::exits::WaitReason::Ci,
+                assignment_id: "primary".into(),
+                agent_id: "agent".into(),
+                snapshot: state.normalize(),
+            },
+        )
+    };
+    let mut states = PrStates::default();
+    let mut state = snapshot();
+    state.checks[0].status = "QUEUED".into();
+    state.checks[0].conclusion.clear();
+    assert_eq!(observe(&mut states, &state, false), Change::Pending(1));
+    assert_eq!(wait(&mut states, &state), Consumed::Consumed);
+    state.labels.push("noise".into());
+    state.mergeable = "UNKNOWN".into();
+    assert_eq!(observe(&mut states, &state, true), Change::None);
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
+    assert_eq!(
+        states.revision_seq(&binding()),
+        1,
+        "teammate reports from seq 1 hold"
+    );
+
+    // A wake that also carries a review change is a new revision.
+    let mut states = PrStates::default();
+    state.checks[0].status = "QUEUED".into();
+    state.checks[0].conclusion.clear();
+    observe(&mut states, &state, false);
+    assert_eq!(wait(&mut states, &state), Consumed::Consumed);
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "SUCCESS".into();
+    state.comment_total += 1;
+    assert_eq!(observe(&mut states, &state, true), Change::Pending(2));
+    assert_eq!(states.revision_seq(&binding()), 2);
 }

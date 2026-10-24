@@ -113,6 +113,10 @@ efficiency, merge-path and reliability fixes.
     own finding (≤`max_calls`, ≤120 min). Failed calls record tokens, tool calls
     and reason.
 - **Review reliability**
+  - CI check runs completing, mergeability and labels on an unchanged head no
+    longer start a new PR state: a running primary is no longer superseded or
+    tossed, and teammates no longer re-run. A CI wait woken by green CI reruns
+    only the primary. Head, base, lifecycle and human feedback still do.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on

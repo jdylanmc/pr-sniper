@@ -168,7 +168,7 @@ feedback. See **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-
 _Avoid_: Re-review, manual re-run
 
 **PR state**:
-Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class, review decision, approvals, CI array, comments and threads, labels. Compared by hash. Persisted per PR in `pr-state.json`.
+Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class, review decision, approvals, CI array, comments and threads, labels. Compared by the review-revision hash, which leaves out CI, mergeable class and labels: they never queue a review, supersede a run or re-run teammates. Persisted per PR in `pr-state.json`.
 
 **Heartbeat**:
 The scheduled read of PR state for tracked open PRs. It only adds a PR to the queue (hash differs from baseline and pending) or removes it (merged/closed before its turn). One queue entry per PR, whatever the number of changes while queued.
@@ -264,7 +264,7 @@ Queue state. All current assigned reviews signed off and enabled comment publica
 _Avoid_: Approved, mergeable
 
 **External wait**:
-Primary `wait` exit for pending CI, draft status or required reviews blocking an enabled action. Persistent host-owned state; no AI slot or human handoff. Running shows **Waiting on CI**, **Waiting on draft** or **Waiting on reviews**. Existing Repository Schedule observes it. Pending CI progress alone does not review again; completion (including failure), new head/base or other meaningful state queues fresh review once. Waiting never grants clearance. Known defects, uncertain evidence, failed tools and permission failures keep their existing routes. Wait is selectable and in primary defaults; explicit tool lists stay unchanged.
+Primary `wait` exit for pending CI, draft status or required reviews blocking an enabled action. Persistent host-owned state; no AI slot or human handoff. Running shows **Waiting on CI**, **Waiting on draft** or **Waiting on reviews**. Existing Repository Schedule observes it. Pending CI progress alone does not review again; completion (including failure), new head/base or other meaningful state queues fresh review once. A wake by CI alone reuses the teammate reports of that revision. Waiting never grants clearance. Known defects, uncertain evidence, failed tools and permission failures keep their existing routes. Wait is selectable and in primary defaults; explicit tool lists stay unchanged.
 
 **Waiting for PR author**:
 Queue state. Findings or questions were successfully published; author must respond or update. Sign-off summary alone never creates it.

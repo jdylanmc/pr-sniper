@@ -782,7 +782,6 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
         "base",
         "body",
         "comment",
-        "label",
         "failure",
         "green",
         "required_checks",
@@ -816,6 +815,13 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
             "{change}"
         );
     }
+    let mut labelled = state.clone();
+    labelled.labels.push("changed".into());
+    labelled.mergeable = "CONFLICTING".into();
+    assert!(
+        final_wait_read(&run, labelled, vec![]).is_ok(),
+        "labels and mergeability are not review changes"
+    );
     let mut result = output();
     result.output = ReviewOutput::from_exit(
         crate::exits::ExitOutcome::Wait {
@@ -1021,7 +1027,7 @@ fn readiness_include_self_reaches_the_agent_and_merges_without_an_approval_vote(
 }
 
 #[test]
-fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merge() {
+fn readiness_draft_then_ready_waits_then_green_wakes_the_primary_and_merges() {
     let (_root, store, item) = fixture(2, true, true);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].review_drafts = true;
@@ -1053,22 +1059,31 @@ fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merg
         let seq = store.load_pr_states().unwrap().state_seq(&binding);
         assert_eq!(seq, i as u64 + 1);
         let work = crate::capacity::candidates(&store, now + 2).unwrap();
-        assert_eq!(work.len(), 2, "each changed state needs both assignments");
+        // Green CI wakes the primary's CI wait on the same review revision:
+        // the teammate's report for it still holds.
+        let woken = conclusion == "SUCCESS";
+        assert_eq!(
+            work.len(),
+            if woken { 1 } else { 2 },
+            "a changed review state needs both assignments"
+        );
         assert_eq!(
             work.iter().filter(|w| w.blocked_by.is_some()).count(),
-            1,
+            usize::from(!woken),
             "the prior state's report must not bypass the primary barrier"
         );
-        let (teammate, prepared) = prepare(&store, &env, &state, false, now + 2);
-        complete(
-            &store,
-            &teammate,
-            &prepared,
-            ExitCall::SubmitReport {
-                report: crate::exits::TeammateReport { findings: vec![] },
-            },
-            now + 3,
-        );
+        if !woken {
+            let (teammate, prepared) = prepare(&store, &env, &state, false, now + 2);
+            complete(
+                &store,
+                &teammate,
+                &prepared,
+                ExitCall::SubmitReport {
+                    report: crate::exits::TeammateReport { findings: vec![] },
+                },
+                now + 3,
+            );
+        }
         let (primary, prepared) = prepare(&store, &env, &state, true, now + 4);
         assert_eq!(primary.job.work.as_ref().unwrap().state_seq, seq);
         assert!(prepared.packet.text.contains("Agent 2"));
@@ -1080,8 +1095,16 @@ fn readiness_draft_then_ready_then_green_dispatches_and_executes_the_chosen_merg
                 .exits_denied
                 .iter()
                 .any(|denial| denial.exit == Exit::ApproveAndMerge && denial.reason == blocker));
-            ExitCall::ReadyForHuman {
-                summary: "No code concerns; merge gate not yet satisfied.".into(),
+            if draft {
+                ExitCall::ReadyForHuman {
+                    summary: "No code concerns; merge gate not yet satisfied.".into(),
+                }
+            } else {
+                // CI alone is no new state: the primary holds on it instead.
+                assert!(prepared.setup.offered.contains(&Exit::Wait));
+                ExitCall::Wait {
+                    reason: crate::exits::WaitReason::Ci,
+                }
             }
         } else {
             assert!(prepared.setup.offered.contains(&Exit::ApproveAndMerge));

@@ -637,9 +637,11 @@ fn a_heartbeat_that_saw_only_own_writes_before_consume_is_absorbed() {
 #[test]
 fn an_external_change_in_the_write_window_requeues_once_after_consume() {
     let human = with_thread(with_thread(snapshot("a"), "T9", "500"), "T10", "600");
-    let mut ci = with_thread(snapshot("a"), "T9", "500");
+    let own = with_thread(snapshot("a"), "T9", "500");
+    let mut ci = own.clone();
     ci.checks[0].conclusion = "FAILURE".into();
-    for fresh in [human, ci] {
+    // CI is no review change: the post-write state is baseline, nothing requeues.
+    for (fresh, external) in [(human, true), (ci, false)] {
         let (_fixture, store, mut monitor) = configured(false);
         let (job, run) = posted_exit(&store, &mut monitor);
         assert_eq!(
@@ -647,10 +649,11 @@ fn an_external_change_in_the_write_window_requeues_once_after_consume() {
                 .unwrap(),
             Consumed::Consumed
         );
+        let baseline = if external { snapshot("a") } else { own.clone() };
         assert_eq!(
             record(&store).baseline_hash,
-            Some(snapshot("a").normalize().hash()),
-            "the packet state is the baseline"
+            Some(baseline.normalize().hash()),
+            "the packet state is the baseline only after an external change"
         );
         scan(
             &mut monitor,
@@ -666,6 +669,7 @@ fn an_external_change_in_the_write_window_requeues_once_after_consume() {
             Some(fresh.clone()),
             NOW + 40,
         );
-        assert_eq!(seqs(&store), [1, 2], "one review of the external change");
+        let expected: &[u64] = if external { &[1, 2] } else { &[1] };
+        assert_eq!(seqs(&store), expected, "one review of the external change");
     }
 }
