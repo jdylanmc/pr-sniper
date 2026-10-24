@@ -231,7 +231,12 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
     let f = &input.facts;
     Exit::ALL
         .into_iter()
-        .filter(|exit| *exit == Exit::Lgtm || input.tools.iter().any(|tool| tool == exit.id()))
+        .filter(|exit| {
+            *exit == Exit::Lgtm
+                || input.tools.iter().any(|tool| tool == exit.id())
+                // Any primary may hold for CI that alone blocks its sign-off.
+                || (*exit == Exit::Wait && ci_blocks_only_sign_off(input))
+        })
         .filter(|exit| match exit {
             Exit::SubmitReport => !input.primary,
             Exit::SubmitVerdict => false,
@@ -283,7 +288,32 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
         .collect()
 }
 
+/// Pending CI is the only gate between this primary and its sign-off, whatever its
+/// authority (local Ready, approve or merge) and tool set.
+pub fn ci_blocks_only_sign_off(input: &GateInput) -> bool {
+    if !input.primary || input.facts.ci != Ci::Pending {
+        return false;
+    }
+    let mut green = input.clone();
+    if let Some(facts) = &input.facts.sign_off {
+        green.facts = (**facts).clone();
+    }
+    // Provider blockers as they would read with CI green; other gates still deny.
+    green.facts.ci = Ci::Green;
+    green.facts.approve_blocker = input.facts.wait_approve_blocker.clone();
+    green.facts.merge_blocker = input.facts.wait_merge_blocker.clone();
+    lgtm_denial(&green).is_none()
+}
+
 pub fn wait_reasons(input: &GateInput) -> Vec<WaitReason> {
+    let mut reasons = gated_wait_reasons(input);
+    if !reasons.contains(&WaitReason::Ci) && ci_blocks_only_sign_off(input) {
+        reasons.insert(0, WaitReason::Ci);
+    }
+    reasons
+}
+
+fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
     let f = &input.facts;
     if !input.primary
         || !f.open

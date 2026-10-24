@@ -56,11 +56,13 @@ impl ExternalWait {
             a.id == self.assignment_id
                 && a.agent_id == self.agent_id
                 && authority.primary
-                && tools.iter().any(|t| t == "wait")
-                && ((authority.merge && tools.iter().any(|t| t == "approve_and_merge"))
-                    || (self.reason == WaitReason::Draft
-                        && authority.approve
-                        && tools.iter().any(|t| t == "approve_pull_request")))
+                // Any primary may hold for CI; it re-runs when CI settles.
+                && (self.reason == WaitReason::Ci
+                    || (tools.iter().any(|t| t == "wait")
+                        && ((authority.merge && tools.iter().any(|t| t == "approve_and_merge"))
+                            || (self.reason == WaitReason::Draft
+                                && authority.approve
+                                && tools.iter().any(|t| t == "approve_pull_request")))))
         })
     }
 }

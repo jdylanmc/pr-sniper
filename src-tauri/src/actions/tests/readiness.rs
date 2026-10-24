@@ -283,7 +283,7 @@ fn wait_pause_disable_and_removed_assignment_never_admit_work() {
 }
 
 #[test]
-fn wait_exit_rechecks_ci_and_disabled_tool_never_grants_wait() {
+fn wait_exit_rechecks_ci_and_any_primary_may_wait_for_ci() {
     for custom in [false, true] {
         let (_root, store, _) = fixture(1, true, true);
         store.save_reviews(&[]).unwrap();
@@ -303,30 +303,17 @@ fn wait_exit_rechecks_ci_and_disabled_tool_never_grants_wait() {
         let env = env(&store);
         env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
         let (_, prepared) = prepare(&store, &env, &state, true, NOW + 12);
-        assert_eq!(prepared.setup.offered.contains(&Exit::Wait), !custom);
+        // Pending CI alone blocks the sign-off: Wait is offered without the tool.
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{custom}");
         let call = ExitCall::Wait {
             reason: crate::exits::WaitReason::Ci,
         };
-        if custom {
+        for rollup in ["SUCCESS", "FAILURE"] {
+            env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
             assert!(matches!(
                 (prepared.setup.gate)(&call),
                 Err(Refusal::Denied(_))
             ));
-            assert!(
-                !store.load_settings().unwrap().repositories[0].assignments[0]
-                    .tools
-                    .as_ref()
-                    .unwrap()
-                    .contains(&"wait".into())
-            );
-        } else {
-            for rollup in ["SUCCESS", "FAILURE"] {
-                env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
-                assert!(matches!(
-                    (prepared.setup.gate)(&call),
-                    Err(Refusal::Denied(_))
-                ));
-            }
         }
         assert!(env.wire.0.lock().unwrap().writes.is_empty());
     }
@@ -534,6 +521,94 @@ fn wait_green_resume_can_approve_and_merge_only_through_existing_action_gates() 
     let server = env.wire.0.lock().unwrap();
     assert_eq!(server.observation.state, "MERGED");
     assert_eq!(server.writes.len(), 2);
+}
+
+#[test]
+fn approve_only_and_no_permission_primaries_wait_for_ci_then_sign_off() {
+    use crate::exits::LgtmAction;
+    for (approve, action) in [(true, LgtmAction::Approve), (false, LgtmAction::Ready)] {
+        let (_root, store, item) = fixture(1, approve, false);
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].assignments[0].tools = Some(vec![
+            "read_changes".into(),
+            "ready_for_human".into(),
+            "panic_exit".into(),
+        ]);
+        store.save_settings(&settings).unwrap();
+        store.save_reviews(&[]).unwrap();
+        let state = snapshot(false, "");
+        poll(&store, &state, NOW + 10);
+        let mut env = env(&store);
+        env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+        assert!(!prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
+        assert!(prepared.packet.text.contains("clean_review_exit: wait"));
+        complete(
+            &store,
+            &run,
+            &prepared,
+            ExitCall::Wait {
+                reason: crate::exits::WaitReason::Ci,
+            },
+            NOW + 13,
+        );
+        let binding = Binding::job(&run.job);
+        let waited = store.load_pr_states().unwrap().state_seq(&binding);
+        // The wait survives polling with its configuration and holds while CI runs.
+        poll(&store, &state, NOW + 15);
+        let states = store.load_pr_states().unwrap();
+        assert!(states.get(&binding).unwrap().external_wait.is_some());
+        assert_eq!(states.state_seq(&binding), waited);
+        assert!(crate::capacity::candidates(&store, NOW + 16)
+            .unwrap()
+            .is_empty());
+
+        let green = snapshot(false, "SUCCESS");
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        poll(&store, &green, NOW + 20);
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            waited + 1
+        );
+        let (run, prepared) = prepare(&store, &env, &green, true, NOW + 22);
+        assert!(prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
+        complete(
+            &store,
+            &run,
+            &prepared,
+            ExitCall::Lgtm {
+                comment: "Reviewed; CI green.".into(),
+                resolve_own_threads: vec![],
+                action,
+                dismissed_teammate_findings: vec![],
+            },
+            NOW + 23,
+        );
+        synchronize(
+            &store,
+            &item,
+            Ok(env.wire.0.lock().unwrap().observation.clone()),
+            NOW + 24,
+        )
+        .unwrap();
+        packet::adopt(&store, &item).unwrap();
+        let next = host::prepare_next_effect(&store, &item, NOW + 25).unwrap();
+        if approve {
+            let approval = next.unwrap();
+            assert_eq!(approval.action, Action::Approve);
+            env.now = NOW + 25;
+            host::execute_action(&mut env, &approval).unwrap();
+            assert_eq!(env.wire.0.lock().unwrap().writes.len(), 1);
+        } else {
+            assert!(next.is_none());
+            assert!(env.wire.0.lock().unwrap().writes.is_empty());
+            let record = store.load_pr_states().unwrap();
+            let record = record.get(&binding).unwrap();
+            assert!(record.local_summary.is_some(), "local Ready sign-off");
+            assert!(record.external_wait.is_none());
+        }
+    }
 }
 
 struct SnapshotWire {

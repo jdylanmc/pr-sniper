@@ -47,10 +47,26 @@ fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
     assert_eq!(wait_reasons(&input), [WaitReason::Ci]);
     assert!(is_offered(&input, Exit::Wait));
     type Edit = fn(&mut GateInput);
-    let denied: [Edit; 9] = [
-        |i| i.primary = false,
+    // Pending CI alone blocking the sign-off is a wait for any primary,
+    // whatever its authority or tool set.
+    let any_primary: [Edit; 4] = [
         |i| i.grants.merge = false,
         |i| i.tools.retain(|t| t != "approve_and_merge"),
+        |i| i.tools.retain(|t| t != "wait"),
+        |i| {
+            i.grants.merge = false;
+            i.grants.approve = false;
+            i.tools.clear();
+        },
+    ];
+    for edit in any_primary {
+        let mut primary = input.clone();
+        edit(&mut primary);
+        assert_eq!(wait_reasons(&primary), [WaitReason::Ci], "{primary:?}");
+        assert!(is_offered(&primary, Exit::Wait), "{primary:?}");
+    }
+    let denied: [Edit; 7] = [
+        |i| i.primary = false,
         |i| i.facts.ci = Ci::Red,
         |i| i.facts.ci = Ci::Unknown,
         |i| i.facts.unresolved_threads = true,

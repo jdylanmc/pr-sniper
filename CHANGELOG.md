@@ -117,6 +117,9 @@ efficiency, merge-path and reliability fixes.
     longer start a new PR state: a running primary is no longer superseded or
     tossed, and teammates no longer re-run. A CI wait woken by green CI reruns
     only the primary. Head, base, lifecycle and human feedback still do.
+  - A primary whose sign-off is blocked only by pending CI can now `wait` for
+    it whatever its permissions or tool list, so approve-only and no-permission
+    primaries sign off (approve or Ready) once CI is green instead of stopping.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on
