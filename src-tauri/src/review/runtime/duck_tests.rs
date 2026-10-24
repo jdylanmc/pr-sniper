@@ -1022,9 +1022,17 @@ async fn a_primary_failing_mid_call_stops_the_duck_at_once_and_records_it() {
         false,
     );
     let log = duck.setup.log.clone();
+    let mut primary = options(root.path(), "duck-primary-error");
+    primary.env.push((
+        "TEST_DUCK_RECEIPT".into(),
+        root.path()
+            .join("duck")
+            .join("receipt.jsonl")
+            .into_os_string(),
+    ));
     let started = Instant::now();
     let error = execute(
-        options(root.path(), "duck-primary-error"),
+        primary,
         &identity(),
         &operation(600),
         primary_request(duck.setup),
