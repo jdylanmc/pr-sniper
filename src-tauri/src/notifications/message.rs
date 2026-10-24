@@ -1,8 +1,9 @@
 //! OS notification copy and state badges. Pattern: title = state word, then
 //! `repo#123`; body = PR title, then at most one short reason. Copy is rendered
-//! at send time from the live queue item and never persisted.
+//! from the live queue item and never persisted; a Failure reason comes only from
+//! the cause stored on the notice when it was sent.
 
-use super::{Category, Destination, Frame, Notice};
+use super::{Category, Destination, Notice};
 use crate::queue;
 use std::path::{Path, PathBuf};
 
@@ -98,8 +99,8 @@ pub struct Subject {
     pub repository: String,
     pub number: u64,
     pub title: String,
-    /// Typed failure cause from the queue item, never inferred from text.
-    pub failure_cause: Option<&'static str>,
+    /// Typed failure cause, never inferred from text.
+    pub failure_cause: Option<String>,
 }
 
 impl Subject {
@@ -108,7 +109,7 @@ impl Subject {
             repository: item.job.repository_name.clone(),
             number: item.job.number,
             title: item.job.title.clone(),
-            failure_cause: item.failure_cause,
+            failure_cause: item.failure_cause.map(Into::into),
         }
     }
 
@@ -124,20 +125,12 @@ impl Subject {
             .map(Self::of)
     }
 
-    /// [`Self::find`] for a saved notice. The item holds only its latest failure
-    /// cause, so the reason shows only while the notice is still the item's
-    /// current event (`current` = `frames` of the same snapshot).
-    pub fn for_history(
-        snapshot: &queue::Snapshot,
-        current: &[Frame],
-        notice: &Notice,
-    ) -> Option<Self> {
+    /// [`Self::find`] for a saved notice: the failure cause is the one stored on
+    /// the notice when it was sent, never the item's live one, which can change
+    /// without a new notice.
+    pub fn saved(snapshot: &queue::Snapshot, notice: &Notice) -> Option<Self> {
         let mut subject = Self::find(snapshot, notice)?;
-        if !current.iter().any(|frame| {
-            frame.source == notice.source && frame.event.as_ref() == Some(&notice.event)
-        }) {
-            subject.failure_cause = None;
-        }
+        subject.failure_cause = notice.failure_cause.clone();
         Some(subject)
     }
 }
@@ -218,7 +211,7 @@ pub fn render(notice: &Notice, subject: Option<&Subject>) -> Message {
         .saturating_sub(state.chars().count() + SEPARATOR.chars().count() + number.chars().count());
     let title = format!("{state}{SEPARATOR}{}{number}", truncate(&repository, room));
     let reason = match category {
-        Category::Failure => subject.failure_cause.and_then(failure_reason),
+        Category::Failure => subject.failure_cause.as_deref().and_then(failure_reason),
         _ => category.reason(),
     };
     let pr_title = clean(&subject.title);

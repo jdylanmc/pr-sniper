@@ -126,7 +126,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
                 .store
                 .lock()
                 .map_err(|_| "Notification storage unavailable.")?;
-            prepare(&store, &frames(&fresh), &next.id, now_seconds()?)?
+            prepare_queue(&store, &fresh, &next.id, now_seconds()?)?
         };
         if notice.phase != Phase::Submitting {
             continue;
@@ -141,7 +141,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
                     (Phase::NotSent, Some("Notifications were disabled or the application is quitting.".into()))
                 } else {
                     match host.notifications.native.as_ref() {
-                        Ok(native) => submit(native, &notice, &render(&notice, Subject::find(&fresh, &notice).as_ref())),
+                        Ok(native) => submit(native, &notice, &render(&notice, Subject::saved(&fresh, &notice).as_ref())),
                         Err(error) => (Phase::Failed, Some(error.clone())),
                     }
                 }
@@ -193,7 +193,6 @@ pub struct Snapshot {
 pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Snapshot, String> {
     let ledger = store.load_notifications()?;
     let queue = queue::snapshot(store, vec![]);
-    let current = queue.as_ref().map(frames).unwrap_or_default();
     let errors: Vec<_> = [permission.as_ref().err(), queue.as_ref().err()]
         .into_iter()
         .flatten()
@@ -213,10 +212,7 @@ pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Sna
             .into_iter()
             .rev()
             .map(|notice| {
-                let subject = queue
-                    .as_ref()
-                    .ok()
-                    .and_then(|q| Subject::for_history(q, &current, &notice));
+                let subject = queue.as_ref().ok().and_then(|q| Subject::saved(q, &notice));
                 let message = render(&notice, subject.as_ref());
                 NoticeView {
                     title: message.title,

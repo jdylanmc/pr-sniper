@@ -339,6 +339,10 @@ pub struct Notice {
     pub error: Option<String>,
     pub opened_at: Option<i64>,
     pub navigation_error: Option<String>,
+    /// The item's typed failure cause when this Failure notice was sent. The
+    /// banner and history render its reason from this alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_cause: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -477,6 +481,7 @@ impl Ledger {
                     error: None,
                     opened_at: None,
                     navigation_error: None,
+                    failure_cause: None,
                 });
             }
         }
@@ -597,6 +602,7 @@ impl Ledger {
             error: None,
             opened_at: None,
             navigation_error: None,
+            failure_cause: None,
         });
         id
     }
@@ -766,10 +772,40 @@ pub fn destination(store: &Store, id: &str) -> Result<Destination, String> {
     Err("This notification belongs to another profile or is no longer retained. No substitute destination was opened.".into())
 }
 
+/// Starts sending notice `id` against the live queue `snapshot`, storing a
+/// Failure notice's live cause so its reason never changes afterwards.
+pub fn prepare_queue(
+    store: &Store,
+    snapshot: &queue::Snapshot,
+    id: &str,
+    now: i64,
+) -> Result<Notice, String> {
+    prepare_with(store, &frames(snapshot), id, now, |notice| {
+        message::Subject::find(snapshot, notice).and_then(|subject| subject.failure_cause)
+    })
+}
+
+#[cfg(test)]
 pub fn prepare(store: &Store, frames: &[Frame], id: &str, now: i64) -> Result<Notice, String> {
+    prepare_with(store, frames, id, now, |_| None)
+}
+
+fn prepare_with(
+    store: &Store,
+    frames: &[Frame],
+    id: &str,
+    now: i64,
+    failure_cause: impl Fn(&Notice) -> Option<String>,
+) -> Result<Notice, String> {
     let mut ledger = store.load_notifications()?;
     ledger.observe(frames, now)?;
     let mut notice = ledger.begin(id)?;
+    if notice.phase == Phase::Submitting && notice.event.category == Category::Failure {
+        notice.failure_cause = failure_cause(&notice);
+        if let Some(saved) = ledger.notices.iter_mut().find(|n| n.id == id) {
+            saved.failure_cause = notice.failure_cause.clone();
+        }
+    }
     if notice.phase == Phase::Submitting {
         if let Destination::QueueItem { item_id } = &notice.event.destination {
             if let Err(error) = queue::destination(store, item_id, None) {

@@ -399,14 +399,14 @@ impl<'a> Sim<'a> {
                 self.stats.snapshots += 1;
                 let notices = self.locked(|store, _| {
                     // Deliver as the native loop does; idle windows send nothing.
-                    let frames = crate::notifications::frames(&snapshot);
                     let mut sent = 0;
                     while let Some(next) =
                         crate::notifications::observe_queue(store, &snapshot, now).unwrap()
                     {
                         sent += 1;
                         let notice =
-                            crate::notifications::prepare(store, &frames, &next.id, now).unwrap();
+                            crate::notifications::prepare_queue(store, &snapshot, &next.id, now)
+                                .unwrap();
                         crate::notifications::complete(
                             store,
                             &notice.id,
@@ -833,7 +833,8 @@ pub(crate) fn bloated(store: &Store, scale: usize) {
         )
         .unwrap();
     // Opted in against the current queue, with the confirmation delivered.
-    let frames = crate::notifications::frames(&crate::queue::snapshot(store, vec![]).unwrap());
+    let baseline = crate::queue::snapshot(store, vec![]).unwrap();
+    let frames = crate::notifications::frames(&baseline);
     crate::notifications::save_preference(store, true, &frames, NOW, || true).unwrap();
     while let Some(next) = crate::notifications::observe_queue(
         store,
@@ -842,7 +843,7 @@ pub(crate) fn bloated(store: &Store, scale: usize) {
     )
     .unwrap()
     {
-        let notice = crate::notifications::prepare(store, &frames, &next.id, NOW).unwrap();
+        let notice = crate::notifications::prepare_queue(store, &baseline, &next.id, NOW).unwrap();
         crate::notifications::complete(
             store,
             &notice.id,

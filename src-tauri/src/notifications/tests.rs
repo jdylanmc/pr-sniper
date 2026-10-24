@@ -1081,6 +1081,7 @@ fn notice(category: Category, destination: Destination) -> Notice {
         error: None,
         opened_at: None,
         navigation_error: None,
+        failure_cause: None,
     }
 }
 
@@ -1089,7 +1090,7 @@ fn subject(title: &str, failure_cause: Option<&'static str>) -> Subject {
         repository: "jdylanmc/pr-sniper".into(),
         number: 219,
         title: title.into(),
-        failure_cause,
+        failure_cause: failure_cause.map(Into::into),
     }
 }
 
@@ -1288,41 +1289,70 @@ fn live_queue_item_supplies_the_subject() {
     assert!(Subject::find(&snapshot, &notice(Category::Failure, Destination::Settings)).is_none());
 }
 
+fn failed_snapshot(cause: &'static str, failure: &str) -> queue::Snapshot {
+    let mut snapshot = merged_snapshot(1);
+    snapshot.items[0].state = queue::State::Failed;
+    snapshot.items[0].failure_cause = Some(cause);
+    snapshot.health = vec![serde_json::from_value(serde_json::json!({
+        "repository_id":"config","name":"example/repo","schedule_key":"interval:5:UTC",
+        "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":null,
+        "next_run":0,"schedule_available":true,"last_failure":failure,"in_flight":false
+    }))
+    .unwrap()];
+    snapshot
+}
+
+/// Sends every queued notice against `snapshot` as the native loop does.
+fn send_all(store: &Store, snapshot: &queue::Snapshot) {
+    while let Some(next) = observe_queue(store, snapshot, 200).unwrap() {
+        let notice = prepare_queue(store, snapshot, &next.id, 200).unwrap();
+        if notice.phase == Phase::Submitting {
+            complete(store, &notice.id, Phase::AcceptedUnconfirmed, None).unwrap();
+        }
+    }
+}
+
+fn history_bodies(store: &Store, live: &queue::Snapshot) -> Vec<String> {
+    store
+        .load_notifications()
+        .unwrap()
+        .notices
+        .iter()
+        .filter(|n| n.event.category == Category::Failure)
+        .map(|n| render(n, Subject::saved(live, n).as_ref()).body)
+        .collect()
+}
+
 #[test]
 fn history_keeps_each_failure_notice_to_its_own_reason() {
-    let failed = |cause: &'static str, failure: &str| {
-        let mut snapshot = merged_snapshot(1);
-        snapshot.items[0].state = queue::State::Failed;
-        snapshot.items[0].failure_cause = Some(cause);
-        snapshot.health = vec![serde_json::from_value(serde_json::json!({
-            "repository_id":"config","name":"example/repo","schedule_key":"interval:5:UTC",
-            "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":null,
-            "next_run":0,"schedule_available":true,"last_failure":failure,"in_flight":false
-        }))
-        .unwrap()];
-        snapshot
-    };
-    let saved = |snapshot: &queue::Snapshot| {
-        let frame = frames(snapshot)
-            .into_iter()
-            .find(|f| f.source.starts_with("queue:"))
-            .unwrap();
-        let mut notice = queue_notice(Category::Failure);
-        notice.source = frame.source;
-        notice.event = frame.event.unwrap();
-        notice
-    };
-    let crashed = saved(&failed(queue::CAUSE_PANIC, "first"));
-    let live = failed("publication_failed", "second");
-    let unpublished = saved(&live);
-    assert_ne!(crashed.event, unpublished.event);
-    let current = frames(&live);
-    let body = |notice: &Notice| {
-        let subject = Subject::for_history(&live, &current, notice);
-        render(notice, subject.as_ref()).body
-    };
-    assert_eq!(body(&unpublished), "Sensitive PR title · Publish failed");
-    assert_eq!(body(&crashed), "Sensitive PR title");
+    let (_root, store) = store();
+    send_all(&store, &failed_snapshot(queue::CAUSE_PANIC, "first"));
+    let live = failed_snapshot("publication_failed", "second");
+    send_all(&store, &live);
+    assert_eq!(
+        history_bodies(&store, &live),
+        [
+            "Sensitive PR title · Review crashed",
+            "Sensitive PR title · Publish failed"
+        ]
+    );
+}
+
+// An uncertain publication reconciled to a definite failure keeps its operation,
+// so the item's event and digest stay the same and no new notice is sent.
+#[test]
+fn history_keeps_the_sent_reason_when_the_cause_changes_without_a_new_event() {
+    let (_root, store) = store();
+    let unconfirmed = failed_snapshot("publication_unresolved", "same");
+    send_all(&store, &unconfirmed);
+    let live = failed_snapshot("publication_failed", "same");
+    let events = |s: &queue::Snapshot| frames(s).into_iter().map(|f| f.event).collect::<Vec<_>>();
+    assert_eq!(events(&unconfirmed), events(&live));
+    send_all(&store, &live);
+    assert_eq!(
+        history_bodies(&store, &live),
+        ["Sensitive PR title · Publish unconfirmed"]
+    );
 }
 
 #[test]
