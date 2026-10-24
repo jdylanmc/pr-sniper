@@ -1232,6 +1232,24 @@ fn provider_text_cannot_break_lines_or_reorder_the_notification() {
     let message = render(&queue_notice(Category::Merged), Some(&pr));
     assert_eq!(message.title, "Merged · repo x#219");
     assert_eq!(message.body, "Fix thegnp.exe thing");
+    // Arabic letter mark (bidi) and the XML-invalid noncharacters a toast rejects.
+    let mut pr = subject("Fix \u{FFFF}a\u{061C}b\u{FFFE}", None);
+    pr.repository = "o/re\u{061C}po\u{FFFF}".into();
+    let message = render(&queue_notice(Category::Merged), Some(&pr));
+    assert_eq!(message.title, "Merged · repo#219");
+    assert_eq!(message.body, "Fix ab");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_toast_with_xml_invalid_provider_text_still_loads() {
+    let pr = subject("Fix \u{FFFF} and \u{FFFE}", None);
+    let message = render(&queue_notice(Category::Merged), Some(&pr));
+    let xml = windows::Data::Xml::Dom::XmlDocument::new().unwrap();
+    xml.LoadXml(&windows::core::HSTRING::from(
+        super::windows_native::toast_xml("id", &message.title, &message.body, None),
+    ))
+    .unwrap();
 }
 
 #[test]
@@ -1253,6 +1271,20 @@ fn live_queue_item_supplies_the_subject() {
     assert_eq!(message.title, "Merged · repo#9");
     assert_eq!(message.body, "Sensitive PR title");
     assert!(Subject::find(&snapshot, &queue_notice(Category::Merged)).is_none());
+    // A notice saved under a legacy item id still finds the live item.
+    let mut aliased = snapshot.clone();
+    aliased.items[0].id = "current".into();
+    aliased.items[0].aliases = vec!["legacy".into()];
+    let legacy = notice(
+        Category::Merged,
+        Destination::QueueItem {
+            item_id: "legacy".into(),
+        },
+    );
+    let found = Subject::find(&aliased, &legacy).unwrap();
+    let message = render(&legacy, Some(&found));
+    assert_eq!(message.title, "Merged · repo#9");
+    assert_eq!(message.body, "Sensitive PR title");
     assert!(Subject::find(&snapshot, &notice(Category::Failure, Destination::Settings)).is_none());
 }
 
