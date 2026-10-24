@@ -1289,6 +1289,43 @@ fn live_queue_item_supplies_the_subject() {
 }
 
 #[test]
+fn history_keeps_each_failure_notice_to_its_own_reason() {
+    let failed = |cause: &'static str, failure: &str| {
+        let mut snapshot = merged_snapshot(1);
+        snapshot.items[0].state = queue::State::Failed;
+        snapshot.items[0].failure_cause = Some(cause);
+        snapshot.health = vec![serde_json::from_value(serde_json::json!({
+            "repository_id":"config","name":"example/repo","schedule_key":"interval:5:UTC",
+            "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":null,
+            "next_run":0,"schedule_available":true,"last_failure":failure,"in_flight":false
+        }))
+        .unwrap()];
+        snapshot
+    };
+    let saved = |snapshot: &queue::Snapshot| {
+        let frame = frames(snapshot)
+            .into_iter()
+            .find(|f| f.source.starts_with("queue:"))
+            .unwrap();
+        let mut notice = queue_notice(Category::Failure);
+        notice.source = frame.source;
+        notice.event = frame.event.unwrap();
+        notice
+    };
+    let crashed = saved(&failed(queue::CAUSE_PANIC, "first"));
+    let live = failed("publication_failed", "second");
+    let unpublished = saved(&live);
+    assert_ne!(crashed.event, unpublished.event);
+    let current = frames(&live);
+    let body = |notice: &Notice| {
+        let subject = Subject::for_history(&live, &current, notice);
+        render(notice, subject.as_ref()).body
+    };
+    assert_eq!(body(&unpublished), "Sensitive PR title · Publish failed");
+    assert_eq!(body(&crashed), "Sensitive PR title");
+}
+
+#[test]
 fn states_map_to_bundled_distinct_badges() {
     use Category::*;
     for (category, badge) in [

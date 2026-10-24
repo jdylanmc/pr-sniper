@@ -2,7 +2,7 @@
 //! `repo#123`; body = PR title, then at most one short reason. Copy is rendered
 //! at send time from the live queue item and never persisted.
 
-use super::{Category, Destination, Notice};
+use super::{Category, Destination, Frame, Notice};
 use crate::queue;
 use std::path::{Path, PathBuf};
 
@@ -122,6 +122,23 @@ impl Subject {
             .iter()
             .find(|item| &item.id == item_id || item.aliases.contains(item_id))
             .map(Self::of)
+    }
+
+    /// [`Self::find`] for a saved notice. The item holds only its latest failure
+    /// cause, so the reason shows only while the notice is still the item's
+    /// current event (`current` = `frames` of the same snapshot).
+    pub fn for_history(
+        snapshot: &queue::Snapshot,
+        current: &[Frame],
+        notice: &Notice,
+    ) -> Option<Self> {
+        let mut subject = Self::find(snapshot, notice)?;
+        if !current.iter().any(|frame| {
+            frame.source == notice.source && frame.event.as_ref() == Some(&notice.event)
+        }) {
+            subject.failure_cause = None;
+        }
+        Some(subject)
     }
 }
 

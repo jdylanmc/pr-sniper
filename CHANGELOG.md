@@ -45,7 +45,8 @@ efficiency, merge-path and reliability fixes.
   carries a state badge: green check, amber `!`, blue crosshair or red `×`
   (macOS thumbnail, Windows app logo). Provider text drops every bidi control
   and the XML-invalid U+FFFE/U+FFFF, and a notice under a legacy item id still
-  names its PR.
+  names its PR. A history entry shows a failure reason only while it is still
+  the PR's current event, never a later failure's reason.
 
 ### Fixed
 
