@@ -61,12 +61,15 @@
   the OS backlog. Only authenticated requests enter a four-slot queue to one
   native executor (single writer). A full queue returns `control_busy`, unexecuted.
   A panicking operation is fatal: shared state may be poisoned or partly
-  committed. The request returns `outcome_unknown`, a content-free diagnostic
-  is recorded, queued requests are rejected unexecuted, the listener stops, the
-  descriptor is withdrawn and the app exits without the store-flushing Quit
-  path; the next client launch starts a clean process. However the executor
-  ends, it withdraws only its own descriptor (PID, capability and file
-  identity; moved aside and re-verified), never a successor's.
+  committed. Fail-stop begins at once (app quitting, Copilot work cancelled),
+  then the request returns `outcome_unknown`, a content-free diagnostic is
+  recorded, queued requests are rejected unexecuted, in-flight replies drain
+  for at most three seconds, the descriptor is withdrawn and the app exits
+  without the store-flushing Quit path; the next client launch starts a clean
+  process. However the executor ends, it withdraws only its own descriptor
+  (PID, capability and file identity; moved aside and re-verified). A
+  successor's file moved by a race is restored without overwriting, or kept
+  aside and reported; it is deleted only once a newer descriptor exists.
   Unsupported methods, unknown fields, authentication and protocol mismatches
   fail before application dispatch.
 - Store mutex serializes native validation/commit with the UI and scheduler.

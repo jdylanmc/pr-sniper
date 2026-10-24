@@ -805,7 +805,7 @@ fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
                     current.fetch_sub(1, Ordering::SeqCst);
                     Ok(request)
                 },
-                || panic!("No operation panics here"),
+                not_fatal,
             )
         })
     };
@@ -882,19 +882,26 @@ fn wait_closed(port: u16) {
     }
 }
 
+fn not_fatal() -> fn() {
+    panic!("No operation panics in this test")
+}
+
 #[test]
 fn panicking_operation_is_outcome_unknown_and_fatal() {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     };
+    use std::time::{Duration, Instant};
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("control");
     let server = transport::Server::bind(&directory).unwrap();
     let endpoint = read_endpoint(&directory);
-    let exited = Arc::new(AtomicBool::new(false));
+    // (endpoint still published, when) at fail-stop, and when exit ran.
+    let began = Arc::new(Mutex::new(None));
+    let exited = Arc::new(Mutex::new(None));
     let host = {
-        let exited = exited.clone();
+        let (began, exited, directory) = (began.clone(), exited.clone(), directory.clone());
         std::thread::spawn(move || {
             server.run(
                 || false,
@@ -904,18 +911,32 @@ fn panicking_operation_is_outcome_unknown_and_fatal() {
                     }
                     Ok(request)
                 },
-                // Injectable application exit.
-                || exited.store(true, Ordering::SeqCst),
+                // Injectable fail-stop and application exit.
+                move || {
+                    *began.lock().unwrap() =
+                        Some((directory.join("endpoint.json").exists(), Instant::now()));
+                    move || *exited.lock().unwrap() = Some(Instant::now())
+                },
             )
         })
     };
+    // An idle client holds a connection slot until its 2 s handshake deadline,
+    // so the bounded drain is still running when fail-stop must already hold.
+    let _idle = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
     let failed =
         transport::client_exchange(&mut stream, &endpoint.token, json!({"operation":"boom"}));
     assert_eq!(failed["ok"], false);
     assert_eq!(failed["error"]["code"], "outcome_unknown");
     host.join().unwrap();
-    assert!(exited.load(Ordering::SeqCst), "App exit requested");
+    let (published, began) = began.lock().unwrap().expect("Fail-stop began");
+    let exited = exited.lock().unwrap().expect("App exit requested");
+    assert!(published, "Fail-stop precedes drain and withdrawal");
+    assert!(
+        exited.duration_since(began) >= Duration::from_millis(500),
+        "Exit follows the bounded drain"
+    );
     assert!(
         !directory.join("endpoint.json").exists(),
         "Endpoint withdrawn"
@@ -932,9 +953,7 @@ fn panicking_operation_is_outcome_unknown_and_fatal() {
     let quit = Arc::new(AtomicBool::new(false));
     let host = {
         let quit = quit.clone();
-        std::thread::spawn(move || {
-            fresh.run(|| quit.load(Ordering::SeqCst), Ok, || panic!("Not fatal"))
-        })
+        std::thread::spawn(move || fresh.run(|| quit.load(Ordering::SeqCst), Ok, not_fatal))
     };
     let mut stream = TcpStream::connect(("127.0.0.1", next.port)).unwrap();
     let reply = transport::client_exchange(&mut stream, &next.token, json!({"operation":"after"}));
@@ -950,8 +969,9 @@ fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
     let server = transport::Server::bind(&directory).unwrap();
     let endpoint = read_endpoint(&directory);
     // A failure outside an operation (here: the quit probe) ends the executor.
-    let host =
-        std::thread::spawn(move || server.run(|| panic!("synthetic executor failure"), Ok, || {}));
+    let host = std::thread::spawn(move || {
+        server.run(|| panic!("synthetic executor failure"), Ok, not_fatal)
+    });
     assert!(host.join().is_err());
     assert!(!directory.join("endpoint.json").exists());
     wait_closed(endpoint.port);
@@ -965,7 +985,7 @@ fn teardown_never_removes_a_successor_descriptor() {
     // A successor publishes before the old server tears down.
     let successor = transport::Server::bind(&directory).unwrap();
     let published = std::fs::read(directory.join("endpoint.json")).unwrap();
-    std::thread::spawn(move || old.run(|| true, Ok, || {}))
+    std::thread::spawn(move || old.run(|| true, Ok, not_fatal))
         .join()
         .unwrap();
     assert_eq!(
@@ -980,7 +1000,7 @@ fn teardown_never_removes_a_successor_descriptor() {
         .collect();
     assert!(names.is_empty(), "{names:?}");
     // The successor still withdraws its own.
-    std::thread::spawn(move || successor.run(|| true, Ok, || {}))
+    std::thread::spawn(move || successor.run(|| true, Ok, not_fatal))
         .join()
         .unwrap();
     assert!(!directory.join("endpoint.json").exists());

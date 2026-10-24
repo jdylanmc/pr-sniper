@@ -65,15 +65,17 @@ pub(crate) fn start(app: &tauri::AppHandle, root: &Path) -> Result<(), String> {
                 },
                 |request| tauri::async_runtime::block_on(operations::execute(&app, request)),
                 || {
-                    // Shared state may be poisoned or partly committed: stop
-                    // new work and exit without the store-flushing Quit path,
-                    // so the next client launch starts a clean process.
+                    // Fail-stop at once: shared state may be poisoned or partly
+                    // committed, so no scheduler or worker may continue.
                     let host = app.state::<crate::Host>();
                     host.quitting
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                     host.copilot.request_shutdown();
                     eprintln!("PR Sniper: local control operation failed; exiting.");
-                    app.exit(70);
+                    // After the reply drains and the endpoint is withdrawn,
+                    // exit without the store-flushing Quit path so the next
+                    // client launch starts a clean process.
+                    || app.exit(70)
                 },
             );
         })

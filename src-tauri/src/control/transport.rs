@@ -127,14 +127,16 @@ impl Server {
     /// requests reach the executor's bounded queue.
     ///
     /// A panicking operation may have poisoned shared state or followed a
-    /// partial commit, so it is fatal: the request is `outcome_unknown`, the
-    /// listener stops, this server's descriptor is withdrawn and `fatal` asks
-    /// the application to exit so the next client relaunches a clean process.
-    pub(crate) fn run(
+    /// partial commit, so it is fatal. `fatal` runs immediately to stop all
+    /// other application work and returns the exit action. Then the request
+    /// is `outcome_unknown`, queued requests are rejected, in-flight replies
+    /// drain briefly, this server's descriptor is withdrawn and the exit
+    /// action runs so the next client relaunches a clean process.
+    pub(crate) fn run<Exit: FnOnce()>(
         self,
         quitting: impl Fn() -> bool,
         mut execute: impl FnMut(Value) -> Result<Value, Error>,
-        fatal: impl FnOnce(),
+        fatal: impl FnOnce() -> Exit,
     ) {
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicUsize::new(0));
@@ -166,7 +168,8 @@ impl Server {
             return;
         };
         teardown.acceptor = Some(acceptor);
-        let mut failed = false;
+        let mut fatal = Some(fatal);
+        let mut exit = None;
         while !quitting() {
             match queue.recv_timeout(Duration::from_millis(25)) {
                 Ok(job) => {
@@ -176,6 +179,8 @@ impl Server {
                             let _ = job.reply.send(result);
                         }
                         Err(_) => {
+                            // Fail-stop before anything else can write.
+                            exit = fatal.take().map(|begin| begin());
                             note(
                                 &failures,
                                 &self.path,
@@ -187,7 +192,6 @@ impl Server {
                             let _ = job
                                 .reply
                                 .send(Err(Error::new("outcome_unknown", Value::Null)));
-                            failed = true;
                             break;
                         }
                     }
@@ -199,8 +203,8 @@ impl Server {
         // Queued requests never ran; their clients get a typed rejection.
         drop(queue);
         drop(teardown);
-        if failed {
-            fatal();
+        if let Some(exit) = exit {
+            exit();
         }
     }
 }
@@ -229,12 +233,22 @@ impl Owned {
 
     /// Removes the descriptor only while it is still this server's. A
     /// successor's replacement is never deleted: the file is first moved
-    /// aside and re-verified, and one moved aside by a race is restored
-    /// unless an even newer descriptor already exists.
+    /// aside and re-verified. One moved aside by a race is restored without
+    /// overwriting (a hard link fails if a newer descriptor exists); it is
+    /// deleted only once restored or superseded, otherwise kept and reported.
     fn withdraw(&self) {
+        self.withdraw_with(|| {}, |aside, path| fs::hard_link(aside, path));
+    }
+
+    fn withdraw_with(
+        &self,
+        raced: impl FnOnce(),
+        restore: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) {
         if !self.matches(&self.path) {
             return;
         }
+        raced();
         let aside = self.path.with_file_name(format!(
             "endpoint.{}.retired",
             uuid::Uuid::new_v4().simple()
@@ -242,9 +256,12 @@ impl Owned {
         if fs::rename(&self.path, &aside).is_err() {
             return;
         }
-        if !self.matches(&aside) {
-            // No-clobber restore: a hard link fails if a newer file exists.
-            let _ = fs::hard_link(&aside, &self.path);
+        if !self.matches(&aside)
+            && restore(&aside, &self.path).is_err()
+            && fs::symlink_metadata(&self.path).is_err()
+        {
+            eprintln!("PR Sniper: kept a successor control endpoint that could not be restored.");
+            return;
         }
         let _ = fs::remove_file(&aside);
     }
@@ -688,4 +705,86 @@ fn authenticated(actual: &str, expected: &str) -> bool {
         .zip(expected.bytes())
         .fold(0, |difference, (a, b)| difference | (a ^ b))
         == 0
+}
+
+#[cfg(test)]
+mod withdraw_tests {
+    use super::*;
+
+    fn publish(directory: &Path, token: char) -> Owned {
+        let path = directory.join("endpoint.json");
+        let endpoint = Endpoint {
+            protocol: PROTOCOL,
+            port: 1,
+            token: token.to_string().repeat(64),
+            app_version: "fixture".into(),
+            pid: std::process::id(),
+        };
+        private_fs::replace(&path, &serde_json::to_vec(&endpoint).unwrap(), "fixture").unwrap();
+        Owned {
+            file: file_identity::identity(&path).unwrap().unwrap(),
+            path,
+            token: endpoint.token,
+            pid: endpoint.pid,
+        }
+    }
+
+    fn retired(directory: &Path) -> Vec<PathBuf> {
+        fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_string_lossy().ends_with(".retired"))
+            .collect()
+    }
+
+    #[test]
+    fn raced_successor_is_restored_kept_or_superseded_never_deleted() {
+        // Restored: the successor's descriptor returns to its name.
+        let root = tempfile::tempdir().unwrap();
+        let own = publish(root.path(), 'a');
+        let mut successor = None;
+        own.withdraw_with(
+            || successor = Some(publish(root.path(), 'b')),
+            |aside, path| fs::hard_link(aside, path),
+        );
+        assert!(successor
+            .unwrap()
+            .matches(&root.path().join("endpoint.json")));
+        assert!(retired(root.path()).is_empty());
+
+        // Restore fails and nothing newer exists: keep the moved file.
+        let root = tempfile::tempdir().unwrap();
+        let own = publish(root.path(), 'a');
+        let mut successor = None;
+        own.withdraw_with(
+            || successor = Some(publish(root.path(), 'b')),
+            |_, _| Err(std::io::ErrorKind::PermissionDenied.into()),
+        );
+        let kept = retired(root.path());
+        assert_eq!(kept.len(), 1, "Successor descriptor kept aside");
+        assert!(successor.unwrap().matches(&kept[0]));
+
+        // Restore fails because an even newer descriptor exists: that one
+        // stays and the superseded one is removed.
+        let root = tempfile::tempdir().unwrap();
+        let own = publish(root.path(), 'a');
+        let mut newest = None;
+        own.withdraw_with(
+            || {
+                publish(root.path(), 'b');
+            },
+            |_, _| {
+                newest = Some(publish(root.path(), 'c'));
+                Err(std::io::ErrorKind::AlreadyExists.into())
+            },
+        );
+        assert!(newest.unwrap().matches(&root.path().join("endpoint.json")));
+        assert!(retired(root.path()).is_empty());
+
+        // Unraced: only this server's own descriptor is removed.
+        let root = tempfile::tempdir().unwrap();
+        publish(root.path(), 'a').withdraw();
+        assert!(!root.path().join("endpoint.json").exists());
+        assert!(retired(root.path()).is_empty());
+    }
 }
