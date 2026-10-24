@@ -767,6 +767,13 @@ for (const width of [320, 400, 408]) {
       await page.emulateMedia({ reducedMotion: "reduce" });
       const fixture = await syntheticAuth(page);
       await page.goto("/");
+      // At <=440px the tabs reflow as startup applies the Queue route, then
+      // the empty-store Welcome. A click straddling that reflow is lost, so
+      // press Settings only once the startup destination has settled.
+      await expect(page.locator(".panel-shell")).toHaveAttribute(
+        "data-setup",
+        "true",
+      );
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await expect(page.locator(".settings-overview")).toBeVisible();
       const navigation = page.getByRole("button", {

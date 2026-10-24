@@ -99,6 +99,10 @@ keep their existing heading/summary placement. Short Queue panels lay out naviga
 at each label's intrinsic width and give the complete hide/quit guidance a footer
 row, rather than wrapping one label or squeezing guidance into a narrow column.
 No text size, counts or errors are reduced to make the evidence fit.
+That intrinsic tab layout follows the applied route, so at <=440px the tabs
+reflow during startup (Queue, then the empty-store Welcome). Pointer tests at
+those heights wait for the startup destination before clicking a tab; a press
+straddling the reflow lands outside the moved tab and is silently lost.
 
 The three combined regressions capture screenshots and measured content,
 navigation, footer and individual-control bounds before keyboard interaction:
