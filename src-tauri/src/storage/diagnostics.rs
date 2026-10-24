@@ -630,7 +630,7 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_error: Option<crate::github::ConnectionError>,
     },
-    /// Host code panicked inside the attempt: bounded message and source location.
+    /// Host code panicked inside the attempt: source location only, never the payload.
     HostPanic {
         panic: crate::host_panic::HostPanic,
     },

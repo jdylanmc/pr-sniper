@@ -1508,6 +1508,35 @@ async fn a_host_panic_in_the_pre_invocation_gate_keeps_its_location() {
     stopped(root.path());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_panic_in_the_review_worker_runtime_keeps_its_location() {
+    let root = tempfile::tempdir().unwrap();
+    let trace = diagnostic_trace(root.path().join("profile"));
+    let line = line!() + 9;
+    // The review worker drives its own runtime, as `Integration::review` does.
+    let error = Failure::blocking(Some(trace), "Review worker could not finish.", || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::task::yield_now().await;
+            let empty: Vec<u8> = Vec::new();
+            Ok::<u8, Failure>(empty[4])
+        })
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+    assert!(
+        error.message.ends_with(&format!("tests.rs:{line}.")),
+        "{}",
+        error.message
+    );
+    let panics = host_panic_records(root.path());
+    assert_eq!(panics.len(), 1);
+    assert_eq!(panics[0]["event"]["panic"]["line"], line);
+}
+
 #[test]
 fn late_tool_completion_is_rejected_before_success_diagnostics() {
     struct RetiringRead(Arc<Watchdog>);

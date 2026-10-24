@@ -1411,6 +1411,7 @@ async fn execute<T: Transport + Send + Sync + 'static, K: Task>(
                 }),
                 diagnostics.clone(),
                 Some(progress.clone()),
+                host_failure.clone(),
                 finding_primary.then(|| {
                     let reads = tools.clone();
                     Arc::new(move |e: &super::duck::EvidenceRef| reads.evidence_served(e))
@@ -1636,8 +1637,12 @@ async fn monitor_attempt(
     host_failure: &HostFailure,
 ) -> Failure {
     loop {
-        // A host panic is the cause, even when a deadline expired since.
+        // A host panic is the cause, even when a deadline expired since. A Rubber
+        // Duck's panic is itemized on its own trace; the attempt's kind is set here.
         if let Some(failure) = host_failure.take() {
+            if let Some(trace) = diagnostics {
+                trace.fail(FailureKind::HostPanic);
+            }
             return failure;
         }
         if let Some((failure, idle_ms, total_ms)) = progress.expiry() {

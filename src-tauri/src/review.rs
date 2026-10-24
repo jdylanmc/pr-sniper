@@ -948,6 +948,18 @@ impl Failure {
             Err(Self::host_panic(&panic))
         })
     }
+    /// [`Self::caught`] on a blocking thread. A panic anywhere in `work`, including
+    /// a nested runtime it drives, is recorded instead of becoming a bare join error;
+    /// any other join failure is `join_failure`.
+    pub(crate) async fn blocking<R: Send + 'static>(
+        trace: Option<std::sync::Arc<diagnostics::Trace>>,
+        join_failure: &'static str,
+        work: impl FnOnce() -> Result<R, Self> + Send + 'static,
+    ) -> Result<R, Self> {
+        tauri::async_runtime::spawn_blocking(move || Self::caught(trace.as_deref(), work))
+            .await
+            .map_err(|_| Self::permanent(join_failure))?
+    }
     /// Repeated malformed or over-limit exit calls. Permanent, human needed.
     pub fn contract(message: impl Into<String>) -> Self {
         Self::permanent(message)

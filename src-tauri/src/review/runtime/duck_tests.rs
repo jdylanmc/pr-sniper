@@ -1050,3 +1050,45 @@ async fn a_primary_failing_mid_call_stops_the_duck_at_once_and_records_it() {
     );
     assert_eq!(methods(&root.path().join("duck"), "session.abort"), 1);
 }
+
+#[tokio::test]
+async fn a_host_panic_in_a_duck_call_ends_the_primary_run_with_its_location() {
+    let root = tempfile::tempdir().unwrap();
+    let mut duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let line = line!() + 3;
+    duck.setup.gated = Arc::new(|| {
+        let empty: Vec<bool> = Vec::new();
+        empty[3]
+    });
+    let request = Request {
+        diagnostics: Some(diagnostic_trace(root.path().join("profile"))),
+        ..primary_request(duck.setup)
+    };
+    let error = execute(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &operation(600),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, crate::monitoring::OperationFailure::Permanent);
+    assert!(
+        error.message.ends_with(&format!("duck_tests.rs:{line}.")),
+        "{}",
+        error.message
+    );
+    let records = diagnostic_records(root.path());
+    let panics: Vec<_> = records
+        .iter()
+        .filter(|r| r["event"]["kind"] == "host_panic")
+        .collect();
+    assert_eq!(panics.len(), 1, "{records:?}");
+    assert_eq!(panics[0]["event"]["panic"]["line"], line);
+    stopped(root.path());
+}

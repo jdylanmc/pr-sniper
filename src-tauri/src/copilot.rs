@@ -90,7 +90,8 @@ impl Integration {
             duck.account = Some(account);
         }
         let final_operation = operation.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
+        let trace = request.diagnostics.clone();
+        let result = Failure::blocking(trace, "Review worker could not finish.", move || {
             if let Some(trace) = &request.diagnostics {
                 trace.emit(crate::storage::diagnostics::Event::Phase {
                     phase: crate::storage::diagnostics::Phase::StartingRuntime,
@@ -98,8 +99,7 @@ impl Integration {
             }
             crate::review::runtime::run(&identity, &pair, &operation, request)
         })
-        .await
-        .map_err(|_| Failure::permanent("Review worker could not finish."))?;
+        .await;
         result.and_then(|value| {
             final_operation.check().map_err(Failure::operation)?;
             Ok(value)

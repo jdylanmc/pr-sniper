@@ -136,10 +136,11 @@ efficiency, merge-path and reliability fixes.
     reviewing #220). The run now ends with the typed provider failure (network,
     rate limit, ...) and its retry policy; the attempt log records each refused
     exit's typed cause.
-  - A host panic in a review attempt, its preparation, a review tool or a
-    blocking step (pre-invocation gate, final eligibility, local-exit check)
-    fails the run as a host fault with its source location instead of killing
-    the worker; a read-tool panic ends the run at once, never as a timeout. Only
+  - A host panic in a review attempt, its preparation, the review worker, a
+    review tool, a Rubber Duck call or a blocking step (pre-invocation gate,
+    final eligibility, local-exit check) fails the run as a host fault with its
+    source location instead of killing the worker; a read-tool or Rubber Duck
+    panic ends the run at once, never as a timeout. Only
     the location is recorded in the attempt log and `diagnostics.jsonl`, never
     the panic message.
   - A failed or pending feedback observation no longer fails a finished review
