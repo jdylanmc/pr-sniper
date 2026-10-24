@@ -118,7 +118,9 @@ mod tests {
         clock.progress().unwrap(); // Tool starts; never completes.
         let operation = super::super::tests::operation(60);
         let gate: super::super::Gate = std::sync::Arc::new(|| Ok(()));
-        let failure = super::super::monitor_attempt(&clock, &operation, &gate, None).await;
+        let failure =
+            super::super::monitor_attempt(&clock, &operation, &gate, None, &Default::default())
+                .await;
         assert_eq!(failure.kind, crate::monitoring::OperationFailure::Timeout);
         assert!(matches!(
             clock.expiry(),
@@ -140,8 +142,9 @@ mod tests {
                 .cancelled
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         };
+        let host = super::super::HostFailure::default();
         let (failure, ()) = tokio::join!(
-            super::super::monitor_attempt(&clock, &operation, &gate, None),
+            super::super::monitor_attempt(&clock, &operation, &gate, None, &host),
             cancel,
         );
         assert!(failure.cancelled);

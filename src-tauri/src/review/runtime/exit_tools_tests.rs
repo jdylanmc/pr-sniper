@@ -174,10 +174,7 @@ async fn a_host_panic_in_an_exit_call_is_a_typed_failure_with_its_location() {
         .ends_with(&format!("exit_tools_tests.rs:{line}.")));
     let panic = &events(&records, "host_panic")[0]["panic"];
     assert_eq!(panic["line"], line);
-    assert!(panic["message"]
-        .as_str()
-        .unwrap()
-        .contains("index out of bounds"));
+    assert!(panic.get("message").is_none(), "{panic}");
     assert_eq!(events(&records, "exit_refused")[0]["refusal"], "host_panic");
     assert_eq!(events(&records, "finished").len(), 0);
 }

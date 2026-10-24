@@ -51,7 +51,6 @@ pub enum DiagnosticEvent {
 #[serde(deny_unknown_fields)]
 pub struct HostPanicRecord {
     pub attempt: String,
-    pub message: String,
     pub file: String,
     pub line: u32,
     pub column: u32,
@@ -2694,7 +2693,7 @@ impl Store {
         })
     }
 
-    /// Host log entry for a caught host panic: bounded, sanitized message and location.
+    /// Host log entry for a caught host panic: its attempt and source location only.
     pub fn record_host_panic(
         &self,
         attempt: &str,
@@ -2707,7 +2706,6 @@ impl Store {
             attempt: None,
             panic: Some(HostPanicRecord {
                 attempt: text(attempt),
-                message: text(&panic.message),
                 file: text(&panic.file),
                 line: panic.line,
                 column: panic.column,

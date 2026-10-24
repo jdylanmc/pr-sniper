@@ -319,7 +319,7 @@ process.stdin.on("data", (chunk) => {
           }, 10);
           break;
         }
-        if (["read-full", "read-source-only", "tool-invalid-path"].includes(scenario)) {
+        if (["read-full", "read-panic-silent", "read-source-only", "tool-invalid-path"].includes(scenario)) {
           const toolName = scenario === "read-source-only" ? "read_source" : "read_changes";
           event("tool.execution_start", { toolName });
           event("external_tool.requested", {
@@ -418,6 +418,8 @@ process.stdin.on("data", (chunk) => {
           }
           break;
         }
+        // The read failed in the host; the session never goes idle.
+        if (scenario === "read-panic-silent") break;
         if (["read-source-only", "tool-invalid-path"].includes(scenario)) {
           // The tool call (served or rejected) does not decide the review.
           handOver();

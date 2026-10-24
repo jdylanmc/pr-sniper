@@ -756,7 +756,6 @@ impl Record {
             }
             Event::PublicationRetry { operation_id, .. } => *operation_id = safe_text(operation_id),
             Event::HostPanic { panic } => {
-                panic.message = safe_text(&panic.message);
                 panic.file = safe_text(&panic.file);
             }
             Event::Duck {
