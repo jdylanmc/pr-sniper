@@ -1245,8 +1245,8 @@ fn provider_text_cannot_break_lines_or_reorder_the_notification() {
 fn a_toast_with_xml_invalid_provider_text_still_loads() {
     let pr = subject("Fix \u{FFFF} and \u{FFFE}", None);
     let message = render(&queue_notice(Category::Merged), Some(&pr));
-    let xml = windows::Data::Xml::Dom::XmlDocument::new().unwrap();
-    xml.LoadXml(&windows::core::HSTRING::from(
+    let xml = ::windows::Data::Xml::Dom::XmlDocument::new().unwrap();
+    xml.LoadXml(&::windows::core::HSTRING::from(
         super::windows_native::toast_xml("id", &message.title, &message.body, None),
     ))
     .unwrap();
