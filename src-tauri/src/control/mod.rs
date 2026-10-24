@@ -63,7 +63,11 @@ pub(crate) fn start(app: &tauri::AppHandle, root: &Path) -> Result<(), String> {
                         .quitting
                         .load(std::sync::atomic::Ordering::SeqCst)
                 },
-                |request| tauri::async_runtime::block_on(operations::execute(&app, request)),
+                |request, early| {
+                    tauri::async_runtime::block_on(operations::execute(&app, request, |reply| {
+                        early.reply(reply)
+                    }))
+                },
                 || {
                     // Fail-stop at once: shared state may be poisoned or partly
                     // committed, so no scheduler or worker may continue.

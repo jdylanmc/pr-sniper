@@ -86,7 +86,10 @@ reply. Receipts last five minutes; older requests fail `expired_request`.
 An interrupted request remains `outcome_unknown`, never re-executed.
 `control_busy` means the request was not executed (native queue full, or
 `reason: expired` when it could not start within 25 seconds); retry it later
-with the same identity. The client waits 120 seconds after sending. An operation that crashes the app also returns
+with the same identity. The client waits 120 seconds after sending. An
+operation still running at 90 seconds returns `outcome_unknown` but finishes
+before any other request starts; its receipt (same request ID) then holds the
+real result. An operation that crashes the app also returns
 `outcome_unknown`; the app exits and relaunches on the next call. Inspect the
 receipt (same request ID) and current state before any retry.
 Mutation success includes `replayed`; a replay is the original observation,

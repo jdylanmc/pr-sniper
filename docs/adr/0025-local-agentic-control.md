@@ -66,6 +66,11 @@
   after its client may have reported `outcome_unknown`. A panic on the
   blocking dispatch pool is re-raised on the executor and is fatal like any
   other operation panic; only a cancelled task is plain `outcome_unknown`.
+  At 90 seconds the client is answered `outcome_unknown`, but the executor
+  keeps waiting for the operation (blocking work cannot be cancelled), so no
+  request ever starts concurrently; queued requests expire meanwhile. The
+  receipt records the real outcome. An operation still running after five
+  minutes is presumed hung and triggers the same fail-stop as a panic.
   A panicking operation is fatal: shared state may be poisoned or partly
   committed. Fail-stop begins at once (app quitting, Copilot work cancelled),
   then the request returns `outcome_unknown`, a content-free diagnostic is

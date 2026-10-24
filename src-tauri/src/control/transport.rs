@@ -143,7 +143,7 @@ impl Server {
     pub(crate) fn run<Exit: FnOnce()>(
         self,
         quitting: impl Fn() -> bool,
-        mut execute: impl FnMut(Value) -> Result<Value, Error>,
+        mut execute: impl FnMut(Value, &Early) -> Result<Value, Error>,
         fatal: impl FnOnce() -> Exit,
     ) {
         let stop = Arc::new(AtomicBool::new(false));
@@ -191,7 +191,10 @@ impl Server {
                 }
                 Ok(job) => {
                     let started = Instant::now();
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| execute(job.request))) {
+                    let early = Early(job.reply.clone());
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        execute(job.request, &early)
+                    })) {
                         Ok(result) => {
                             let _ = job.reply.send(result);
                         }
@@ -381,6 +384,17 @@ const OPERATION_BUDGET: Duration = Duration::from_secs(90);
 const QUEUE_WAIT: Duration = CLIENT_WAIT
     .saturating_sub(OPERATION_BUDGET)
     .saturating_sub(Duration::from_secs(5));
+
+/// Lets a running operation answer its client before it finishes (for
+/// example `outcome_unknown` at the reply limit) while the executor stays
+/// occupied. Only the first reply reaches the client.
+pub(crate) struct Early(mpsc::Sender<Result<Value, Error>>);
+
+impl Early {
+    pub(crate) fn reply(&self, result: Result<Value, Error>) {
+        let _ = self.0.send(result);
+    }
+}
 
 struct Job {
     request: Value,

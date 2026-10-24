@@ -270,14 +270,51 @@ pub(crate) fn finish_request(
         .map_err(|_| Error::new("outcome_unknown", ()))
 }
 
-pub(crate) async fn execute(app: &tauri::AppHandle, input: Value) -> Result<Value, Error> {
-    let host = app.state::<Host>();
-    execute_request(&host.store, input, |command| execute_command(app, command)).await
+/// Native operation time limits. After `reply`, the client is told
+/// `outcome_unknown` but the executor keeps waiting for the operation, so no
+/// other request runs concurrently; past `hard` the operation is presumed
+/// hung and is escalated to the executor's fail-stop.
+#[derive(Clone, Copy)]
+pub(crate) struct Limits {
+    pub(crate) reply: std::time::Duration,
+    pub(crate) hard: std::time::Duration,
 }
 
+pub(crate) const LIMITS: Limits = Limits {
+    reply: std::time::Duration::from_secs(90),
+    hard: std::time::Duration::from_secs(300),
+};
+
+pub(crate) async fn execute(
+    app: &tauri::AppHandle,
+    input: Value,
+    early: impl FnOnce(Result<Value, Error>),
+) -> Result<Value, Error> {
+    let host = app.state::<Host>();
+    execute_request_with(&host.store, input, early, LIMITS, |command| {
+        execute_command(app, command)
+    })
+    .await
+}
+
+#[cfg(test)]
 pub(super) async fn execute_request<F, Fut>(
     store: &std::sync::Mutex<Store>,
     input: Value,
+    dispatch: F,
+) -> Result<Value, Error>
+where
+    F: FnOnce(Command) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, Error>>,
+{
+    execute_request_with(store, input, |_| {}, LIMITS, dispatch).await
+}
+
+pub(super) async fn execute_request_with<F, Fut>(
+    store: &std::sync::Mutex<Store>,
+    input: Value,
+    early: impl FnOnce(Result<Value, Error>),
+    limits: Limits,
     dispatch: F,
 ) -> Result<Value, Error>
 where
@@ -328,17 +365,25 @@ where
             return previous.map(|value| replay_marker(value, true));
         }
     }
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(90),
-        dispatch(request.command),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        Err(Error::new(
-            "outcome_unknown",
-            json!({"request_id":request.request_id}),
-        ))
-    });
+    let mut work = std::pin::pin!(dispatch(request.command));
+    let response = match tokio::time::timeout(limits.reply, &mut work).await {
+        Ok(response) => response,
+        Err(_) => {
+            // Release the client, but keep this (single) executor occupied:
+            // blocking native work cannot be cancelled and must never overlap
+            // the next request. Queued requests meanwhile hit their start
+            // deadline. The receipt still records the real outcome.
+            early(Err(Error::new(
+                "outcome_unknown",
+                json!({"request_id":request.request_id}),
+            )));
+            match tokio::time::timeout(limits.hard.saturating_sub(limits.reply), &mut work).await {
+                Ok(response) => response,
+                // Presumed hung: escalate to the executor's fail-stop.
+                Err(_) => panic!("native operation exceeded its hard time limit"),
+            }
+        }
+    };
     let response = if mutating {
         response.map(|value| replay_marker(value, false))
     } else {

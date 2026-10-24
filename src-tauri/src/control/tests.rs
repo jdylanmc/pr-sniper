@@ -795,7 +795,7 @@ fn long_operation_keeps_handshakes_prompt_and_execution_single_writer() {
         std::thread::spawn(move || {
             server.run(
                 || quit.load(Ordering::SeqCst),
-                |request| {
+                |request, _: &transport::Early| {
                     let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(now, Ordering::SeqCst);
                     if request["operation"] == "slow" {
@@ -882,6 +882,10 @@ fn wait_closed(port: u16) {
     }
 }
 
+fn echo(request: Value, _: &transport::Early) -> Result<Value, Error> {
+    Ok(request)
+}
+
 fn not_fatal() -> fn() {
     panic!("No operation panics in this test")
 }
@@ -905,7 +909,7 @@ fn panicking_operation_is_outcome_unknown_and_fatal() {
         std::thread::spawn(move || {
             server.run(
                 || false,
-                |request| {
+                |request, _: &transport::Early| {
                     if request["operation"] == "boom" {
                         panic!("synthetic native panic");
                     }
@@ -953,7 +957,7 @@ fn panicking_operation_is_outcome_unknown_and_fatal() {
     let quit = Arc::new(AtomicBool::new(false));
     let host = {
         let quit = quit.clone();
-        std::thread::spawn(move || fresh.run(|| quit.load(Ordering::SeqCst), Ok, not_fatal))
+        std::thread::spawn(move || fresh.run(|| quit.load(Ordering::SeqCst), echo, not_fatal))
     };
     let mut stream = TcpStream::connect(("127.0.0.1", next.port)).unwrap();
     let reply = transport::client_exchange(&mut stream, &next.token, json!({"operation":"after"}));
@@ -981,7 +985,7 @@ fn panic_on_the_blocking_dispatch_pool_is_fatal() {
                 || false,
                 // The production request path; only the AppHandle-bound
                 // dispatcher body is replaced by a panicking one.
-                |request| {
+                |request, _: &transport::Early| {
                     tauri::async_runtime::block_on(operations::execute_request(
                         &store,
                         request,
@@ -1030,7 +1034,7 @@ fn queued_requests_past_their_start_deadline_never_execute() {
         std::thread::spawn(move || {
             server.run(
                 || quit.load(Ordering::SeqCst),
-                |request| {
+                |request, _: &transport::Early| {
                     let operation = request["operation"].as_str().unwrap().to_owned();
                     executed.lock().unwrap().push(operation.clone());
                     match operation.as_str() {
@@ -1075,6 +1079,141 @@ fn queued_requests_past_their_start_deadline_never_execute() {
     host.join().unwrap();
 }
 
+fn inspect_request() -> Value {
+    json!({"operation":"inspect","request_id":uuid::Uuid::new_v4().to_string(),
+        "issued_at":crate::now_seconds().unwrap()})
+}
+
+#[test]
+fn timed_out_operation_keeps_the_executor_until_it_finishes() {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
+    let (root, store) = capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory)
+        .unwrap()
+        .with_queue_wait(Duration::from_millis(300));
+    let endpoint = read_endpoint(&directory);
+    let limits = operations::Limits {
+        reply: Duration::from_millis(200),
+        hard: Duration::from_secs(20),
+    };
+    let quit = Arc::new(AtomicBool::new(false));
+    let (calls, current, peak) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let host = {
+        let (quit, calls, current, peak) =
+            (quit.clone(), calls.clone(), current.clone(), peak.clone());
+        std::thread::spawn(move || {
+            server.run(
+                || quit.load(Ordering::SeqCst),
+                |request, early| {
+                    let (calls, current, peak) = (calls.clone(), current.clone(), peak.clone());
+                    tauri::async_runtime::block_on(operations::execute_request_with(
+                        &store,
+                        request,
+                        |reply| early.reply(reply),
+                        limits,
+                        move |_| {
+                            operations::blocking(move || {
+                                let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                                peak.fetch_max(now, Ordering::SeqCst);
+                                // The first operation outlives the reply limit.
+                                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                                    std::thread::sleep(Duration::from_millis(1200));
+                                }
+                                current.fetch_sub(1, Ordering::SeqCst);
+                                Ok(json!({"done":true}))
+                            })
+                        },
+                    ))
+                },
+                not_fatal,
+            )
+        })
+    };
+    let call = || {
+        let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+        transport::client_exchange(&mut stream, &endpoint.token, inspect_request())
+    };
+    let asked = Instant::now();
+    let first = call();
+    assert_eq!(first["error"]["code"], "outcome_unknown");
+    assert!(
+        asked.elapsed() < Duration::from_millis(1000),
+        "Released at the reply limit"
+    );
+    // The operation is still running: nothing else may start meanwhile.
+    let queued = call();
+    assert_eq!(queued["error"]["code"], "control_busy");
+    assert_eq!(queued["error"]["detail"]["reason"], "expired");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let after = call();
+    assert_eq!(after["result"]["done"], true);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(peak.load(Ordering::SeqCst), 1, "Never concurrent");
+    quit.store(true, Ordering::SeqCst);
+    host.join().unwrap();
+}
+
+#[test]
+fn operation_past_the_hard_limit_is_fatal() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    let (root, store) = capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let directory = root.path().join("control");
+    let server = transport::Server::bind(&directory).unwrap();
+    let endpoint = read_endpoint(&directory);
+    let limits = operations::Limits {
+        reply: Duration::from_millis(100),
+        hard: Duration::from_millis(400),
+    };
+    let exited = Arc::new(AtomicBool::new(false));
+    let host = {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            server.run(
+                || false,
+                |request, early| {
+                    tauri::async_runtime::block_on(operations::execute_request_with(
+                        &store,
+                        request,
+                        |reply| early.reply(reply),
+                        limits,
+                        |_| {
+                            operations::blocking(|| {
+                                std::thread::sleep(Duration::from_secs(3));
+                                Ok(Value::Null)
+                            })
+                        },
+                    ))
+                },
+                move || move || exited.store(true, Ordering::SeqCst),
+            )
+        })
+    };
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    let reply = transport::client_exchange(&mut stream, &endpoint.token, inspect_request());
+    assert_eq!(reply["error"]["code"], "outcome_unknown");
+    host.join().unwrap();
+    assert!(
+        exited.load(Ordering::SeqCst),
+        "Hung operation escalates to fail-stop"
+    );
+    assert!(!directory.join("endpoint.json").exists());
+}
+
 #[test]
 fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
     let root = tempfile::tempdir().unwrap();
@@ -1083,7 +1222,7 @@ fn executor_failure_withdraws_the_endpoint_so_clients_relaunch() {
     let endpoint = read_endpoint(&directory);
     // A failure outside an operation (here: the quit probe) ends the executor.
     let host = std::thread::spawn(move || {
-        server.run(|| panic!("synthetic executor failure"), Ok, not_fatal)
+        server.run(|| panic!("synthetic executor failure"), echo, not_fatal)
     });
     assert!(host.join().is_err());
     assert!(!directory.join("endpoint.json").exists());
@@ -1098,7 +1237,7 @@ fn teardown_never_removes_a_successor_descriptor() {
     // A successor publishes before the old server tears down.
     let successor = transport::Server::bind(&directory).unwrap();
     let published = std::fs::read(directory.join("endpoint.json")).unwrap();
-    std::thread::spawn(move || old.run(|| true, Ok, not_fatal))
+    std::thread::spawn(move || old.run(|| true, echo, not_fatal))
         .join()
         .unwrap();
     assert_eq!(
@@ -1113,7 +1252,7 @@ fn teardown_never_removes_a_successor_descriptor() {
         .collect();
     assert!(names.is_empty(), "{names:?}");
     // The successor still withdraws its own.
-    std::thread::spawn(move || successor.run(|| true, Ok, not_fatal))
+    std::thread::spawn(move || successor.run(|| true, echo, not_fatal))
         .join()
         .unwrap();
     assert!(!directory.join("endpoint.json").exists());
