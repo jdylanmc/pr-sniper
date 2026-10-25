@@ -1,4 +1,7 @@
-use super::{windows_native as native, Adapter, Notice, Permission, SendError};
+use super::{
+    badge_directory, message::windows_file_uri, windows_native as native, Adapter, Message, Notice,
+    Permission, SendError,
+};
 use crate::{storage::Store, Host};
 use native::{ActivationServer, Apartment, Registration};
 use std::{
@@ -137,19 +140,15 @@ impl Adapter for Native {
             &registration,
             || native::permission(&registration),
             |notice| {
-                native::submit_setup(
-                    &registration,
-                    &notice.id,
-                    notice.event.category.title(),
-                    notice.event.category.body(),
-                )
+                let message = super::render(notice, None);
+                native::submit_setup(&registration, &notice.id, &message.title, &message.body)
             },
             |id| native::remove_setup(&registration, id),
         )
         .map(permission)
     }
 
-    fn send(&self, notice: &Notice) -> Result<(), SendError> {
+    fn send(&self, notice: &Notice, message: &Message) -> Result<(), SendError> {
         let _apartment = Apartment::new().map_err(|message| SendError {
             message,
             uncertain: false,
@@ -174,11 +173,19 @@ impl Adapter for Native {
                 uncertain: false,
             });
         }
+        // Windows reads the logo when it renders, including later from the
+        // notification center, so badges stay at a stable path. Cosmetic only.
+        let logo = message
+            .badge
+            .write(&badge_directory(&self.root), message.badge.file_name())
+            .ok()
+            .map(|path| windows_file_uri(&path.to_string_lossy()));
         native::send(
             &registration,
             &notice.id,
-            notice.event.category.title(),
-            notice.event.category.body(),
+            &message.title,
+            &message.body,
+            logo.as_deref(),
         )
         .map_err(|(message, uncertain)| SendError { message, uncertain })
     }
@@ -819,8 +826,8 @@ mod tests {
             .as_secs();
         let toast = native::setup_toast(
             id,
-            super::super::Category::Test.title(),
-            super::super::Category::Test.body(),
+            super::super::Category::Test.state(),
+            "PR alerts show here",
         )
         .unwrap();
         let after = std::time::SystemTime::now()
@@ -906,12 +913,8 @@ mod tests {
                     {
                         return Err(("Probe intent was not persisted.".into(), false));
                     }
-                    native::submit_setup(
-                        &registration,
-                        &notice.id,
-                        notice.event.category.title(),
-                        notice.event.category.body(),
-                    )
+                    let message = super::super::render(notice, None);
+                    native::submit_setup(&registration, &notice.id, &message.title, &message.body)
                 },
                 |id| native::remove_setup(&registration, id),
             )?;

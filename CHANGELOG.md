@@ -38,6 +38,16 @@ efficiency, merge-path and reliability fixes.
 - Set up SOLID and Security teammates feeding a Maintainer primary using a
   shipped preset that preserves customized components.
 
+### Changed
+
+- Notifications are short and state-first: **Approved · repo#123** with the PR
+  title as the body and at most one reason (e.g. **Needs your review**). Each
+  carries a state badge: green check, amber `!`, blue crosshair or red `×`
+  (macOS thumbnail, Windows app logo). Provider text drops every bidi control
+  and the XML-invalid U+FFFE/U+FFFF, and a notice under a legacy item id still
+  names its PR. A Failure notice keeps the failure cause it was sent with; its
+  history entry never shows a later or changed reason.
+
 ### Fixed
 
 - **Efficiency & resource use**

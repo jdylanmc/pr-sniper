@@ -28,7 +28,7 @@ impl Coordinator {
     pub(crate) fn new(app: &tauri::AppHandle, _store: &Store, _root: &std::path::Path) -> Self {
         Self {
             #[cfg(target_os = "macos")]
-            native: Native::new(app),
+            native: Native::new(app, _root),
             #[cfg(windows)]
             native: Native::new(app, _store, _root),
             active: AtomicBool::new(false),
@@ -126,7 +126,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
                 .store
                 .lock()
                 .map_err(|_| "Notification storage unavailable.")?;
-            prepare(&store, &frames(&fresh), &next.id, now_seconds()?)?
+            prepare_queue(&store, &fresh, &next.id, now_seconds()?)?
         };
         if notice.phase != Phase::Submitting {
             continue;
@@ -141,7 +141,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
                     (Phase::NotSent, Some("Notifications were disabled or the application is quitting.".into()))
                 } else {
                     match host.notifications.native.as_ref() {
-                        Ok(native) => submit(native, &notice),
+                        Ok(native) => submit(native, &notice, &render(&notice, Subject::saved(&fresh, &notice).as_ref())),
                         Err(error) => (Phase::Failed, Some(error.clone())),
                     }
                 }
@@ -170,8 +170,8 @@ fn run(app: &tauri::AppHandle) -> Result<(), String> {
 pub struct NoticeView {
     #[serde(flatten)]
     notice: Notice,
-    title: &'static str,
-    body: &'static str,
+    title: String,
+    body: String,
 }
 
 #[derive(Serialize)]
@@ -211,10 +211,14 @@ pub fn view(store: &Store, permission: Result<Permission, String>) -> Result<Sna
             .notices
             .into_iter()
             .rev()
-            .map(|notice| NoticeView {
-                title: notice.event.category.title(),
-                body: notice.event.category.body(),
-                notice,
+            .map(|notice| {
+                let subject = queue.as_ref().ok().and_then(|q| Subject::saved(q, &notice));
+                let message = render(&notice, subject.as_ref());
+                NoticeView {
+                    title: message.title,
+                    body: message.body,
+                    notice,
+                }
             })
             .collect(),
         categories: Category::SELECTABLE

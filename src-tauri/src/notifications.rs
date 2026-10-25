@@ -1,11 +1,13 @@
 pub(crate) mod host;
 #[cfg(target_os = "macos")]
 mod macos;
+mod message;
 #[cfg(windows)]
 pub(crate) mod windows;
 #[cfg(windows)]
 mod windows_native;
 pub use host::{view as snapshot, Snapshot};
+pub use message::{badge_directory, render, Badge, Message, Subject, BODY_MAX, TITLE_MAX};
 
 use crate::{queue, storage::Store};
 use serde::{Deserialize, Serialize};
@@ -26,32 +28,6 @@ pub enum Category {
 }
 
 impl Category {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Confirmation => "Review needs your confirmation",
-            Self::HumanInput => "Review needs your input",
-            Self::Ready => "Ready for your final review",
-            Self::Failure => "PR Sniper needs attention",
-            Self::Test => "PR Sniper notifications are on",
-            Self::Approved => "Automated approval confirmed; personal review remains",
-            Self::Merged => "PR merged on GitHub",
-            Self::FinalReviewCleared => "Primary final full review cleared",
-        }
-    }
-
-    pub fn body(self) -> &'static str {
-        match self {
-            Self::Confirmation => "Open the exact queue item to confirm the next action. Opening this alert does not start or publish a review.",
-            Self::HumanInput => "Automated review needs your judgment. Open the exact queue item for the conversation and evidence.",
-            Self::Ready => "Automated review completed. Open the exact queue item for your final review and merge decision. This is not approval.",
-            Self::Failure => "A review or monitoring operation needs recovery. Open the saved destination for details; no success is implied.",
-            Self::Test => "Alerts for review events will appear here.",
-            Self::Approved => "GitHub recorded the acting account's automated approval. This unmerged PR still needs your personal review; one account is one vote.",
-            Self::Merged => "GitHub confirmed merge. Open saved evidence for action attribution; human review is not inferred.",
-            Self::FinalReviewCleared => "The primary completed its final full review. Provider approval/merge remain separately gated; an unmerged PR still needs personal review.",
-        }
-    }
-
     /// Event categories a user can turn off; `Test` confirms opt-in and always sends.
     pub const SELECTABLE: [Self; 7] = [
         Self::Confirmation,
@@ -363,6 +339,10 @@ pub struct Notice {
     pub error: Option<String>,
     pub opened_at: Option<i64>,
     pub navigation_error: Option<String>,
+    /// The item's typed failure cause when this Failure notice was sent. The
+    /// banner and history render its reason from this alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_cause: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -501,6 +481,7 @@ impl Ledger {
                     error: None,
                     opened_at: None,
                     navigation_error: None,
+                    failure_cause: None,
                 });
             }
         }
@@ -621,6 +602,7 @@ impl Ledger {
             error: None,
             opened_at: None,
             navigation_error: None,
+            failure_cause: None,
         });
         id
     }
@@ -746,17 +728,21 @@ pub struct SendError {
 pub trait Adapter: Send + Sync {
     fn permission(&self) -> Result<Permission, String>;
     fn request_permission(&self) -> Result<Permission, String>;
-    fn send(&self, notice: &Notice) -> Result<(), SendError>;
+    fn send(&self, notice: &Notice, message: &Message) -> Result<(), SendError>;
 }
 
-pub fn submit(adapter: &dyn Adapter, notice: &Notice) -> (Phase, Option<String>) {
+pub fn submit(
+    adapter: &dyn Adapter,
+    notice: &Notice,
+    message: &Message,
+) -> (Phase, Option<String>) {
     if notice.phase != Phase::Submitting {
         return (
             Phase::Failed,
             Some("Native notification intent must be persisted before submission.".into()),
         );
     }
-    match adapter.send(notice) {
+    match adapter.send(notice, message) {
         Ok(()) => (Phase::AcceptedUnconfirmed, None),
         Err(error) => (
             if error.uncertain {
@@ -786,10 +772,40 @@ pub fn destination(store: &Store, id: &str) -> Result<Destination, String> {
     Err("This notification belongs to another profile or is no longer retained. No substitute destination was opened.".into())
 }
 
+/// Starts sending notice `id` against the live queue `snapshot`, storing a
+/// Failure notice's live cause so its reason never changes afterwards.
+pub fn prepare_queue(
+    store: &Store,
+    snapshot: &queue::Snapshot,
+    id: &str,
+    now: i64,
+) -> Result<Notice, String> {
+    prepare_with(store, &frames(snapshot), id, now, |notice| {
+        message::Subject::find(snapshot, notice).and_then(|subject| subject.failure_cause)
+    })
+}
+
+#[cfg(test)]
 pub fn prepare(store: &Store, frames: &[Frame], id: &str, now: i64) -> Result<Notice, String> {
+    prepare_with(store, frames, id, now, |_| None)
+}
+
+fn prepare_with(
+    store: &Store,
+    frames: &[Frame],
+    id: &str,
+    now: i64,
+    failure_cause: impl Fn(&Notice) -> Option<String>,
+) -> Result<Notice, String> {
     let mut ledger = store.load_notifications()?;
     ledger.observe(frames, now)?;
     let mut notice = ledger.begin(id)?;
+    if notice.phase == Phase::Submitting && notice.event.category == Category::Failure {
+        notice.failure_cause = failure_cause(&notice);
+        if let Some(saved) = ledger.notices.iter_mut().find(|n| n.id == id) {
+            saved.failure_cause = notice.failure_cause.clone();
+        }
+    }
     if notice.phase == Phase::Submitting {
         if let Destination::QueueItem { item_id } = &notice.event.destination {
             if let Err(error) = queue::destination(store, item_id, None) {

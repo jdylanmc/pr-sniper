@@ -66,7 +66,22 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 - Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
 - Types: while on, each type has its own switch (default on, including older profiles). A type turned back on never replays what happened while it was off.
 - Click opens the exact saved queue item, or Settings for a scheduling/account failure with no PR.
-- Banner text is generic. Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
+- Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
+- Copy: title = state word, then `repo#123`; body = PR title, then at most one reason. Repo and PR title in banners are owner-approved (2026-10-23). Rendered at send time from the live queue item; `state/notifications.json` keeps no PR text. Title ≤ 48 chars, body ≤ 90; longer text ends in `…`. Line breaks, control, bidi-control and XML-invalid (U+FFFE/U+FFFF) characters are stripped. The live item matches by id or legacy alias. A Failure notice stores the item's typed failure cause when sent (`failure_cause`, no text); banner and history render its reason from that alone. Item gone: state word alone, body **Open the queue**.
+
+| Type                 | Title                | Body                                                                                                   | Badge          |
+| -------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ | -------------- |
+| Confirmation         | Confirm · repo#123   | PR title                                                                                               | Amber `!`      |
+| Human input          | Needs you · repo#123 | PR title                                                                                               | Amber `!`      |
+| Ready                | Ready · repo#123     | PR title · Needs your review                                                                           | Blue crosshair |
+| Final review cleared | Cleared · repo#123   | PR title · Needs your review                                                                           | Blue crosshair |
+| Approved             | Approved · repo#123  | PR title · Needs your review                                                                           | Green check    |
+| Merged               | Merged · repo#123    | PR title                                                                                               | Green check    |
+| Failure              | Failed · repo#123    | PR title [· Publish failed / Publish unconfirmed / Review crashed / Retries exhausted / Review failed] | Red `×`        |
+| Failure, no PR       | Failed · Repo check  | Open Settings                                                                                          | Red `×`        |
+| Opt-in confirmation  | Notifications on     | PR alerts show here                                                                                    | Blue crosshair |
+
+- Badges: `src-tauri/icons/notifications/*.png` (256 px RGBA, white rim for dark and light), embedded in the binary; regenerate with `swift scripts/generate-notification-badges.swift`. Shape and title word carry the state, not color alone. macOS: per-request copy in `<data root>/notification-badges/` attached as the thumbnail (the app icon stays the main icon); UserNotifications moves it into its store, leftovers are deleted after the request. Windows: `appLogoOverride` from a stable `<data root>/notification-badges/<state>.png`. A badge that cannot be written is skipped; the notice still sends.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.
 - Review Queue > Notifications states: queued, submitting, accepted-unconfirmed, unknown, denied, failed, no-longer-current. Acceptance is not banner display; Focus may suppress. Missing or foreign-profile destination fails visibly. Denied/failed events stay in history, not replayed after permission change.
 - Settings card: the switch only while healthy. A problem shows one row: **Blocked by macOS/Windows** (denied or disabled) or **Muted in macOS** (banners and Notification Center both off). Unknown channels are never shown as muted.
