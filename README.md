@@ -77,6 +77,7 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 - [CONTEXT.md](CONTEXT.md): domain glossary.
 - [docs/adr/](docs/adr/): architecture decisions.
 - [AGENTS.md](AGENTS.md): build, test, UI rules.
+- [PRIVACY.md](PRIVACY.md): privacy statement.
 
 ## Develop
 
