@@ -1031,13 +1031,19 @@ async fn a_primary_failing_mid_call_stops_the_duck_at_once_and_records_it() {
             .into_os_string(),
     ));
     let started = Instant::now();
-    let error = execute(
-        primary,
-        &identity(),
-        &operation(600),
-        primary_request(duck.setup),
+    // The fixture fails the primary only once the duck turn is in flight; bound
+    // the wait so a missing signal fails fast instead of hanging.
+    let error = tokio::time::timeout(
+        Duration::from_secs(30),
+        execute(
+            primary,
+            &identity(),
+            &operation(600),
+            primary_request(duck.setup),
+        ),
     )
     .await
+    .expect("primary error ends the attempt once the duck turn starts")
     .unwrap_err();
     let elapsed = started.elapsed();
     assert!(!error.cancelled && !error.duck_setup, "{}", error.message);
