@@ -1,5 +1,5 @@
 // Synthetic transport: verifies the adapter, not live Copilot acceptance.
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 if (process.env.TEST_STARTUP_DELAY_MS) {
@@ -259,9 +259,17 @@ process.stdin.on("data", (chunk) => {
           setTimeout(() => {
             if (sequential) duckCall(0);
             else duckCalls.forEach((_, index) => duckCall(index));
-            // The primary run fails on its own while the duck call is still pending.
-            if (scenario === "duck-primary-error")
-              setTimeout(() => event("session.error", { statusCode: 500 }), 300);
+            // The primary run fails on its own once the duck's turn is in flight.
+            if (scenario === "duck-primary-error") {
+              const duckReceipt = process.env.TEST_DUCK_RECEIPT;
+              if (!duckReceipt) throw new Error("duck-primary-error needs TEST_DUCK_RECEIPT");
+              const inFlight = setInterval(() => {
+                if (!existsSync(duckReceipt)
+                  || !readFileSync(duckReceipt, "utf8").includes("fixture.turns")) return;
+                clearInterval(inFlight);
+                event("session.error", { statusCode: 500 });
+              }, 10);
+            }
           }, 10);
           break;
         }
