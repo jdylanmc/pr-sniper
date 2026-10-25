@@ -127,6 +127,14 @@ impl Trace {
         });
     }
 
+    /// Records a caught host panic and makes it the attempt's failure kind.
+    pub(crate) fn host_panic(&self, panic: &crate::host_panic::HostPanic) {
+        self.fail(FailureKind::HostPanic);
+        self.emit(Event::HostPanic {
+            panic: panic.clone(),
+        });
+    }
+
     pub(crate) fn tool_calls(&self) -> u64 {
         self.state
             .lock()
@@ -332,6 +340,21 @@ pub(crate) fn attempt(job: &QueueJob, operation: &JobOperation, model: &str) -> 
     }
 }
 
+/// A host panic, a Rubber Duck's included, also lands in the host log,
+/// correlated by the primary attempt.
+pub(crate) fn log_host_panic(store: &crate::storage::Store, record: &Record) -> Result<(), String> {
+    fn panic_of(event: &Event) -> Option<&crate::host_panic::HostPanic> {
+        match event {
+            Event::HostPanic { panic } => Some(panic),
+            Event::DuckEvent { event, .. } => panic_of(event),
+            _ => None,
+        }
+    }
+    panic_of(&record.event).map_or(Ok(()), |panic| {
+        store.record_host_panic(&record.attempt.id, panic)
+    })
+}
+
 pub(crate) fn native(
     app: &tauri::AppHandle,
     job: &QueueJob,
@@ -348,11 +371,13 @@ pub(crate) fn native(
                 .lock()
                 .map_err(|_| "Attempt diagnostic storage unavailable.".to_string())
                 .and_then(|store| {
+                    let logged = log_host_panic(&store, &record);
                     if matches!(record.event, Event::Started) {
                         store.record_attempt_start(record)
                     } else {
                         store.record_attempt(record)
                     }
+                    .and(logged)
                 });
             if let Err(error) = &result {
                 crate::report(&app, error.clone());

@@ -927,6 +927,39 @@ impl Failure {
             ..Self::permanent(format!("Agent panic exit: {reason}"))
         }
     }
+    /// Host code panicked at a review boundary: a host defect, never the agent's
+    /// `panic_exit`. Permanent, with the panic's source location.
+    pub fn host_panic(panic: &crate::host_panic::HostPanic) -> Self {
+        Self::permanent(format!(
+            "Review host panicked at {}:{}.",
+            panic.file, panic.line
+        ))
+    }
+    /// Runs host `work` at a review boundary. A panic in it is recorded on `trace`
+    /// and fails the attempt with its location instead of a generic join error.
+    pub(crate) fn caught<R>(
+        trace: Option<&diagnostics::Trace>,
+        work: impl FnOnce() -> Result<R, Self>,
+    ) -> Result<R, Self> {
+        crate::host_panic::catch(work).unwrap_or_else(|panic| {
+            if let Some(trace) = trace {
+                trace.host_panic(&panic);
+            }
+            Err(Self::host_panic(&panic))
+        })
+    }
+    /// [`Self::caught`] on a blocking thread. A panic anywhere in `work`, including
+    /// a nested runtime it drives, is recorded instead of becoming a bare join error;
+    /// any other join failure is `join_failure`.
+    pub(crate) async fn blocking<R: Send + 'static>(
+        trace: Option<std::sync::Arc<diagnostics::Trace>>,
+        join_failure: &'static str,
+        work: impl FnOnce() -> Result<R, Self> + Send + 'static,
+    ) -> Result<R, Self> {
+        tauri::async_runtime::spawn_blocking(move || Self::caught(trace.as_deref(), work))
+            .await
+            .map_err(|_| Self::permanent(join_failure))?
+    }
     /// Repeated malformed or over-limit exit calls. Permanent, human needed.
     pub fn contract(message: impl Into<String>) -> Self {
         Self::permanent(message)

@@ -3,7 +3,9 @@
 
 use crate::exits::{Exit, ExitCall, MAX_REJECTED_CALLS};
 use crate::review::{diagnostics::Trace, Failure};
-use crate::storage::diagnostics::{Event as DiagnosticEvent, FailureKind, Paths, ToolName};
+use crate::storage::diagnostics::{
+    Event as DiagnosticEvent, ExitRefusal, FailureKind, Paths, ToolName,
+};
 use async_trait::async_trait;
 use github_copilot_sdk::{tool::ToolHandler, ToolInvocation, ToolResult, ToolResultExpanded};
 use std::sync::{
@@ -19,6 +21,9 @@ pub enum Refusal {
     Denied(String),
     /// The PR state moved since the packet; the run is tossed.
     Moved(String),
+    /// The exit-time PR re-read failed. The run ends with the typed provider failure:
+    /// the agent cannot fix it, and retrying in the loop only ends in `panic_exit`.
+    Unreadable(crate::github::ConnectionError),
 }
 
 pub(crate) type ExitGate = Arc<dyn Fn(&ExitCall) -> Result<(), Refusal> + Send + Sync>;
@@ -62,10 +67,28 @@ pub(super) struct ExitTools {
     pub calls: AtomicU64,
     pub(super) finding_gate: Option<FindingGate>,
     pub(super) require_finding_identity: bool,
+    /// A Rubber Duck's exits: the primary attempt's latch, so a host panic here
+    /// ends the primary run instead of reading as a missing verdict.
+    host_failure: Option<Arc<super::HostFailure>>,
 }
 
 fn error(message: &str) -> ToolResult {
     ToolResult::Expanded(ToolResultExpanded::new(message, "failure").with_error(message))
+}
+
+/// A refused exit call: the agent's tool result and the typed cause for diagnostics.
+pub(super) struct Rejection {
+    result: ToolResult,
+    refusal: ExitRefusal,
+    provider_error: Option<crate::github::ConnectionError>,
+}
+
+fn refused(refusal: ExitRefusal, result: ToolResult) -> Box<Rejection> {
+    Box::new(Rejection {
+        result,
+        refusal,
+        provider_error: None,
+    })
 }
 
 impl ExitTools {
@@ -78,7 +101,13 @@ impl ExitTools {
             calls: AtomicU64::new(0),
             finding_gate: None,
             require_finding_identity: false,
+            host_failure: None,
         }
+    }
+
+    pub(super) fn with_host_failure(mut self, host_failure: Arc<super::HostFailure>) -> Self {
+        self.host_failure = Some(host_failure);
+        self
     }
 
     fn reject(&self, message: String) -> ToolResult {
@@ -91,9 +120,18 @@ impl ExitTools {
         error(&message)
     }
 
+    #[cfg(test)]
     fn handle(&self, name: &str, args: &serde_json::Value) -> (ToolResult, bool) {
+        match self.judge(name, args) {
+            Ok(result) => (result, false),
+            Err(rejection) => (rejection.result, true),
+        }
+    }
+
+    fn judge(&self, name: &str, args: &serde_json::Value) -> Result<ToolResult, Box<Rejection>> {
+        use ExitRefusal as R;
         let Some(exit) = Exit::parse(name).filter(|exit| self.offered.contains(exit)) else {
-            return (error("Exit not offered."), true);
+            return Err(refused(R::NotOffered, error("Exit not offered.")));
         };
         if self.require_finding_identity
             && args
@@ -101,11 +139,11 @@ impl ExitTools {
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|comments| comments.iter().any(|c| c.get("finding_id").is_none()))
         {
-            return (self.reject("Each new_comments item needs finding_id: null for a distinct new finding, or the existing thread id to update it.".into()), true);
+            return Err(refused(R::Malformed, self.reject("Each new_comments item needs finding_id: null for a distinct new finding, or the existing thread id to update it.".into())));
         }
         let (arguments, mut findings) = match crate::review::findings::extract(args) {
             Ok(value) => value,
-            Err(message) => return (self.reject(message), true),
+            Err(message) => return Err(refused(R::Malformed, self.reject(message))),
         };
         if !findings.is_empty()
             && matches!(
@@ -113,44 +151,79 @@ impl ExitTools {
                 Exit::PanicExit | Exit::SubmitReport | Exit::SubmitVerdict
             )
         {
-            return (
+            return Err(refused(
+                R::Malformed,
                 self.reject("Finding dispositions are primary-only.".into()),
-                true,
-            );
+            ));
         }
         let mut call = match ExitCall::parse(name, &arguments) {
             Ok(call) => call,
-            Err(message) => return (self.reject(message), true),
+            Err(message) => return Err(refused(R::Malformed, self.reject(message))),
         };
         // Parallel exit calls race here: the slot lock serializes them, first one wins.
         let Ok(mut slot) = self.state.slot.lock() else {
-            return (error("Exit tracking unavailable."), true);
+            return Err(refused(R::Unavailable, error("Exit tracking unavailable.")));
         };
         if slot.is_some() {
-            return (error("An exit was already taken. Stop."), true);
+            return Err(refused(
+                R::AlreadyTaken,
+                error("An exit was already taken. Stop."),
+            ));
         }
         if let Some(gate) = &self.finding_gate {
             if let Err(reason) = gate(&mut call, &mut findings) {
-                return (error(&reason), true);
+                return Err(refused(R::Findings, error(&reason)));
             }
         }
         if exit != Exit::PanicExit {
             if let Err(refusal) = (self.gate)(&call) {
-                return match refusal {
-                    Refusal::Denied(reason) => (error(&reason), true),
+                return Err(match refusal {
+                    Refusal::Denied(reason) => refused(R::Gate, error(&reason)),
                     Refusal::Moved(reason) => {
                         self.state.fail(Failure::tossed(&reason));
-                        (error(&reason), true)
+                        refused(R::Moved, error(&reason))
                     }
-                };
+                    Refusal::Unreadable(cause) => {
+                        self.state.fail(Failure::from(cause));
+                        Box::new(Rejection {
+                            result: error("PR state unreadable. The host ends this run. Stop."),
+                            refusal: R::ProviderRead,
+                            provider_error: Some(cause),
+                        })
+                    }
+                });
             }
         }
         let Ok(mut saved) = self.state.findings.lock() else {
-            return (error("Finding tracking unavailable."), true);
+            return Err(refused(
+                R::Unavailable,
+                error("Finding tracking unavailable."),
+            ));
         };
         *saved = findings;
         *slot = Some(call);
-        (ToolResult::Text("ok".into()), false)
+        Ok(ToolResult::Text("ok".into()))
+    }
+
+    /// `judge`, with a host panic turned into the run's typed failure.
+    fn judge_caught(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<ToolResult, Box<Rejection>> {
+        crate::host_panic::catch(|| self.judge(name, args)).unwrap_or_else(|panic| {
+            if let Some(trace) = &self.diagnostics {
+                trace.host_panic(&panic);
+            }
+            self.state.fail(Failure::host_panic(&panic));
+            if let Some(host_failure) = &self.host_failure {
+                host_failure.raise(Failure::host_panic(&panic));
+            }
+            Err(refused(
+                ExitRefusal::HostPanic,
+                error("Host fault. The host ends this run. Stop."),
+            ))
+        })
     }
 }
 
@@ -175,8 +248,22 @@ impl ToolHandler for ExitTools {
         }
 
         // The exit gate re-reads the PR over blocking HTTP.
-        let (result, failed) =
-            super::off_runtime(|| self.handle(&invocation.tool_name, &invocation.arguments));
+        let outcome =
+            super::off_runtime(|| self.judge_caught(&invocation.tool_name, &invocation.arguments));
+        let failed = outcome.is_err();
+        let result = match outcome {
+            Ok(result) => result,
+            Err(rejection) => {
+                if let Some(trace) = &self.diagnostics {
+                    trace.emit(DiagnosticEvent::ExitRefused {
+                        call,
+                        refusal: rejection.refusal,
+                        provider_error: rejection.provider_error,
+                    });
+                }
+                rejection.result
+            }
+        };
         if let Some(trace) = &self.diagnostics {
             trace.emit(DiagnosticEvent::ToolFinished {
                 call,

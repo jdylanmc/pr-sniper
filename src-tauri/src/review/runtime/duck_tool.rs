@@ -1,11 +1,11 @@
 //! The primary's `rubber_duck` tool. Each call runs one fresh duck session on the duck's
 //! own Copilot client, inside the primary's attempt: same AI slot, same deadline, same
 //! cancellation. Calls are serialized, bounded and recorded. A failed call is a typed tool
-//! error for the primary, never a run failure.
+//! error for the primary, never a run failure; a host panic in a call ends the run.
 
 use super::{
-    config_with, exit_tools::ExitTools, verified_intelligence, ExitState, Gate, ReadTools,
-    DUCK_SYSTEM,
+    config_with, exit_tools::ExitTools, verified_intelligence, ExitState, Gate, HostFailure,
+    ReadTools, DUCK_SYSTEM,
 };
 use crate::{
     copilot::operation::Operation,
@@ -189,6 +189,8 @@ pub(super) struct DuckTool<T: Transport> {
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
     progress: Option<Arc<super::Watchdog>>,
+    /// The primary attempt's host-panic latch: a panic in a duck call ends the run.
+    host_failure: Arc<HostFailure>,
     started: AtomicU32,
     tool_calls: AtomicU64,
     /// Every path any duck session of this attempt was served.
@@ -218,6 +220,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
         progress: Option<Arc<super::Watchdog>>,
+        host_failure: Arc<HostFailure>,
         claim_evidence: Option<ClaimEvidence>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
@@ -232,6 +235,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
             local_gate,
             diagnostics,
             progress,
+            host_failure,
             started: AtomicU32::new(0),
             tool_calls: AtomicU64::new(0),
             read: Default::default(),
@@ -482,7 +486,8 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 self.local_gate.clone(),
             )
             .with_facts(self.facts.clone())
-            .with_progress(self.progress.clone()),
+            .with_progress(self.progress.clone())
+            .with_host_failure(self.host_failure.clone()),
         );
         if let Some((id, text)) = &inline {
             reads.seed_thread(id, text.len());
@@ -498,6 +503,11 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 let ExitCall::SubmitVerdict { verdict } = exit else {
                     return Ok(());
                 };
+                #[cfg(test)]
+                if verdict.nano == super::duck_tests::PANIC_VERDICT {
+                    let empty: Vec<bool> = Vec::new();
+                    let _ = empty[1];
+                }
                 match unproven(
                     &input,
                     verdict,
@@ -516,11 +526,10 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
                 }
             })
         };
-        let exits = Arc::new(ExitTools::new(
-            vec![Exit::SubmitVerdict],
-            verdict_gate,
-            diagnostics.clone(),
-        ));
+        let exits = Arc::new(
+            ExitTools::new(vec![Exit::SubmitVerdict], verdict_gate, diagnostics.clone())
+                .with_host_failure(self.host_failure.clone()),
+        );
         let create = self.engine.client.create_session(config_with(
             &setup.selection,
             reads.clone(),
@@ -753,9 +762,21 @@ impl<T: Transport + Send + Sync + 'static> ToolHandler for DuckTool<T> {
         let outcome = match self.me.upgrade() {
             Some(this) => {
                 let args = invocation.arguments.clone();
-                tokio::spawn(async move { this.consult(&args).await })
-                    .await
-                    .unwrap_or_else(|_| Err(DuckFailure::Failed.message(None)))
+                match tokio::spawn(async move {
+                    crate::host_panic::catch_future(this.consult(&args)).await
+                })
+                .await
+                {
+                    Ok(Ok(outcome)) => outcome,
+                    Ok(Err(panic)) => {
+                        if let Some(trace) = &self.diagnostics {
+                            trace.host_panic(&panic);
+                        }
+                        self.host_failure.raise(Failure::host_panic(&panic));
+                        Err("Host fault. The host ends this run. Stop.".into())
+                    }
+                    Err(_) => Err(DuckFailure::Failed.message(None)),
+                }
             }
             None => Err(DuckFailure::Unavailable.message(None)),
         };

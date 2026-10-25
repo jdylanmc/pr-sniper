@@ -130,6 +130,20 @@ efficiency, merge-path and reliability fixes.
     checks yet after a push, still pending, or red then re-run green) wakes the
     primary once on the same head; teammates do not re-run. Repositories with no
     CI never wait for it.
+  - An exit whose exit-time PR re-read failed was refused with "PR state
+    unreadable now. Try again."; the provider error was discarded, the agent
+    retried, gave up with `panic_exit` and the run parked as **Panic** (seen
+    reviewing #220). The run now ends with the typed provider failure (network,
+    rate limit, ...) and its retry policy; the attempt log records each refused
+    exit's typed cause.
+  - A host panic in a review attempt, its preparation, the review worker, a
+    review tool, a Rubber Duck call or a blocking step (pre-invocation gate,
+    final eligibility, local-exit check) fails the run as a host fault with its
+    source location instead of killing the worker; a read-tool or Rubber Duck
+    (call, read or exit tool) panic ends the run at once, never as a timeout or
+    a missing verdict. Only
+    the location is recorded in the attempt log and `diagnostics.jsonl`, never
+    the panic message.
   - A failed or pending feedback observation no longer fails a finished review
     permanently: the result is tossed and retried through the normal budget, and
     no new attempt starts until a clean poll. Old permanent failures recover on

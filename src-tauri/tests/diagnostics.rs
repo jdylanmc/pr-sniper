@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod support;
 use pr_sniper_lib::storage::diagnostics::{
-    Attempt, CompletionStage, Connectivity, Coverage, Event, FailureKind, Outcome, Paths,
-    PublicationStage, Record, RetryDecision, StopReason, ToolName, VerificationField,
+    Attempt, CompletionStage, Connectivity, Coverage, Event, ExitRefusal, FailureKind, Outcome,
+    Paths, PublicationStage, Record, RetryDecision, StopReason, ToolName, VerificationField,
 };
 use support::Fixture;
 
@@ -347,6 +347,89 @@ fn corrupt_or_oversized_attempt_logs_fail_visibly_without_echoing_content() {
 }
 
 #[test]
+fn host_panics_and_exit_refusals_keep_typed_cause_in_both_logs() {
+    let fixture = Fixture::new();
+    // A payload that carries a runtime value but looks like no credential.
+    let private = "Err value: \"customer invoice 4471 for Contoso\"";
+    let line = line!() + 1;
+    let panic = pr_sniper_lib::host_panic::catch::<()>(|| panic!("called unwrap on an {private}"))
+        .unwrap_err();
+    assert_eq!(panic.line, line);
+    let store = fixture.store();
+    store
+        .record_attempt(attempt_record(
+            "refused",
+            Event::ExitRefused {
+                call: 1,
+                refusal: ExitRefusal::ProviderRead,
+                provider_error: Some(pr_sniper_lib::github::ConnectionError::RateLimitedAfter(30)),
+            },
+        ))
+        .unwrap();
+    store
+        .record_attempt(attempt_record(
+            "refused",
+            Event::HostPanic {
+                panic: panic.clone(),
+            },
+        ))
+        .unwrap();
+    store.record_host_panic("refused", &panic).unwrap();
+
+    let attempts = attempt_values(&fixture);
+    assert_eq!(
+        attempts[0]["event"],
+        serde_json::json!({"kind":"exit_refused","call":1,"refusal":"provider_read",
+            "provider_error":{"rate_limited_after":30}})
+    );
+    assert_eq!(
+        attempts[1]["event"]["panic"],
+        serde_json::json!({"file":file!(),"line":line,"column":panic.column})
+    );
+    let records = serde_json::to_value(store.diagnostics().unwrap()).unwrap();
+    let host: Vec<_> = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["event"] == "host_panic")
+        .collect();
+    assert_eq!(host.len(), 1);
+    assert_eq!(
+        host[0]["panic"],
+        serde_json::json!({"attempt":"refused","file":file!(),"line":line,"column":panic.column})
+    );
+    let mut logs = Vec::new();
+    let mut dirs = vec![fixture.path().to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "jsonl") {
+                logs.push(path);
+            }
+        }
+    }
+    let names: Vec<_> = logs
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str())
+        .collect();
+    assert!(
+        names.contains(&"diagnostics.jsonl") && names.contains(&"attempts.jsonl"),
+        "{names:?}"
+    );
+    for log in &logs {
+        let text = std::fs::read_to_string(log).unwrap();
+        assert!(
+            !text.contains("Contoso") && !text.contains("4471"),
+            "{log:?}"
+        );
+    }
+    // A host panic marker cannot be written without its typed record.
+    assert!(store.record(DiagnosticEvent::HostPanic).is_err());
+}
+
+#[test]
 fn diagnostics_append_and_survive_a_fresh_reader() {
     let fixture = Fixture::new();
     let before = SystemTime::now()
@@ -656,6 +739,7 @@ fn compact_and_legacy_attempt_lines_read_back_identically() {
             timestamp_secs: 1,
             event: DiagnosticEvent::Attempt,
             attempt: Some(record),
+            panic: None,
         })
         .unwrap();
         line.push('\n');

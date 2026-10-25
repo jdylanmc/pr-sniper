@@ -344,7 +344,26 @@ pub enum FailureKind {
     Permanent,
     EligibilityOrConfiguration,
     Superseded,
+    /// The agent chose `panic_exit`.
     Panic,
+    /// Host code panicked; see the attempt's `host_panic` event.
+    HostPanic,
+}
+
+/// Why the host refused an exit call. The refusal text is never recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitRefusal {
+    NotOffered,
+    Malformed,
+    AlreadyTaken,
+    Unavailable,
+    Findings,
+    Gate,
+    Moved,
+    /// The exit-time PR re-read failed; `provider_error` carries the typed cause.
+    ProviderRead,
+    HostPanic,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -605,6 +624,16 @@ pub enum Event {
         next_attempt_at: Option<i64>,
         attempt_count: u64,
     },
+    ExitRefused {
+        call: u64,
+        refusal: ExitRefusal,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_error: Option<crate::github::ConnectionError>,
+    },
+    /// Host code panicked inside the attempt: source location only, never the payload.
+    HostPanic {
+        panic: crate::host_panic::HostPanic,
+    },
     EvidenceUnavailable {
         runtime_truncation: bool,
         runtime_stop_reason: bool,
@@ -624,7 +653,7 @@ pub struct Record {
 
 // Metadata is bounded and rejects credential-shaped text. Free-form arguments,
 // provider/runtime errors, responses and prompts have no fields in this schema.
-fn safe_text(text: &str) -> String {
+pub(super) fn safe_text(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     if text.len() > TEXT_LIMIT
         || serde_json::to_string(text).is_ok_and(|encoded| encoded.len() > TEXT_LIMIT)
@@ -726,6 +755,9 @@ impl Record {
                 *operation_id = safe_text(operation_id);
             }
             Event::PublicationRetry { operation_id, .. } => *operation_id = safe_text(operation_id),
+            Event::HostPanic { panic } => {
+                panic.file = safe_text(&panic.file);
+            }
             Event::Duck {
                 session_id: Some(id),
                 ..
@@ -831,6 +863,7 @@ impl Store {
             timestamp_secs,
             event: DiagnosticEvent::Attempt,
             attempt: Some(record),
+            panic: None,
         })
         .map_err(|_| "Cannot encode attempt diagnostics.")?;
         if full_bytes.len() + 1 > RECORD_BYTES {
