@@ -10,8 +10,10 @@ and keeps everything else on your device.
 
 ## What PR Sniper accesses
 
-- Pull requests in repositories you add: metadata, diffs, file contents,
-  comments, review threads and CI status.
+- Names, IDs and owners of repositories your connected account can access, so
+  you can choose which ones to add. Only repositories you add are monitored.
+- Pull requests in repositories you add: metadata, diffs, repository files,
+  comments, review threads, CI status and CI logs.
 - Your account identity (login and ID) for each account you connect.
 - Sign-in tokens issued when you connect an account.
 
@@ -22,8 +24,9 @@ and keeps everything else on your device.
   and replies or approves and merges. CI logs are fetched from links GitHub
   provides.
 - **GitHub Copilot.** Reviews run through the bundled Copilot runtime with your
-  Copilot account. PR content (title, description, diffs, files, comments) and
-  your agent instructions are sent to GitHub Copilot and the AI model provider
+  Copilot account. PR content (title, description, diffs, comments), any
+  repository files, CI status and CI logs a review agent reads, and your agent
+  instructions are sent to GitHub Copilot and the AI model provider
   behind it. Their terms and privacy statements apply. PR Sniper starts the
   runtime with its telemetry and auto-update turned off.
 - **Azure DevOps and Microsoft Entra ID.** When you connect Azure DevOps, you
