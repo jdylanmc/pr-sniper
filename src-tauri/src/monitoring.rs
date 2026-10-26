@@ -32,7 +32,7 @@ pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
 const SUPERSEDED_RETRY_SECONDS: i64 = 30;
 // A job iteration parks after this many failed attempts.
-pub(crate) const MAX_FAILED_ATTEMPTS: u8 = 3;
+pub(crate) const MAX_FAILED_ATTEMPTS: u8 = crate::retry::TRANSIENT.max_attempts;
 // A parked failure earns a fresh attempt budget after each cooldown, bounding
 // AI cost: 30m, 1h, 2h, 4h, 8h, then it waits for a human.
 pub const RESUME_COOLDOWNS_SECONDS: [i64; 5] = [1_800, 3_600, 7_200, 14_400, 28_800];
@@ -3722,17 +3722,22 @@ impl JobOperation {
             self.state = OperationState::Failed;
             return;
         }
-        if self.attempt_count >= MAX_FAILED_ATTEMPTS || now >= self.retry_deadline {
+        if crate::retry::TRANSIENT.exhausted(self.attempt_count) || now >= self.retry_deadline {
             self.state = OperationState::ManualRetry;
             return;
         }
-        let delay = match error {
+        let stated = match error {
             MonitoringError::Recoverable {
-                retry_after_seconds: Some(delay),
+                retry_after_seconds,
                 ..
-            } => *delay,
-            _ => retry_delay_seconds(&self.id, self.attempt_count),
+            } => *retry_after_seconds,
+            _ => None,
         };
+        let delay = crate::retry::TRANSIENT.wait(
+            &self.id,
+            u32::from(self.attempt_count.saturating_sub(1)),
+            stated,
+        );
         let next_attempt = now.saturating_add(delay);
         if next_attempt >= self.retry_deadline {
             self.state = OperationState::ManualRetry;
@@ -3861,18 +3866,6 @@ fn retryable_failure(error: &MonitoringError) -> OperationFailure {
             OperationFailure::Permanent
         }
     }
-}
-
-fn retry_delay_seconds(operation_id: &str, retry_count: u8) -> i64 {
-    let base = 5_i64.saturating_mul(1_i64 << retry_count.saturating_sub(1).min(6));
-    let jitter = operation_id
-        .bytes()
-        .chain([retry_count])
-        .fold(0_u64, |value, byte| {
-            value.wrapping_mul(31).wrapping_add(byte as u64)
-        })
-        % 4;
-    base + jitter as i64
 }
 
 fn configuration_failure(failure: Option<&str>) -> bool {
@@ -4638,6 +4631,23 @@ mod read_diagnostic_tests {
             assert_eq!(operation.state, OperationState::Queued);
             operation.begin_attempt(round * 2_000 + 1_500).unwrap();
         }
+    }
+
+    #[test]
+    fn transient_failure_waits_a_full_jitter_backoff() {
+        let delays: Vec<_> = (0..32)
+            .map(|_| {
+                let mut operation = running_operation();
+                operation.fail(&check_error(ConnectionError::Network), 10);
+                assert_eq!(operation.state, OperationState::Queued);
+                operation.next_attempt_at.unwrap() - 10
+            })
+            .collect();
+        assert!(
+            delays.iter().all(|delay| (1..=5).contains(delay)),
+            "{delays:?}"
+        );
+        assert!(delays.iter().any(|delay| *delay < 5), "{delays:?}");
     }
 
     fn running_operation() -> JobOperation {

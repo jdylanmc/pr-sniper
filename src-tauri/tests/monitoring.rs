@@ -2463,12 +2463,12 @@ fn check_now_preserves_an_existing_retry_budget() {
         )
         .unwrap_err();
     let queued = monitor.snapshot()[0].operation.clone().unwrap();
+    let due = queued.next_attempt_at.unwrap();
 
     assert!(monitor
-        .prepare_checks(&store, 1_800_000_002, true)
+        .prepare_checks(&store, due - 1, true)
         .unwrap()
         .is_empty());
-    let due = queued.next_attempt_at.unwrap();
     let mut retry = monitor.prepare_checks(&store, due, true).unwrap();
     assert_eq!(retry.len(), 1);
     let running = monitor.snapshot()[0].operation.clone().unwrap();
