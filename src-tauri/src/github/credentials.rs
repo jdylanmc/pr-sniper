@@ -1,8 +1,8 @@
 use super::ConnectionError;
+use crate::cli_process::{self, CommandRunner, EnvPolicy, Invocation, Limits, RunError};
 use std::path::{Path, PathBuf};
-use std::{process::Stdio, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use zeroize::{Zeroize, Zeroizing};
+use std::time::Duration;
+use zeroize::Zeroizing;
 
 pub struct Credential(pub(super) Zeroizing<String>);
 
@@ -33,69 +33,37 @@ pub trait ProcessRunner {
 
 pub struct SystemRunner;
 
+const GH_ENV: EnvPolicy = EnvPolicy {
+    remove: &["GH_DEBUG"],
+    set: &[("GH_PROMPT_DISABLED", "1")],
+};
+
 impl ProcessRunner for SystemRunner {
     fn run(&self, executable: &Path, args: &[&str]) -> Result<ProcessOutput, ConnectionError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|_| ConnectionError::BrokenCli)?;
-        runtime.block_on(async {
-            let mut child = tokio::process::Command::new(executable)
-                .args(args)
-                .env("GH_PROMPT_DISABLED", "1")
-                .env_remove("GH_DEBUG")
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|error| match error.kind() {
-                    std::io::ErrorKind::NotFound => ConnectionError::MissingCli,
-                    _ => ConnectionError::BrokenCli,
-                })?;
-            let stdout = child.stdout.take().ok_or(ConnectionError::BrokenCli)?;
-            let stderr = child.stderr.take().ok_or(ConnectionError::BrokenCli)?;
-            let result = tokio::time::timeout(Duration::from_secs(10), async {
-                tokio::try_join!(
-                    async { child.wait().await.map_err(|_| ConnectionError::BrokenCli) },
-                    bounded_output(stdout),
-                    bounded_output(stderr)
-                )
-            })
-            .await;
-            match result {
-                Ok(Ok((status, stdout, mut stderr))) => {
-                    stderr.zeroize();
-                    Ok(ProcessOutput {
-                        code: status.code(),
-                        stdout,
-                    })
-                }
-                failure => {
-                    // Reap our exact child; do not kill processes by name.
-                    let _ = child.kill().await;
-                    match failure {
-                        Err(_) => Err(ConnectionError::Timeout),
-                        _ => Err(ConnectionError::BrokenCli),
-                    }
-                }
-            }
+        let mut output = runtime
+            .block_on(cli_process::SystemRunner.run(Invocation {
+                program: executable,
+                args,
+                env: &GH_ENV,
+                limits: Limits {
+                    timeout: Duration::from_secs(10),
+                    output_bytes: 16_384,
+                },
+            }))
+            .map_err(|error| match error {
+                RunError::NotFound => ConnectionError::MissingCli,
+                RunError::Timeout => ConnectionError::Timeout,
+                RunError::OutputLimit | RunError::Failed => ConnectionError::BrokenCli,
+            })?;
+        Ok(ProcessOutput {
+            code: output.code,
+            stdout: std::mem::take(&mut *output.stdout),
         })
     }
-}
-
-async fn bounded_output(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, ConnectionError> {
-    let mut bytes = Vec::new();
-    reader
-        .take(16_385)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| ConnectionError::BrokenCli)?;
-    if bytes.len() > 16_384 {
-        bytes.zeroize();
-        return Err(ConnectionError::BrokenCli);
-    }
-    Ok(bytes)
 }
 
 pub struct GhCredentialSource<R> {

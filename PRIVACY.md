@@ -1,6 +1,6 @@
 # Privacy statement
 
-Effective date: 2026-10-25
+Effective date: 2026-10-26
 
 ## Summary
 
@@ -29,10 +29,17 @@ and keeps everything else on your device.
   instructions are sent to GitHub Copilot and the AI model provider
   behind it. Their terms and privacy statements apply. PR Sniper starts the
   runtime with its telemetry and auto-update turned off.
-- **Azure DevOps and Microsoft Entra ID.** When you connect Azure DevOps, you
-  sign in with Microsoft Entra ID. PR Sniper then reads pull request data from
-  Azure DevOps and, only when your settings allow it, writes to it, as it does
-  for GitHub. Microsoft's terms and privacy statement apply.
+- **Azure DevOps via Azure CLI.** When you connect Azure DevOps, PR Sniper
+  asks the Azure CLI on your computer for short-lived Azure DevOps access
+  tokens. You sign in to Azure CLI with Microsoft Entra ID; Azure CLI keeps
+  its own sign-in data in its configuration folder. PR Sniper keeps these
+  tokens in memory only and stores no Azure DevOps secret. It runs Azure CLI
+  with telemetry and auto-upgrade turned off and never changes your Azure CLI
+  configuration. To find your organization's Microsoft Entra tenant, PR Sniper
+  sends an unauthenticated request to `dev.azure.com/<organization>`. It then
+  reads pull request data from Azure DevOps and, only when your settings allow
+  it, writes to it, as it does for GitHub. Microsoft's terms and privacy
+  statement apply.
 - **Connectivity checks.** Unauthenticated requests to `api.github.com` and
   `api.githubcopilot.com` to see whether they are reachable.
 
@@ -41,6 +48,7 @@ and keeps everything else on your device.
 | Data                                     | Where                                                                                                                |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Sign-in tokens                           | macOS Keychain; Windows Credential Manager. Never in files.                                                          |
+| Azure DevOps tokens                      | Memory only. Azure CLI keeps its own sign-in data.                                                                   |
 | Settings, queue, reviews, notifications  | macOS: `~/Library/Application Support/com.jdylanmc.pr-sniper/`; Windows: `%LOCALAPPDATA%\com.jdylanmc.pr-sniper\`    |
 | Diagnostics logs (content-free)          | `state/` in the folder above. Shared only if you copy them yourself.                                                 |
 | Copilot runtime                          | Your user cache folder, under `github-copilot-sdk`                                                                   |
@@ -54,7 +62,8 @@ checks. Updates come from Homebrew or GitHub Releases, which you run yourself.
 ## Removing your data
 
 1. Disconnect each account in Settings. This deletes its stored tokens.
-2. Revoke the app's access in your GitHub (or Microsoft) account settings.
+2. Revoke the app's access in your GitHub account settings. For Azure DevOps,
+   sign out of Azure CLI (`az logout`) if you no longer use it.
 3. Turn off launch at login, then quit PR Sniper.
 4. Delete the data folder listed above and the `github-copilot-sdk` cache
    folder. Remove the `pr-sniper` entry from `.copilot/mcp-config.json` in

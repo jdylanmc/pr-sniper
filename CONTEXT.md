@@ -46,6 +46,14 @@ _Avoid_: Device token, access code
 A validated stable GitHub account ID and login whose credentials remain only in memory until the user explicitly confirms.
 _Avoid_: Connected account
 
+**Token Source**:
+Supplier of short-lived Azure DevOps bearer tokens per **Resource Tenant**. The Azure CLI token source asks the user's signed-in Azure CLI; Azure CLI owns the refresh token. Tokens stay in memory, refresh before expiry, one Azure CLI run per tenant at a time; a 401 drops the rejected token and retries once. Never interactive in the background. Failures are typed causes, never Azure CLI text. PR Sniper stores no Azure DevOps secret. See [ADR 0026](docs/adr/0026-azure-devops-auth-via-azure-cli.md).
+_Avoid_: Azure DevOps login, PAT, app registration
+
+**Resource Tenant**:
+The Microsoft Entra tenant that owns an Azure DevOps organization, read from the unauthenticated `X-VSS-ResourceTenant` header. Distinct outcomes: found, organization not found, missing tenant, all-zero tenant. Several organizations may share one tenant.
+_Avoid_: Home tenant, directory
+
 ### Agents and grants
 
 **Agent**:
