@@ -1185,14 +1185,14 @@ fn sign_off_as(threads: &[&str], disposition: &str) -> ExitWrite {
 }
 
 #[test]
-fn a_sign_off_replies_on_and_resolves_only_its_own_threads_without_fixed_evidence() {
+fn a_sign_off_resolves_only_its_own_threads_without_fixed_evidence() {
     let wire = wire();
     let mut env = Env::new(&wire);
     let mut w = sign_off_write(&["T1"]);
     assert_eq!(w.sign_off, Some(pr_sniper_lib::exits::LgtmAction::Merge));
     drive(&mut env, &mut w);
     assert_eq!(w.phase, Phase::Completed);
-    assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+    assert_eq!(wire.log(), ["resolve:T1"]);
     assert!(wire.thread("T1").resolved);
 
     // Another reviewer's thread is never the sign-off's to resolve.
@@ -1206,20 +1206,25 @@ fn a_sign_off_replies_on_and_resolves_only_its_own_threads_without_fixed_evidenc
 }
 
 #[test]
-fn a_sign_off_posts_each_threads_disposition_as_its_audit_reply() {
+fn a_sign_off_resolves_silently_keeping_each_disposition_as_local_evidence() {
     for disposition in ["withdrawn", "no_longer_applies"] {
         let wire = wire();
         let mut env = Env::new(&wire);
         let mut w = sign_off_as(&["T1"], disposition);
+        // No status chatter: no audit reply, the disposition stays local evidence.
+        assert_eq!(w.steps.len(), 1);
         assert_eq!(
-            w.steps[0].body,
-            format!(
-                "Signed off: every finding is settled.\n\n{disposition}: Signed off: every finding is settled."
-            )
+            w.steps[0]
+                .resolution_evidence
+                .as_ref()
+                .unwrap()
+                .disposition
+                .id(),
+            disposition
         );
         drive(&mut env, &mut w);
         assert_eq!(w.phase, Phase::Completed, "{disposition}");
-        assert_eq!(wire.log(), ["reply:100", "resolve:T1"]);
+        assert_eq!(wire.log(), ["resolve:T1"]);
     }
     // Not a disposition a sign-off accounts for: nothing is resolved.
     let wire = wire();
@@ -1241,14 +1246,5 @@ fn a_sign_off_is_refused_when_its_thread_changed_since_the_review() {
     drive(&mut env, &mut w);
     assert_eq!(w.phase, Phase::Tossed);
     assert!(wire.log().is_empty());
-
-    // A concern landing after the audit reply stops the resolve.
-    let wire = self::wire();
-    let mut env = Env::new(&wire);
-    env.on_attempted = Some(human_concern());
-    let mut w = sign_off_write(&["T1"]);
-    drive(&mut env, &mut w);
-    assert_eq!(wire.log(), ["reply:100"]);
     assert!(!wire.thread("T1").resolved);
-    assert_ne!(w.phase, Phase::Completed);
 }

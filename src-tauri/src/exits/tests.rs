@@ -36,39 +36,32 @@ fn leave_comments_validates_shape_and_bounds() {
         json!({"resolve_own_threads":[" "]}),
         json!({"new_comments":[{"path":"a.rs","line":1,"body":"x","extra":1}]}),
         json!({"surprise":true}),
-        json!({"body":" "}),
-        json!({"body":"x".repeat(MAX_REVIEW_BODY_BYTES + 1)}),
     ] {
         assert!(parse("leave_comments", bad.clone()).is_err(), "{bad}");
     }
 }
 
 #[test]
-fn leave_comments_body_alone_is_a_valid_exit_and_old_outcomes_load_without_it() {
-    let call = parse(
-        "leave_comments",
-        json!({"body":"Merge conflict in CHANGELOG.md. Resolve against main."}),
-    )
+fn leave_comments_has_no_body_so_status_chatter_cannot_be_published() {
+    for chatter in [
+        json!({"body":"Two issues are still open. CI is still running."}),
+        json!({"body":"Neither is fixed.","resolve_own_threads":["T"]}),
+    ] {
+        assert!(
+            parse("leave_comments", chatter.clone()).is_err(),
+            "{chatter}"
+        );
+    }
+    assert!(Exit::LeaveComments.schema()["properties"]
+        .get("body")
+        .is_none());
+    let legacy: ExitOutcome = serde_json::from_value(json!({"exit":"comments",
+        "new_comments":[],"body":"Neither is fixed.","reply_comments":[],"resolve_own_threads":[]}))
     .unwrap();
-    let (outcome, _) = call.outcome().unwrap();
     assert!(matches!(
-        &outcome,
-        ExitOutcome::Comments { new_comments, body: Some(_), .. } if new_comments.is_empty()
+        legacy,
+        ExitOutcome::Comments { body: Some(_), .. }
     ));
-    assert!(parse(
-        "leave_comments",
-        json!({"body":"x".repeat(MAX_REVIEW_BODY_BYTES)})
-    )
-    .is_ok());
-    assert_eq!(
-        Exit::LeaveComments.schema()["properties"]["body"]["type"],
-        "string"
-    );
-    let old: ExitOutcome = serde_json::from_value(json!({"exit":"comments",
-        "new_comments":[],"reply_comments":[],"resolve_own_threads":["T"]}))
-    .unwrap();
-    assert!(matches!(old, ExitOutcome::Comments { body: None, .. }));
-    assert!(serde_json::to_value(&old).unwrap().get("body").is_none());
 }
 
 #[test]

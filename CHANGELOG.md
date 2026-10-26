@@ -5,6 +5,13 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- No more status chatter (#228): a review posts only its new inline findings
+  with a marker-only body, at most once per head; unfixed findings stay
+  silent, fixed ones resolve silently, approvals carry no comment, and CI
+  turning green never re-runs a revision that already published.
+
 ## 0.5.0 - 2026-10-22
 
 Agentic control over local MCP, a stricter `lgtm` sign-off, and a large set of

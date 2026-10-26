@@ -1629,43 +1629,30 @@ fn posted_review(fixture: &Fixture) -> (Value, Vec<Value>) {
 }
 
 #[test]
-fn a_body_only_exit_publishes_one_review_with_the_body() {
-    let mut fixture = Fixture::new();
-    let mut run = exit_publication_with_body(vec![], Some("Merge conflict in CHANGELOG.md:151."));
-    assert!(publication::writes_comments(
+fn a_body_only_exit_is_status_chatter_and_never_publishes() {
+    let run = exit_publication_with_body(vec![], Some("Neither finding is fixed. CI is green."));
+    assert!(!publication::writes_comments(
         run.review.result.as_ref().unwrap()
     ));
-    fixture.run(&mut run).unwrap();
-    assert_eq!(run.phase, Phase::Published);
-    assert_eq!(fixture.visible(), 1);
-    assert_eq!(fixture.writes(), 2, "create + submit COMMENT");
-    let (review, comments) = posted_review(&fixture);
-    let body = review["body"].as_str().unwrap();
-    assert!(body.contains("Merge conflict in CHANGELOG.md:151."));
-    assert!(
-        body.contains(&run.marker()),
-        "reconcile finds the body by its marker"
-    );
-    assert!(body.ends_with("\u{f05b} PR Sniper"));
-    assert!(comments.is_empty());
-    assert_eq!(run.receipts.last().unwrap().comment_ids.len(), 0);
+    assert!(Batch::prepare(&run, &context(pull())).is_err());
 }
 
 #[test]
-fn body_and_inline_comments_post_as_one_review() {
+fn inline_comments_post_with_a_marker_only_body_and_no_status_chatter() {
     let mut fixture = Fixture::new();
     let mut run = exit_publication_with_body(
         vec![comment("source.rs", 1, None)],
-        Some("Also: resolve the conflict outside the diff."),
+        Some("Two issues are still open. validate-native was still running."),
     );
     fixture.run(&mut run).unwrap();
     assert_eq!(run.phase, Phase::Published);
     assert_eq!(fixture.wire.0.lock().unwrap().reviews.len(), 1);
     let (review, comments) = posted_review(&fixture);
-    assert!(review["body"]
-        .as_str()
-        .unwrap()
-        .contains("Also: resolve the conflict outside the diff."));
+    assert_eq!(
+        review["body"].as_str().unwrap(),
+        format!("{}\n\n\u{f05b} PR Sniper", run.marker()),
+        "reconcile finds the review by its marker; nothing else is said"
+    );
     assert_eq!(comments.len(), 1);
     assert_eq!(run.receipts.last().unwrap().comment_ids.len(), 1);
 }

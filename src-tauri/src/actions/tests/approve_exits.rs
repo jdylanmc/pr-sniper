@@ -182,22 +182,21 @@ fn finding_clearance_survives_restart_and_denies_previously_accepted_native_acti
 }
 
 #[test]
-fn approve_sends_the_agents_comment_then_the_confirmed_write_consumes_the_state() {
+fn approve_sends_only_the_marker_then_the_confirmed_write_consumes_the_state() {
     let (_root, store, item) = setup(true, false, approve_exit(false), false);
     adopted(&store, &item, observed());
     let effect = host::prepare_next_effect(&store, &item, NOW + 20)
         .unwrap()
         .unwrap();
     assert_eq!(effect.action, Action::Approve);
-    assert!(effect.body.starts_with("Reviewed the diff. Looks right."));
+    // No status chatter: the agent's comment stays local.
+    assert!(effect.body.starts_with("<!-- pr-sniper:action:"));
+    assert!(!effect.body.contains("Reviewed the diff. Looks right."));
     let mut env = env(&store);
     host::execute_action(&mut env, &effect).unwrap();
     let writes = env.wire.0.lock().unwrap().writes.clone();
     assert_eq!(writes.len(), 1);
-    assert!(writes[0].1["body"]
-        .as_str()
-        .unwrap()
-        .starts_with("Reviewed the diff. Looks right."));
+    assert_eq!(writes[0].1["body"].as_str().unwrap(), effect.body);
     let after = env.wire.0.lock().unwrap().observation.clone();
     let job = store.load_reviews().unwrap().remove(0).job;
     // Not consumed until the write is confirmed and settled.
@@ -738,9 +737,8 @@ fn lgtm_applies_the_assignments_authority() {
             .unwrap()
             .unwrap();
         assert_eq!(effect.action, Action::Approve);
-        assert!(effect
-            .body
-            .starts_with("Signed off: every finding is settled."));
+        assert!(effect.body.starts_with("<!-- pr-sniper:action:"));
+        assert!(!effect.body.contains("Signed off"));
     }
 }
 

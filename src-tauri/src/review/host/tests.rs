@@ -309,6 +309,30 @@ fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
 }
 
 #[test]
+fn nothing_new_while_own_findings_still_apply_waits_for_the_author_not_a_handoff() {
+    for (disposition, expected) in [
+        ("still_applies", crate::queue::State::WaitingForAuthor),
+        ("withdrawn", crate::queue::State::MachineSignedOff),
+    ] {
+        let (_root, store, template) = fixture();
+        let run = running_packet(&store, &template, 100);
+        let mut result =
+            packet_result(json!({"exit":"ready_for_human","summary":"No new defect."}));
+        result.finding_dispositions = vec![serde_json::from_value(json!({
+            "thread_id":"T","disposition":disposition,"head_sha":"h","base_sha":"b",
+            "rationale":"Unchanged.","evidence":[]
+        }))
+        .unwrap()];
+        complete(&store, &run.operation.id, Ok(result), 101).unwrap();
+        let mut queue = store.load_queue().unwrap();
+        queue[0].observed_base_sha = Some("b".repeat(40));
+        store.save_queue(&queue).unwrap();
+        let snapshot = crate::queue::snapshot(&store, vec![]).unwrap();
+        assert_eq!(snapshot.items[0].state, expected, "{disposition}");
+    }
+}
+
+#[test]
 fn a_state_that_moved_during_the_run_tosses_and_requeues_until_it_parks_at_three() {
     let (_root, store, template) = fixture();
     let binding = crate::retention::Binding::job(&template.job);

@@ -609,6 +609,31 @@ impl Contract {
         Ok(())
     }
 
+    /// A reply answers someone: the thread's latest comment is not PR Sniper's, or it is
+    /// a reply the finding contract requires. Anything else restates an open finding or
+    /// re-announces unchanged state (status chatter).
+    fn answers(&self, reply: &crate::exits::ReplyComment, assessments: &[Assessment]) -> bool {
+        let Some(thread) = self.threads.iter().find(|t| t.id == reply.thread_id) else {
+            return true; // Unknown ids are refused by the exit gate.
+        };
+        let addressed = thread
+            .comments
+            .last()
+            .is_some_and(|last| !own_comment(&self.identities, last));
+        // A correction of a mistaken resolution, or the acceptance of an author's won't-fix.
+        let required = thread.mine
+            && assessments.iter().any(|a| {
+                a.thread_id == thread.id
+                    && reply.body.contains(&a.rationale)
+                    && match a.disposition {
+                        Disposition::StillApplies => thread.resolved,
+                        Disposition::AuthorWontFix => true,
+                        _ => false,
+                    }
+            });
+        addressed || required
+    }
+
     pub fn prepare(
         &self,
         call: &mut ExitCall,
@@ -782,6 +807,22 @@ impl Contract {
             } else {
                 Err("Finding dispositions are primary-only.".into())
             };
+        }
+        if let ExitCall::LeaveComments {
+            new_comments,
+            reply_comments,
+            ..
+        } = call
+        {
+            if self.identities.revision_reviewed && !new_comments.is_empty() {
+                return Err("One review per revision: you already published on this head. No new findings until a new head. Answer only questions asked of you; else ready_for_human.".into());
+            }
+            if let Some(reply) = reply_comments
+                .iter()
+                .find(|r| !self.answers(r, assessments))
+            {
+                return Err(format!("No status chatter on {}: reply only to answer a comment addressed to you. An open thread already states its finding; omit the reply, or ready_for_human.", reply.thread_id));
+            }
         }
         if let ExitCall::LeaveComments { reply_comments, .. } = call {
             for reply in reply_comments {

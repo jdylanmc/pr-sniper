@@ -267,7 +267,7 @@ _Avoid_: Approved, mergeable
 Primary `wait` exit for pending CI, draft status or required reviews blocking an enabled action. Persistent host-owned state; no AI slot or human handoff. Running shows **Waiting on CI**, **Waiting on draft** or **Waiting on reviews**. Existing Repository Schedule observes it. Pending CI progress alone does not review again; completion (including failure), new head/base or other meaningful state queues fresh review once. A wake by CI alone reuses the teammate reports of that revision. Waiting never grants clearance. Known defects, uncertain evidence, failed tools and permission failures keep their existing routes. Wait is selectable and in primary defaults; explicit tool lists stay unchanged. A CI wait is offered to every primary when pending CI alone blocks its sign-off, whatever its authority or tool list.
 
 **Waiting for PR author**:
-Queue state. Findings or questions were successfully published; author must respond or update. Sign-off summary alone never creates it.
+Queue state. Findings or questions were successfully published, now or on an earlier pass with an own finding that still applies; author must respond or update. Sign-off summary alone never creates it.
 
 **Needs your input**:
 Queue state. Follow-up needs human judgment, findings remain local, or some findings are unpublished. Never implies the author saw unpublished feedback.
@@ -286,8 +286,12 @@ Exact PR, Iteration or job identity addressed by a panel route, notification or 
 ### Publication and feedback
 
 **Publication**:
-Host-owned posting of frozen validated findings. Findings map only to verified diff lines. One pending review with explicit commit SHA, submitted as `COMMENT`. Out-of-diff findings stay local. Sign-off ends with canonical ` PR Sniper`. Never approves or merges. Copilot credentials never publish.
+Host-owned posting of frozen validated findings. Findings map only to verified diff lines. One pending review with explicit commit SHA, submitted as `COMMENT`; its body is the marker and canonical ` PR Sniper` only. Out-of-diff findings stay local. At most one per head per assignment unless the human asks to **Review again**. Never approves or merges. Copilot credentials never publish.
 _Avoid_: Posting, sync
+
+**Status chatter**:
+Never restate open findings, report CI progress, summarize counts, or re-announce unchanged state. A revision gets exactly one of: new inline findings, a sign-off, or nothing. Open own threads are the record; unfixed findings stay silent, fixed ones resolve silently. Replies only answer.
+_Avoid_: Summary review, still-unfixed reply, CI status comment
 
 **Native Mutation Owner**:
 Single native writer for every comment, reply, approval and merge, serial and independent of **AI Capacity**. Pause cannot undo an accepted remote write. Approval and merge are native operations, never Agent tools.

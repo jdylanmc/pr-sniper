@@ -406,6 +406,15 @@ fn review_state(
         use crate::exits::ExitOutcome;
         match exit {
             ExitOutcome::Wait { .. } => return State::Queued,
+            // Nothing new published while own findings still apply: the open threads
+            // are the record, and the author must act. Not a hand-off.
+            ExitOutcome::ReadyForHuman { .. }
+                if result.finding_dispositions.iter().any(|a| {
+                    a.disposition == crate::review::findings::Disposition::StillApplies
+                }) =>
+            {
+                return State::WaitingForAuthor
+            }
             // Approve exits are signed off; actions show Approving/Merging, then Approved/Merged.
             ExitOutcome::ReadyForHuman { .. }
             | ExitOutcome::SubmitReport
@@ -420,16 +429,14 @@ fn review_state(
                     _ => State::MachineSignedOff,
                 }
             }
-            ExitOutcome::Comments {
-                new_comments, body, ..
-            } => match context.write(run) {
+            ExitOutcome::Comments { new_comments, .. } => match context.write(run) {
                 Some(write) => match write.phase {
                     Phase::Failed => return State::Failed,
                     Phase::Tossed if context.parked(run) => return State::Failed,
                     // The toss re-queues the PR.
                     Phase::Tossed => return State::Queued,
                     Phase::Completed if write.consumed => {
-                        if new_comments.is_empty() && body.is_none() {
+                        if new_comments.is_empty() {
                             return State::WaitingForAuthor;
                         }
                     }
@@ -443,9 +450,7 @@ fn review_state(
                         State::Queued
                     };
                 }
-                None if new_comments.is_empty() && body.is_none() => {
-                    return State::AwaitingPublication
-                }
+                None if new_comments.is_empty() => return State::AwaitingPublication,
                 None => {}
             },
         }

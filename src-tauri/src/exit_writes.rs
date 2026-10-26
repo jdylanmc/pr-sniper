@@ -139,19 +139,18 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         return None;
     }
     if let Some(ExitOutcome::Lgtm {
-        comment,
         resolve_own_threads,
         action,
         ..
     }) = review.result.as_ref()?.output.exit.as_ref()
     {
-        return sign_off(review, comment, resolve_own_threads, *action, now);
+        return sign_off(review, resolve_own_threads, *action, now);
     }
     let Some(ExitOutcome::Comments {
         new_comments,
-        body,
         reply_comments,
         resolve_own_threads,
+        ..
     }) = review.result.as_ref()?.output.exit.as_ref()
     else {
         return None;
@@ -214,7 +213,7 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         review_operation_id: review.operation.id.clone(),
         job: review.job.clone(),
         assignment_id: review.assignment_id.clone(),
-        comments_first: !new_comments.is_empty() || body.is_some(),
+        comments_first: !new_comments.is_empty(),
         published: false,
         steps,
         phase: Phase::Planned,
@@ -227,11 +226,10 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
     })
 }
 
-/// A sign-off's audit reply (its comment and the thread's disposition) and
-/// resolution on each accounted own open thread.
+/// A sign-off's silent resolution of each accounted own open thread. No audit
+/// reply: the disposition stays local evidence, never status chatter.
 fn sign_off(
     review: &ReviewRun,
-    comment: &str,
     threads: &[String],
     action: crate::exits::LgtmAction,
     now: i64,
@@ -266,27 +264,19 @@ fn sign_off(
             })
             .cloned()
     };
-    let step = |kind, id: &String| Step {
-        kind,
-        thread_id: id.clone(),
-        body: if kind == StepKind::Reply {
-            match evidence(id) {
-                Some(a) if a.disposition != Disposition::SignedOff => {
-                    format!("{comment}\n\n{}: {}", a.disposition.id(), a.rationale)
-                }
-                _ => comment.to_string(),
-            }
-        } else {
-            String::new()
-        },
-        root_id: None,
-        revision: None,
-        state: StepState::Planned,
-        receipt: None,
-        resolution_evidence: (kind == StepKind::Resolve).then(|| evidence(id)).flatten(),
-    };
-    let mut steps: Vec<Step> = threads.iter().map(|id| step(StepKind::Reply, id)).collect();
-    steps.extend(threads.iter().map(|id| step(StepKind::Resolve, id)));
+    let steps: Vec<Step> = threads
+        .iter()
+        .map(|id| Step {
+            kind: StepKind::Resolve,
+            thread_id: id.clone(),
+            body: String::new(),
+            root_id: None,
+            revision: None,
+            state: StepState::Planned,
+            receipt: None,
+            resolution_evidence: evidence(id),
+        })
+        .collect();
     let mut operation = JobOperation::review(&review.job, now);
     operation.operation_type = "exit_writes".into();
     Some(ExitWrite {

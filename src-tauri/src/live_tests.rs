@@ -367,6 +367,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         packet_run::Caller {
             resolutions: Vec::new(),
             receipts: Default::default(),
+            review_again: false,
             acting_login: &live.identity.login,
             ownership: crate::review::findings::proofs(&live.store(), &run.job, &run.assignment_id)
                 .unwrap(),

@@ -227,13 +227,13 @@ fn clean_review_prefers_only_offered_actions_and_keeps_human_uncertainty() {
 #[test]
 fn ci_red_rule_points_at_logs_only_when_the_run_can_read_them() {
     let with = build(&input()).text;
-    assert!(with.contains("6. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(with.contains("8. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix on the line that causes it, unless an open thread already says it.\n"));
     assert!(with.contains("- build: COMPLETED / FAILURE (log: read_check_log id=4242)\n"));
     assert!(with.contains("- lint: COMPLETED / SUCCESS\n"));
     let mut without = input();
     without.tools.retain(|t| t != "read_check_log");
     let without = build(&without).text;
-    assert!(without.contains("6. CI red or merge conflicts: do not approve. leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(without.contains("8. CI red or merge conflicts: do not approve. leave_comments with the fix on the line that causes it, unless an open thread already says it.\n"));
     assert!(!without.contains("read_check_log"));
 }
 
