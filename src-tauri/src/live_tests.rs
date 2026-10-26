@@ -641,6 +641,7 @@ impl exit_writes::Environment for Writes<'_> {
         Ok(exit_writes::publication_dependency(
             &publications,
             &write.review_operation_id,
+            true,
         ))
     }
     fn head(&mut self, write: &ExitWrite) -> Result<String, Failure> {

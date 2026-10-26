@@ -229,9 +229,17 @@ impl Environment for Native {
             .lock()
             .map_err(|_| storage("Exit write storage unavailable."))?;
         let publications = store.load_publications().map_err(storage)?;
+        let batch_expected = store
+            .review_evidence()
+            .map_err(storage)?
+            .iter()
+            .find(|r| r.operation.id == write.review_operation_id)
+            .and_then(|r| r.result.as_ref())
+            .is_none_or(crate::publication::writes_comments);
         Ok(publication_dependency(
             &publications,
             &write.review_operation_id,
+            batch_expected,
         ))
     }
 

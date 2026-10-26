@@ -305,15 +305,23 @@ pub enum Dependency {
 }
 
 /// State of the exit's publication batch, from saved publications only.
+/// `batch_expected`: the review still has a batch to publish
+/// ([`crate::publication::writes_comments`]). A write saved before body-only batches
+/// stopped publishing (status chatter) has none coming, so it never waits for one.
 pub fn publication_dependency(
     publications: &[Publication],
     review_operation_id: &str,
+    batch_expected: bool,
 ) -> Dependency {
     let Some(p) = publications
         .iter()
         .find(|p| p.review.operation.id == review_operation_id)
     else {
-        return Dependency::Pending;
+        return if batch_expected {
+            Dependency::Pending
+        } else {
+            Dependency::Confirmed
+        };
     };
     if p.phase == PublicationPhase::Published
         && p.operation.state == OperationState::Completed

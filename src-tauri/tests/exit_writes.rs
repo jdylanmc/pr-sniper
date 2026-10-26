@@ -908,11 +908,21 @@ fn a_parked_or_terminal_publication_fails_the_dependency() {
         let mut p = publication.clone();
         p.phase = phase;
         p.operation.state = state;
-        exit_writes::publication_dependency(&[p], &id)
+        exit_writes::publication_dependency(&[p], &id, true)
     };
     assert_eq!(
         with(P::Pending, OperationState::Queued),
         Dependency::Pending
+    );
+    // No record yet: wait only for a batch that is still coming. A pre-upgrade
+    // body-only write (no new comments) has none and proceeds to its replies.
+    assert_eq!(
+        exit_writes::publication_dependency(&[], &id, true),
+        Dependency::Pending
+    );
+    assert_eq!(
+        exit_writes::publication_dependency(&[], &id, false),
+        Dependency::Confirmed
     );
     for parked in [OperationState::ManualRetry, OperationState::Failed] {
         for phase in [P::Preparing, P::Pending, P::Unresolved] {
