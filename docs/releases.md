@@ -127,7 +127,9 @@ authorize an agent to cut the first release merely because checks pass.
 1. Update `package.json`, both root npm lock version fields,
    `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and the PR Sniper entry in
    `src-tauri/Cargo.lock` to one stable version. Keep both shown versions in
-   `site/index.html` and the boot version in `site/app.js` in step. Curate
+   `site/index.html` and the boot version in `site/app.js` in step. Run
+   `npm run build:control-mcp` so the bundled
+   `src-tauri/resources/mcp/mcp-server.mjs` carries the new version. Curate
    `CHANGELOG.md`.
 2. Merge the version/release changes to main. Wait for that merged commit's
    normal **macOS foundation** workflow to pass, including `npm run test:release`.

@@ -5,12 +5,32 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-26
+
+Quieter reviews and notifications, and steadier retries.
+
+### Added
+
+- A [privacy statement](PRIVACY.md) describing what PR Sniper reads, stores
+  locally and sends, including the repository catalog and CI logs.
+
 ### Fixed
 
 - No more status chatter (#228): a review posts only its new inline findings
   with a marker-only body, at most once per head; unfixed findings stay
   silent, fixed ones resolve silently, approvals carry no comment, and CI
-  turning green never re-runs a revision that already published.
+  turning green never re-runs a revision that already published. `lgtm`
+  answers an accepted won't-fix on its thread.
+- A stale revision superseded after publication no longer notifies as a
+  failure, and a cause that flickers or returns never repeats its notification.
+- A publication not yet visible on GitHub stays pending while its retries
+  last instead of failing and notifying; it fails only once it parks.
+- macOS notification outcome badges are a smaller, padded thumbnail instead of
+  matching the app icon's size.
+- Retries share one full-jitter backoff policy: rate-limit waits and action
+  observation retries no longer retry in lockstep.
+- Repository polls retry an `IncompleteRead` instead of parking the repository;
+  oversized responses are reported as permanent limits, not retried.
 
 ## 0.5.0 - 2026-10-22
 
