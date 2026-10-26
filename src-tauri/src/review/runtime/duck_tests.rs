@@ -45,6 +45,7 @@ fn base() -> PacketInput {
         conversation: Default::default(),
         files: vec![],
         delta: None,
+        revision_reviewed: false,
         directive: Directive::default(),
         teammates: vec![],
     }

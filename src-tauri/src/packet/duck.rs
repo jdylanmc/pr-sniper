@@ -62,7 +62,7 @@ fn render(input: &DuckPacketInput<'_>, packet_id: &str, with_time: bool) -> Stri
     let _ = writeln!(out, "{}", rules::DUCK_INTRO);
     let _ = writeln!(out, "tools: {}", input.tools.join(", "));
     out.push_str("\n## Rules\n");
-    for (index, rule) in rules::rules(Role::Duck, false, false, false)
+    for (index, rule) in rules::rules(Role::Duck, false, false, false, false)
         .iter()
         .enumerate()
     {

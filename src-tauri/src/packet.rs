@@ -174,6 +174,9 @@ pub struct PacketInput {
     pub delta: Option<Vec<String>>,
     pub directive: Directive,
     pub teammates: Vec<TeammateEntry>,
+    /// This assignment already published on this head and the pass is not the human's
+    /// explicit Review again: the packet says no new findings.
+    pub revision_reviewed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

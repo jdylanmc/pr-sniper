@@ -168,6 +168,10 @@ where
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
+    let revision_reviewed = !review_again
+        && ownership
+            .iter()
+            .any(|proof| proof.head_sha == context.pull.head_sha);
     let description = Some(snapshot.body.clone());
     let state_hash = snapshot.normalize().hash();
     let input = PacketInput {
@@ -224,6 +228,7 @@ where
         },
         teammates: if base.primary { teammates } else { vec![] },
         conversation: conversation.clone(),
+        revision_reviewed,
     };
     let duck_input = input.clone();
     let mut packet = packet::build(&input);
@@ -282,10 +287,7 @@ where
             })
             .collect(),
         teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
-        revision_reviewed: !review_again
-            && ownership
-                .iter()
-                .any(|proof| proof.head_sha == context.pull.head_sha),
+        revision_reviewed,
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(

@@ -85,6 +85,7 @@ pub fn render(input: &PacketInput, packet_id: &str, with_time: bool) -> String {
         !input.teammates.is_empty(),
         can_read_logs,
         can_duck,
+        input.revision_reviewed,
     )
     .iter()
     .enumerate()
