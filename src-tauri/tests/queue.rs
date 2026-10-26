@@ -1071,6 +1071,70 @@ fn a_resumed_publication_that_completes_clears_attention() {
     assert_eq!(state(&store), State::MachineSignedOff);
 }
 
+// #231: an effect not yet observed by the read-back is pending verification while
+// the bounded retry is live; only a parked publication is a failure.
+#[test]
+fn an_unobserved_publication_awaits_verification_until_retries_park_it() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let mut batch = published(&run);
+    batch.operation.failure = None;
+    batch.phase = publication::Phase::Pending;
+    batch.uncertain = true;
+    batch.receipts[0].state = RemoteState::Pending;
+    for (operation, error) in [
+        (OperationState::Running, None),
+        (
+            OperationState::Queued,
+            Some("GitHub mutation outcome is unresolved."),
+        ),
+        (OperationState::Interrupted, None),
+    ] {
+        batch.operation.state = operation.clone();
+        batch.error = error.map(String::from);
+        seed(&store, std::slice::from_ref(&run), &[batch.clone()]);
+        let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+        assert_eq!(item.state, State::AwaitingPublication, "{operation:?}");
+        assert_eq!(item.failure_cause, None, "{operation:?}");
+    }
+    batch.operation.state = OperationState::ManualRetry;
+    batch.operation.failure = Some(pr_sniper_lib::monitoring::OperationFailure::Network);
+    batch.phase = publication::Phase::Unresolved;
+    seed(&store, std::slice::from_ref(&run), &[batch]);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.state, State::Failed);
+    assert_eq!(item.failure_cause, Some("publication_unresolved"));
+}
+
+// A removed assignment's live unobserved batch still holds readiness (#231).
+#[test]
+fn an_unobserved_publication_of_a_removed_assignment_still_blocks_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let mut removed = run.clone();
+    removed.assignment_id = "00000000-0000-4000-8000-000000000004".into();
+    removed.job.assignment_id = Some(removed.assignment_id.clone());
+    removed.job.waiting = pr_sniper_lib::monitoring::WAITING_ASSIGNMENT_REMOVED.into();
+    removed.key = review::key(&removed.job, &removed.assignment_id);
+    removed.operation = JobOperation::review(&removed.job, 100);
+    removed.operation.state = OperationState::Completed;
+    let mut verifying = published(&removed);
+    verifying.operation.state = OperationState::Running;
+    verifying.phase = publication::Phase::Pending;
+    verifying.uncertain = true;
+    verifying.receipts[0].state = RemoteState::Pending;
+    seed(
+        &store,
+        &[run.clone(), removed],
+        &[published(&run), verifying],
+    );
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.state, State::AwaitingPublication);
+    assert_eq!(item.failure_cause, None);
+}
+
 fn accounts() -> std::collections::BTreeMap<String, AccountAvailability> {
     ["22", "33"]
         .into_iter()
