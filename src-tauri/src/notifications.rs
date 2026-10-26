@@ -134,7 +134,8 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             queue::State::ConfirmationRequired => Some(Category::Confirmation),
             queue::State::WaitingForHuman => Some(Category::HumanInput),
             queue::State::MachineSignedOff => Some(Category::Ready),
-            queue::State::Failed | queue::State::StaleAfterPublication => Some(Category::Failure),
+            // A superseded revision is stale, not failed.
+            queue::State::Failed => Some(Category::Failure),
             _ => None,
         };
         if item.state == queue::State::MachineSignedOff
@@ -289,10 +290,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         let covered = snapshot.items.iter().any(|item| {
             item.job.configuration_id == health.repository_id
                 && Some(&item.job.account_id) == health.provider_account_id.as_ref()
-                && matches!(
-                    item.state,
-                    queue::State::Failed | queue::State::StaleAfterPublication
-                )
+                && item.state == queue::State::Failed
         });
         frames.push(Frame {
             source: format!("schedule:{source}"),
@@ -467,6 +465,23 @@ impl Ledger {
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
+                // Re-entering an event (flicker, A→B→A) is status chatter: never
+                // resend one that had a send attempt; re-arm one still queued.
+                if self.notices.iter().any(|n| {
+                    n.source == frame.source
+                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                        && !matches!(n.phase, Phase::Queued | Phase::NotSent)
+                }) {
+                    continue;
+                }
+                if let Some(queued) = self.notices.iter_mut().find(|n| {
+                    n.phase == Phase::Queued
+                        && n.source == frame.source
+                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                }) {
+                    queued.episode = previous.episode;
+                    continue;
+                }
                 if !notify || !first_merge || self.muted.contains(&event.category) {
                     continue;
                 }

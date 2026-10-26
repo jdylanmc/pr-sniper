@@ -179,7 +179,7 @@ fn unchanged_poll_and_restart_do_not_repeat_a_transition() {
 }
 
 #[test]
-fn new_causes_and_genuine_reentry_are_eligible_without_polling_duplicates() {
+fn new_causes_are_eligible_without_polling_duplicates_or_status_chatter() {
     let (_root, store) = store();
     let mut ledger = store.load_notifications().unwrap();
     let first = frame(Category::HumanInput, "external-comment-1");
@@ -201,9 +201,69 @@ fn new_causes_and_genuine_reentry_are_eligible_without_polling_duplicates() {
     ledger
         .observe(&[frame(Category::HumanInput, "external-comment-2")], 5)
         .unwrap();
+    ledger
+        .observe(&[frame(Category::HumanInput, "external-comment-1")], 6)
+        .unwrap();
+    assert_eq!(ledger.notices.len(), 2);
+    ledger
+        .observe(&[frame(Category::HumanInput, "external-comment-3")], 7)
+        .unwrap();
     assert_eq!(ledger.notices.len(), 3);
-    assert_eq!(ledger.notices[2].episode, 3);
+    assert_eq!(ledger.notices[2].episode, 5);
     assert_ne!(ledger.notices[0].id, ledger.notices[1].id);
+}
+
+fn attempt_queued(ledger: &mut Ledger) {
+    for notice in &mut ledger.notices {
+        if notice.phase == Phase::Queued {
+            notice.phase = Phase::AcceptedUnconfirmed;
+        }
+    }
+}
+
+#[test]
+fn a_returning_failure_cause_does_not_repeat_its_notification() {
+    let (_root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    let gone = Frame {
+        source: "queue:exact-revision".into(),
+        event: None,
+    };
+    for (now, frame) in [
+        frame(Category::Failure, "cause-a"),
+        gone,
+        frame(Category::Failure, "cause-a"),
+        frame(Category::Failure, "cause-b"),
+        frame(Category::Failure, "cause-a"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ledger.observe(&[frame], now as i64).unwrap();
+        attempt_queued(&mut ledger);
+    }
+    let causes: Vec<_> = ledger
+        .notices
+        .iter()
+        .map(|n| n.event.cause.as_str())
+        .collect();
+    assert_eq!(causes, ["cause-a", "cause-b"]);
+}
+
+#[test]
+fn an_unsent_notice_is_rearmed_when_its_cause_returns() {
+    let (_root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    for (now, cause) in ["cause-a", "cause-b", "cause-a"].into_iter().enumerate() {
+        ledger
+            .observe(&[frame(Category::Failure, cause)], now as i64)
+            .unwrap();
+    }
+    assert_eq!(ledger.notices.len(), 2);
+    assert!(ledger.current(&ledger.notices[0]));
+    assert!(!ledger.current(&ledger.notices[1]));
+    let id = ledger.notices[0].id.clone();
+    assert_eq!(ledger.begin(&id).unwrap().phase, Phase::Submitting);
 }
 
 #[test]
@@ -673,7 +733,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
         (queue::State::WaitingForHuman, Some(Category::HumanInput)),
         (queue::State::MachineSignedOff, Some(Category::Ready)),
         (queue::State::Failed, Some(Category::Failure)),
-        (queue::State::StaleAfterPublication, Some(Category::Failure)),
+        (queue::State::StaleAfterPublication, None),
         (queue::State::WaitingForAuthor, None),
         (queue::State::Reviewing, None),
         (queue::State::Queued, None),
