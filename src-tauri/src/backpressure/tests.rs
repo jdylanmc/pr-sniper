@@ -6,17 +6,20 @@ fn github() -> Scope {
 
 #[test]
 fn backoff_doubles_from_thirty_seconds_and_caps_at_fifteen_minutes() {
-    let floors: Vec<_> = (0..8).map(|step| delay_seconds("op", step, None)).collect();
-    for (step, delay) in floors.iter().enumerate() {
-        let base = (30_i64 << step).min(CAP_SECONDS);
+    for step in 0..12 {
+        let ceiling = (30_i64 << step).min(CAP_SECONDS);
+        let delays: Vec<_> = (0..32)
+            .map(|i| delay_seconds(&format!("op-{i}"), step, None))
+            .collect();
         assert!(
-            *delay >= base.min(CAP_SECONDS) && *delay <= CAP_SECONDS,
-            "{delay}"
+            delays.iter().all(|d| (BASE_SECONDS..=ceiling).contains(d)),
+            "{step}: {delays:?}"
         );
-        assert!(*delay <= base + base / 10);
     }
-    assert_eq!(delay_seconds("op", 6, None), CAP_SECONDS);
-    assert_eq!(delay_seconds("op", 200, None), CAP_SECONDS);
+    assert_eq!(delay_seconds("op", 0, None), BASE_SECONDS);
+    assert!(delay_seconds("op", 200, None) <= CAP_SECONDS);
+    // Full jitter spreads a shared limit instead of a +10% band at the ceiling.
+    assert!((0..32).any(|i| delay_seconds(&format!("op-{i}"), 5, None) < 480));
 }
 
 #[test]

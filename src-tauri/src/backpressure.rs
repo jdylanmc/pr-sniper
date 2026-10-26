@@ -5,10 +5,8 @@
 use crate::{monitoring::JobOperation, review::Failure, storage::Store};
 use serde::{Deserialize, Serialize};
 
-pub const BASE_SECONDS: i64 = 30;
-pub const CAP_SECONDS: i64 = 15 * 60;
-// A provider-stated wait is honored, bounded only against absurd values.
-const PROVIDER_CAP_SECONDS: i64 = 24 * 60 * 60;
+pub const BASE_SECONDS: i64 = crate::retry::BACKPRESSURE.base_seconds;
+pub const CAP_SECONDS: i64 = crate::retry::BACKPRESSURE.cap_seconds;
 // An expired gate nobody cleared is dropped after this idle time.
 const STALE_SECONDS: i64 = 60 * 60;
 
@@ -63,16 +61,9 @@ pub struct Backpressure {
 }
 
 /// Seconds to wait: the provider's stated delay when present, else
-/// `30s * 2^step` capped at 15 minutes with jitter derived from `seed`.
+/// `retry::BACKPRESSURE` full jitter seeded by `seed` and `step`.
 pub fn delay_seconds(seed: &str, step: u8, retry_after_seconds: Option<i64>) -> i64 {
-    if let Some(stated) = retry_after_seconds {
-        return stated.clamp(1, PROVIDER_CAP_SECONDS);
-    }
-    let base = (BASE_SECONDS << step.min(10)).min(CAP_SECONDS);
-    let jitter = seed.bytes().chain([step]).fold(0_u64, |value, byte| {
-        value.wrapping_mul(31).wrapping_add(u64::from(byte))
-    }) % (base as u64 / 10 + 1);
-    (base + jitter as i64).min(CAP_SECONDS)
+    crate::retry::BACKPRESSURE.wait(seed, u32::from(step), retry_after_seconds)
 }
 
 impl Backpressure {

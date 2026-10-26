@@ -28,7 +28,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
   observes the committed failure, so late reads stay rejected but cannot replace
   it or refund its budget. Individual tool errors and duck verdicts are not
   commitments. Successful outcomes remain subject to finalization freshness checks.
-- Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else 30s x2^n capped at 15m with deterministic jitter. A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
+- Rate limits (GitHub 403/429 primary + secondary, Copilot/model 429) are **backpressure**, not failure. No attempt, no failure budget, no park, never Needs attention. Work stays queued; its provider account is gated until Retry-After/reset, else seeded full jitter in [30s, 30s x2^n] capped at 15m (`retry::BACKPRESSURE`). A success clears the gate. See [ADR 0013](0013-shared-ai-capacity.md).
 - Credential, permission, permanent failure: park at once.
 - Superseded is not failure: a moved head, closed/merged/unadmitted PR or removed/replaced assignment, seen before or during a run, requeues without an attempt and never parks. It re-dispatches only after the repository's next successful poll observes the PR, which retargets or retires it ([ADR 0008](0008-one-review-per-head-sha.md)); a failing poll never loops it. A base move after an AI run waits for a poll that observed another base: at most one AI attempt per base.
 - Every parked failure lands in one inbox: Queue > **Needs attention**. Cause chip: Credentials, Permission, Network, Failed.
