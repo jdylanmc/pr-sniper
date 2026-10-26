@@ -134,7 +134,10 @@ async fn an_unreadable_exit_gate_ends_the_run_with_a_recorded_typed_cause() {
         Some(trace),
     );
     let result = tools
-        .call(invocation("leave_comments", json!({"body":"Looks off."})))
+        .call(invocation(
+            "leave_comments",
+            json!({"new_comments":[{"path":"a.rs","line":1,"body":"Looks off."}]}),
+        ))
         .await
         .unwrap();
     assert!(matches!(result, ToolResult::Expanded(_)));

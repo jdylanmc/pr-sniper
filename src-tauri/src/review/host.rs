@@ -750,7 +750,7 @@ async fn execute_attempt(
                         let (
                             teammates,
                             iterations,
-                            last_consumed_at,
+                            (last_consumed_at, review_again),
                             ownership,
                             (corrections, resolutions, receipts),
                         ) = {
@@ -770,7 +770,14 @@ async fn execute_attempt(
                                     .load_pr_states()
                                     .map_err(Failure::permanent)?
                                     .get(&crate::retention::Binding::job(&preparation_run.job))
-                                    .and_then(|r| r.consumed_at),
+                                    .map_or((None, false), |r| {
+                                        (
+                                            r.consumed_at,
+                                            preparation_run.job.work.as_ref().is_some_and(|w| {
+                                                r.review_again_seq == Some(w.state_seq)
+                                            }),
+                                        )
+                                    }),
                                 super::findings::proofs(
                                     &store,
                                     &preparation_run.job,
@@ -807,6 +814,7 @@ async fn execute_attempt(
                                 ownership,
                                 resolutions,
                                 receipts,
+                                review_again,
                             },
                         )?;
                         Arc::make_mut(&mut prepared.setup.facts).corrections = corrections;

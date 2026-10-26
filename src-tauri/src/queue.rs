@@ -406,6 +406,15 @@ fn review_state(
         use crate::exits::ExitOutcome;
         match exit {
             ExitOutcome::Wait { .. } => return State::Queued,
+            // Nothing new published while own findings still apply: the open threads
+            // are the record, and the author must act. Not a hand-off.
+            ExitOutcome::ReadyForHuman { .. }
+                if result.finding_dispositions.iter().any(|a| {
+                    a.disposition == crate::review::findings::Disposition::StillApplies
+                }) =>
+            {
+                return State::WaitingForAuthor
+            }
             // Approve exits are signed off; actions show Approving/Merging, then Approved/Merged.
             ExitOutcome::ReadyForHuman { .. }
             | ExitOutcome::SubmitReport
@@ -429,7 +438,8 @@ fn review_state(
                     // The toss re-queues the PR.
                     Phase::Tossed => return State::Queued,
                     Phase::Completed if write.consumed => {
-                        if new_comments.is_empty() && body.is_none() {
+                        // A legacy body never published now: its replies are the outcome.
+                        if new_comments.is_empty() && (body.is_none() || publication.is_none()) {
                             return State::WaitingForAuthor;
                         }
                     }
@@ -445,6 +455,11 @@ fn review_state(
                 }
                 None if new_comments.is_empty() && body.is_none() => {
                     return State::AwaitingPublication
+                }
+                // A legacy body-only result never publishes now (status chatter): its
+                // text stays local. A confirmed earlier publication shows below.
+                None if new_comments.is_empty() && publication.is_none() => {
+                    return State::WaitingForHuman
                 }
                 None => {}
             },

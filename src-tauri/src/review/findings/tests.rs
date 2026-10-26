@@ -1367,3 +1367,66 @@ fn an_edited_or_retracted_author_reply_no_longer_holds() {
     assert!(!holds(&comments, Some("new-author")), "PR author changed");
     assert!(!holds(&comments, None), "PR author unknown");
 }
+
+fn reply(thread: &str, body: &str) -> ExitCall {
+    ExitCall::LeaveComments {
+        new_comments: vec![],
+        reply_comments: vec![crate::exits::ReplyComment {
+            thread_id: thread.into(),
+            body: body.into(),
+        }],
+        resolve_own_threads: vec![],
+    }
+}
+
+#[test]
+fn status_chatter_reply_on_an_unaddressed_own_thread_is_refused() {
+    let mut c = contract(false, false);
+    c.identities.own_comments.insert("root".into());
+    let still = assessment(Disposition::StillApplies);
+    let chatter = reply("existing", "Still unfixed on this head.");
+    let refused = c
+        .validate(&chatter, std::slice::from_ref(&still), &[], |_| Ok(()))
+        .unwrap_err();
+    assert!(refused.starts_with("No status chatter"), "{refused}");
+    // Unaddressed and no new issue: nothing is published.
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Own finding still applies.".into(),
+    };
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&still), &[], |_| Ok(()))
+        .is_ok());
+    // A question addressed to PR Sniper may be answered.
+    c.threads[0].comments.push(CommentFact {
+        author_id: Some("11".into()),
+        id: "question".into(),
+        author: "author".into(),
+        body: "Does this also apply to the cleanup path?".into(),
+    });
+    assert!(c
+        .validate(
+            &reply("existing", "Yes, cleanup has the same gap."),
+            &[still],
+            &[],
+            |_| Ok(())
+        )
+        .is_ok());
+}
+
+#[test]
+fn same_head_rerun_publishes_no_new_findings_unless_reviewed_again() {
+    let mut c = contract(false, false);
+    c.identities.revision_reviewed = true;
+    let still = assessment(Disposition::StillApplies);
+    let fresh = ExitCall::parse(
+        "leave_comments",
+        &json!({"new_comments":[{"path":"src/lib.rs","line":2,"body":"New defect."}]}),
+    )
+    .unwrap();
+    let refused = c
+        .validate(&fresh, std::slice::from_ref(&still), &[], |_| Ok(()))
+        .unwrap_err();
+    assert!(refused.starts_with("One review per revision"), "{refused}");
+    c.identities.revision_reviewed = false;
+    assert!(c.validate(&fresh, &[still], &[], |_| Ok(())).is_ok());
+}

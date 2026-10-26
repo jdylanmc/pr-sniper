@@ -107,6 +107,7 @@ fn input() -> PacketInput {
             },
         ],
         delta: Some(vec!["src/lib.rs".into()]),
+        revision_reviewed: false,
         directive: Directive {
             doctrines: vec![("Correctness".into(), "Trace behavior precisely.".into())],
             agent_prompt: "Look for defects.".into(),
@@ -227,13 +228,13 @@ fn clean_review_prefers_only_offered_actions_and_keeps_human_uncertainty() {
 #[test]
 fn ci_red_rule_points_at_logs_only_when_the_run_can_read_them() {
     let with = build(&input()).text;
-    assert!(with.contains("6. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(with.contains("7. CI red or merge conflicts: do not approve. Read the failing log (read_check_log), then leave_comments with the fix on the line that causes it, unless an open thread already says it.\n"));
     assert!(with.contains("- build: COMPLETED / FAILURE (log: read_check_log id=4242)\n"));
     assert!(with.contains("- lint: COMPLETED / SUCCESS\n"));
     let mut without = input();
     without.tools.retain(|t| t != "read_check_log");
     let without = build(&without).text;
-    assert!(without.contains("6. CI red or merge conflicts: do not approve. leave_comments with the fix, unless an open thread already says it.\n"));
+    assert!(without.contains("7. CI red or merge conflicts: do not approve. leave_comments with the fix on the line that causes it, unless an open thread already says it.\n"));
     assert!(!without.contains("read_check_log"));
 }
 
@@ -576,6 +577,17 @@ fn the_duck_rule_is_present_only_when_the_primary_can_call_rubber_duck() {
     let with = build(&with).text;
     assert!(with.contains(rules::DUCK_RULE));
     assert!(with.contains("tools: read_changes, get_thread, read_check_log, rubber_duck,"));
+}
+
+#[test]
+fn only_a_normal_rerun_of_a_published_head_is_told_no_new_findings() {
+    let normal = input();
+    assert!(!build(&normal).text.contains(rules::REVISION_REVIEWED_RULE));
+    let mut rerun = input();
+    rerun.revision_reviewed = true;
+    assert!(build(&rerun).text.contains(rules::REVISION_REVIEWED_RULE));
+    rerun.role = Role::Teammate;
+    assert!(!build(&rerun).text.contains(rules::REVISION_REVIEWED_RULE));
 }
 
 #[test]

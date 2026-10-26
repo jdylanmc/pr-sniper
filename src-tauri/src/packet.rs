@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Bumped with any change to the fixed text or section layout.
-pub const SCHEMA: u32 = 11;
+pub const SCHEMA: u32 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -99,6 +99,9 @@ pub struct FindingFacts {
     pub thread_heads: std::collections::BTreeMap<String, String>,
     /// Host id (`T<k>#<n>`) of every teammate finding in this run's packet.
     pub teammate_findings: Vec<String>,
+    /// This assignment already published findings on this exact head and the human
+    /// did not ask to review again: no new findings until a new head.
+    pub revision_reviewed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +174,9 @@ pub struct PacketInput {
     pub delta: Option<Vec<String>>,
     pub directive: Directive,
     pub teammates: Vec<TeammateEntry>,
+    /// This assignment already published on this head and the pass is not the human's
+    /// explicit Review again: the packet says no new findings.
+    pub revision_reviewed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

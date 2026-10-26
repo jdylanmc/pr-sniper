@@ -128,6 +128,10 @@ pub struct PrStateRecord {
     /// green on the same review revision wakes the primary once (teammate reports hold).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ci_wake: bool,
+    /// `state_seq` of the human's explicit Review again: the one pass that may review
+    /// an already-published head anew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_again_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +187,7 @@ impl PrStates {
             .ok_or("PR state sequence exhausted.")?;
         record.baseline_hash = None;
         Self::bump(record, record.hash.clone(), now);
+        record.review_again_seq = Some(record.state_seq);
         Ok(record.state_seq)
     }
     pub fn get(&self, binding: &Binding) -> Option<&PrStateRecord> {
@@ -210,6 +215,7 @@ impl PrStates {
                     consumed_at: None,
                     revision_seq: None,
                     ci_wake: false,
+                    review_again_seq: None,
                 });
                 self.records.len() - 1
             });

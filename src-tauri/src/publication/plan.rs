@@ -28,15 +28,15 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// Batch from a Packet-mode `leave_comments` exit: inline comments and the
-    /// agent's PR-level `body`, one review. All or nothing: an unmappable line is a
-    /// typed content toss (`Failure::tossed`), so nothing partial is ever posted and
-    /// the same batch is never retried.
+    /// Batch from a Packet-mode `leave_comments` exit: its inline comments, one review.
+    /// The review body is the attribution marker alone, never status chatter: no
+    /// summary, count or restated finding; a legacy agent `body` is never posted.
+    /// All or nothing: an unmappable line is a typed content toss (`Failure::tossed`),
+    /// so nothing partial is ever posted and the same batch is never retried.
     pub fn prepare_exit(
         run: &Publication,
         context: &ReviewContext,
         new_comments: &[NewComment],
-        review_body: Option<&str>,
     ) -> Result<Self, Failure> {
         let result = run
             .review
@@ -50,7 +50,7 @@ impl Batch {
                 "The reviewed diff is stale. Run a new review.",
             ));
         }
-        if new_comments.is_empty() && review_body.is_none() {
+        if new_comments.is_empty() {
             return Err(Failure::permanent(
                 "The exit has no new comments to publish.",
             ));
@@ -76,19 +76,7 @@ impl Batch {
                 diff_position: Some(position),
             });
         }
-        let body = match review_body {
-            None => format!(
-                "Automated review by PR Sniper.\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
-                comments.len(),
-                run.marker(),
-            ),
-            Some(text) => format!(
-                "Automated review by PR Sniper.\n\n{}\n\n{} inline comment(s).\n\n{}\n\n\u{f05b} PR Sniper",
-                text.trim_end(),
-                comments.len(),
-                run.marker(),
-            ),
-        };
+        let body = format!("{}\n\n\u{f05b} PR Sniper", run.marker());
         check_body(&body)?;
         Ok(Self {
             commit_id: run.review.job.head_sha.clone(),
@@ -113,9 +101,9 @@ impl Batch {
         }
         // The batch is built from the exit's comments. Legacy findings never publish.
         match &result.output.exit {
-            Some(ExitOutcome::Comments {
-                new_comments, body, ..
-            }) => Self::prepare_exit(run, context, new_comments, body.as_deref()),
+            Some(ExitOutcome::Comments { new_comments, .. }) => {
+                Self::prepare_exit(run, context, new_comments)
+            }
             Some(_) => Err(Failure::permanent("This exit writes no review comments.")),
             None => Err(Failure::permanent(crate::review::LEGACY_RETIRED)),
         }
@@ -123,12 +111,12 @@ impl Batch {
 }
 
 /// Whether a completed review has a provider review to publish: only a
-/// `leave_comments` exit with new comments or a body. Legacy results never publish.
+/// `leave_comments` exit with new inline comments. A body alone is status chatter
+/// and never publishes. Legacy results never publish.
 pub fn writes_comments(result: &crate::review::ReviewResult) -> bool {
     matches!(
         &result.output.exit,
-        Some(ExitOutcome::Comments { new_comments, body, .. })
-            if !new_comments.is_empty() || body.is_some()
+        Some(ExitOutcome::Comments { new_comments, .. }) if !new_comments.is_empty()
     )
 }
 

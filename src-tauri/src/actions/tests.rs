@@ -263,6 +263,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         packet_run::Caller {
             resolutions: Vec::new(),
             receipts: Default::default(),
+            review_again: false,
             acting_login: "actor",
             ownership: vec![],
             write_capability: true,
@@ -348,6 +349,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             packet_run::Caller {
                 resolutions: Vec::new(),
                 receipts: Default::default(),
+                review_again: false,
                 acting_login: "actor",
                 ownership: vec![],
                 write_capability: true,
@@ -377,7 +379,6 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         // Live: the model mangled one thread id; the gate now refuses it in the loop.
         let reply = |thread: &str| ExitCall::LeaveComments {
             new_comments: vec![],
-            body: None,
             reply_comments: vec![crate::exits::ReplyComment {
                 thread_id: thread.into(),
                 body: "b".into(),
@@ -386,47 +387,39 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         };
         assert_eq!((stamped.setup.gate)(&reply("mapped")), Ok(()));
         // Live: a comment on CHANGELOG.md:151 outside the diff parked the publication.
-        // The gate refuses it in the loop; a body or a changed line is accepted.
-        let leave = |comments: Vec<(&str, u64, Option<&str>)>, body: Option<&str>| {
-            ExitCall::LeaveComments {
-                new_comments: comments
-                    .into_iter()
-                    .map(|(path, line, side)| crate::exits::NewComment {
-                        path: path.into(),
-                        line,
-                        side: side.map(String::from),
-                        body: "b".into(),
-                    })
-                    .collect(),
-                body: body.map(String::from),
-                reply_comments: vec![],
-                resolve_own_threads: vec![],
-            }
+        // The gate refuses it in the loop; a changed line is accepted.
+        let leave = |comments: Vec<(&str, u64, Option<&str>)>| ExitCall::LeaveComments {
+            new_comments: comments
+                .into_iter()
+                .map(|(path, line, side)| crate::exits::NewComment {
+                    path: path.into(),
+                    line,
+                    side: side.map(String::from),
+                    body: "b".into(),
+                })
+                .collect(),
+            reply_comments: vec![],
+            resolve_own_threads: vec![],
         };
         assert_eq!(
-            (stamped.setup.gate)(&leave(vec![("CHANGELOG.md", 151, Some("head"))], None)),
+            (stamped.setup.gate)(&leave(vec![("CHANGELOG.md", 151, Some("head"))])),
             Err(Refusal::Denied(
-                "CHANGELOG.md:151 (head) not in diff. Comment on a changed line, or put it in body."
+                "CHANGELOG.md:151 (head) not in diff. Comment on a changed line, or leave it out (ready_for_human for a local note)."
                     .into()
             ))
         );
         assert!(matches!(
             (stamped.setup.gate)(&leave(
-                vec![("src/lib.rs", 1, None), ("src/lib.rs", 2, None), ("src/lib.rs", 1, Some("base"))],
-                Some("x")
+                vec![("src/lib.rs", 1, None), ("src/lib.rs", 2, None), ("src/lib.rs", 1, Some("base"))]
             )),
             Err(Refusal::Denied(reason)) if reason.starts_with("src/lib.rs:2 (head) not in diff.")
         ));
         assert_eq!(
-            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, None)], None)),
+            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, None)])),
             Ok(())
         );
         assert_eq!(
-            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, Some("base"))], Some("x"))),
-            Ok(())
-        );
-        assert_eq!(
-            (stamped.setup.gate)(&leave(vec![], Some("Merge conflict in CHANGELOG.md."))),
+            (stamped.setup.gate)(&leave(vec![("src/lib.rs", 1, Some("base"))])),
             Ok(())
         );
         assert!(matches!(
@@ -514,6 +507,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
             packet_run::Caller {
                 resolutions: Vec::new(),
                 receipts: Default::default(),
+                review_again: false,
                 acting_login: "actor",
                 ownership: vec![],
                 write_capability: true,

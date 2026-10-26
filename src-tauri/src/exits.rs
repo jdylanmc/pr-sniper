@@ -11,8 +11,6 @@ pub const MAX_COMMENTS: usize = 100;
 pub const MAX_REPLIES: usize = 100;
 pub const MAX_RESOLUTIONS: usize = 100;
 pub const MAX_COMMENT_BYTES: usize = 16 * 1024;
-/// PR-level review body of `leave_comments`.
-pub const MAX_REVIEW_BODY_BYTES: usize = 8 * 1024;
 pub const MAX_SUMMARY_BYTES: usize = 4 * 1024;
 pub const MAX_PANIC_REASON_BYTES: usize = 200;
 pub const MAX_PANIC_DETAIL_BYTES: usize = 4 * 1024;
@@ -82,15 +80,15 @@ impl Exit {
 
     pub fn description(self) -> &'static str {
         match self {
-            Exit::LeaveComments => "Terminal exit: post new inline comments on diff lines, a PR-level review body (body), reply to threads, resolve your own threads. Ends the run. Call once.",
+            Exit::LeaveComments => "Terminal exit: post new inline comments on diff lines (each new finding once, in its own thread), answer questions asked of you in threads, resolve your own fixed threads. No PR-level body. Ends the run. Call once.",
             Exit::ReadyForHuman => "Terminal exit: nothing to post; hand the PR to the human with a short local summary. Ends the run.",
             Exit::Wait => "Terminal exit: yield for a host-observed external prerequisite to a permitted action. The host polls on the repository schedule and queues a fresh review when it changes. Not for defects, uncertainty or tool failures.",
-            Exit::ApprovePullRequest => "Terminal exit: approve the PR head with an approval comment. Ends the run.",
+            Exit::ApprovePullRequest => "Terminal exit: approve the PR head. The approval carries no text; comment is a local rationale only. Ends the run.",
             Exit::ApproveAndMerge => "Terminal exit: merge the reviewed PR when offered. For another author's PR, the host approves first. For the acting account's own PR with Include self enabled, the host merges without an approval vote. Ends the run.",
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
             Exit::SubmitVerdict => crate::review::duck::VERDICT_DESCRIPTION,
-            Exit::Lgtm => "Terminal exit: sign off. No new findings and nothing pending. Every own open thread needs a finding_dispositions entry: fixed (verified evidence), author_wont_fix, withdrawn (your rationale) or no_longer_applies (head changed since the thread, with evidence); still_applies or unverifiable refuses it. Every teammate finding in this run needs a dismissed_teammate_findings entry, or publish it with leave_comments instead. The host posts comment and each disposition as an audit reply on each own open thread and resolves it, then acts on the assignment's authority after fresh gates: hand to the human, approve, or approve and merge. Never updates the branch: a branch behind its base refuses merge. Refused while others' threads are open, CI is not green, or the PR is draft or conflicting. Ends the run.",
+            Exit::Lgtm => "Terminal exit: sign off. No new findings and nothing pending. Every own open thread needs a finding_dispositions entry: fixed (verified evidence), author_wont_fix, withdrawn (your rationale) or no_longer_applies (head changed since the thread, with evidence); still_applies or unverifiable refuses it. Every teammate finding in this run needs a dismissed_teammate_findings entry, or publish it with leave_comments instead. The host resolves each own open thread silently, then acts on the assignment's authority after fresh gates: hand to the human, approve, or approve and merge. Never updates the branch: a branch behind its base refuses merge. Refused while others' threads are open, CI is not green, or the PR is draft or conflicting. Ends the run.",
         }
     }
 
@@ -112,7 +110,6 @@ impl Exit {
         let (mut properties, required) = match self {
             Exit::LeaveComments => (
                 json!({"new_comments":{"type":"array","items":comment},
-                    "body":{"type":"string","description":"PR-level review body. At most 8192 bytes. For points not on a diff line."},
                     "reply_comments":{"type":"array","items":reply},
                     "resolve_own_threads":{"type":"array","items":{"type":"string"}}}),
                 json!([]),
@@ -122,9 +119,10 @@ impl Exit {
                 json!({"reason":{"type":"string","enum":["ci","draft","required_reviews"]}}),
                 json!(["reason"]),
             ),
-            Exit::ApprovePullRequest | Exit::ApproveAndMerge => {
-                (json!({"comment":{"type":"string"}}), json!(["comment"]))
-            }
+            Exit::ApprovePullRequest | Exit::ApproveAndMerge => (
+                json!({"comment":{"type":"string","description":"Local rationale. Never posted."}}),
+                json!(["comment"]),
+            ),
             Exit::PanicExit => (
                 json!({"reason":{"type":"string"},"detail":{"type":"string"}}),
                 json!(["reason", "detail"]),
@@ -135,7 +133,7 @@ impl Exit {
             ),
             Exit::SubmitVerdict => return crate::review::duck::verdict_schema(),
             Exit::Lgtm => (
-                json!({"comment":{"type":"string","description":"Short sign-off rationale, posted on each own thread resolved. At most 4096 bytes."},
+                json!({"comment":{"type":"string","description":"Short local sign-off rationale. Never posted. At most 4096 bytes."},
                     "dismissed_teammate_findings":{"type":"array","maxItems":MAX_FINDINGS,"items":{"type":"object","additionalProperties":false,
                         "properties":{"id":{"type":"string","description":"Exact id as listed under Teammate reports, e.g. T1#2."},
                             "rationale":{"type":"string","description":"Why it is not a defect. At most 4096 bytes."}},
@@ -200,8 +198,6 @@ pub enum ExitCall {
     },
     LeaveComments {
         new_comments: Vec<NewComment>,
-        /// PR-level review body, posted with the same review as `new_comments`.
-        body: Option<String>,
         reply_comments: Vec<ReplyComment>,
         resolve_own_threads: Vec<String>,
     },
@@ -264,7 +260,7 @@ pub enum ExitOutcome {
     },
     Comments {
         new_comments: Vec<NewComment>,
-        /// PR-level review body. Absent in records written before it existed.
+        /// Legacy PR-level body; kept for history, never published (status chatter).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<String>,
         reply_comments: Vec<ReplyComment>,
@@ -318,13 +314,12 @@ impl ExitCall {
             Self::Wait { reason } => (ExitOutcome::Wait { reason: *reason }, None),
             Self::LeaveComments {
                 new_comments,
-                body,
                 reply_comments,
                 resolve_own_threads,
             } => (
                 ExitOutcome::Comments {
                     new_comments: new_comments.clone(),
-                    body: body.clone(),
+                    body: None,
                     reply_comments: reply_comments.clone(),
                     resolve_own_threads: resolve_own_threads.clone(),
                 },
@@ -387,19 +382,19 @@ impl ExitCall {
                     #[serde(default)]
                     new_comments: Vec<NewComment>,
                     #[serde(default)]
-                    body: Option<String>,
-                    #[serde(default)]
                     reply_comments: Vec<ReplyComment>,
                     #[serde(default)]
                     resolve_own_threads: Vec<String>,
                 }
                 let a: Args = serde_json::from_value(args.clone()).map_err(bad)?;
                 if a.new_comments.is_empty()
-                    && a.body.is_none()
                     && a.reply_comments.is_empty()
                     && a.resolve_own_threads.is_empty()
                 {
-                    return Err("Nothing to post. Call ready_for_human instead.".into());
+                    return Err(
+                        "Nothing new to post. Publish nothing: call ready_for_human (local only)."
+                            .into(),
+                    );
                 }
                 if a.new_comments.len() > MAX_COMMENTS
                     || a.reply_comments.len() > MAX_REPLIES
@@ -414,9 +409,6 @@ impl ExitCall {
                         return Err("Comment line must be >= 1 and side base or head.".into());
                     }
                 }
-                if let Some(body) = &a.body {
-                    check_text(body, MAX_REVIEW_BODY_BYTES, "body")?;
-                }
                 for r in &a.reply_comments {
                     check_text(&r.body, MAX_COMMENT_BYTES, "reply body")?;
                     check_text(&r.thread_id, MAX_PATH_BYTES, "thread_id")?;
@@ -426,7 +418,6 @@ impl ExitCall {
                 }
                 Ok(Self::LeaveComments {
                     new_comments: a.new_comments,
-                    body: a.body,
                     reply_comments: a.reply_comments,
                     resolve_own_threads: a.resolve_own_threads,
                 })

@@ -801,6 +801,11 @@ fn ready_sign_off_resolving_own_threads_retries_when_ci_is_pending_at_write_comp
         let mut ledger = store.load_feedback().unwrap();
         let write = &mut ledger.exit_writes[0];
         assert_eq!(write.sign_off, Some(crate::exits::LgtmAction::Ready));
+        // Addressed threads resolve silently: no audit reply (no status chatter).
+        assert!(write
+            .steps
+            .iter()
+            .all(|step| step.kind == crate::exit_writes::StepKind::Resolve));
         for step in &mut write.steps {
             step.state = crate::exit_writes::StepState::Done;
         }
@@ -832,6 +837,70 @@ fn ready_sign_off_resolving_own_threads_retries_when_ci_is_pending_at_write_comp
             prepare(&store, &env, &fresh, true, NOW + 32);
         }
     }
+}
+
+#[test]
+fn published_comments_end_the_revision_so_ci_turning_green_never_reruns_it() {
+    use crate::github::state::{SnapshotComment, SnapshotThread};
+    let with = |conclusion: &str, resolved| PrSnapshot {
+        threads: vec![SnapshotThread {
+            id: "own".into(),
+            resolved,
+            outdated: false,
+            comments: vec![SnapshotComment {
+                id: "41".into(),
+                body: "Finding.".into(),
+                commit: None,
+            }],
+            comment_total: 1,
+        }],
+        thread_total: 1,
+        ..snapshot(false, conclusion)
+    };
+    let (_root, store, _) = read_only_primary(false);
+    let read = with("", false);
+    poll(&store, &read, NOW + 10);
+    let env = env(&store);
+    let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
+    let mut result = output();
+    result.output = ReviewOutput::from_exit(
+        crate::exits::ExitOutcome::Comments {
+            new_comments: vec![],
+            body: None,
+            reply_comments: vec![],
+            resolve_own_threads: vec!["own".into()],
+        },
+        None,
+    );
+    review_host::complete(&store, &run.operation.id, Ok(result), NOW + 13).unwrap();
+    assert_eq!(crate::exit_writes::admit(&store, NOW + 14).unwrap(), 1);
+    let mut ledger = store.load_feedback().unwrap();
+    let write = &mut ledger.exit_writes[0];
+    for step in &mut write.steps {
+        step.state = crate::exit_writes::StepState::Done;
+    }
+    write.phase = crate::exit_writes::Phase::Completed;
+    write.operation.state = OperationState::Completed;
+    write.consumed = true;
+    store.save_feedback(&ledger).unwrap();
+    // CI was still pending when the comments were written.
+    let fresh = with("", true);
+    crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
+    let binding = Binding::job(&run.job);
+    assert!(
+        !store
+            .load_pr_states()
+            .unwrap()
+            .get(&binding)
+            .unwrap()
+            .ci_wake
+    );
+    // CI turning green on the same revision queues nothing: no status chatter.
+    env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+    poll(&store, &with("SUCCESS", true), NOW + 30);
+    assert!(crate::capacity::candidates(&store, NOW + 31)
+        .unwrap()
+        .is_empty());
 }
 
 struct SnapshotWire {
@@ -1211,6 +1280,7 @@ fn prepare_owned(
         packet_run::Caller {
             resolutions: Vec::new(),
             receipts: Default::default(),
+            review_again: false,
             acting_login: "actor",
             write_capability: true,
             teammates: crate::review::teammates::entries(store, &run).unwrap(),

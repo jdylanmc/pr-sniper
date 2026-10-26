@@ -1251,7 +1251,7 @@ fn a_content_tossed_batch_requeues_then_parks_as_tossed() {
 }
 
 #[test]
-fn a_body_only_exit_awaits_its_publication() {
+fn a_legacy_body_only_exit_stays_local_instead_of_publishing() {
     use pr_sniper_lib::exits::ExitOutcome;
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
@@ -1262,11 +1262,12 @@ fn a_body_only_exit_awaits_its_publication() {
         resolve_own_threads: vec![],
     });
     seed(&store, std::slice::from_ref(&run), &[]);
-    let waiting = item(&store);
-    assert_eq!(waiting.state, State::AwaitingPublication);
-    assert_eq!(waiting.progress, Some(queue::Progress::Publishing));
+    // A body alone is status chatter: it never publishes, so it never shows Publishing.
+    let local = item(&store);
+    assert_eq!(local.state, State::WaitingForHuman);
+    assert_ne!(local.progress, Some(queue::Progress::Publishing));
     assert!(
         exit_writes::plan(&run, 100).is_none(),
-        "no replies: batch only"
+        "no replies: no exit write"
     );
 }

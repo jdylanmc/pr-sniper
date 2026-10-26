@@ -74,18 +74,6 @@ pub fn settle_fresh(
         .review_evidence()?
         .into_iter()
         .find(|r| r.operation.id == review_operation_id);
-    let sign_off = run
-        .as_ref()
-        .and_then(|r| r.result.as_ref())
-        .and_then(|r| r.output.exit.as_ref())
-        .map(|exit| {
-            matches!(
-                exit,
-                ExitOutcome::Lgtm { .. }
-                    | ExitOutcome::Approve { .. }
-                    | ExitOutcome::ApproveAndMerge { .. }
-            )
-        });
     let packet = run.and_then(|r| r.packet);
     let Some((marks, read_hash)) = packet.and_then(|p| Some((p.state_marks?, p.state_hash?)))
     else {
@@ -102,12 +90,9 @@ pub fn settle_fresh(
         .load_pr_states()?
         .state_seq(&binding)
         .max(state_seq(job));
-    // An exit of unknown kind arms nothing.
-    let ci = sign_off.map(|sign_off| pr_state::ExitCi {
-        sign_off,
-        fresh: Some(&normalized),
-    });
-    let outcome = pr_state::consume_exit(store, &binding, seq, &fresh_hash, ci)?;
+    // Provider writes end the revision: CI settling later never re-runs it (no status
+    // chatter). Only a local `ready_for_human` arms the CI wake ([`honour_local`]).
+    let outcome = pr_state::consume_exit(store, &binding, seq, &fresh_hash, None)?;
     if outcome == Consumed::Moved {
         pr_state::toss(store, &binding)?;
     }

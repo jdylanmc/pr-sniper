@@ -477,13 +477,10 @@ pub fn ready(
     Ok(Ready::Go)
 }
 
-/// Review body for the approval: the agent's comment plus the intent marker that
-/// lets a lost response be reconciled.
-pub fn approval_body(approval: &PacketApproval, effect_id: &str) -> String {
-    format!(
-        "{}\n\n<!-- pr-sniper:action:{effect_id} -->\n\nPR Sniper",
-        approval.comment
-    )
+/// Review body for the approval: the intent marker that lets a lost response be
+/// reconciled, and the signature. The agent's comment stays local (no status chatter).
+pub fn approval_body(effect_id: &str) -> String {
+    format!("<!-- pr-sniper:action:{effect_id} -->\n\nPR Sniper")
 }
 
 /// The packet finals of `item_id` whose wanted writes are all confirmed (or whose

@@ -539,6 +539,9 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
     );
     assert_eq!(jobs[1].work.as_ref().unwrap().pass_ordinal, 2);
     assert_eq!(jobs[1].work.as_ref().unwrap().state_seq, 2);
+    // Only this explicit pass may publish anew on an already-published head.
+    let record = store.load_pr_states().unwrap();
+    assert_eq!(record.get(&binding).unwrap().review_again_seq, Some(2));
 }
 
 fn fixture_endpoint(port: u16) -> Endpoint {

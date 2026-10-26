@@ -555,7 +555,6 @@ fn lgtm_on_an_own_pr_follows_include_self() {
 fn exit_time_check_rechecks_gates_and_payload_grants() {
     let comments = ExitCall::LeaveComments {
         new_comments: vec![],
-        body: None,
         reply_comments: vec![ReplyComment {
             thread_id: "T".into(),
             body: "b".into(),

@@ -67,6 +67,8 @@ pub(crate) struct Caller<'a> {
     pub resolutions: Vec<super::findings::Resolved>,
     /// Every reply receipt PR Sniper holds on this PR.
     pub receipts: std::collections::BTreeSet<String>,
+    /// This pass is the human's explicit Review again.
+    pub review_again: bool,
 }
 
 /// Build the packet and the run's tool set from state read right now.
@@ -92,6 +94,7 @@ where
         ownership,
         resolutions,
         receipts,
+        review_again,
     } = caller;
     let mut observation = client
         .action_observation(repo, run.job.number)
@@ -165,6 +168,10 @@ where
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
+    let revision_reviewed = !review_again
+        && ownership
+            .iter()
+            .any(|proof| proof.head_sha == context.pull.head_sha);
     let description = Some(snapshot.body.clone());
     let state_hash = snapshot.normalize().hash();
     let input = PacketInput {
@@ -221,6 +228,7 @@ where
         },
         teammates: if base.primary { teammates } else { vec![] },
         conversation: conversation.clone(),
+        revision_reviewed,
     };
     let duck_input = input.clone();
     let mut packet = packet::build(&input);
@@ -279,6 +287,7 @@ where
             })
             .collect(),
         teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
+        revision_reviewed,
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(
@@ -464,7 +473,7 @@ pub(crate) fn out_of_diff(
     (!bad.is_empty()).then(|| {
         let more = bad.len().saturating_sub(SHOWN);
         format!(
-            "{}{} not in diff. Comment on a changed line, or put it in body.",
+            "{}{} not in diff. Comment on a changed line, or leave it out (ready_for_human for a local note).",
             bad[..bad.len().min(SHOWN)].join(", "),
             if more > 0 {
                 format!(" (+{more} more)")
