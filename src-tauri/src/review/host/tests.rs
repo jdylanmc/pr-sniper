@@ -357,6 +357,27 @@ fn a_legacy_body_only_result_shows_its_confirmed_publication() {
 }
 
 #[test]
+fn a_legacy_body_and_reply_result_waits_for_the_author_once_its_replies_land() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    let result = packet_result(json!({"exit":"comments","new_comments":[],
+        "body":"Neither finding is fixed.","resolve_own_threads":[],
+        "reply_comments":[{"thread_id":"T","body":"Yes, cleanup has the same gap."}]}));
+    complete(&store, &run.operation.id, Ok(result), 101).unwrap();
+    let mut queue = store.load_queue().unwrap();
+    queue[0].observed_base_sha = Some("b".repeat(40));
+    store.save_queue(&queue).unwrap();
+    assert_eq!(crate::exit_writes::admit(&store, 102).unwrap(), 1);
+    let mut ledger = store.load_feedback().unwrap();
+    let write = &mut ledger.exit_writes[0];
+    write.phase = crate::exit_writes::Phase::Completed;
+    write.consumed = true;
+    store.save_feedback(&ledger).unwrap();
+    let state = crate::queue::snapshot(&store, vec![]).unwrap().items[0].state;
+    assert_eq!(state, crate::queue::State::WaitingForAuthor);
+}
+
+#[test]
 fn a_state_that_moved_during_the_run_tosses_and_requeues_until_it_parks_at_three() {
     let (_root, store, template) = fixture();
     let binding = crate::retention::Binding::job(&template.job);

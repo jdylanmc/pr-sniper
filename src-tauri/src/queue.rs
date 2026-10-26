@@ -438,7 +438,8 @@ fn review_state(
                     // The toss re-queues the PR.
                     Phase::Tossed => return State::Queued,
                     Phase::Completed if write.consumed => {
-                        if new_comments.is_empty() && body.is_none() {
+                        // A legacy body never published now: its replies are the outcome.
+                        if new_comments.is_empty() && (body.is_none() || publication.is_none()) {
                             return State::WaitingForAuthor;
                         }
                     }
