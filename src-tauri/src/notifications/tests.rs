@@ -209,8 +209,16 @@ fn new_causes_are_eligible_without_polling_duplicates_or_status_chatter() {
         .observe(&[frame(Category::HumanInput, "external-comment-3")], 7)
         .unwrap();
     assert_eq!(ledger.notices.len(), 3);
-    assert_eq!(ledger.notices[2].episode, 3);
+    assert_eq!(ledger.notices[2].episode, 5);
     assert_ne!(ledger.notices[0].id, ledger.notices[1].id);
+}
+
+fn attempt_queued(ledger: &mut Ledger) {
+    for notice in &mut ledger.notices {
+        if notice.phase == Phase::Queued {
+            notice.phase = Phase::AcceptedUnconfirmed;
+        }
+    }
 }
 
 #[test]
@@ -223,7 +231,7 @@ fn a_returning_failure_cause_does_not_repeat_its_notification() {
     };
     for (now, frame) in [
         frame(Category::Failure, "cause-a"),
-        gone.clone(),
+        gone,
         frame(Category::Failure, "cause-a"),
         frame(Category::Failure, "cause-b"),
         frame(Category::Failure, "cause-a"),
@@ -232,6 +240,7 @@ fn a_returning_failure_cause_does_not_repeat_its_notification() {
     .enumerate()
     {
         ledger.observe(&[frame], now as i64).unwrap();
+        attempt_queued(&mut ledger);
     }
     let causes: Vec<_> = ledger
         .notices
@@ -239,6 +248,22 @@ fn a_returning_failure_cause_does_not_repeat_its_notification() {
         .map(|n| n.event.cause.as_str())
         .collect();
     assert_eq!(causes, ["cause-a", "cause-b"]);
+}
+
+#[test]
+fn an_unsent_notice_is_rearmed_when_its_cause_returns() {
+    let (_root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    for (now, cause) in ["cause-a", "cause-b", "cause-a"].into_iter().enumerate() {
+        ledger
+            .observe(&[frame(Category::Failure, cause)], now as i64)
+            .unwrap();
+    }
+    assert_eq!(ledger.notices.len(), 2);
+    assert!(ledger.current(&ledger.notices[0]));
+    assert!(!ledger.current(&ledger.notices[1]));
+    let id = ledger.notices[0].id.clone();
+    assert_eq!(ledger.begin(&id).unwrap().phase, Phase::Submitting);
 }
 
 #[test]

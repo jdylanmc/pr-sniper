@@ -348,10 +348,6 @@ pub struct Notice {
 pub struct Observation {
     fingerprint: Option<String>,
     episode: u64,
-    /// Every event this source has already recorded. Re-entering one of them
-    /// (after a flicker or an A→B→A cycle) is status chatter, not a new outcome.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    seen: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -459,22 +455,33 @@ impl Ledger {
                 true
             };
             let previous = self.observations.entry(frame.source.clone()).or_default();
-            if let Some(current) = previous.fingerprint.clone() {
-                changed |= previous.seen.insert(current);
-            }
             if previous.fingerprint == fingerprint {
                 continue;
             }
             previous.fingerprint = fingerprint.clone();
             changed = true;
             if let Some(event) = &frame.event {
-                if !previous.seen.insert(fingerprint.clone().unwrap()) {
-                    continue;
-                }
                 previous.episode = previous
                     .episode
                     .checked_add(1)
                     .ok_or("Notification episode limit reached.")?;
+                // Re-entering an event (flicker, A→B→A) is status chatter: never
+                // resend one that had a send attempt; re-arm one still queued.
+                if self.notices.iter().any(|n| {
+                    n.source == frame.source
+                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                        && !matches!(n.phase, Phase::Queued | Phase::NotSent)
+                }) {
+                    continue;
+                }
+                if let Some(queued) = self.notices.iter_mut().find(|n| {
+                    n.phase == Phase::Queued
+                        && n.source == frame.source
+                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                }) {
+                    queued.episode = previous.episode;
+                    continue;
+                }
                 if !notify || !first_merge || self.muted.contains(&event.category) {
                     continue;
                 }
