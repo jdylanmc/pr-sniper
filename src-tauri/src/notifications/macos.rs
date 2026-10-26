@@ -158,7 +158,7 @@ impl Adapter for Native {
         // request gets its own copy; the badge is cosmetic and never blocks a send.
         let badge = message
             .badge
-            .write(
+            .write_thumbnail(
                 &self.badges,
                 &format!("{}-{}", uuid::Uuid::new_v4(), message.badge.file_name()),
             )

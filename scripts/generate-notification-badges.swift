@@ -5,7 +5,8 @@ import AppKit
 // so color is never the only cue.
 enum Glyph { case check, bang, crosshair, cross }
 
-func png(size: Int, color: NSColor, glyph: Glyph) throws -> Data {
+// `inset` is transparent padding per side, in pixels, around the 32-unit disc.
+func png(size: Int, inset: Int, color: NSColor, glyph: Glyph) throws -> Data {
     let image = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -13,7 +14,9 @@ func png(size: Int, color: NSColor, glyph: Glyph) throws -> Data {
     )!
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: image)
-    (AffineTransform(scale: CGFloat(size) / 32) as NSAffineTransform).concat()
+    var transform = AffineTransform(translationByX: CGFloat(inset), byY: CGFloat(inset))
+    transform.scale(CGFloat(size - 2 * inset) / 32)
+    (transform as NSAffineTransform).concat()
     NSColor.white.setFill()
     NSBezierPath(ovalIn: NSRect(x: 1, y: 1, width: 30, height: 30)).fill()
     color.setFill()
@@ -69,14 +72,22 @@ func rgb(_ hex: Int) -> NSColor {
 
 // 256px covers the macOS attachment thumbnail at 2x and the Windows 48px
 // app-logo slot up to 400% scale. Names match `notifications::Badge::file_name`.
-let destination = URL(fileURLWithPath: "src-tauri/icons/notifications", isDirectory: true)
-try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+// macOS scales an attachment to fill its thumbnail, as large as the app icon, so
+// its copies pad the disc to half the canvas (`Badge::THUMBNAIL_INSET`).
+// Windows crops the app logo to a circle and keeps the full-bleed disc.
+let root = URL(fileURLWithPath: "src-tauri/icons/notifications", isDirectory: true)
+let outputs = [(root, 0), (root.appendingPathComponent("macos", isDirectory: true), 64)]
+for (destination, _) in outputs {
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+}
 for (name, color, glyph) in [
     ("success", rgb(0x1A7F37), Glyph.check),
     ("attention", rgb(0xB76E00), Glyph.bang),
     ("ready", rgb(0x0969DA), Glyph.crosshair),
     ("failure", rgb(0xCF222E), Glyph.cross)
 ] {
-    try png(size: 256, color: color, glyph: glyph)
-        .write(to: destination.appendingPathComponent("\(name).png"))
+    for (destination, inset) in outputs {
+        try png(size: 256, inset: inset, color: color, glyph: glyph)
+            .write(to: destination.appendingPathComponent("\(name).png"))
+    }
 }

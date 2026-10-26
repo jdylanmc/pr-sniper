@@ -1388,6 +1388,42 @@ fn states_map_to_bundled_distinct_badges() {
 }
 
 #[test]
+fn macos_thumbnails_pad_the_badge_disc_to_half_the_canvas() {
+    let inset = Badge::THUMBNAIL_INSET;
+    let mut seen = BTreeSet::new();
+    for badge in Badge::ALL {
+        let png = badge.thumbnail_png();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("icons/notifications/macos")
+            .join(badge.file_name());
+        assert_eq!(std::fs::read(source).unwrap(), png, "{badge:?}");
+        let image = tauri::image::Image::from_bytes(png).unwrap();
+        let size = image.width();
+        assert_eq!((size, image.height()), (256, 256), "{badge:?}");
+        let alpha = |x: u32, y: u32| image.rgba()[((y * size + x) * 4 + 3) as usize];
+        // Opaque pixels sit only inside the inset square, and the disc fills it.
+        let (mut min, mut max) = (size, 0);
+        for y in 0..size {
+            for x in 0..size {
+                if alpha(x, y) > 0 {
+                    (min, max) = (min.min(x).min(y), max.max(x).max(y));
+                }
+            }
+        }
+        assert!(
+            min >= inset && max < size - inset,
+            "{badge:?}: {min}..={max}"
+        );
+        assert!(
+            min <= inset + 8 && max >= size - inset - 8,
+            "{badge:?}: {min}..={max}"
+        );
+        assert_eq!(alpha(size / 2, size / 2), 255, "{badge:?}");
+        assert!(seen.insert(png), "{badge:?} duplicates another thumbnail");
+    }
+}
+
+#[test]
 fn badge_write_is_idempotent_and_repairs_changed_files() {
     let root = tempfile::tempdir().unwrap();
     let directory = badge_directory(root.path());
@@ -1396,6 +1432,13 @@ fn badge_write_is_idempotent_and_repairs_changed_files() {
     std::fs::write(&path, b"tampered").unwrap();
     Badge::Failure.write(&directory, "failure.png").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), Badge::Failure.png());
+    let thumbnail = Badge::Failure
+        .write_thumbnail(&directory, "thumb.png")
+        .unwrap();
+    assert_eq!(
+        std::fs::read(thumbnail).unwrap(),
+        Badge::Failure.thumbnail_png()
+    );
 }
 
 #[test]
