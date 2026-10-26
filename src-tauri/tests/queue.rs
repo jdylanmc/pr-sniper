@@ -1107,6 +1107,34 @@ fn an_unobserved_publication_awaits_verification_until_retries_park_it() {
     assert_eq!(item.failure_cause, Some("publication_unresolved"));
 }
 
+// A removed assignment's live unobserved batch still holds readiness (#231).
+#[test]
+fn an_unobserved_publication_of_a_removed_assignment_still_blocks_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let mut removed = run.clone();
+    removed.assignment_id = "00000000-0000-4000-8000-000000000004".into();
+    removed.job.assignment_id = Some(removed.assignment_id.clone());
+    removed.job.waiting = pr_sniper_lib::monitoring::WAITING_ASSIGNMENT_REMOVED.into();
+    removed.key = review::key(&removed.job, &removed.assignment_id);
+    removed.operation = JobOperation::review(&removed.job, 100);
+    removed.operation.state = OperationState::Completed;
+    let mut verifying = published(&removed);
+    verifying.operation.state = OperationState::Running;
+    verifying.phase = publication::Phase::Pending;
+    verifying.uncertain = true;
+    verifying.receipts[0].state = RemoteState::Pending;
+    seed(
+        &store,
+        &[run.clone(), removed],
+        &[published(&run), verifying],
+    );
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(item.state, State::AwaitingPublication);
+    assert_eq!(item.failure_cause, None);
+}
+
 fn accounts() -> std::collections::BTreeMap<String, AccountAvailability> {
     ["22", "33"]
         .into_iter()

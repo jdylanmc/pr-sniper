@@ -843,7 +843,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             if let Some(error) = publication.error.as_ref().filter(|_| !verifying) {
                 warnings.insert(error.clone());
             }
-            if publication.uncertain && !verifying {
+            // Pending verification still blocks readiness, even after its assignment is removed.
+            if verifying {
+                states.push(State::AwaitingPublication);
+            } else if publication.uncertain {
                 warnings.insert("Publication outcome unresolved; reconcile the original batch, never a replacement.".into());
                 states.push(State::Failed);
             }
