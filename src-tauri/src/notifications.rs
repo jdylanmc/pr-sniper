@@ -134,7 +134,8 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             queue::State::ConfirmationRequired => Some(Category::Confirmation),
             queue::State::WaitingForHuman => Some(Category::HumanInput),
             queue::State::MachineSignedOff => Some(Category::Ready),
-            queue::State::Failed | queue::State::StaleAfterPublication => Some(Category::Failure),
+            // A superseded revision is stale, not failed.
+            queue::State::Failed => Some(Category::Failure),
             _ => None,
         };
         if item.state == queue::State::MachineSignedOff
@@ -289,10 +290,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         let covered = snapshot.items.iter().any(|item| {
             item.job.configuration_id == health.repository_id
                 && Some(&item.job.account_id) == health.provider_account_id.as_ref()
-                && matches!(
-                    item.state,
-                    queue::State::Failed | queue::State::StaleAfterPublication
-                )
+                && item.state == queue::State::Failed
         });
         frames.push(Frame {
             source: format!("schedule:{source}"),
@@ -350,6 +348,10 @@ pub struct Notice {
 pub struct Observation {
     fingerprint: Option<String>,
     episode: u64,
+    /// Every event this source has already recorded. Re-entering one of them
+    /// (after a flicker or an A→B→A cycle) is status chatter, not a new outcome.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    seen: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,12 +459,18 @@ impl Ledger {
                 true
             };
             let previous = self.observations.entry(frame.source.clone()).or_default();
+            if let Some(current) = previous.fingerprint.clone() {
+                changed |= previous.seen.insert(current);
+            }
             if previous.fingerprint == fingerprint {
                 continue;
             }
             previous.fingerprint = fingerprint.clone();
             changed = true;
             if let Some(event) = &frame.event {
+                if !previous.seen.insert(fingerprint.clone().unwrap()) {
+                    continue;
+                }
                 previous.episode = previous
                     .episode
                     .checked_add(1)
