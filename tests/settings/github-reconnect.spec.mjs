@@ -233,9 +233,9 @@ test("reconnecting the bound account resumes its parked credentials failure", as
   );
   await page.goto("/");
   await showQueueGroup(page, "attention");
-  // The credentials park is cleared; this fixture's publication still has an
-  // unresolved remote outcome, so it stays visible as a reconcile, not a Fix.
-  await expect(failed).not.toContainText("Credentials");
-  await expect(failed.locator("[data-fix-account]")).toHaveCount(0);
-  await expect(failed.getByRole("button", { name: "Retry" })).toHaveCount(1);
+  // The credentials park is cleared; the resumed publication re-observes its
+  // unresolved remote outcome silently, pending verification rather than
+  // Needs attention, until its retry budget parks it again (#231).
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(failed).toHaveCount(0);
 });
