@@ -44,15 +44,38 @@ impl Badge {
         }
     }
 
+    /// Transparent padding per side of the macOS thumbnail, in pixels of its
+    /// 256px canvas. macOS scales attachments to fill the thumbnail slot.
+    pub const THUMBNAIL_INSET: u32 = 64;
+
+    /// macOS attachment copy: the same disc at half the canvas.
+    pub fn thumbnail_png(self) -> &'static [u8] {
+        match self {
+            Self::Success => include_bytes!("../../icons/notifications/macos/success.png"),
+            Self::Attention => include_bytes!("../../icons/notifications/macos/attention.png"),
+            Self::Ready => include_bytes!("../../icons/notifications/macos/ready.png"),
+            Self::Failure => include_bytes!("../../icons/notifications/macos/failure.png"),
+        }
+    }
+
     /// Writes this badge to `directory/name`, rewriting only missing or changed bytes.
     pub fn write(self, directory: &Path, name: &str) -> std::io::Result<PathBuf> {
-        std::fs::create_dir_all(directory)?;
-        let path = directory.join(name);
-        if std::fs::read(&path).ok().as_deref() != Some(self.png()) {
-            std::fs::write(&path, self.png())?;
-        }
-        Ok(path)
+        write_bytes(self.png(), directory, name)
     }
+
+    /// Writes the macOS thumbnail copy, like [`Badge::write`].
+    pub fn write_thumbnail(self, directory: &Path, name: &str) -> std::io::Result<PathBuf> {
+        write_bytes(self.thumbnail_png(), directory, name)
+    }
+}
+
+fn write_bytes(bytes: &[u8], directory: &Path, name: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(directory)?;
+    let path = directory.join(name);
+    if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+        std::fs::write(&path, bytes)?;
+    }
+    Ok(path)
 }
 
 /// Badges live beside, not inside, saved state; they hold no user data.
