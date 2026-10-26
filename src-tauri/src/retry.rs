@@ -10,6 +10,8 @@ pub const PROVIDER_CAP_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
+    /// Shortest jittered wait.
+    pub floor_seconds: i64,
     pub base_seconds: i64,
     pub cap_seconds: i64,
     /// Failed attempts before the work parks.
@@ -18,9 +20,20 @@ pub struct Policy {
 
 /// Transient failures: timeouts, connection loss, incomplete reads, 5xx.
 pub const TRANSIENT: Policy = Policy {
+    floor_seconds: 1,
     base_seconds: 5,
     cap_seconds: 5 * 60,
     max_attempts: 3,
+};
+
+/// Rate limits without a stated wait: GitHub primary/secondary, Copilot 429.
+/// Not failures, so no attempt budget; the floor keeps a 429 from being retried
+/// within seconds.
+pub const BACKPRESSURE: Policy = Policy {
+    floor_seconds: 30,
+    base_seconds: 30,
+    cap_seconds: 15 * 60,
+    max_attempts: u8::MAX,
 };
 
 /// Uniform sample source for jitter; injectable so tests are deterministic.
@@ -63,13 +76,17 @@ impl Policy {
     pub fn ceiling(&self, retry: u32) -> i64 {
         self.base_seconds
             .saturating_mul(1_i64.checked_shl(retry.min(62)).unwrap_or(i64::MAX))
-            .clamp(1, self.cap_seconds.max(1))
+            .clamp(self.floor(), self.cap_seconds.max(self.floor()))
     }
 
-    /// Full jitter: uniform in `[1, ceiling(retry)]` seconds.
+    fn floor(&self) -> i64 {
+        self.floor_seconds.max(1)
+    }
+
+    /// Full jitter: uniform in `[floor, ceiling(retry)]` seconds.
     pub fn delay(&self, retry: u32, jitter: &mut impl Jitter) -> i64 {
         let ceiling = self.ceiling(retry);
-        1 + jitter.sample((ceiling - 1) as u64) as i64
+        self.floor() + jitter.sample((ceiling - self.floor()) as u64) as i64
     }
 
     /// Seconds to wait before retry `retry`: the provider's stated wait when
@@ -134,6 +151,18 @@ mod tests {
         assert_eq!(TRANSIENT.wait("x", 0, Some(0)), 1);
         assert_eq!(TRANSIENT.wait("x", 0, Some(-5)), 1);
         assert_eq!(TRANSIENT.wait("x", 0, Some(i64::MAX)), PROVIDER_CAP_SECONDS);
+    }
+
+    #[test]
+    fn backpressure_never_waits_below_its_floor() {
+        assert_eq!(BACKPRESSURE.ceiling(0), 30);
+        assert_eq!(BACKPRESSURE.ceiling(20), 15 * 60);
+        assert_eq!(BACKPRESSURE.delay(3, &mut Fixed(0)), 30);
+        assert_eq!(BACKPRESSURE.delay(3, &mut Fixed(u64::MAX)), 240);
+        for retry in 0..12 {
+            let delay = BACKPRESSURE.wait("operation-1", retry, None);
+            assert!((30..=BACKPRESSURE.ceiling(retry)).contains(&delay));
+        }
     }
 
     #[test]
