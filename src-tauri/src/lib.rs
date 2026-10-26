@@ -22,6 +22,7 @@ pub mod prompt_tokens;
 pub mod publication;
 pub mod queue;
 pub mod retention;
+pub mod retry;
 pub mod review;
 pub mod schedule;
 mod seeds;

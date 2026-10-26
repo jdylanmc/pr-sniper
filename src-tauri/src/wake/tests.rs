@@ -519,10 +519,8 @@ fn transient_retry_dispatches_on_the_first_tick_after_it_is_due() {
     ticks_until_dispatch(&mut sim, TICK * 2);
     finish(&mut sim, crate::review::Failure::provider("transient"));
     let due = retried(&store);
-    assert!(
-        due > sim.now + TICK,
-        "retry {due} must outlive the next tick"
-    );
+    // Full jitter may land inside the next tick; it still waits until due.
+    assert!(due > sim.now, "retry {due} must be in the future");
     assert_next_tick(&mut sim, due);
 }
 
