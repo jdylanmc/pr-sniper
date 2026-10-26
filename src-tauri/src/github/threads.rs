@@ -296,7 +296,7 @@ impl<T: QueryTransport> GithubClient<T> {
                 }
                 count += 1;
                 if count > 1000 {
-                    return Err(ConnectionError::IncompleteRead);
+                    return Err(ConnectionError::LimitExceeded);
                 }
                 let comments = node["comments"]["nodes"]
                     .as_array()
@@ -321,7 +321,7 @@ impl<T: QueryTransport> GithubClient<T> {
                     .map(|comment| comment.body.len())
                     .sum::<usize>();
                 if bytes > 2 * 1024 * 1024 {
-                    return Err(ConnectionError::IncompleteRead);
+                    return Err(ConnectionError::LimitExceeded);
                 }
                 result.push(thread);
             }
@@ -417,9 +417,9 @@ impl<T: QueryTransport> GithubClient<T> {
                                     .map_err(|_| ConnectionError::InvalidResponse)?
                                     .len(),
                             )
-                            .ok_or(ConnectionError::IncompleteRead)?;
+                            .ok_or(ConnectionError::LimitExceeded)?;
                         if bytes > 1024 * 1024 {
-                            return Err(ConnectionError::IncompleteRead);
+                            return Err(ConnectionError::LimitExceeded);
                         }
                         comments.push(comment);
                     }
@@ -454,7 +454,7 @@ impl<T: QueryTransport> GithubClient<T> {
             .len()
             > 1024 * 1024
         {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::LimitExceeded);
         }
         Ok(thread)
     }

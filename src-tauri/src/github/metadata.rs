@@ -146,7 +146,7 @@ impl<T: Transport> GithubClient<T> {
     fn changed_files(&self, path: &str, count: u64) -> Result<Vec<ChangedFile>, ConnectionError> {
         // GitHub's files endpoint cannot return more than 3,000 files.
         if count > 3_000 {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::LimitExceeded);
         }
         let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
         if raw_files.len() as u64 != count {
@@ -224,7 +224,7 @@ impl<T: Transport> GithubClient<T> {
                 .ok_or(ConnectionError::InvalidResponse)?;
             // GitHub's files endpoint cannot return more than 3,000 files.
             if count > 3_000 {
-                return Err(ConnectionError::IncompleteRead);
+                return Err(ConnectionError::LimitExceeded);
             }
             let files = self.changed_files(&path, count)?;
             let (reviewers, response) = self.read(&format!("{path}/requested_reviewers"))?;
@@ -327,8 +327,11 @@ impl<T: Transport> GithubClient<T> {
         let mut result = Vec::new();
         let mut advertised_last = None;
         loop {
-            if !seen.insert(path.clone()) || seen.len() > 10_000 {
+            if !seen.insert(path.clone()) {
                 return Err(ConnectionError::IncompleteRead);
+            }
+            if seen.len() > 10_000 {
+                return Err(ConnectionError::LimitExceeded);
             }
             let (value, response) = self.read(&path)?;
             let page = array(&value)?;
@@ -340,7 +343,7 @@ impl<T: Transport> GithubClient<T> {
                 return Err(ConnectionError::IncompleteRead);
             }
             if result.len() + page.len() > limit {
-                return Err(ConnectionError::IncompleteRead);
+                return Err(ConnectionError::LimitExceeded);
             }
             result.extend(page.iter().cloned());
             match next {

@@ -55,6 +55,9 @@ pub enum ConnectionError {
     ProviderRejectedStatus(u16),
     ProviderFailureAfter(i64),
     IncompleteRead,
+    /// A provider or host size limit (3,000 files, truncated tree, body cap);
+    /// retrying the same revision cannot help.
+    LimitExceeded,
     RevisionChanged,
     InvalidRepository,
     RepositoryChanged,

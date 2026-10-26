@@ -3955,7 +3955,10 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         | ConnectionError::OrganizationPolicyDenied
         | ConnectionError::ProviderRejectedStatus(403) => (OperationFailure::Permission, None),
         ConnectionError::Network => (OperationFailure::Network, None),
-        ConnectionError::ProviderFailure => (OperationFailure::Provider, None),
+        // A page set that moved or truncated mid-read is a fresh-read problem.
+        ConnectionError::ProviderFailure | ConnectionError::IncompleteRead => {
+            (OperationFailure::Provider, None)
+        }
         ConnectionError::ProviderFailureAfter(retry_after_seconds) => {
             (OperationFailure::Provider, Some(retry_after_seconds))
         }
@@ -3995,6 +3998,7 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         }
         ConnectionError::ProviderFailureAfter(_) => "ProviderFailure",
         ConnectionError::IncompleteRead => "IncompleteRead",
+        ConnectionError::LimitExceeded => "LimitExceeded",
         ConnectionError::RevisionChanged => "RevisionChanged",
         ConnectionError::InvalidRepository => "InvalidRepository",
         ConnectionError::RepositoryChanged => "RepositoryChanged",
@@ -4585,6 +4589,19 @@ mod read_diagnostic_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn incomplete_read_is_transient_but_a_size_limit_is_permanent() {
+        let mut operation = running_operation();
+        operation.fail(&check_error(ConnectionError::IncompleteRead), 10);
+        assert_eq!(operation.state, OperationState::Queued);
+        assert_eq!(operation.failure, Some(OperationFailure::Provider));
+        assert!(!operation.parked());
+        let mut operation = running_operation();
+        operation.fail(&check_error(ConnectionError::LimitExceeded), 10);
+        assert_eq!(operation.state, OperationState::Failed);
+        assert_eq!(operation.failure, Some(OperationFailure::Permanent));
     }
 
     #[test]

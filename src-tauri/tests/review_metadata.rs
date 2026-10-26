@@ -11,6 +11,7 @@ struct Fixture {
     truncated: bool,
     changed_head: bool,
     missing_page: bool,
+    changed_files: u64,
 }
 
 impl Transport for Fixture {
@@ -25,7 +26,7 @@ impl Transport for Fixture {
                 "requested_reviewers":[],"requested_teams":[],"state":"open","merged":false,"draft":false,
                 "head":{"sha":if reread && self.changed_head {"c".repeat(40)} else {"a".repeat(40)},"repo":{"id":100}},
                 "base":{"sha":"b".repeat(40),"repo":{"id":100}},
-                "updated_at":"2026-09-27T00:00:00Z","changed_files":301
+                "updated_at":"2026-09-27T00:00:00Z","changed_files":self.changed_files
             })
         } else if path.starts_with("/repos/example/repo/pulls/1/files?") {
             let page: usize = path.rsplit('=').next().unwrap().parse().unwrap();
@@ -81,6 +82,7 @@ fn fixture() -> Fixture {
         truncated: false,
         changed_head: false,
         missing_page: false,
+        changed_files: 301,
     }
 }
 fn repository() -> RemoteRepository {
@@ -125,6 +127,24 @@ fn partial_pagination_truncated_tree_or_changed_head_never_returns_partial_succe
             .review_context(&repository(), 1, &"a".repeat(40))
             .is_err());
     }
+}
+
+#[test]
+fn size_limits_are_permanent_but_a_missing_page_is_retryable() {
+    let read = |f: Fixture| {
+        GithubClient::new(f)
+            .review_context(&repository(), 1, &"a".repeat(40))
+            .unwrap_err()
+    };
+    let mut over = fixture();
+    over.changed_files = 3001;
+    assert_eq!(read(over), ConnectionError::LimitExceeded);
+    let mut truncated = fixture();
+    truncated.truncated = true;
+    assert_eq!(read(truncated), ConnectionError::LimitExceeded);
+    let mut missing = fixture();
+    missing.missing_page = true;
+    assert_eq!(read(missing), ConnectionError::IncompleteRead);
 }
 
 #[test]

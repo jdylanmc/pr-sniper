@@ -120,7 +120,7 @@ impl<T: Transport> GithubClient<T> {
             .as_u64()
             .ok_or(ConnectionError::InvalidResponse)?;
         if count > 3000 {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::LimitExceeded);
         }
         let raw = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
         if raw.len() as u64 != count {
@@ -213,6 +213,9 @@ impl<T: Transport> GithubClient<T> {
         revision: &str,
     ) -> Result<BTreeMap<String, TreeEntry>, ConnectionError> {
         let (value, _) = self.read(&format!("/repos/{name}/git/trees/{revision}?recursive=1"))?;
+        if value["truncated"].as_bool() == Some(true) {
+            return Err(ConnectionError::LimitExceeded);
+        }
         if value["truncated"].as_bool() != Some(false) {
             return Err(ConnectionError::IncompleteRead);
         }

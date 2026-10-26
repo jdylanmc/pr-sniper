@@ -115,7 +115,7 @@ impl Transport for HttpTransport {
             }
             seen += read;
             if seen > MAX_BLOB_STREAM_BYTES {
-                return Err(ConnectionError::IncompleteRead);
+                return Err(ConnectionError::LimitExceeded);
             }
             body.extend_from_slice(&buffer[..read]);
             if body.len() > tail.saturating_mul(2) {
@@ -227,7 +227,7 @@ impl HttpTransport {
             .read_to_end(&mut body)
             .map_err(|_| ConnectionError::Network)?;
         if body.len() > 32 * 1024 * 1024 {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::LimitExceeded);
         }
         Ok(Response {
             status,
