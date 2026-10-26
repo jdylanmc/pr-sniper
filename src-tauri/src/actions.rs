@@ -230,14 +230,16 @@ pub fn synchronize(
         },
         retry_at: paced.or_else(|| {
             observation.as_ref().err().and_then(|error| {
-                (error.kind != monitoring::OperationFailure::Permanent && previous_failures < 3)
-                    .then(|| {
-                        now.saturating_add(
-                            error
-                                .retry_after_seconds
-                                .unwrap_or(5 * (1_i64 << previous_failures)),
-                        )
-                    })
+                let policy = crate::retry::TRANSIENT;
+                (error.kind != monitoring::OperationFailure::Permanent
+                    && !policy.exhausted(previous_failures.saturating_add(1)))
+                .then(|| {
+                    now.saturating_add(policy.wait(
+                        item_id,
+                        u32::from(previous_failures),
+                        error.retry_after_seconds,
+                    ))
+                })
             })
         }),
         item_id: item_id.into(),
