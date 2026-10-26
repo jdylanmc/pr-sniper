@@ -429,14 +429,16 @@ fn review_state(
                     _ => State::MachineSignedOff,
                 }
             }
-            ExitOutcome::Comments { new_comments, .. } => match context.write(run) {
+            ExitOutcome::Comments {
+                new_comments, body, ..
+            } => match context.write(run) {
                 Some(write) => match write.phase {
                     Phase::Failed => return State::Failed,
                     Phase::Tossed if context.parked(run) => return State::Failed,
                     // The toss re-queues the PR.
                     Phase::Tossed => return State::Queued,
                     Phase::Completed if write.consumed => {
-                        if new_comments.is_empty() {
+                        if new_comments.is_empty() && body.is_none() {
                             return State::WaitingForAuthor;
                         }
                     }
@@ -450,7 +452,14 @@ fn review_state(
                         State::Queued
                     };
                 }
-                None if new_comments.is_empty() => return State::AwaitingPublication,
+                None if new_comments.is_empty() && body.is_none() => {
+                    return State::AwaitingPublication
+                }
+                // A legacy body-only result never publishes now (status chatter): its
+                // text stays local. A confirmed earlier publication shows below.
+                None if new_comments.is_empty() && publication.is_none() => {
+                    return State::WaitingForHuman
+                }
                 None => {}
             },
         }
