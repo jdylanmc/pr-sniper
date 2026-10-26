@@ -226,8 +226,9 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
     })
 }
 
-/// A sign-off's silent resolution of each accounted own open thread. No audit
-/// reply: the disposition stays local evidence, never status chatter.
+/// A sign-off's resolution of each accounted own open thread. Silent, never status
+/// chatter: only an accepted author won't-fix gets its acceptance reply first,
+/// answering the author like `leave_comments` must.
 fn sign_off(
     review: &ReviewRun,
     threads: &[String],
@@ -264,19 +265,29 @@ fn sign_off(
             })
             .cloned()
     };
-    let steps: Vec<Step> = threads
+    let step = |kind, id: &String, body: String| Step {
+        kind,
+        thread_id: id.clone(),
+        body,
+        root_id: None,
+        revision: None,
+        state: StepState::Planned,
+        receipt: None,
+        resolution_evidence: (kind == StepKind::Resolve).then(|| evidence(id)).flatten(),
+    };
+    let mut steps: Vec<Step> = threads
         .iter()
-        .map(|id| Step {
-            kind: StepKind::Resolve,
-            thread_id: id.clone(),
-            body: String::new(),
-            root_id: None,
-            revision: None,
-            state: StepState::Planned,
-            receipt: None,
-            resolution_evidence: evidence(id),
+        .filter_map(|id| {
+            evidence(id)
+                .filter(|a| a.disposition == Disposition::AuthorWontFix)
+                .map(|a| step(StepKind::Reply, id, a.rationale))
         })
         .collect();
+    steps.extend(
+        threads
+            .iter()
+            .map(|id| step(StepKind::Resolve, id, String::new())),
+    );
     let mut operation = JobOperation::review(&review.job, now);
     operation.operation_type = "exit_writes".into();
     Some(ExitWrite {

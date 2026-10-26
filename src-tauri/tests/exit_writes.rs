@@ -1236,6 +1236,14 @@ fn a_sign_off_resolves_silently_keeping_each_disposition_as_local_evidence() {
         assert_eq!(w.phase, Phase::Completed, "{disposition}");
         assert_eq!(wire.log(), ["resolve:T1"]);
     }
+    // An accepted author won't-fix answers the author once, then resolves.
+    let w = sign_off_as(&["T1"], "author_wont_fix");
+    let kinds: Vec<_> = w.steps.iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds,
+        [exit_writes::StepKind::Reply, exit_writes::StepKind::Resolve]
+    );
+    assert_eq!(w.steps[0].body, "Signed off: every finding is settled.");
     // Not a disposition a sign-off accounts for: nothing is resolved.
     let wire = wire();
     let mut env = Env::new(&wire);
