@@ -180,17 +180,17 @@ fn missing_or_failed_later_file_page_never_returns_partial_metadata() {
 
 #[test]
 fn file_count_mismatch_and_provider_file_limit_are_explicitly_incomplete() {
-    for count in [0, 2, 3001] {
+    for (count, error) in [
+        (0, ConnectionError::IncompleteRead),
+        (2, ConnectionError::IncompleteRead),
+        (3001, ConnectionError::FileLimitExceeded),
+    ] {
         let mut transport = ready_transport();
         let mut pull = detail();
         pull["changed_files"] = json!(count);
         transport.reply(DETAIL, response(200, pull));
 
-        assert_eq!(
-            read(transport),
-            Err(ConnectionError::IncompleteRead),
-            "{count}"
-        );
+        assert_eq!(read(transport), Err(error), "{count}");
     }
 }
 
