@@ -7,6 +7,7 @@ use pr_sniper_lib::{
         OperationFailure, OperationState, QueueJob, RESUME_COOLDOWNS_SECONDS,
     },
     queue::{self, State},
+    retry::TRANSIENT,
     review::{self, Failure, ReviewRun, Selection},
     storage::{Settings, Store},
 };
@@ -69,11 +70,13 @@ fn transient_failures_back_off_and_park_on_the_third_failure() {
         let first = attempt(&mut operation, &error);
         assert_eq!(operation.state, OperationState::Queued);
         let first_delay = operation.next_attempt_at.unwrap() - first;
-        assert!(first_delay > 0);
+        assert!((1..=TRANSIENT.ceiling(0)).contains(&first_delay));
         assert_eq!(operation.failure_class(), None);
         let second = attempt(&mut operation, &error);
         assert_eq!(operation.state, OperationState::Queued);
-        assert!(operation.next_attempt_at.unwrap() - second > first_delay);
+        let second_delay = operation.next_attempt_at.unwrap() - second;
+        assert!((1..=TRANSIENT.ceiling(1)).contains(&second_delay));
+        assert!(TRANSIENT.ceiling(1) > TRANSIENT.ceiling(0));
         attempt(&mut operation, &error);
         assert_eq!(operation.state, OperationState::ManualRetry);
         assert_eq!(operation.attempt_count, 3);

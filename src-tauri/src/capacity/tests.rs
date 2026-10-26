@@ -344,8 +344,8 @@ fn offline_freezes_remaining_retry_backoff_without_granting_a_fresh_budget() {
         101,
     );
     let failed = store.load_reviews().unwrap().remove(0).operation;
-    record(&store, Scope::github("101"), Observation::Unreachable, 102).unwrap();
-    dispatch(&coordinator, &store, 102);
+    record(&store, Scope::github("101"), Observation::Unreachable, 101).unwrap();
+    dispatch(&coordinator, &store, 101);
     record(&store, Scope::github("101"), Observation::Reachable, 86_400).unwrap();
     assert!(dispatch(&coordinator, &store, 86_400).is_empty());
     let resumed = store.load_reviews().unwrap().remove(0).operation;
@@ -353,10 +353,10 @@ fn offline_freezes_remaining_retry_backoff_without_granting_a_fresh_budget() {
     assert_eq!(resumed.failure, failed.failure);
     assert_eq!(resumed.resume_cycle, failed.resume_cycle);
     assert_eq!(resumed.initial_attempt_at, failed.initial_attempt_at);
-    assert_eq!(resumed.retry_deadline, failed.retry_deadline + 86_400 - 102);
+    assert_eq!(resumed.retry_deadline, failed.retry_deadline + 86_400 - 101);
     assert_eq!(
         resumed.next_attempt_at,
-        failed.next_attempt_at.map(|at| at + 86_400 - 102)
+        failed.next_attempt_at.map(|at| at + 86_400 - 101)
     );
     assert_eq!(
         dispatch(&coordinator, &store, resumed.next_attempt_at.unwrap()).len(),
