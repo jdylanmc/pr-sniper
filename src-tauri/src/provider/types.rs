@@ -11,7 +11,8 @@ pub struct Person {
     pub login: String,
 }
 
-/// The commits one pull request state compares: head and merge base.
+/// The commits one pull request state points at: its head and the target
+/// branch tip (not the merge base; see `ReviewContext::base_revision`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Revision {
     pub head: String,
