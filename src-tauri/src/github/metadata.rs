@@ -146,7 +146,7 @@ impl<T: Transport> GithubClient<T> {
     fn changed_files(&self, path: &str, count: u64) -> Result<Vec<ChangedFile>, ConnectionError> {
         // GitHub's files endpoint cannot return more than 3,000 files.
         if count > 3_000 {
-            return Err(ConnectionError::FileLimitExceeded);
+            return Err(ConnectionError::LimitExceeded);
         }
         let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
         if raw_files.len() as u64 != count {
@@ -224,7 +224,7 @@ impl<T: Transport> GithubClient<T> {
                 .ok_or(ConnectionError::InvalidResponse)?;
             // GitHub's files endpoint cannot return more than 3,000 files.
             if count > 3_000 {
-                return Err(ConnectionError::FileLimitExceeded);
+                return Err(ConnectionError::LimitExceeded);
             }
             let files = self.changed_files(&path, count)?;
             let (reviewers, response) = self.read(&format!("{path}/requested_reviewers"))?;

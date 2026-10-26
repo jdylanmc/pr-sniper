@@ -3998,7 +3998,7 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         }
         ConnectionError::ProviderFailureAfter(_) => "ProviderFailure",
         ConnectionError::IncompleteRead => "IncompleteRead",
-        ConnectionError::FileLimitExceeded => "FileLimitExceeded",
+        ConnectionError::LimitExceeded => "LimitExceeded",
         ConnectionError::RevisionChanged => "RevisionChanged",
         ConnectionError::InvalidRepository => "InvalidRepository",
         ConnectionError::RepositoryChanged => "RepositoryChanged",
@@ -4592,14 +4592,14 @@ mod read_diagnostic_tests {
     }
 
     #[test]
-    fn incomplete_read_is_transient_but_the_file_limit_is_permanent() {
+    fn incomplete_read_is_transient_but_a_size_limit_is_permanent() {
         let mut operation = running_operation();
         operation.fail(&check_error(ConnectionError::IncompleteRead), 10);
         assert_eq!(operation.state, OperationState::Queued);
         assert_eq!(operation.failure, Some(OperationFailure::Provider));
         assert!(!operation.parked());
         let mut operation = running_operation();
-        operation.fail(&check_error(ConnectionError::FileLimitExceeded), 10);
+        operation.fail(&check_error(ConnectionError::LimitExceeded), 10);
         assert_eq!(operation.state, OperationState::Failed);
         assert_eq!(operation.failure, Some(OperationFailure::Permanent));
     }

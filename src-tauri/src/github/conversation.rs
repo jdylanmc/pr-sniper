@@ -115,7 +115,10 @@ impl<T: Transport> GithubClient<T> {
                 }
                 let comment = parse(value)?;
                 bytes += comment.body.len();
-                if bytes > 1024 * 1024 || !ids.insert(comment.id.clone()) {
+                if bytes > 1024 * 1024 {
+                    return Err(ConnectionError::LimitExceeded);
+                }
+                if !ids.insert(comment.id.clone()) {
                     return Err(ConnectionError::IncompleteRead);
                 }
                 Ok(comment)

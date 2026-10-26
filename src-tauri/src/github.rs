@@ -55,8 +55,9 @@ pub enum ConnectionError {
     ProviderRejectedStatus(u16),
     ProviderFailureAfter(i64),
     IncompleteRead,
-    /// GitHub's files endpoint cannot list more than 3,000 files; retrying cannot help.
-    FileLimitExceeded,
+    /// A provider or host size limit (3,000 files, truncated tree, body cap);
+    /// retrying the same revision cannot help.
+    LimitExceeded,
     RevisionChanged,
     InvalidRepository,
     RepositoryChanged,

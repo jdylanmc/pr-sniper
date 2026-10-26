@@ -436,7 +436,7 @@ impl<T: QueryTransport> GithubClient<T> {
             .len()
             > 1024 * 1024
         {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::LimitExceeded);
         }
         Ok(observation)
     }

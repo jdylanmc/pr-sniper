@@ -89,7 +89,7 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 ## PR metadata read
 
 - Rechecks account and remote repo ID. Reads all PR pages, per-PR changed-file pages, requested users/teams. Includes closed, merged, deleted-account and fork PRs.
-- Errors, never partial success: head change mid-read, malformed page, duplicate entry, incomplete file count, more than 3,000 files, failed page (`src-tauri/src/github/metadata.rs`). Incomplete reads (duplicate entry, count mismatch) are transient and retry; more than 3,000 files (`FileLimitExceeded`) is permanent.
+- Errors, never partial success: head change mid-read, malformed page, duplicate entry, incomplete file count, more than 3,000 files, failed page (`src-tauri/src/github/metadata.rs`). Incomplete reads (duplicate entry, count mismatch) are transient and retry; size limits (`LimitExceeded`: more than 3,000 files, truncated tree, body cap) are permanent.
 - No checkout, no execution. Metadata is not full diff text.
 - Mention scan: top-level issue-comment pages, up to 1,000 comments, 1 MiB total body bytes, complete pages only; over a limit or duplicate ID = incomplete read, error (`github/conversation.rs`).
 

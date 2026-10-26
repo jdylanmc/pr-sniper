@@ -183,7 +183,7 @@ fn file_count_mismatch_and_provider_file_limit_are_explicitly_incomplete() {
     for (count, error) in [
         (0, ConnectionError::IncompleteRead),
         (2, ConnectionError::IncompleteRead),
-        (3001, ConnectionError::FileLimitExceeded),
+        (3001, ConnectionError::LimitExceeded),
     ] {
         let mut transport = ready_transport();
         let mut pull = detail();
