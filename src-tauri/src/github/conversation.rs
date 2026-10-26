@@ -114,12 +114,13 @@ impl<T: Transport> GithubClient<T> {
                     return Err(ConnectionError::RepositoryChanged);
                 }
                 let comment = parse(value)?;
+                // A duplicate means the page set moved; never count it toward the cap.
+                if !ids.insert(comment.id.clone()) {
+                    return Err(ConnectionError::IncompleteRead);
+                }
                 bytes += comment.body.len();
                 if bytes > 1024 * 1024 {
                     return Err(ConnectionError::LimitExceeded);
-                }
-                if !ids.insert(comment.id.clone()) {
-                    return Err(ConnectionError::IncompleteRead);
                 }
                 Ok(comment)
             })
@@ -242,6 +243,7 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 2);
         for case in [
             "duplicate",
+            "duplicate_over_cap",
             "foreign",
             "invalid_time",
             "too_many",
@@ -251,6 +253,10 @@ mod tests {
             let mut values = vec![value(1)];
             match case {
                 "duplicate" => values.push(value(1)),
+                "duplicate_over_cap" => {
+                    values[0]["body"] = json!("x".repeat(600 * 1024));
+                    values.push(values[0].clone());
+                }
                 "foreign" => {
                     values[0]["issue_url"] = json!("https://github.com/foreign/repo/issues/1")
                 }
@@ -267,7 +273,7 @@ mod tests {
             });
             let expected = match case {
                 "too_many" | "too_large" => Some(ConnectionError::LimitExceeded),
-                "duplicate" => Some(ConnectionError::IncompleteRead),
+                "duplicate" | "duplicate_over_cap" => Some(ConnectionError::IncompleteRead),
                 _ => None,
             };
             let error = client.top_comments(&repo, 1).unwrap_err();
