@@ -1,7 +1,9 @@
 pub mod actions;
 pub mod admission;
+pub mod azure_devops;
 pub mod backpressure;
 pub mod capacity;
+pub mod cli_process;
 pub mod connectivity;
 pub mod control;
 mod copilot;
