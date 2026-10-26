@@ -42,7 +42,8 @@ pub trait PullRequestReader {
         &self,
         repository: &RemoteRepository,
     ) -> Result<u64, ConnectionError>;
-    /// Every pull request, open and closed, without changed files.
+    /// Every pull request, open and closed. Unlike `poll_pull_requests`, each
+    /// one carries its changed files.
     fn pull_requests(
         &self,
         repository: &RemoteRepository,
