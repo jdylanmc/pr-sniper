@@ -257,16 +257,19 @@ fn publication_cause(
         .filter_map(|(p, _)| p.publication.as_ref())
         .filter(|p| p.phase != publication::Phase::Discarded)
         .collect();
-    if own.iter().any(|p| p.uncertain) {
+    if own.iter().any(|p| p.uncertain && failed(&p.operation)) {
         Some("publication_unresolved")
-    } else if own
-        .iter()
-        .any(|p| failed(&p.operation) || p.error.is_some())
-    {
+    } else if own.iter().any(|p| publication_failed(p)) {
         Some("publication_failed")
     } else {
         None
     }
+}
+
+/// An effect the read-back has not observed yet is pending verification while its
+/// bounded retry is live; it fails only once the operation parks.
+fn publication_failed(publication: &publication::Publication) -> bool {
+    failed(&publication.operation) || (!publication.uncertain && publication.error.is_some())
 }
 
 fn failed(operation: &monitoring::JobOperation) -> bool {
@@ -342,7 +345,7 @@ fn review_state(
             State::Stale
         };
     }
-    if publication.is_some_and(|p| p.uncertain || failed(&p.operation) || p.error.is_some()) {
+    if publication.is_some_and(publication_failed) {
         return State::Failed;
     }
     let finished = candidate
@@ -836,10 +839,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }
         }
         for publication in own_publications(&id) {
-            if let Some(error) = &publication.error {
+            let verifying = publication.uncertain && !failed(&publication.operation);
+            if let Some(error) = publication.error.as_ref().filter(|_| !verifying) {
                 warnings.insert(error.clone());
             }
-            if publication.uncertain {
+            if publication.uncertain && !verifying {
                 warnings.insert("Publication outcome unresolved; reconcile the original batch, never a replacement.".into());
                 states.push(State::Failed);
             }
