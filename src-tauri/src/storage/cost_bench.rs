@@ -138,9 +138,9 @@ pub(crate) fn live_profile(store: &Store) {
             number,
             head_sha: last.head_sha,
             lifecycle: if open {
-                crate::github::metadata::Lifecycle::Open
+                crate::provider::Lifecycle::Open
             } else {
-                crate::github::metadata::Lifecycle::Merged
+                crate::provider::Lifecycle::Merged
             },
             iteration_id: format!("iteration-{number}"),
             item_id: format!("iteration-{number}"),

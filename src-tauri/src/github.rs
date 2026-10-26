@@ -15,54 +15,17 @@ pub mod metadata;
 pub mod oauth;
 pub mod provider;
 pub mod publication;
+mod read;
 pub mod review;
 pub mod state;
 pub mod threads;
 pub mod token_store;
 
-use serde::{Deserialize, Serialize};
+pub use crate::provider::ConnectionError;
 use serde_json::Value;
 pub mod credentials;
 mod identity;
 pub use identity::Identity;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum ConnectionError {
-    WrongIdentity,
-    InvalidResponse,
-    MissingCli,
-    BrokenCli,
-    SignedOut,
-    Timeout,
-    MissingReadPermission,
-    RepositoryUnavailable,
-    MissingScope,
-    ScopeUnverified,
-    OrganizationPolicyDenied,
-    OrganizationPolicyDeniedWithMissingScope,
-    RateLimited,
-    RateLimitedAfter(i64),
-    RateLimitedWithContext {
-        retry_after_seconds: Option<i64>,
-        reset_at: Option<i64>,
-        organization_access_incomplete: bool,
-        missing_repo_scope: bool,
-    },
-    Network,
-    ProviderFailure,
-    ProviderRejected,
-    ProviderRejectedStatus(u16),
-    ProviderFailureAfter(i64),
-    IncompleteRead,
-    /// A provider or host size limit (3,000 files, truncated tree, body cap);
-    /// retrying the same revision cannot help.
-    LimitExceeded,
-    RevisionChanged,
-    InvalidRepository,
-    RepositoryChanged,
-    Configuration,
-}
 
 pub fn client() -> Result<provider::GithubClient<http::HttpTransport>, ConnectionError> {
     use credentials::CredentialSource;

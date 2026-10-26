@@ -1,5 +1,6 @@
 use pr_sniper_lib::github::provider::{GithubClient, Response, Transport};
 use pr_sniper_lib::github::ConnectionError;
+use pr_sniper_lib::provider::prelude::*;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 

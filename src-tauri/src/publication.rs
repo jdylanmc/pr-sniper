@@ -280,7 +280,7 @@ pub fn evaluate_gate(
     settings: &Settings,
     run: &Publication,
     current_job: Option<&QueueJob>,
-    pull: &crate::github::metadata::PullRequest,
+    pull: &crate::provider::PullRequest,
     active: bool,
     can_comment: bool,
     cancelled: bool,
@@ -314,7 +314,7 @@ pub fn evaluate_review_gate(
     settings: &Settings,
     review: &ReviewRun,
     current_job: Option<&QueueJob>,
-    pull: &crate::github::metadata::PullRequest,
+    pull: &crate::provider::PullRequest,
     permissions: GatePermissions,
 ) -> Gate {
     let GatePermissions {

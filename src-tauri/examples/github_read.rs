@@ -1,4 +1,5 @@
 use pr_sniper_lib::github;
+use pr_sniper_lib::provider::prelude::*;
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();

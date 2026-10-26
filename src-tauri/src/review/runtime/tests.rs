@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::AccountReader;
 use crate::{
     copilot::operation::AccountWork,
     github::{
@@ -106,7 +107,7 @@ fn escaped_client_keeps_runtime_feedback_refusal_for_source_and_log_reads() {
                 }),
                 |client| {
                     client
-                        .review_source("example/repo", &context.head["source.rs"])
+                        .file_content("example/repo", &context.head["source.rs"])
                         .map_err(Failure::from)?;
                     Ok(client)
                 },
@@ -193,7 +194,7 @@ async fn runtime_feedback_refusal_survives_sdk_tool_error_and_teardown() {
             }),
             |client| {
                 client
-                    .review_source("example/repo", &base.context.head["source.rs"])
+                    .file_content("example/repo", &base.context.head["source.rs"])
                     .map_err(Failure::from)?;
                 Ok(Arc::new(client))
             },
@@ -2005,7 +2006,9 @@ mod exits {
         let seen = calls.clone();
         let gate: ExitGate = Arc::new(move |_| {
             seen.fetch_add(1, AtomicOrdering::SeqCst);
-            Err(Refusal::Unreadable(crate::github::ConnectionError::Network))
+            Err(Refusal::Unreadable(
+                crate::provider::ConnectionError::Network,
+            ))
         });
         let (result, root) = run_exit("exit-refused-then-panic", gate).await;
         let error = result.unwrap_err();

@@ -14,6 +14,7 @@
 //! Optional: `PR_SNIPER_LIVE_MODEL` (default `gpt-5-mini`), `PR_SNIPER_LIVE_STORE`
 //! (store root; default under the target directory).
 
+use crate::provider::{AccountReader, PullRequestReader, RepositoryReader};
 use crate::{
     exit_writes::{self, Dependency, ExitWrite},
     exits::{consume, ExitOutcome},
@@ -190,7 +191,7 @@ impl Live {
     fn observe_feedback(&self, number: u64) {
         let head = self
             .client
-            .review_pull(&self.repo, number)
+            .pull_request(&self.repo, number)
             .unwrap()
             .head_sha;
         let store = self.store();
@@ -231,13 +232,13 @@ impl Live {
     }
 
     fn binding(&self, number: u64, head: &str) -> Binding {
-        let pull = self.client.review_pull(&self.repo, number).unwrap();
+        let pull = self.client.pull_request(&self.repo, number).unwrap();
         Binding::job(&self.job(&pull, PRIMARY, PRIMARY_AGENT, 0, head))
     }
 
     fn job(
         &self,
-        pull: &crate::github::metadata::PullRequest,
+        pull: &crate::provider::PullRequest,
         assignment: &str,
         agent: &str,
         seq: u64,
@@ -263,7 +264,7 @@ impl Live {
 
     /// Queue one job per assignment for the PR's current state (same work item and seq).
     fn enqueue(&self, number: u64, seq: u64, assignments: &[(&str, &str)]) -> Vec<String> {
-        let pull = self.client.review_pull(&self.repo, number).unwrap();
+        let pull = self.client.pull_request(&self.repo, number).unwrap();
         let store = self.store();
         let mut queue = store.load_queue().unwrap();
         let mut keys = vec![];
@@ -345,7 +346,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         .unwrap()
         .capabilities
         .comment
-        == crate::github::provider::CommentCapability::Available;
+        == crate::provider::CommentCapability::Available;
     let (teammates, iterations, last_consumed_at) = {
         let store = live.store();
         (
@@ -648,7 +649,7 @@ impl exit_writes::Environment for Writes<'_> {
         Ok(self
             .live
             .client
-            .review_pull(&self.live.repo, write.job.number)?
+            .pull_request(&self.live.repo, write.job.number)?
             .head_sha)
     }
     fn proofs(&mut self, write: &ExitWrite) -> Result<Vec<Ownership>, Failure> {
@@ -817,7 +818,7 @@ fn assert_own_writes_do_not_retrigger(live: &Live, number: u64) {
     let (change, _, hash) = live.heartbeat(number, false);
     let head = live
         .client
-        .review_pull(&live.repo, number)
+        .pull_request(&live.repo, number)
         .unwrap()
         .head_sha;
     let record = live

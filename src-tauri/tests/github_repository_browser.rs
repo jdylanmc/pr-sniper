@@ -2,6 +2,7 @@ use pr_sniper_lib::github::{
     provider::{GithubClient, Response, Transport},
     ConnectionError, Identity,
 };
+use pr_sniper_lib::provider::prelude::*;
 use serde_json::{json, Value};
 use std::{cell::RefCell, collections::BTreeMap};
 

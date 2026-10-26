@@ -21,6 +21,7 @@ pub mod policy;
 pub mod pr_state;
 mod process_path;
 pub mod prompt_tokens;
+pub mod provider;
 pub mod publication;
 pub mod queue;
 pub mod retention;
@@ -42,7 +43,10 @@ mod live_tests;
 #[path = "../tests/support/windows_permissions.rs"]
 pub(crate) mod windows_permissions;
 
-use github::{metadata::PullRequest, provider::Connection, ConnectionError};
+use provider::{
+    AccountReader, Connection, ConnectionError, ProviderReader, PullRequest, PullRequestReader,
+    RepositoryReader,
+};
 use serde::Serialize;
 use startup::{LoginRegistration, RegistrationStatus};
 use std::collections::BTreeMap;
@@ -113,14 +117,14 @@ struct ActiveGithubAuth {
 }
 
 struct PendingGithubAccount {
-    identity: github::Identity,
+    identity: provider::Person,
     pair: github::oauth::TokenPair,
 }
 
 enum GithubAccountState {
-    Connected(github::Identity),
+    Connected(provider::Person),
     ReconnectRequired {
-        identity: github::Identity,
+        identity: provider::Person,
         reason: GithubAuthFailure,
     },
 }
@@ -340,7 +344,7 @@ impl GithubAuth {
     fn publish_session_success(
         &mut self,
         account_id: &str,
-        identity: github::Identity,
+        identity: provider::Person,
     ) -> Result<(), ConnectionError> {
         self.account_session_allowed(account_id)?;
         if identity.id != account_id {
@@ -386,8 +390,8 @@ impl GithubAuth {
 
     fn publish_restored_identity(
         &mut self,
-        expected: github::Identity,
-        result: Result<github::Identity, ConnectionError>,
+        expected: provider::Person,
+        result: Result<provider::Person, ConnectionError>,
     ) {
         let state = match result {
             Ok(identity) if identity.id == expected.id => GithubAccountState::Connected(identity),
@@ -487,7 +491,7 @@ impl GithubAuth {
     fn finish_attempt(
         &mut self,
         attempt_id: u64,
-        outcome: Result<(github::Identity, github::oauth::TokenPair), GithubAuthFailure>,
+        outcome: Result<(provider::Person, github::oauth::TokenPair), GithubAuthFailure>,
     ) {
         if !self
             .active
@@ -550,7 +554,7 @@ impl GithubAuth {
         persist: F,
     ) -> Result<T, String>
     where
-        F: FnOnce(&github::Identity, &github::oauth::TokenPair) -> Result<T, ()>,
+        F: FnOnce(&provider::Person, &github::oauth::TokenPair) -> Result<T, ()>,
     {
         self.confirm_with(|identity, pair| {
             let result = persist(identity, pair)?;
@@ -561,7 +565,7 @@ impl GithubAuth {
 
     fn confirm_with<F, T>(&mut self, persist: F) -> Result<T, String>
     where
-        F: FnOnce(&github::Identity, &github::oauth::TokenPair) -> Result<T, ()>,
+        F: FnOnce(&provider::Person, &github::oauth::TokenPair) -> Result<T, ()>,
     {
         let pending = self
             .pending
@@ -595,7 +599,7 @@ impl GithubAuth {
             if account.provider != provider {
                 continue;
             }
-            let identity = github::Identity {
+            let identity = provider::Person {
                 id: account.account_id.clone(),
                 login: account.login.clone(),
             };
@@ -679,7 +683,7 @@ impl GithubAuth {
                         }
                         continue;
                     }
-                    let identity = github::Identity {
+                    let identity = provider::Person {
                         id: account.account_id.clone(),
                         login: account.login,
                     };
@@ -859,7 +863,7 @@ fn github_session(
     account_id: &str,
 ) -> Result<
     (
-        github::Identity,
+        provider::Person,
         github::provider::GithubClient<github::http::HttpTransport>,
     ),
     ConnectionError,
@@ -879,13 +883,32 @@ fn github_session(
     result
 }
 
+/// Read-interface session for one provider account; callers that only read
+/// never depend on a concrete provider client.
+pub(crate) fn read_session(
+    host: &Host,
+    account_id: &str,
+) -> Result<(provider::Person, Box<dyn ProviderReader + Send + Sync>), ConnectionError> {
+    let (identity, client) = github_session(host, account_id)?;
+    Ok((identity, Box::new(client)))
+}
+
+/// Unpublished read-interface session; see `acquire_github_session`.
+pub(crate) fn acquire_read_session(
+    host: &Host,
+    account_id: &str,
+) -> Result<(provider::Person, Box<dyn ProviderReader + Send + Sync>), ConnectionError> {
+    let (identity, client) = acquire_github_session(host, account_id)?;
+    Ok((identity, Box::new(client)))
+}
+
 // Intake owns publication at its generation-fenced completion boundary.
 fn acquire_github_session(
     host: &Host,
     account_id: &str,
 ) -> Result<
     (
-        github::Identity,
+        provider::Person,
         github::provider::GithubClient<github::http::HttpTransport>,
     ),
     ConnectionError,
@@ -949,7 +972,7 @@ mod repository_save_account_tests {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "22".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "22".into(),
                 login: "actor".into(),
             }),
@@ -968,7 +991,7 @@ mod repository_save_account_tests {
         assert_eq!(store.load_settings().unwrap(), settings);
         auth.accounts.insert(
             "22".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "22".into(),
                 login: "actor".into(),
             }),
@@ -998,7 +1021,7 @@ mod repository_save_account_tests {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "22".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "22".into(),
                 login: "actor".into(),
             }),
@@ -1078,7 +1101,7 @@ mod repository_save_account_tests {
             for (id, login) in [("22", "fixture_corp"), ("44", "neighbor")] {
                 auth.accounts.insert(
                     id.into(),
-                    GithubAccountState::Connected(github::Identity {
+                    GithubAccountState::Connected(provider::Person {
                         id: id.into(),
                         login: login.into(),
                     }),
@@ -1586,14 +1609,14 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
         tauri::async_runtime::spawn_blocking(move || {
             let host = app.state::<Host>();
             let observed = (|| {
-                let (_, client) = github_session(&host, &ticket.provider_account_id)?;
+                let (_, client) = read_session(&host, &ticket.provider_account_id)?;
                 let connection = client.connect(&ticket.name, Some(&ticket.provider_account_id))?;
                 if connection.repository.id != ticket.provider_repository_id {
                     return Err(ConnectionError::RepositoryChanged);
                 }
                 let mut seen = Vec::new();
                 for (id, number) in &ticket.tracked {
-                    if let Ok(pull) = client.review_pull(&connection.repository, *number) {
+                    if let Ok(pull) = client.pull_request(&connection.repository, *number) {
                         if &pull.id == id {
                             seen.push((pull.id, pull.state));
                         }
@@ -1609,6 +1632,30 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
             let _ = monitor.apply_lifecycle(&store, &ticket, observed, now);
         });
     }
+}
+
+/// Verifies the ticket's repository binding and reads its open and tracked
+/// pull requests, with changed files where an enabled path rule needs them.
+fn poll_repository(
+    reader: &(impl RepositoryReader + PullRequestReader + ?Sized),
+    ticket: &monitoring::PollTicket,
+) -> Result<(Connection, Vec<PullRequest>), ConnectionError> {
+    let connection = reader.connect(&ticket.name, Some(&ticket.provider_account_id))?;
+    if connection.repository.id != ticket.provider_repository_id {
+        return Err(ConnectionError::RepositoryChanged);
+    }
+    let mut pull_requests =
+        reader.poll_tracked_pull_requests(&connection.repository, &ticket.tracked)?;
+    // The polling listing has no changed files; load them only
+    // for pull requests that an enabled path rule must decide.
+    for pull in pull_requests.iter_mut().filter(|pull| {
+        pull.state == provider::Lifecycle::Open
+            && !pull.draft
+            && monitoring::needs_changed_files(ticket, pull)
+    }) {
+        pull.files = reader.pull_request_files(&connection.repository, pull.number)?;
+    }
+    Ok((connection, pull_requests))
 }
 
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
@@ -1629,24 +1676,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
                 }
-                let connection = client.connect(
-                    &ticket_for_poll.name,
-                    Some(&ticket_for_poll.provider_account_id),
-                )?;
-                if connection.repository.id != ticket_for_poll.provider_repository_id {
-                    return Err(ConnectionError::RepositoryChanged);
-                }
-                let mut pull_requests = client
-                    .poll_tracked_pull_requests(&connection.repository, &ticket_for_poll.tracked)?;
-                // The polling listing has no changed files; load them only
-                // for pull requests that an enabled path rule must decide.
-                for pull in pull_requests.iter_mut().filter(|pull| {
-                    pull.state == github::metadata::Lifecycle::Open
-                        && !pull.draft
-                        && monitoring::needs_changed_files(&ticket_for_poll, pull)
-                }) {
-                    pull.files = client.pull_request_files(&connection.repository, pull.number)?;
-                }
+                let (connection, mut pull_requests) = poll_repository(&client, &ticket_for_poll)?;
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
@@ -1660,7 +1690,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 let numbers: Vec<u64> = pull_requests
                     .iter()
                     .filter(|p| {
-                        p.state == github::metadata::Lifecycle::Open && tracked_open.contains(&p.id)
+                        p.state == provider::Lifecycle::Open && tracked_open.contains(&p.id)
                     })
                     .map(|p| p.number)
                     .collect();
@@ -1790,19 +1820,19 @@ fn monitoring_setup_review(host: State<'_, Host>) -> Result<monitoring::SetupRev
 
 #[derive(Serialize)]
 struct GithubRepositories {
-    identity: github::Identity,
-    owners: Vec<github::provider::RepositoryOwner>,
-    repositories: Vec<github::provider::RemoteRepository>,
-    warnings: Vec<github::provider::RepositoryBrowseWarning>,
+    identity: provider::Person,
+    owners: Vec<provider::RepositoryOwner>,
+    repositories: Vec<provider::RemoteRepository>,
+    warnings: Vec<provider::RepositoryBrowseWarning>,
 }
 
 #[derive(Serialize)]
 struct GithubRepositoryResolution {
-    identity: github::Identity,
-    repository: github::provider::RemoteRepository,
+    identity: provider::Person,
+    repository: provider::RemoteRepository,
     account_generation: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pull_request: Option<github::metadata::PullRequest>,
+    pull_request: Option<provider::PullRequest>,
 }
 
 fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
@@ -2051,13 +2081,13 @@ async fn resolve_provider_person(
     provider: storage::ProviderId,
     account_id: String,
     login: String,
-) -> Result<github::Identity, ConnectionError> {
+) -> Result<provider::Person, ConnectionError> {
     if !matches!(provider, storage::ProviderId::Github) {
         return Err(ConnectionError::Configuration);
     }
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<Host>();
-        github_session(&host, &account_id)?.1.resolve_person(&login)
+        read_session(&host, &account_id)?.1.resolve_person(&login)
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?
@@ -2079,7 +2109,7 @@ async fn list_provider_repositories(
             &host.github_generations,
             &host.github_auth,
             &account_id,
-            || acquire_github_session(&host, &account_id),
+            || acquire_read_session(&host, &account_id),
             |identity, client, _| {
                 let browser = client.owner_repository_browser(identity, &owner)?;
                 Ok(GithubRepositories {
@@ -2097,9 +2127,9 @@ async fn list_provider_repositories(
 
 #[derive(Serialize)]
 struct GithubRepositoryOwners {
-    identity: github::Identity,
-    owners: Vec<github::provider::RepositoryOwner>,
-    warnings: Vec<github::provider::RepositoryBrowseWarning>,
+    identity: provider::Person,
+    owners: Vec<provider::RepositoryOwner>,
+    warnings: Vec<provider::RepositoryBrowseWarning>,
 }
 
 #[tauri::command]
@@ -2117,7 +2147,7 @@ async fn list_provider_repository_owners(
             &host.github_generations,
             &host.github_auth,
             &account_id,
-            || acquire_github_session(&host, &account_id),
+            || acquire_read_session(&host, &account_id),
             |identity, client, _| {
                 let browser = client.repository_browser(identity)?;
                 Ok(GithubRepositoryOwners {
@@ -2148,7 +2178,7 @@ async fn resolve_provider_repository(
             &host.github_generations,
             &host.github_auth,
             &account_id,
-            || acquire_github_session(&host, &account_id),
+            || acquire_read_session(&host, &account_id),
             |identity, client, generation| {
                 let target = client.resolve_repository_target(&repository, &identity.id)?;
                 Ok(GithubRepositoryResolution {
@@ -2185,7 +2215,7 @@ async fn admit_explicit_pull_request(
             &host.github_generations,
             &host.github_auth,
             account_id,
-            || acquire_github_session(&host, account_id),
+            || acquire_read_session(&host, account_id),
             |identity, client, generation| {
                 let target = client.resolve_repository_target(
                     &format!("https://github.com/{}/pull/{number}", expected.name),
@@ -2268,14 +2298,14 @@ mod explicit_intake_account_tests {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "22".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "22".into(),
                 login: "selected".into(),
             }),
         );
         auth.accounts.insert(
             "44".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "44".into(),
                 login: "neighbor".into(),
             }),
@@ -2360,8 +2390,8 @@ fn repository_read<T, C>(
     generations: &Mutex<BTreeMap<String, u64>>,
     auth: &Mutex<GithubAuth>,
     account_id: &str,
-    acquire: impl FnOnce() -> Result<(github::Identity, C), ConnectionError>,
-    read: impl FnOnce(&github::Identity, C, u64) -> Result<T, ConnectionError>,
+    acquire: impl FnOnce() -> Result<(provider::Person, C), ConnectionError>,
+    read: impl FnOnce(&provider::Person, C, u64) -> Result<T, ConnectionError>,
 ) -> Result<T, RepositoryReadError> {
     let generation = {
         let generations = generations.lock().map_err(|_| {
@@ -2477,8 +2507,8 @@ mod repository_read_tests {
         }
     }
 
-    fn identity(login: &str) -> github::Identity {
-        github::Identity {
+    fn identity(login: &str) -> provider::Person {
+        provider::Person {
             id: "22".into(),
             login: login.into(),
         }
@@ -2486,7 +2516,7 @@ mod repository_read_tests {
 
     fn acquire(
         provider: HeldProvider,
-    ) -> Result<(github::Identity, GithubClient<HeldProvider>), ConnectionError> {
+    ) -> Result<(provider::Person, GithubClient<HeldProvider>), ConnectionError> {
         let client = GithubClient::new(provider);
         let identity = client.current_identity()?;
         Ok((identity, client))
@@ -2494,7 +2524,7 @@ mod repository_read_tests {
 
     fn read_operation(
         operation: Operation,
-        identity: &github::Identity,
+        identity: &provider::Person,
         client: GithubClient<HeldProvider>,
         generation: u64,
     ) -> Result<serde_json::Value, ConnectionError> {
@@ -2742,7 +2772,7 @@ mod repository_read_tests {
         );
         initial.accounts.insert(
             "44".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "44".into(),
                 login: "neighbor".into(),
             }),
@@ -2774,7 +2804,7 @@ mod repository_read_tests {
         );
         initial.accounts.insert(
             "44".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "44".into(),
                 login: "neighbor".into(),
             }),
@@ -2802,7 +2832,7 @@ mod repository_read_tests {
         );
         initial.accounts.insert(
             "44".into(),
-            GithubAccountState::Connected(github::Identity {
+            GithubAccountState::Connected(provider::Person {
                 id: "44".into(),
                 login: "neighbor".into(),
             }),
@@ -2831,7 +2861,7 @@ mod repository_read_tests {
             &generations,
             &auth,
             "22",
-            || Err::<(github::Identity, ()), _>(ConnectionError::BrokenCli),
+            || Err::<(provider::Person, ()), _>(ConnectionError::BrokenCli),
             |_, (), _| -> Result<(), ConnectionError> {
                 panic!("Header failure cannot verify identity or read catalog")
             },
@@ -2984,7 +3014,7 @@ mod repository_read_tests {
             );
             initial.accounts.insert(
                 "44".into(),
-                GithubAccountState::Connected(github::Identity {
+                GithubAccountState::Connected(provider::Person {
                     id: "44".into(),
                     login: "neighbor".into(),
                 }),
@@ -2995,7 +3025,7 @@ mod repository_read_tests {
                 &generations,
                 &auth,
                 "22",
-                || Err::<(github::Identity, ()), _>(error),
+                || Err::<(provider::Person, ()), _>(error),
                 |_, (), _| -> Result<(), ConnectionError> {
                     panic!("Failed acquisition cannot read catalog")
                 },
@@ -3128,7 +3158,7 @@ mod repository_read_tests {
             );
             initial.accounts.insert(
                 "44".into(),
-                GithubAccountState::Connected(github::Identity {
+                GithubAccountState::Connected(provider::Person {
                     id: "44".into(),
                     login: "neighbor".into(),
                 }),
@@ -3252,7 +3282,7 @@ mod repository_read_tests {
             );
             initial.accounts.insert(
                 "44".into(),
-                GithubAccountState::Connected(github::Identity {
+                GithubAccountState::Connected(provider::Person {
                     id: "44".into(),
                     login: "neighbor".into(),
                 }),
@@ -3397,7 +3427,7 @@ mod repository_read_tests {
                         || {
                             entered_tx.send(()).unwrap();
                             release_rx.recv_timeout(WAIT).unwrap();
-                            Err::<(github::Identity, ()), _>(acquisition_error)
+                            Err::<(provider::Person, ()), _>(acquisition_error)
                         },
                         |_, (), _| -> Result<(), ConnectionError> {
                             panic!("Failed sessions cannot read provider data")
@@ -3506,7 +3536,7 @@ mod repository_read_tests {
             );
             initial.accounts.insert(
                 "44".into(),
-                GithubAccountState::Connected(github::Identity {
+                GithubAccountState::Connected(provider::Person {
                     id: "44".into(),
                     login: "neighbor".into(),
                 }),
@@ -3600,7 +3630,7 @@ mod repository_read_tests {
             );
             initial.accounts.insert(
                 "44".into(),
-                GithubAccountState::Connected(github::Identity {
+                GithubAccountState::Connected(provider::Person {
                     id: "44".into(),
                     login: "neighbor".into(),
                 }),
@@ -4079,7 +4109,7 @@ async fn verify_provider_connection(
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
-        let (identity, client) = github_session(&host, &account_id)?;
+        let (identity, client) = read_session(&host, &account_id)?;
         let connection = client.connect(&expected.name, Some(&identity.id))?;
         if connection.repository.id
             != expected
@@ -4131,7 +4161,7 @@ async fn read_provider_metadata(
     let app_for_read = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let host = app_for_read.state::<Host>();
-        let (identity, client) = github_session(&host, &account_id)?;
+        let (identity, client) = read_session(&host, &account_id)?;
         if identity.id != expected_account_id {
             return Err(ConnectionError::WrongIdentity);
         }
@@ -4840,7 +4870,6 @@ mod github_auth_tests {
         AccountRegistry, AccountRegistryStore, CredentialKey, CredentialStore, RotationError,
         StoreError,
     };
-    use crate::github::ConnectionError;
     use crate::github::{
         metadata::{Lifecycle, PullRequest},
         oauth::OAuthError,
@@ -4851,6 +4880,7 @@ mod github_auth_tests {
         WAITING_ACCOUNT_DISCONNECTED, WAITING_AI_CAPACITY,
     };
     use crate::policy::{PolicyOverrides, WatchedIdentity};
+    use crate::provider::ConnectionError;
     use crate::storage::{ProviderId as SettingsProviderId, Repository, Settings, Store};
     use std::{
         collections::BTreeMap,
@@ -4919,8 +4949,8 @@ mod github_auth_tests {
         }
     }
 
-    fn identity(id: &str, login: &str) -> crate::github::Identity {
-        crate::github::Identity {
+    fn identity(id: &str, login: &str) -> crate::provider::Person {
+        crate::provider::Person {
             id: id.into(),
             login: login.into(),
         }
@@ -5724,14 +5754,14 @@ mod github_auth_tests {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "101".into(),
-            GithubAccountState::Connected(crate::github::Identity {
+            GithubAccountState::Connected(crate::provider::Person {
                 id: "101".into(),
                 login: "account-a".into(),
             }),
         );
         auth.accounts.insert(
             "202".into(),
-            GithubAccountState::Connected(crate::github::Identity {
+            GithubAccountState::Connected(crate::provider::Person {
                 id: "202".into(),
                 login: "account-b".into(),
             }),
@@ -5757,13 +5787,13 @@ mod github_auth_tests {
         let mut auth = GithubAuth::new();
         auth.accounts.insert(
             "101".into(),
-            GithubAccountState::Connected(crate::github::Identity {
+            GithubAccountState::Connected(crate::provider::Person {
                 id: "101".into(),
                 login: "account-a".into(),
             }),
         );
         auth.pending = Some(super::PendingGithubAccount {
-            identity: crate::github::Identity {
+            identity: crate::provider::Person {
                 id: "202".into(),
                 login: "account-b".into(),
             },

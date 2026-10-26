@@ -615,7 +615,7 @@ pub enum Event {
         attempt_count: u64,
     },
     PublicationProviderError {
-        error: crate::github::ConnectionError,
+        error: crate::provider::ConnectionError,
     },
     PublicationRetry {
         operation_id: String,
@@ -628,7 +628,7 @@ pub enum Event {
         call: u64,
         refusal: ExitRefusal,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_error: Option<crate::github::ConnectionError>,
+        provider_error: Option<crate::provider::ConnectionError>,
     },
     /// Host code panicked inside the attempt: source location only, never the payload.
     HostPanic {

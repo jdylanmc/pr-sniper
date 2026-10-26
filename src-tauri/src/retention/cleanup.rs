@@ -3,9 +3,9 @@ use crate::storage::review_store::ReadError;
 use crate::{
     actions::{EffectState, Ledger as Actions},
     follow_up::FollowUp,
-    github::metadata::Lifecycle,
     monitoring::{OperationState, QueueState},
     notifications::{Destination, Ledger as Notifications, Phase as NoticePhase},
+    provider::Lifecycle,
     publication::{Publication, RemoteState},
     review::ReviewRun,
 };

@@ -185,10 +185,10 @@ impl Runtime for Fixture {
         &self,
         account: &str,
         _: &str,
-    ) -> Result<(crate::github::intake::ResolvedTarget, u64), Error> {
+    ) -> Result<(crate::provider::ResolvedTarget, u64), Error> {
         assert_eq!(account, "101");
         Ok((
-            crate::github::intake::ResolvedTarget {
+            crate::provider::ResolvedTarget {
                 connection: Connection {
                     identity: Identity {
                         id: "101".into(),
@@ -642,7 +642,7 @@ fn failed_initial_polls_are_discoverable_and_only_the_selected_poll_is_retried()
                     &store,
                     &accounts,
                     ticket,
-                    Err(crate::github::ConnectionError::MissingReadPermission),
+                    Err(crate::provider::ConnectionError::MissingReadPermission),
                     now + 1
                 )
                 .is_err());
@@ -903,7 +903,7 @@ fn detail_of_an_automatically_pruned_pr_reads_its_tombstone() {
     {
         let store = fixture.store.lock().unwrap();
         let mut scope = store.load_queue_state().unwrap().tracked.remove(0);
-        scope.lifecycle = crate::github::metadata::Lifecycle::Merged;
+        scope.lifecycle = crate::provider::Lifecycle::Merged;
         scope.terminal_observed = true;
         let receipt = serde_json::from_value(json!({"scope":scope,"enqueue_watermark":1,
             "items":["pruned-item"],"pass_ordinals":{},"reply_ordinals":{},

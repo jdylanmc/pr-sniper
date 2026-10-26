@@ -10,7 +10,7 @@ use crate::{
         gates::{self, Facts, GateInput, Grants, Offer},
         Exit, ExitOutcome,
     },
-    github::provider::RemoteRepository,
+    provider::RemoteRepository,
     retention::Binding,
     review::RunMode,
 };

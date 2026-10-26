@@ -410,7 +410,7 @@ pub(crate) fn observed_pr<'a>(
         .ok_or("Owned feedback tracking is unavailable.")?;
     if matches.next().is_some()
         || pr.number != proof.number
-        || pr.lifecycle != crate::github::metadata::Lifecycle::Open
+        || pr.lifecycle != crate::provider::Lifecycle::Open
         || pr.head_sha != head
         || pr.item_id.is_empty()
         || pr.iteration_id.is_empty()

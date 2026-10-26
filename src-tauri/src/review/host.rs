@@ -1,8 +1,9 @@
 use super::{key, runtime, Failure, ReviewRun, Selection};
 use crate::{
-    github::provider::RemoteRepository,
     monitoring::{self, OperationState, QueueJob},
-    now_seconds, Host,
+    now_seconds,
+    provider::{PullRequestReader, RemoteRepository, RepositoryReader},
+    Host,
 };
 use serde::Serialize;
 use std::{
@@ -525,15 +526,15 @@ fn local_gate(
 fn remote_gate(
     app: &tauri::AppHandle,
     run: &ReviewRun,
-) -> Result<crate::github::metadata::PullRequest, Failure> {
+) -> Result<crate::provider::PullRequest, Failure> {
     local_gate(app, run, None)?;
     let host = app.state::<Host>();
-    let (_, client) = crate::github_session(&host, &run.job.account_id).map_err(Failure::from)?;
+    let (_, client) = crate::read_session(&host, &run.job.account_id).map_err(Failure::from)?;
     let repo = RemoteRepository {
         id: run.job.repository_id.clone(),
         name: run.job.repository_name.clone(),
     };
-    let pull = client.review_pull(&repo, run.job.number)?;
+    let pull = client.pull_request(&repo, run.job.number)?;
     let store = host
         .store
         .lock()
@@ -548,7 +549,7 @@ fn remote_gate(
 pub(crate) fn pull_gate(
     settings: &crate::storage::Settings,
     job: &QueueJob,
-    pull: &crate::github::metadata::PullRequest,
+    pull: &crate::provider::PullRequest,
 ) -> Result<(), Failure> {
     monitoring::check_review_policy(settings, job, Some(pull))
         .map(|_| ())
@@ -746,7 +747,7 @@ async fn execute_attempt(
                             .map_err(Failure::from)?
                             .capabilities
                             .comment
-                            == crate::github::provider::CommentCapability::Available;
+                            == crate::provider::CommentCapability::Available;
                         let (
                             teammates,
                             iterations,
@@ -1079,9 +1080,9 @@ impl AttemptGuard {
         let client = client.guarded(Arc::new(move || {
             gate().map_err(|error| {
                 if error.kind == monitoring::OperationFailure::Timeout {
-                    crate::github::ConnectionError::Timeout
+                    crate::provider::ConnectionError::Timeout
                 } else {
-                    crate::github::ConnectionError::Configuration
+                    crate::provider::ConnectionError::Configuration
                 }
             })
         }));

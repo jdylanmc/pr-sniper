@@ -9,12 +9,12 @@ use crate::{
     exits::gates::{self, Facts, GateInput, Grants},
     github::{
         actions::Observation,
-        provider::{GithubClient, RemoteRepository, Transport},
-        review::ReviewContext,
+        provider::{GithubClient, Transport},
         state::PrSnapshot,
         threads::QueryTransport,
     },
     packet::{self, reads, Directive, Packet, PacketInput, Role},
+    provider::{RemoteRepository, ReviewContext},
 };
 use std::sync::Arc;
 
@@ -450,7 +450,7 @@ where
 /// can act on in the loop. Same mapping as the publication batch
 /// ([`crate::publication::DiffLines`]), so an accepted exit always maps.
 pub(crate) fn out_of_diff(
-    files: &[crate::github::review::ReviewFile],
+    files: &[crate::provider::ReviewFile],
     call: &crate::exits::ExitCall,
 ) -> Option<String> {
     let crate::exits::ExitCall::LeaveComments { new_comments, .. } = call else {

@@ -128,9 +128,9 @@ fn normal_publication_gate_refusals_remain_item_local() {
 #[test]
 fn explicit_connection_configuration_failure_marks_host_not_provider_refusal() {
     for (error, infrastructure) in [
-        (crate::github::ConnectionError::Configuration, true),
-        (crate::github::ConnectionError::SignedOut, false),
-        (crate::github::ConnectionError::MissingScope, false),
+        (crate::provider::ConnectionError::Configuration, true),
+        (crate::provider::ConnectionError::SignedOut, false),
+        (crate::provider::ConnectionError::MissingScope, false),
     ] {
         let failures = FailureRouting::default();
         let _failure = failures.connection_error(error);
@@ -565,8 +565,8 @@ fn retained_origin_controls_launch_conflicts_even_if_ordinary_evidence_differs()
 }
 
 /// One changed file whose head line 1 is in the diff, for the exit's comment.
-fn changed_files() -> Vec<crate::github::review::ReviewFile> {
-    vec![crate::github::review::ReviewFile {
+fn changed_files() -> Vec<crate::provider::ReviewFile> {
+    vec![crate::provider::ReviewFile {
         path: "source.rs".into(),
         previous_path: None,
         status: "modified".into(),

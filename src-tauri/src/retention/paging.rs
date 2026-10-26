@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    capacity::Kind, github::metadata::Lifecycle, monitoring::OperationState, panel::Detail,
-};
+use crate::{capacity::Kind, monitoring::OperationState, panel::Detail, provider::Lifecycle};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

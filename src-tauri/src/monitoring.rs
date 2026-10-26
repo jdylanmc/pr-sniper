@@ -1,10 +1,6 @@
 use crate::admission::AdmissionConfig;
-use crate::github::{
-    metadata::{Lifecycle, PullRequest},
-    provider::Connection,
-    ConnectionError,
-};
 use crate::policy::{Policy, Schedule, WatchedIdentity};
+use crate::provider::{Connection, ConnectionError, Lifecycle, PullRequest};
 use crate::storage::{ProviderId, SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
@@ -1532,7 +1528,7 @@ impl Monitor {
         store: &Store,
         accounts: &BTreeMap<String, AccountAvailability>,
         expected: &crate::storage::Repository,
-        resolved: crate::github::intake::ResolvedTarget,
+        resolved: crate::provider::ResolvedTarget,
         read_at: i64,
         now: i64,
     ) -> Result<ExplicitAdmission, String> {
@@ -4688,8 +4684,8 @@ mod read_diagnostic_tests {
 mod admission_tests {
     use super::*;
     use crate::admission::{AdmissionMode, AdmissionRule, AdmissionRuleKind};
-    use crate::github::metadata::ChangedFile;
-    use crate::github::Identity;
+    use crate::provider::ChangedFile;
+    use crate::provider::Person;
 
     const ACCOUNT: &str = "22";
     const REPO_ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -4716,13 +4712,13 @@ mod admission_tests {
             id: "1".into(),
             number: 1,
             title: "t".into(),
-            author: Some(Identity {
+            author: Some(Person {
                 id: author.into(),
                 login: "a".into(),
             }),
             requested_reviewers: reviewers
                 .iter()
-                .map(|id| Identity {
+                .map(|id| Person {
                     id: (*id).into(),
                     login: "r".into(),
                 })

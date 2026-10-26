@@ -192,7 +192,7 @@ impl Store {
         crate::retention::reject_cleaned(self, state.jobs.iter().cloned())?;
         let retention = crate::retention::load(self)?;
         if state.tracked.iter().any(|p| {
-            p.lifecycle == crate::github::metadata::Lifecycle::Open
+            p.lifecycle == crate::provider::Lifecycle::Open
                 && retention.receipts.iter().any(|r| {
                     crate::retention::Binding::tracked(&r.scope)
                         == crate::retention::Binding::tracked(p)

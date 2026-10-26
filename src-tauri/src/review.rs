@@ -8,9 +8,9 @@ pub(crate) mod teammates;
 pub(crate) mod tools;
 
 use crate::{
-    github::ConnectionError,
     monitoring::{self, JobOperation, MonitoringError, OperationFailure, OperationState, QueueJob},
     policy::Policy,
+    provider::ConnectionError,
     storage::{Agent, AssignmentAuthority, Doctrine, Repository, Settings, Store, Voice},
 };
 use serde::{Deserialize, Serialize};

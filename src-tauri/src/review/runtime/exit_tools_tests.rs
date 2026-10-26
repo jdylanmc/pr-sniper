@@ -130,7 +130,11 @@ async fn an_unreadable_exit_gate_ends_the_run_with_a_recorded_typed_cause() {
     let (trace, records) = recorded_trace();
     let tools = ExitTools::new(
         vec![Exit::LeaveComments, Exit::PanicExit],
-        Arc::new(|_| Err(Refusal::Unreadable(crate::github::ConnectionError::Network))),
+        Arc::new(|_| {
+            Err(Refusal::Unreadable(
+                crate::provider::ConnectionError::Network,
+            ))
+        }),
         Some(trace),
     );
     let result = tools
