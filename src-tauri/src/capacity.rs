@@ -565,9 +565,7 @@ impl Coordinator {
             .load_queue_state()?
             .tracked
             .into_iter()
-            .filter(|p| {
-                p.terminal_observed && p.lifecycle != crate::github::metadata::Lifecycle::Open
-            })
+            .filter(|p| p.terminal_observed && p.lifecycle != crate::provider::Lifecycle::Open)
             .map(|p| crate::retention::Binding::tracked(&p))
             .collect();
         let matches = |job: &crate::monitoring::QueueJob| terminal.iter().any(|b| b.matches(job));

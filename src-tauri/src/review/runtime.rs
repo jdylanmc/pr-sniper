@@ -10,10 +10,10 @@ use crate::{
         http::HttpTransport,
         oauth::TokenPair,
         provider::{GithubClient, Transport},
-        review::ReviewContext,
         Identity,
     },
     packet::ToolFacts,
+    provider::{PullRequestReader, ReviewContext},
 };
 use async_trait::async_trait;
 use github_copilot_sdk::{
@@ -278,7 +278,7 @@ struct CheckLog {
     truncated_head: bool,
 }
 
-fn required_parts(file: &crate::github::review::ReviewFile, context: &ReviewContext) -> Vec<Part> {
+fn required_parts(file: &crate::provider::ReviewFile, context: &ReviewContext) -> Vec<Part> {
     let before_path = file.previous_path.as_deref().unwrap_or(&file.path);
     let mut parts = vec![];
     if file.patch.is_some() {
@@ -686,7 +686,7 @@ impl<T: Transport> ReadTools<T> {
         (self.gate)()?;
         let mut value = self
             .client
-            .review_source(&self.name, entry)
+            .file_content(&self.name, entry)
             .map_err(|error| {
                 let error = Failure::from(error);
                 match self.source_failure.lock() {

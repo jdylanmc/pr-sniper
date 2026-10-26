@@ -3,8 +3,8 @@
 //! When a repository has no `admission`, the legacy watched-author,
 //! reviewer-assignment and mention behavior applies unchanged.
 
-use crate::github::metadata::{ChangedFile, PullRequest};
 use crate::policy::WatchedIdentity;
+use crate::provider::{ChangedFile, PullRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

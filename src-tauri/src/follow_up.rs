@@ -497,7 +497,7 @@ impl FollowUp {
         &self,
         settings: &crate::storage::Settings,
         job: &crate::monitoring::QueueJob,
-        pull: &crate::github::metadata::PullRequest,
+        pull: &crate::provider::PullRequest,
         active: bool,
         can_comment: bool,
     ) -> Result<(), Failure> {
@@ -953,7 +953,7 @@ pub fn admit_run(runs: &mut Vec<FollowUp>, mut run: FollowUp) -> Result<bool, St
 pub fn observation_origins(
     store: &Store,
     ticket: &crate::monitoring::PollTicket,
-    pulls: &[crate::github::metadata::PullRequest],
+    pulls: &[crate::provider::PullRequest],
 ) -> Result<Vec<Publication>, String> {
     Ok(store
         .load_publications()?
@@ -969,7 +969,7 @@ pub fn observation_origins(
                 })
                 && pulls.iter().any(|pull| {
                     pull.id == p.review.job.pull_request_id
-                        && pull.state == crate::github::metadata::Lifecycle::Open
+                        && pull.state == crate::provider::Lifecycle::Open
                 })
         })
         .collect())
@@ -992,7 +992,7 @@ pub fn current_owner_job<'a>(
 pub fn polling_origins(
     store: &Store,
     ticket: &crate::monitoring::PollTicket,
-    pulls: &[crate::github::metadata::PullRequest],
+    pulls: &[crate::provider::PullRequest],
 ) -> Result<Vec<Publication>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;

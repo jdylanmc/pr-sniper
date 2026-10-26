@@ -1,7 +1,7 @@
 use super::Publication;
 use crate::{
     exits::{ExitOutcome, NewComment},
-    github::review::{ReviewContext, ReviewFile},
+    provider::{ReviewContext, ReviewFile},
     review::Failure,
 };
 use serde::{Deserialize, Serialize};

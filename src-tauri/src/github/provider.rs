@@ -1,7 +1,13 @@
-use super::{verify_identity, ConnectionError, Identity};
-use serde::{Deserialize, Serialize};
+use super::{ConnectionError, Identity};
+use crate::provider::RepositoryReader;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+pub use crate::provider::{
+    Capabilities, CommentCapability, Connection, RemoteRepository, RepositoryBrowseWarning,
+    RepositoryBrowser, RepositoryOwner,
+};
 
 pub trait Transport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError>;
@@ -20,39 +26,6 @@ pub struct Response {
     pub status: u16,
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Connection {
-    pub identity: Identity,
-    pub repository: RemoteRepository,
-    pub capabilities: Capabilities,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RemoteRepository {
-    pub id: String,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RepositoryOwner {
-    pub login: String,
-    pub kind: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RepositoryBrowseWarning {
-    pub boundary: &'static str,
-    pub page: u64,
-    pub error: ConnectionError,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RepositoryBrowser {
-    pub owners: Vec<RepositoryOwner>,
-    pub repositories: Vec<RemoteRepository>,
-    pub warnings: Vec<RepositoryBrowseWarning>,
 }
 
 #[derive(Deserialize)]
@@ -82,20 +55,6 @@ type RepositoryCatalog = (
     Vec<RepositoryBrowseWarning>,
 );
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Capabilities {
-    pub read: bool,
-    pub comment: CommentCapability,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CommentCapability {
-    Available,
-    Unavailable,
-    Unknown,
-}
-
 pub struct GithubClient<T: Transport> {
     pub(super) transport: T,
     pub(super) publication_diagnostics: Option<PublicationDiagnostics>,
@@ -117,35 +76,6 @@ impl<T: Transport> GithubClient<T> {
         self
     }
 
-    pub fn resolve_person(&self, login: &str) -> Result<Identity, ConnectionError> {
-        if login.is_empty()
-            || login.len() > 39
-            || login.starts_with('-')
-            || login.ends_with('-')
-            || !login
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
-            return Err(ConnectionError::InvalidResponse);
-        }
-
-        let (user, _) = self.read(&format!("/users/{login}"))?;
-        verify_identity(&user, None)
-    }
-
-    pub fn current_identity(&self) -> Result<Identity, ConnectionError> {
-        let (user, _) = self.read("/user")?;
-        verify_identity(&user, None)
-    }
-
-    pub fn accessible_repositories(&self) -> Result<Vec<RemoteRepository>, ConnectionError> {
-        let (entries, warnings) = self.repository_catalog(false)?;
-        if let Some(warning) = warnings.first() {
-            return Err(warning.error);
-        }
-        Ok(entries.into_iter().map(|(repo, _)| repo).collect())
-    }
-
     pub fn repository_owners(
         &self,
         identity: &Identity,
@@ -155,31 +85,6 @@ impl<T: Transport> GithubClient<T> {
             return Err(warning.error);
         }
         Ok(browser.owners)
-    }
-
-    pub fn repository_browser(
-        &self,
-        identity: &Identity,
-    ) -> Result<RepositoryBrowser, ConnectionError> {
-        let (entries, warnings) = self.repository_catalog(true)?;
-        let mut owners = BTreeMap::from([(identity.login.to_ascii_lowercase(), "personal")]);
-        let mut repositories = Vec::new();
-        for (repository, owner) in entries {
-            if let Some(owner) = owner {
-                if owner.kind == "organization" {
-                    owners.insert(owner.login, "organization");
-                }
-            }
-            repositories.push(repository);
-        }
-        Ok(RepositoryBrowser {
-            owners: owners
-                .into_iter()
-                .map(|(login, kind)| RepositoryOwner { login, kind })
-                .collect(),
-            repositories,
-            warnings,
-        })
     }
 
     pub fn owner_repositories(
@@ -206,25 +111,7 @@ impl<T: Transport> GithubClient<T> {
             .collect())
     }
 
-    pub fn owner_repository_browser(
-        &self,
-        identity: &Identity,
-        owner: &str,
-    ) -> Result<RepositoryBrowser, ConnectionError> {
-        crate::storage::canonical_repository(&format!("{owner}/repository"))
-            .map_err(|_| ConnectionError::InvalidRepository)?;
-        let mut browser = self.repository_browser(identity)?;
-        browser.repositories.retain(|repository| {
-            repository
-                .name
-                .split('/')
-                .next()
-                .is_some_and(|login| login.eq_ignore_ascii_case(owner))
-        });
-        Ok(browser)
-    }
-
-    fn repository_catalog(
+    pub(super) fn repository_catalog(
         &self,
         require_owner: bool,
     ) -> Result<RepositoryCatalog, ConnectionError> {
@@ -391,59 +278,6 @@ impl<T: Transport> GithubClient<T> {
         ))
     }
 
-    pub fn connect(
-        &self,
-        repository: &str,
-        expected_account_id: Option<&str>,
-    ) -> Result<Connection, ConnectionError> {
-        let name = super::intake::repository_target(repository)?.name;
-        let (user, _) = self.read("/user")?;
-        let identity = verify_identity(&user, expected_account_id)?;
-        let (repo, response) = self.read_repository(&format!("/repos/{name}"))?;
-        let id = decimal_id(&repo["id"])?;
-        let remote_name = repo["full_name"]
-            .as_str()
-            .ok_or(ConnectionError::InvalidResponse)?;
-        if remote_name.to_ascii_lowercase() != name {
-            return Err(ConnectionError::RepositoryChanged);
-        }
-        let private = boolean(&repo, "private")?;
-        require_repo_scope(&response)?;
-        let archived = boolean(&repo, "archived")?;
-        let disabled = boolean(&repo, "disabled")?;
-        if repo["permissions"]["pull"].as_bool() == Some(false) || disabled {
-            return Err(ConnectionError::MissingReadPermission);
-        }
-        let (pulls, _) =
-            self.read_repository(&format!("/repos/{name}/pulls?state=open&per_page=1"))?;
-        if !pulls.is_array() {
-            return Err(ConnectionError::InvalidResponse);
-        }
-        let comment = if archived {
-            CommentCapability::Unavailable
-        } else if let Some(scopes) = response.headers.get("x-oauth-scopes") {
-            if scopes
-                .split(',')
-                .map(str::trim)
-                .any(|scope| scope == "repo" || (!private && scope == "public_repo"))
-            {
-                CommentCapability::Available
-            } else {
-                CommentCapability::Unavailable
-            }
-        } else {
-            CommentCapability::Unknown
-        };
-        Ok(Connection {
-            identity,
-            repository: RemoteRepository { id, name },
-            capabilities: Capabilities {
-                read: true,
-                comment,
-            },
-        })
-    }
-
     pub(super) fn read(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
         self.transport
             .get(path)
@@ -459,7 +293,7 @@ impl<T: Transport> GithubClient<T> {
         }
     }
 
-    fn read_repository(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
+    pub(super) fn read_repository(&self, path: &str) -> Result<(Value, Response), ConnectionError> {
         let response = self.transport.get(path)?;
         // GitHub hides unauthorized private resources behind the same 404 as
         // absent repositories. Neither absence nor a definite denial is proven.
@@ -587,7 +421,7 @@ fn oauth_app_restricted(response: &Response) -> bool {
             })
 }
 
-fn require_repo_scope(response: &Response) -> Result<(), ConnectionError> {
+pub(super) fn require_repo_scope(response: &Response) -> Result<(), ConnectionError> {
     if !response.headers.contains_key("x-oauth-scopes") {
         return Err(ConnectionError::ScopeUnverified);
     }

@@ -3,6 +3,7 @@ use pr_sniper_lib::github::{
     provider::{GithubClient, Response, Transport},
     ConnectionError,
 };
+use pr_sniper_lib::provider::prelude::*;
 use serde_json::json;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 

@@ -676,9 +676,9 @@ fn record_terminal(
     {
         tracked.terminal_observed = true;
         tracked.lifecycle = if observation.state == "MERGED" {
-            crate::github::metadata::Lifecycle::Merged
+            crate::provider::Lifecycle::Merged
         } else {
-            crate::github::metadata::Lifecycle::Closed
+            crate::provider::Lifecycle::Closed
         };
         tracked.head_sha = observation.head.clone();
         tracked.observed_at = now;

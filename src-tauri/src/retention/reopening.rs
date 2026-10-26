@@ -1,11 +1,9 @@
 use super::*;
 use crate::{
     feedback::{Context, Record},
-    github::{
-        metadata::{Lifecycle, PullRequest},
-        threads::Thread,
-    },
+    github::threads::Thread,
     monitoring::PollTicket,
+    provider::{Lifecycle, PullRequest},
 };
 
 pub(crate) struct Observed {

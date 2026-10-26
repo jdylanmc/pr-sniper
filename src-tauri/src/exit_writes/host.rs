@@ -1,11 +1,10 @@
 use super::*;
 use crate::{
-    github::{
-        http::HttpTransport,
-        provider::{GithubClient, RemoteRepository},
-    },
+    github::{http::HttpTransport, provider::GithubClient},
     monitoring::OperationFailure,
-    now_seconds, Host,
+    now_seconds,
+    provider::{PullRequestReader, RemoteRepository},
+    Host,
 };
 use std::sync::atomic::Ordering;
 use tauri::Manager;
@@ -245,8 +244,8 @@ impl Environment for Native {
 
     fn head(&mut self, write: &ExitWrite) -> Result<String, Failure> {
         let client = self.client(write)?;
-        let pull = client.review_pull(&Self::repository(write), write.job.number)?;
-        if pull.state != crate::github::metadata::Lifecycle::Open {
+        let pull = client.pull_request(&Self::repository(write), write.job.number)?;
+        if pull.state != crate::provider::Lifecycle::Open {
             return Err(Failure::permanent("PR is no longer open."));
         }
         if write
@@ -272,7 +271,7 @@ impl Environment for Native {
 
     fn pr_author(&mut self, write: &ExitWrite) -> Result<Option<String>, Failure> {
         let client = self.client(write)?;
-        let pull = client.review_pull(&Self::repository(write), write.job.number)?;
+        let pull = client.pull_request(&Self::repository(write), write.job.number)?;
         Ok(pull.author.map(|author| author.id))
     }
 

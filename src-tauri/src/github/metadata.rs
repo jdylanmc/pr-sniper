@@ -1,149 +1,16 @@
-use super::provider::{boolean, decimal_id, GithubClient, RemoteRepository, Response, Transport};
-use super::{verify_identity, ConnectionError, Identity};
-use serde::{Deserialize, Serialize};
+use super::provider::{boolean, decimal_id, GithubClient, Response, Transport};
+use super::{verify_identity, ConnectionError};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PullRequest {
-    /// Account-scoped comment observation supplied by the monitoring host,
-    /// never inferred from a provider review request or an action permission.
-    #[serde(skip_serializing)]
-    pub mentioned: bool,
-    pub id: String,
-    pub number: u64,
-    pub title: String,
-    pub author: Option<Identity>,
-    pub requested_reviewers: Vec<Identity>,
-    pub requested_teams: Vec<RequestedTeam>,
-    pub state: Lifecycle,
-    pub draft: bool,
-    pub head_sha: String,
-    pub base_sha: String,
-    pub head_repository_id: Option<String>,
-    pub base_repository_id: String,
-    pub updated_at: String,
-    pub files: Vec<ChangedFile>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Lifecycle {
-    Open,
-    Closed,
-    Merged,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RequestedTeam {
-    pub id: String,
-    pub slug: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ChangedFile {
-    pub path: String,
-    pub previous_path: Option<String>,
-    pub status: String,
-    pub additions: u64,
-    pub deletions: u64,
-    pub changes: u64,
-    pub sha: String,
-}
+pub use crate::provider::{ChangedFile, Lifecycle, PullRequest, RequestedTeam};
 
 impl<T: Transport> GithubClient<T> {
-    pub fn latest_pull_request_number(
+    pub(super) fn changed_files(
         &self,
-        repository: &RemoteRepository,
-    ) -> Result<u64, ConnectionError> {
-        let name = crate::storage::canonical_repository(&repository.name)
-            .map_err(|_| ConnectionError::InvalidRepository)?;
-        let (value, _) = self.read(&format!(
-            "/repos/{name}/pulls?state=all&sort=created&direction=desc&per_page=1"
-        ))?;
-        let pulls = array(&value)?;
-        if pulls.len() > 1 {
-            return Err(ConnectionError::InvalidResponse);
-        }
-        pulls
-            .first()
-            .map(|pull| {
-                if decimal_id(&pull["base"]["repo"]["id"])? != repository.id {
-                    return Err(ConnectionError::RepositoryChanged);
-                }
-                pull["number"]
-                    .as_u64()
-                    .filter(|number| *number > 0)
-                    .ok_or(ConnectionError::InvalidResponse)
-            })
-            .transpose()
-            .map(|number| number.unwrap_or(0))
-    }
-
-    pub fn poll_pull_requests(
-        &self,
-        repository: &RemoteRepository,
-    ) -> Result<Vec<PullRequest>, ConnectionError> {
-        let name = crate::storage::canonical_repository(&repository.name)
-            .map_err(|_| ConnectionError::InvalidRepository)?;
-        let list = self.pages(&format!(
-            "/repos/{name}/pulls?state=open&sort=created&direction=asc&per_page=100&page=1"
-        ))?;
-        let mut ids = HashSet::new();
-        let mut numbers = HashSet::new();
-        list.iter()
-            .map(|value| {
-                let pull = polling_pull_request(value)?;
-                if !ids.insert(pull.id.clone()) || !numbers.insert(pull.number) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                if pull.base_repository_id != repository.id {
-                    return Err(ConnectionError::RepositoryChanged);
-                }
-                Ok(pull)
-            })
-            .collect()
-    }
-
-    /// An open listing cannot establish closure. Verify every previously admitted
-    /// active PR missing from that complete listing. Previously verified terminal
-    /// PRs can reappear in the open listing without polling all historical details.
-    pub fn poll_tracked_pull_requests(
-        &self,
-        repository: &RemoteRepository,
-        tracked: &[(String, u64)],
-    ) -> Result<Vec<PullRequest>, ConnectionError> {
-        let mut pulls = self.poll_pull_requests(repository)?;
-        for (id, number) in tracked {
-            if pulls.iter().any(|pull| &pull.id == id) {
-                continue;
-            }
-            let pull = self.review_pull(repository, *number)?;
-            if &pull.id != id {
-                return Err(ConnectionError::RepositoryChanged);
-            }
-            pulls.push(pull);
-        }
-        Ok(pulls)
-    }
-
-    /// Changed files of one pull request; the listing endpoint omits them.
-    pub fn pull_request_files(
-        &self,
-        repository: &RemoteRepository,
-        number: u64,
+        path: &str,
+        count: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError> {
-        let name = crate::storage::canonical_repository(&repository.name)
-            .map_err(|_| ConnectionError::InvalidRepository)?;
-        let path = format!("/repos/{name}/pulls/{number}");
-        let (detail, _) = self.read(&path)?;
-        let count = detail["changed_files"]
-            .as_u64()
-            .ok_or(ConnectionError::InvalidResponse)?;
-        self.changed_files(&path, count)
-    }
-
-    fn changed_files(&self, path: &str, count: u64) -> Result<Vec<ChangedFile>, ConnectionError> {
         // GitHub's files endpoint cannot return more than 3,000 files.
         if count > 3_000 {
             return Err(ConnectionError::LimitExceeded);
@@ -188,129 +55,6 @@ impl<T: Transport> GithubClient<T> {
             });
         }
         Ok(files)
-    }
-
-    pub fn pull_requests(
-        &self,
-        repository: &RemoteRepository,
-    ) -> Result<Vec<PullRequest>, ConnectionError> {
-        let name = crate::storage::canonical_repository(&repository.name)
-            .map_err(|_| ConnectionError::InvalidRepository)?;
-        let list = self.pages(&format!(
-            "/repos/{name}/pulls?state=all&sort=created&direction=asc&per_page=100&page=1"
-        ))?;
-        let mut ids = HashSet::new();
-        let mut numbers = HashSet::new();
-        let mut result = Vec::new();
-        for summary in list {
-            let id = decimal_id(&summary["id"])?;
-            let number = summary["number"]
-                .as_u64()
-                .filter(|n| *n > 0)
-                .ok_or(ConnectionError::InvalidResponse)?;
-            if !ids.insert(id.clone()) || !numbers.insert(number) {
-                return Err(ConnectionError::IncompleteRead);
-            }
-            let path = format!("/repos/{name}/pulls/{number}");
-            let (detail, _) = self.read(&path)?;
-            if decimal_id(&detail["id"])? != id
-                || detail["number"].as_u64() != Some(number)
-                || detail["head"]["sha"] != summary["head"]["sha"]
-            {
-                return Err(ConnectionError::RevisionChanged);
-            }
-            let count = detail["changed_files"]
-                .as_u64()
-                .ok_or(ConnectionError::InvalidResponse)?;
-            // GitHub's files endpoint cannot return more than 3,000 files.
-            if count > 3_000 {
-                return Err(ConnectionError::LimitExceeded);
-            }
-            let files = self.changed_files(&path, count)?;
-            let (reviewers, response) = self.read(&format!("{path}/requested_reviewers"))?;
-            if response.headers.contains_key("link") {
-                return Err(ConnectionError::IncompleteRead);
-            }
-            let mut reviewer_ids = HashSet::new();
-            let requested_reviewers = array(&reviewers["users"])?
-                .iter()
-                .map(|value| {
-                    let identity = verify_identity(value, None)?;
-                    if !reviewer_ids.insert(identity.id.clone()) {
-                        return Err(ConnectionError::IncompleteRead);
-                    }
-                    Ok(identity)
-                })
-                .collect::<Result<_, _>>()?;
-            let mut team_ids = HashSet::new();
-            let requested_teams = array(&reviewers["teams"])?
-                .iter()
-                .map(|value| {
-                    let id = decimal_id(&value["id"])?;
-                    if !team_ids.insert(id.clone()) {
-                        return Err(ConnectionError::IncompleteRead);
-                    }
-                    Ok(RequestedTeam {
-                        id,
-                        slug: text(&value["slug"])?,
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            let base_repository_id = decimal_id(&detail["base"]["repo"]["id"])?;
-            if base_repository_id != repository.id {
-                return Err(ConnectionError::RepositoryChanged);
-            }
-            let state = match (detail["state"].as_str(), detail["merged"].as_bool()) {
-                (Some("open"), Some(false)) => Lifecycle::Open,
-                (Some("closed"), Some(false)) => Lifecycle::Closed,
-                (Some("closed"), Some(true)) => Lifecycle::Merged,
-                _ => return Err(ConnectionError::InvalidResponse),
-            };
-            let author = match detail.get("user") {
-                Some(Value::Null) => None,
-                Some(user) => Some(verify_identity(user, None)?),
-                None => return Err(ConnectionError::InvalidResponse),
-            };
-            let head_repository_id = match detail["head"].get("repo") {
-                Some(Value::Null) => None,
-                Some(repo) => Some(decimal_id(&repo["id"])?),
-                None => return Err(ConnectionError::InvalidResponse),
-            };
-            let (current, _) = self.read(&path)?;
-            for key in [
-                "id",
-                "number",
-                "head",
-                "base",
-                "updated_at",
-                "state",
-                "draft",
-                "merged",
-                "changed_files",
-            ] {
-                if current.get(key) != detail.get(key) {
-                    return Err(ConnectionError::RevisionChanged);
-                }
-            }
-            result.push(PullRequest {
-                mentioned: false,
-                id,
-                number,
-                title: text(&detail["title"])?,
-                author,
-                requested_reviewers,
-                requested_teams,
-                state,
-                draft: boolean(&detail, "draft")?,
-                head_sha: sha(&detail["head"]["sha"])?,
-                base_sha: sha(&detail["base"]["sha"])?,
-                head_repository_id,
-                base_repository_id,
-                updated_at: text(&detail["updated_at"])?,
-                files,
-            });
-        }
-        Ok(result)
     }
 
     pub(super) fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
@@ -417,11 +161,11 @@ pub(super) fn polling_pull_request(value: &Value) -> Result<PullRequest, Connect
     })
 }
 
-fn array(value: &Value) -> Result<&Vec<Value>, ConnectionError> {
+pub(super) fn array(value: &Value) -> Result<&Vec<Value>, ConnectionError> {
     value.as_array().ok_or(ConnectionError::InvalidResponse)
 }
 
-fn text(value: &Value) -> Result<String, ConnectionError> {
+pub(super) fn text(value: &Value) -> Result<String, ConnectionError> {
     value
         .as_str()
         .filter(|value| !value.is_empty())

@@ -102,7 +102,7 @@ pub(super) trait Runtime {
         &self,
         account: &str,
         url: &str,
-    ) -> Result<(crate::github::intake::ResolvedTarget, u64), Error>;
+    ) -> Result<(crate::provider::ResolvedTarget, u64), Error>;
     fn launch(&self, batch: Batch);
     fn start_checks(&self) -> Result<(), Error>;
     fn login_status(&self) -> Result<Value, Error>;
@@ -136,12 +136,12 @@ impl Runtime for Native<'_> {
         &self,
         account: &str,
         url: &str,
-    ) -> Result<(crate::github::intake::ResolvedTarget, u64), Error> {
+    ) -> Result<(crate::provider::ResolvedTarget, u64), Error> {
         crate::repository_read(
             self.generations(),
             self.auth(),
             account,
-            || crate::acquire_github_session(self.host, account),
+            || crate::acquire_read_session(self.host, account),
             |identity, client, generation| {
                 Ok((
                     client.resolve_repository_target(url, &identity.id)?,

@@ -261,7 +261,7 @@ fn decode(store: &Store) -> Result<Ledger, String> {
                 .chain(ledger.pending.iter().map(|p| &p.receipt))
                 .any(|r| {
                     !r.scope.terminal_observed
-                        || r.scope.lifecycle == crate::github::metadata::Lifecycle::Open
+                        || r.scope.lifecycle == crate::provider::Lifecycle::Open
                         || r.scope.iteration == 0
                         || r.scope.iteration_id.is_empty()
                 })

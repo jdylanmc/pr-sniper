@@ -12,11 +12,11 @@ use crate::{
     exits::{Exit, ExitCall},
     github::{
         provider::{GithubClient, Transport},
-        review::ReviewContext,
         Identity,
     },
     monitoring::OperationFailure,
     packet::{Directive, PacketInput, ToolFacts},
+    provider::ReviewContext,
     review::{
         duck::{self, DuckCall, DuckFailure, DuckInput, DuckOutcome, DuckReason, Verdict},
         Events, Failure, ReadCoverage, Selection,

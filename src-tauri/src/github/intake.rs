@@ -1,9 +1,7 @@
-use super::{
-    metadata::PullRequest,
-    provider::{Connection, GithubClient, Transport},
-    ConnectionError,
-};
+use super::ConnectionError;
 use serde::Serialize;
+
+pub use crate::provider::ResolvedTarget;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct RepositoryTarget {
@@ -47,29 +45,4 @@ pub fn repository_target(input: &str) -> Result<RepositoryTarget, ConnectionErro
         name,
         pull_request_number: Some(number),
     })
-}
-
-#[derive(Debug, Serialize)]
-pub struct ResolvedTarget {
-    pub connection: Connection,
-    pub pull_request: Option<PullRequest>,
-}
-
-impl<T: Transport> GithubClient<T> {
-    pub fn resolve_repository_target(
-        &self,
-        input: &str,
-        account_id: &str,
-    ) -> Result<ResolvedTarget, ConnectionError> {
-        let target = repository_target(input)?;
-        let connection = self.connect(&target.name, Some(account_id))?;
-        let pull_request = target
-            .pull_request_number
-            .map(|number| self.review_pull(&connection.repository, number))
-            .transpose()?;
-        Ok(ResolvedTarget {
-            connection,
-            pull_request,
-        })
-    }
 }

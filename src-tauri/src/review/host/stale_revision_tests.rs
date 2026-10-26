@@ -324,7 +324,7 @@ fn failed_poll(monitor: &mut Monitor, store: &Store, at: i64) {
         .finish(
             store,
             ticket,
-            Err(crate::github::ConnectionError::Network),
+            Err(crate::provider::ConnectionError::Network),
             at + 1,
         )
         .is_err());
@@ -568,7 +568,7 @@ fn an_older_intake_read_never_moves_the_observation_back() {
                 },
             )]),
             &expected,
-            crate::github::intake::ResolvedTarget {
+            crate::provider::ResolvedTarget {
                 connection: poll_result(vec![]).connection,
                 pull_request: Some(pull('a')),
             },

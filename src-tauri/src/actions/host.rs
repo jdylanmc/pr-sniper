@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::RepositoryReader;
 use crate::{
     github::{actions::Action, provider::RemoteRepository},
     now_seconds, Host,
@@ -60,7 +61,7 @@ fn observation(app: &tauri::AppHandle, job: &QueueJob) -> Result<Observation, Fa
         ));
     }
     observation.write_capability =
-        connection.capabilities.comment == crate::github::provider::CommentCapability::Available;
+        connection.capabilities.comment == crate::provider::CommentCapability::Available;
     Ok(observation)
 }
 

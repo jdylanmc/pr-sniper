@@ -23,7 +23,7 @@ pub enum Refusal {
     Moved(String),
     /// The exit-time PR re-read failed. The run ends with the typed provider failure:
     /// the agent cannot fix it, and retrying in the loop only ends in `panic_exit`.
-    Unreadable(crate::github::ConnectionError),
+    Unreadable(crate::provider::ConnectionError),
 }
 
 pub(crate) type ExitGate = Arc<dyn Fn(&ExitCall) -> Result<(), Refusal> + Send + Sync>;
@@ -80,7 +80,7 @@ fn error(message: &str) -> ToolResult {
 pub(super) struct Rejection {
     result: ToolResult,
     refusal: ExitRefusal,
-    provider_error: Option<crate::github::ConnectionError>,
+    provider_error: Option<crate::provider::ConnectionError>,
 }
 
 fn refused(refusal: ExitRefusal, result: ToolResult) -> Box<Rejection> {

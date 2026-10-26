@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::AccountReader;
 use crate::{
     feedback::{Context, Record},
     github::threads::{Comment, Thread},
@@ -414,14 +415,14 @@ fn owned_feedback_blocked_migration_keeps_the_operation_until_unblocked() {
 
 struct PreparationWire {
     during_read: Box<dyn Fn()>,
-    error: Option<crate::github::ConnectionError>,
+    error: Option<crate::provider::ConnectionError>,
 }
 
 impl crate::github::provider::Transport for PreparationWire {
     fn get(
         &self,
         _: &str,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         (self.during_read)();
         if let Some(error) = &self.error {
             return Err(*error);
@@ -439,7 +440,7 @@ impl crate::github::threads::QueryTransport for PreparationWire {
         &self,
         _: &str,
         _: serde_json::Value,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         crate::github::provider::Transport::get(self, "graphql")
     }
 }
@@ -640,7 +641,7 @@ impl crate::github::provider::Transport for FinalSnapshotWire {
     fn get(
         &self,
         _: &str,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         unreachable!("snapshot-only fixture")
     }
 }
@@ -650,7 +651,7 @@ impl crate::github::threads::QueryTransport for FinalSnapshotWire {
         &self,
         _: &str,
         _: serde_json::Value,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         (self.during_read)();
         let body = json!({"data":{"repository":{"databaseId":100,"p1":{
             "fullDatabaseId":"9","number":1,"title":"Review","body":"",
@@ -745,7 +746,7 @@ impl crate::github::provider::Transport for UserWire {
     fn get(
         &self,
         _: &str,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         (self.0)();
         Ok(crate::github::provider::Response {
             status: 200,
@@ -760,7 +761,7 @@ impl crate::github::threads::QueryTransport for UserWire {
         &self,
         _: &str,
         _: serde_json::Value,
-    ) -> Result<crate::github::provider::Response, crate::github::ConnectionError> {
+    ) -> Result<crate::github::provider::Response, crate::provider::ConnectionError> {
         crate::github::provider::Transport::get(self, "graphql")
     }
 }

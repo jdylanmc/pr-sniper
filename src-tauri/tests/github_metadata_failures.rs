@@ -1,6 +1,7 @@
 use pr_sniper_lib::github::metadata::PullRequest;
 use pr_sniper_lib::github::provider::{GithubClient, RemoteRepository, Response, Transport};
 use pr_sniper_lib::github::ConnectionError;
+use pr_sniper_lib::provider::prelude::*;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};

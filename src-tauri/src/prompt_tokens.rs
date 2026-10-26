@@ -2,7 +2,7 @@
 //! Unknown `{{tokens}}` are left untouched; values are inserted verbatim and
 //! never re-expanded.
 
-use crate::github::review::ReviewContext;
+use crate::provider::ReviewContext;
 
 /// Token names accepted in prompts. Keep in sync with the editor's tip list.
 pub const TOKENS: &[&str] = &[

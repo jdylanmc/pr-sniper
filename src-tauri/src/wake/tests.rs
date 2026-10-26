@@ -1,10 +1,10 @@
 use super::*;
 use crate::{
-    github::metadata::Lifecycle,
     monitoring::{
         AccountAvailability, Admission, JobOperation, Monitor, OperationState, QueueJob,
         QueueState, TrackedPullRequest, WAITING_HUMAN_START, WAITING_MERGED, WAITING_SUPERSEDED,
     },
+    provider::Lifecycle,
     publication::{Batch, Publication, Receipt, RemoteState},
     review::{ReviewRun, Selection},
     storage::{Settings, Store},

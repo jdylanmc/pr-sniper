@@ -1,10 +1,9 @@
 use super::*;
 use crate::{
-    github::{
-        http::HttpTransport,
-        provider::{CommentCapability, GithubClient, RemoteRepository},
-    },
-    now_seconds, Host,
+    github::{http::HttpTransport, provider::GithubClient},
+    now_seconds,
+    provider::{CommentCapability, PullRequestReader, RemoteRepository, RepositoryReader},
+    Host,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -295,8 +294,8 @@ impl FailureRouting {
         }
     }
 
-    fn connection_error(&self, error: crate::github::ConnectionError) -> Failure {
-        if error == crate::github::ConnectionError::Configuration {
+    fn connection_error(&self, error: crate::provider::ConnectionError) -> Failure {
+        if error == crate::provider::ConnectionError::Configuration {
             self.infrastructure_failed.store(true, Ordering::SeqCst);
         }
         error.into()
@@ -383,17 +382,17 @@ impl Native {
         Ok(client.guarded(Arc::new(move || {
             if now_seconds().map_err(|error| {
                 guard.failures.infrastructure_error(error);
-                crate::github::ConnectionError::Configuration
+                crate::provider::ConnectionError::Configuration
             })? >= run.operation.retry_deadline
             {
-                return Err(crate::github::ConnectionError::Timeout);
+                return Err(crate::provider::ConnectionError::Timeout);
             }
             let result = if check_policy {
                 guard.local_gate(&run)
             } else {
                 guard.connection_gate(&run)
             };
-            result.map_err(|_| crate::github::ConnectionError::Configuration)
+            result.map_err(|_| crate::provider::ConnectionError::Configuration)
         })))
     }
 
@@ -556,7 +555,7 @@ impl Environment for Native {
         if connection.repository.id != repo.id {
             return Err(Failure::permanent("Repository identity changed."));
         }
-        let pull = client.review_pull(&repo, run.review.job.number)?;
+        let pull = client.pull_request(&repo, run.review.job.number)?;
         self.connection_gate(run)?;
         let local = self.local_gate(run);
         let host = self.app.state::<Host>();

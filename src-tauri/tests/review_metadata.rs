@@ -3,6 +3,7 @@ use pr_sniper_lib::github::{
     provider::{GithubClient, RemoteRepository, Response, Transport},
     ConnectionError,
 };
+use pr_sniper_lib::provider::prelude::*;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -104,11 +105,11 @@ fn complete_301_file_context_includes_renames_deletions_binary_and_all_pages() {
     assert_eq!(context.files[1].status, "removed");
     assert_eq!(context.files[3].status, "copied");
     let source = client
-        .review_source("example/repo", &context.head["file-300.rs"])
+        .file_content("example/repo", &context.head["file-300.rs"])
         .unwrap();
     assert_eq!(source["text"], "source\n");
     let binary = client
-        .review_source("example/repo", &context.head["binary.png"])
+        .file_content("example/repo", &context.head["binary.png"])
         .unwrap();
     assert_eq!(binary["kind"], "binary");
     assert_eq!(binary["size"], 3);
@@ -163,13 +164,13 @@ fn cancellation_fences_each_read_and_discards_an_inflight_response() {
         }
     }));
     assert_eq!(
-        client.review_pull(&repository(), 1),
+        client.pull_request(&repository(), 1),
         Err(ConnectionError::Configuration)
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let client = GithubClient::new(fixture()).guarded(Arc::new(|| Err(ConnectionError::Timeout)));
     assert_eq!(
-        client.review_pull(&repository(), 1),
+        client.pull_request(&repository(), 1),
         Err(ConnectionError::Timeout)
     );
 }

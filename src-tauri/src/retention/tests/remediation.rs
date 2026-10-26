@@ -253,6 +253,7 @@ fn r4_missing_and_failed_legacy_reads_never_authorize_cleanup() {
         provider::{GithubClient, Response, Transport},
         ConnectionError,
     };
+    use crate::provider::PullRequestReader;
     struct Remote(u16);
     impl Transport for Remote {
         fn get(&self, path: &str) -> Result<Response, ConnectionError> {

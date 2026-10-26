@@ -1,15 +1,16 @@
 use super::*;
 use crate::{
     github::{
-        self,
         http::HttpTransport,
-        metadata::PullRequest,
-        provider::{CommentCapability, GithubClient, RemoteRepository},
+        provider::GithubClient,
         review::GuardedTransport,
         threads::{Ownership, Provenance},
     },
     monitoring::{self, PollTicket},
     now_seconds,
+    provider::{
+        self, CommentCapability, PullRequest, PullRequestReader, RemoteRepository, RepositoryReader,
+    },
     publication::WriteFailure,
     review::Selection,
     Host,
@@ -32,7 +33,7 @@ pub(crate) struct Scan {
     pub(crate) feedback: Vec<Observed>,
     pub(crate) mentions: Vec<(
         crate::feedback::MentionBinding,
-        Vec<github::conversation::TopComment>,
+        Vec<crate::github::conversation::TopComment>,
     )>,
     pub(crate) threads: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
 }
@@ -41,26 +42,26 @@ pub(crate) fn scan(
     app: &tauri::AppHandle,
     ticket: &PollTicket,
     pulls: &mut [PullRequest],
-    identity: &github::Identity,
-) -> Result<Scan, github::ConnectionError> {
+    identity: &provider::Person,
+) -> Result<Scan, provider::ConnectionError> {
     let (origins, tracked, retained, cursors) = {
         let host = app.state::<Host>();
         let store = host
             .store
             .lock()
-            .map_err(|_| github::ConnectionError::Configuration)?;
+            .map_err(|_| provider::ConnectionError::Configuration)?;
         (
             super::observation_origins(&store, ticket, pulls)
-                .map_err(|_| github::ConnectionError::Configuration)?,
+                .map_err(|_| provider::ConnectionError::Configuration)?,
             store
                 .load_queue_state()
-                .map_err(|_| github::ConnectionError::Configuration)?
+                .map_err(|_| provider::ConnectionError::Configuration)?
                 .tracked,
             crate::retention::scan_origins(&store, ticket, pulls)
-                .map_err(|_| github::ConnectionError::Configuration)?,
+                .map_err(|_| provider::ConnectionError::Configuration)?,
             store
                 .load_feedback()
-                .map_err(|_| github::ConnectionError::Configuration)?
+                .map_err(|_| provider::ConnectionError::Configuration)?
                 .conversation_cursors,
         )
     };
@@ -73,43 +74,43 @@ pub(crate) fn scan(
             &guard_ticket.provider_account_id,
             guard_ticket.account_generation,
         )
-        .map_err(|_| github::ConnectionError::Configuration)?;
+        .map_err(|_| provider::ConnectionError::Configuration)?;
         let store = host
             .store
             .lock()
-            .map_err(|_| github::ConnectionError::Configuration)?;
+            .map_err(|_| provider::ConnectionError::Configuration)?;
         let settings = store
             .load_settings()
-            .map_err(|_| github::ConnectionError::Configuration)?;
+            .map_err(|_| provider::ConnectionError::Configuration)?;
         let context =
             monitoring::Monitor::activation_context(&settings, &guard_ticket.repository_id)?;
         if context.account_id != guard_ticket.provider_account_id
             || context.provider_repository_id != guard_ticket.provider_repository_id
             || context.trigger_policy != guard_ticket.trigger_policy
         {
-            return Err(github::ConnectionError::Configuration);
+            return Err(provider::ConnectionError::Configuration);
         }
         let health = host
             .monitor
             .lock()
-            .map_err(|_| github::ConnectionError::Configuration)?
+            .map_err(|_| provider::ConnectionError::Configuration)?
             .snapshot();
         let operation = health
             .iter()
             .find(|h| h.repository_id == guard_ticket.repository_id)
             .and_then(|h| h.operation.as_ref())
-            .ok_or(github::ConnectionError::Configuration)?;
-        if now_seconds().map_err(|_| github::ConnectionError::Configuration)?
+            .ok_or(provider::ConnectionError::Configuration)?;
+        if now_seconds().map_err(|_| provider::ConnectionError::Configuration)?
             >= operation.retry_deadline
         {
-            return Err(github::ConnectionError::Timeout);
+            return Err(provider::ConnectionError::Timeout);
         }
         Ok(())
     });
     guard()?;
     let (_, client) = crate::github_session(&app.state::<Host>(), &ticket.provider_account_id)?;
     if identity.id != ticket.provider_account_id {
-        return Err(github::ConnectionError::WrongIdentity);
+        return Err(provider::ConnectionError::WrongIdentity);
     }
     let client = client.guarded(guard);
     let mut result = Scan::default();
@@ -117,10 +118,10 @@ pub(crate) fn scan(
         let pull = pulls
             .iter()
             .find(|p| p.id == origin.proof.pull_request_id)
-            .ok_or(github::ConnectionError::IncompleteRead)?;
+            .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin.proof, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(github::ConnectionError::InvalidResponse) => {
+            Err(provider::ConnectionError::InvalidResponse) => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -136,10 +137,10 @@ pub(crate) fn scan(
         let pull = pulls
             .iter()
             .find(|p| p.id == origin.review.job.pull_request_id)
-            .ok_or(github::ConnectionError::IncompleteRead)?;
+            .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(github::ConnectionError::InvalidResponse) => {
+            Err(provider::ConnectionError::InvalidResponse) => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -153,7 +154,7 @@ pub(crate) fn scan(
     }
     for pull in pulls
         .iter_mut()
-        .filter(|pull| pull.state == github::metadata::Lifecycle::Open && !pull.draft)
+        .filter(|pull| pull.state == provider::Lifecycle::Open && !pull.draft)
     {
         let binding = crate::feedback::MentionBinding {
             configuration_id: ticket.repository_id.clone(),
@@ -181,8 +182,7 @@ pub(crate) fn scan(
                     && cursor.is_none_or(|cursor| !cursor.comments.contains(&comment.id))
             });
         let admitted = tracked.iter().any(|tracked| {
-            binding.matches_tracked(tracked)
-                && tracked.lifecycle == github::metadata::Lifecycle::Open
+            binding.matches_tracked(tracked) && tracked.lifecycle == provider::Lifecycle::Open
         }) || monitoring::scan_admits(ticket, pull);
         if admitted {
             match client.review_threads_at(
@@ -194,7 +194,7 @@ pub(crate) fn scan(
             ) {
                 Ok(threads) => result.threads.push((binding.clone(), threads)),
                 // A malformed discussion on one PR must not fail the repository scan.
-                Err(github::ConnectionError::InvalidResponse) => {
+                Err(provider::ConnectionError::InvalidResponse) => {
                     crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 }
                 Err(error) => return Err(error),
@@ -334,7 +334,7 @@ fn observe_threads(
         let Ok(pr) = binding.tracked(tracked) else {
             continue;
         };
-        if pr.lifecycle != github::metadata::Lifecycle::Open {
+        if pr.lifecycle != provider::Lifecycle::Open {
             continue;
         }
         let index = conversation_cursor(ledger, &binding);
@@ -678,8 +678,8 @@ struct Native {
 }
 
 impl Native {
-    fn read_failure(&self, error: github::ConnectionError) -> Failure {
-        if error == github::ConnectionError::Configuration
+    fn read_failure(&self, error: provider::ConnectionError) -> Failure {
+        if error == provider::ConnectionError::Configuration
             && self.cancelled_read.load(Ordering::SeqCst)
         {
             Failure::cancelled()
@@ -717,20 +717,20 @@ impl Native {
                 &snapshot.context.job.account_id,
                 native.generation,
             )
-            .map_err(|_| github::ConnectionError::Configuration)?;
+            .map_err(|_| provider::ConnectionError::Configuration)?;
             if snapshot.publication.is_none() && native.cancelled.load(Ordering::SeqCst) {
                 native.cancelled_read.store(true, Ordering::SeqCst);
-                return Err(github::ConnectionError::Configuration);
+                return Err(provider::ConnectionError::Configuration);
             }
             let operation = snapshot
                 .publication
                 .as_ref()
                 .or(snapshot.analysis.as_ref())
-                .ok_or(github::ConnectionError::Configuration)?;
-            if now_seconds().map_err(|_| github::ConnectionError::Configuration)?
+                .ok_or(provider::ConnectionError::Configuration)?;
+            if now_seconds().map_err(|_| provider::ConnectionError::Configuration)?
                 >= operation.retry_deadline
             {
-                return Err(github::ConnectionError::Timeout);
+                return Err(provider::ConnectionError::Timeout);
             }
             Ok(())
         })))
@@ -884,7 +884,7 @@ impl Environment for Native {
             return Err(Failure::permanent("Repository identity changed."));
         }
         let pull = client
-            .review_pull(&repo, job.number)
+            .pull_request(&repo, job.number)
             .map_err(|e| self.read_failure(e))?;
         let local = self.local(run);
         let host = self.app.state::<Host>();

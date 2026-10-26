@@ -965,7 +965,7 @@ fn signed_off_and_merged(store: &Store, consumed: bool) -> crate::exit_writes::E
     store.save_feedback(&feedback).unwrap();
     let mut queue = store.load_queue_state().unwrap();
     for tracked in &mut queue.tracked {
-        tracked.lifecycle = crate::github::metadata::Lifecycle::Merged;
+        tracked.lifecycle = crate::provider::Lifecycle::Merged;
         tracked.terminal_observed = true;
     }
     store.save_queue_state(&queue).unwrap();

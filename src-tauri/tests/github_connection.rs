@@ -3,6 +3,7 @@ use pr_sniper_lib::github::provider::{
     Transport,
 };
 use pr_sniper_lib::github::{verify_identity, ConnectionError, Identity};
+use pr_sniper_lib::provider::prelude::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
