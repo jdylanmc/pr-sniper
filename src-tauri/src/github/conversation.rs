@@ -265,7 +265,15 @@ mod tests {
                 values,
                 calls: Arc::new(Mutex::new(0)),
             });
-            assert!(client.top_comments(&repo, 1).is_err(), "{case}");
+            let expected = match case {
+                "too_many" | "too_large" => Some(ConnectionError::LimitExceeded),
+                "duplicate" => Some(ConnectionError::IncompleteRead),
+                _ => None,
+            };
+            let error = client.top_comments(&repo, 1).unwrap_err();
+            if let Some(expected) = expected {
+                assert_eq!(error, expected, "{case}");
+            }
         }
     }
 }

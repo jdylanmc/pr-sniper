@@ -327,8 +327,11 @@ impl<T: Transport> GithubClient<T> {
         let mut result = Vec::new();
         let mut advertised_last = None;
         loop {
-            if !seen.insert(path.clone()) || seen.len() > 10_000 {
+            if !seen.insert(path.clone()) {
                 return Err(ConnectionError::IncompleteRead);
+            }
+            if seen.len() > 10_000 {
+                return Err(ConnectionError::LimitExceeded);
             }
             let (value, response) = self.read(&path)?;
             let page = array(&value)?;
@@ -340,7 +343,7 @@ impl<T: Transport> GithubClient<T> {
                 return Err(ConnectionError::IncompleteRead);
             }
             if result.len() + page.len() > limit {
-                return Err(ConnectionError::IncompleteRead);
+                return Err(ConnectionError::LimitExceeded);
             }
             result.extend(page.iter().cloned());
             match next {

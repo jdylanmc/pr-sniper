@@ -214,12 +214,32 @@ fn complete(value: &Value) -> Result<&Vec<Value>, ConnectionError> {
     let nodes = value["nodes"]
         .as_array()
         .ok_or(ConnectionError::IncompleteRead)?;
+    // A single `first: 100` page is the cap; more is a limit, not a bad read.
+    if value["pageInfo"]["hasNextPage"] == true {
+        return Err(ConnectionError::LimitExceeded);
+    }
     if value["totalCount"].as_u64() != Some(nodes.len() as u64)
         || value["pageInfo"]["hasNextPage"] != false
     {
         return Err(ConnectionError::IncompleteRead);
     }
     Ok(nodes)
+}
+
+#[cfg(test)]
+mod complete_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_further_page_is_a_limit_but_a_count_mismatch_is_incomplete() {
+        let more = json!({"totalCount": 101, "pageInfo": {"hasNextPage": true}, "nodes": [{}]});
+        assert_eq!(complete(&more), Err(ConnectionError::LimitExceeded));
+        let short = json!({"totalCount": 2, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
+        assert_eq!(complete(&short), Err(ConnectionError::IncompleteRead));
+        let whole = json!({"totalCount": 1, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
+        assert_eq!(complete(&whole).map(Vec::len), Ok(1));
+    }
 }
 
 impl<T: QueryTransport> GithubClient<T> {
