@@ -1603,6 +1603,35 @@ fn wrong_provider_identity_cannot_create_a_final_or_mark_another_pr_merged() {
 }
 
 #[test]
+fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budget() {
+    let (_root, store, item) = fixture(1, true, false);
+    let network = Failure {
+        cancelled: false,
+        kind: monitoring::OperationFailure::Network,
+        message: "Provider read unreachable.".into(),
+        retry_after_seconds: None,
+        origin: crate::backpressure::Origin::Github,
+        duck_setup: false,
+        resume: Default::default(),
+    };
+    let policy = crate::retry::TRANSIENT;
+    let mut now = NOW + 21;
+    for retry in 0..u32::from(policy.max_attempts) - 1 {
+        synchronize(&store, &item, Err(network.clone()), now).unwrap();
+        let retry_at = store.load_actions().unwrap().observations[0]
+            .retry_at
+            .unwrap();
+        assert!((1..=policy.ceiling(retry)).contains(&(retry_at - now)));
+        now = retry_at;
+    }
+    synchronize(&store, &item, Err(network), now).unwrap();
+    let observed = store.load_actions().unwrap().observations.remove(0);
+    assert_eq!(observed.failures, policy.max_attempts);
+    assert_eq!(observed.retry_at, None);
+    request_observation_retry(&store, &item, now).unwrap();
+}
+
+#[test]
 fn observation_retry_after_and_original_mutation_ownership_survive_retry_requests() {
     let (_root, store, item) = fixture(1, true, false);
     let run = completed_final(&store, &item);
