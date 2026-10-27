@@ -5,6 +5,17 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Add an explicit unsigned-public Chocolatey distribution mode (`PublicUnsigned`)
+  with commit-pinned MIT license metadata, `webview2-runtime` dependency
+  provisioning, bounded WebView2 registration verification and visible trust
+  disclosures while preserving signed-only verification for `Public` (#62, #64).
+- Add tag-gated Windows release asset publication (`publish-windows`) that
+  preserves macOS release assets and idempotent Chocolatey submission
+  (`choco-publish`) that records `submitted`, `awaiting_moderation`, `rejected`
+  and `publicly_approved` states separately (#62, #64).
+
 ## 0.5.1 - 2026-10-26
 
 Quieter reviews and notifications, and steadier retries.

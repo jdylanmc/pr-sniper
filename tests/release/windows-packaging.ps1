@@ -450,6 +450,7 @@ public class PackagingFixture { public static void Main() {} }
     Check ($nuspec.package.metadata.version -ceq '0.1.1-localtest') 'Test package must be a prerelease.'
     Check ($nuspec.package.metadata.authors -ceq 'Dylan McCurry') 'Preserve actual authorship.'
     Check (-not $nuspec.package.metadata.licenseUrl) 'Do not invent a project license.'
+    Check (-not $nuspec.package.metadata.dependencies) 'Private lifecycle tests must not install a shared runtime dependency.'
     Check ((Get-FileHash (Join-Path $arguments.Destination 'tools\installer.exe')).Hash -ceq $hash) 'Pin exact local bytes.'
     $installScript = Join-Path $arguments.Destination 'tools\chocolateyinstall.ps1'
     Reject { & $installScript } 'explicit consent for this exact installer'
@@ -468,6 +469,71 @@ public class PackagingFixture { public static void Main() {} }
     $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
     function Get-ChocolateyWebFile { }
     Reject { & $installScript } 'Windows-trusted embedded Authenticode'
+    $publicMetadata.mode = 'PublicUnsigned'
+    $publicMetadata.signer_thumbprint = $null
+    $publicMetadata.signer_subject = $null
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    $downloadFixture = @{ Corrupt = $false }
+    $webViewFixture = @{ Version = '154.0.4258.62'; Reads = 0 }
+    function Get-ItemProperty {
+        param($LiteralPath, $ErrorAction)
+        if ($LiteralPath -notmatch '\\EdgeUpdate\\Clients\\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5\}$') {
+            throw 'Fixture refuses unrelated registry reads.'
+        }
+        return [pscustomobject]@{ pv = $webViewFixture.Version }
+    }
+    function Get-ChocolateyWebFile {
+        param($PackageName, $FileFullPath, $Url64bit, $Checksum64, $ChecksumType64)
+        Check ($PackageName -ceq 'pr-sniper' -and $Url64bit -ceq $publicMetadata.url -and
+            $Checksum64 -ieq $hash -and $ChecksumType64 -ceq 'sha256') 'Public download uses the immutable URL and exact SHA-256.'
+        if ($downloadFixture.Corrupt) {
+            [IO.File]::WriteAllText($FileFullPath, 'Tampered download; never execute.')
+        } else { Copy-Item -LiteralPath $executable -Destination $FileFullPath -Force }
+    }
+    $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = ''
+    Reject { & $installScript } 'Fixture boundary reached'
+    $downloadFixture.Corrupt = $true
+    Reject { & $installScript } 'Installer checksum mismatch'
+    $downloadFixture.Corrupt = $false
+    $publicMetadata.signer_subject = 'CN=MisleadingPublisher'
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    Reject { & $installScript } 'must not claim an Authenticode publisher'
+    $publicMetadata.signer_subject = $null
+    $publicMetadata.url = 'https://example.invalid/unapproved-installer.exe'
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    Reject { & $installScript } 'Unexpected public installer URL'
+    $publicMetadata.url = 'https://github.com/jdylanmc/pr-sniper/releases/download/v0.1.1/pr-sniper-0.1.1-x64-setup.exe'
+    $publicMetadata.commit = 'invalid'
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    Reject { & $installScript } 'Invalid public release'
+    $publicMetadata.mode = 'Unexpected'
+    $publicMetadata | ConvertTo-Json | Set-Content $metadataPath -Encoding utf8
+    Reject { & $installScript } 'Unknown package distribution mode'
+    Copy-Item -LiteralPath $executable -Destination (Join-Path $arguments.Destination 'tools\installer.exe') -Force
+    . (Join-Path $repository 'scripts\windows-webview2.ps1')
+    Check ((Wait-PrSniperWebView2Runtime -TimeoutSeconds 0).ToString() -ceq '154.0.4258.62') 'A registered runtime is ready immediately.'
+    foreach ($unregistered in @('', '0.0.0.0', 'not-a-version')) {
+        $webViewFixture.Version = $unregistered
+        Reject { Wait-PrSniperWebView2Runtime -TimeoutSeconds 0 } 'No application installer was started'
+    }
+    function Get-ItemProperty {
+        param($LiteralPath, $ErrorAction)
+        if ($LiteralPath -match 'HKEY_LOCAL_MACHINE') {
+            throw [System.Management.Automation.ItemNotFoundException]::new('Fixture runtime absent.')
+        }
+        return [pscustomobject]@{ pv = '154.0.4258.62' }
+    }
+    Check ((Wait-PrSniperWebView2Runtime -TimeoutSeconds 0).ToString() -ceq '154.0.4258.62') 'A missing machine registration falls back to the invoking user.'
+    function Get-ItemProperty { throw 'Fixture registry access denied.' }
+    Reject { Wait-PrSniperWebView2Runtime -TimeoutSeconds 0 } 'registry access denied'
+    $webViewFixture.Reads = 0
+    function Get-ItemProperty {
+        $webViewFixture.Reads++
+        return [pscustomobject]@{ pv = $(if ($webViewFixture.Reads -le 2) { '0.0.0.0' } else { '154.0.4258.62' }) }
+    }
+    Check ((Wait-PrSniperWebView2Runtime -TimeoutSeconds 1).ToString() -ceq '154.0.4258.62' -and
+        $webViewFixture.Reads -eq 3) 'Delayed registration is retried within the bounded wait.'
+    Remove-Item Function:\Get-ItemProperty
     [IO.File]::WriteAllBytes($metadataPath, $originalMetadata)
     $env:PR_SNIPER_UNSIGNED_LOCAL_TEST_SHA256 = ''
     $arguments.Destination = Join-Path $fixture 'duplicate'
@@ -489,8 +555,54 @@ public class PackagingFixture { public static void Main() {} }
     $arguments.Url = 'https://github.com/jdylanmc/pr-sniper/releases/download/v0.1.1/pr-sniper-0.1.1-x64-setup.exe'
     $arguments.ExpectedThumbprint = 'A' * 40
     $arguments.ExpectedSubject = 'CN=Test'
-    $arguments.LicenseUrl = 'https://example.invalid/fixture-only'
+    $arguments.LicenseUrl = "https://github.com/jdylanmc/pr-sniper/blob/$($arguments.Commit)/LICENSE"
     Reject { & $generator @arguments } 'Windows-trusted embedded Authenticode'
+
+    $arguments.Mode = 'PublicUnsigned'
+    Reject { & $generator @arguments } 'must not claim an Authenticode publisher'
+    $arguments.Remove('ExpectedThumbprint')
+    $arguments.Remove('ExpectedSubject')
+    $arguments.LicenseUrl = 'https://example.invalid/unapproved-license'
+    Reject { & $generator @arguments } 'MIT license URL at the exact release commit'
+    $arguments.LicenseUrl = "https://github.com/jdylanmc/pr-sniper/blob/$($arguments.Commit)/LICENSE"
+    function python {
+        Check ($args[-1] -ceq 'check-windows-release') 'Unsigned public generation retains the exact-tag Windows/macOS release gate.'
+        $global:LASTEXITCODE = 0
+        '{"sha":"' + ('a' * 40) + '","version":"0.1.1"}'
+    }
+    function Invoke-WebRequest {
+        param($Uri, $OutFile)
+        if ($Uri -cne $arguments.Url) { throw 'Fixture download URL mismatch.' }
+        Copy-Item -LiteralPath $executable -Destination $OutFile
+    }
+    & $generator @arguments | Out-Null
+    $publicNuspec = [xml](Get-Content (Join-Path $arguments.Destination 'pr-sniper.nuspec') -Raw)
+    Check ($publicNuspec.package.metadata.id -ceq 'pr-sniper' -and
+        $publicNuspec.package.metadata.version -ceq '0.1.1') 'Unsigned public delivery uses the stable public identity, not the private test package.'
+    Check ($publicNuspec.package.metadata.licenseUrl -ceq $arguments.LicenseUrl) 'Public license is pinned to the exact source commit.'
+    Check ($publicNuspec.package.metadata.description -match 'UNSIGNED PUBLIC RELEASE' -and
+        $publicNuspec.package.metadata.description -match 'do not disable security protections') 'Unsigned public trust limitations are disclosed.'
+    Check ($publicNuspec.package.metadata.dependencies.dependency.id -ceq 'webview2-runtime' -and
+        $publicNuspec.package.metadata.dependencies.dependency.version -ceq '[154.0.4258.62,)') 'Public packages provision the reviewed WebView2 dependency before application installation.'
+    Check (-not (Test-Path (Join-Path $arguments.Destination 'tools\installer.exe'))) 'Public packages download immutable release bytes, never embed a private candidate.'
+    $unsignedMetadata = Get-Content (Join-Path $arguments.Destination 'tools\installer.json') -Raw | ConvertFrom-Json
+    Check ($unsignedMetadata.mode -ceq 'PublicUnsigned' -and
+        -not $unsignedMetadata.signer_subject -and -not $unsignedMetadata.signer_thumbprint) 'Unsigned metadata does not fabricate a publisher identity.'
+    $arguments.Destination = Join-Path $fixture 'public-tampered-download'
+    function Invoke-WebRequest {
+        param($Uri, $OutFile)
+        [IO.File]::WriteAllText($OutFile, 'Wrong public installer bytes; never execute.')
+    }
+    Reject { & $generator @arguments } 'Public release bytes differ'
+    Check (-not (Test-Path (Join-Path $arguments.Destination 'pr-sniper.nuspec'))) 'A mismatched public download cannot emit a publishable package.'
+    $arguments.Destination = Join-Path $fixture 'public-wrong-provenance'
+    function python { $global:LASTEXITCODE = 0; '{"sha":"' + ('b' * 40) + '","version":"0.1.1"}' }
+    Reject { & $generator @arguments } 'Release provenance mismatch'
+    Check (-not (Test-Path $arguments.Destination)) 'Wrong-source public generation fails before creating output.'
+    function python { $global:LASTEXITCODE = 1 }
+    Reject { & $generator @arguments } 'release preflight failed'
+    Remove-Item Function:\python
+    Remove-Item Function:\Invoke-WebRequest
 
     . (Join-Path $repository 'scripts\windows-signature.ps1')
     $script:signature = [pscustomobject]@{
@@ -505,6 +617,20 @@ public class PackagingFixture { public static void Main() {} }
     function Get-Command { param($Name, $ErrorAction) return @{ Source = 'Invoke-FixtureSignTool' } }
     $script:verifierCode = 0
     function Invoke-FixtureSignTool { $global:LASTEXITCODE = $script:verifierCode }
+    foreach ($status in @('Valid', 'HashMismatch', 'NotTrusted', 'UnknownError')) {
+        $signature.Status = $status
+        Reject { Assert-UnsignedWindowsArtifact $executable } 'not an unsigned fallback'
+    }
+    $signature.Status = 'NotSigned'
+    Reject { Assert-UnsignedWindowsArtifact $executable } 'not an unsigned fallback'
+    $publisher = $signature.SignerCertificate
+    $unsignedTimestamp = $signature.TimeStamperCertificate
+    $signature.SignerCertificate = $null
+    $signature.TimeStamperCertificate = $null
+    Assert-UnsignedWindowsArtifact $executable
+    Check ($true) 'Only an actually unsigned artifact passes the explicit unsigned policy.'
+    $signature.SignerCertificate = $publisher
+    $signature.TimeStamperCertificate = $unsignedTimestamp
     foreach ($status in @('NotSigned', 'HashMismatch', 'NotTrusted', 'UnknownError')) {
         $signature.Status = $status
         Reject { Assert-TrustedWindowsSignature $executable ('A' * 40) 'CN=Publisher' } 'Windows-trusted'
