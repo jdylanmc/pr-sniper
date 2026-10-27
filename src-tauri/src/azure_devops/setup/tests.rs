@@ -1000,3 +1000,40 @@ async fn reads_share_one_token_cache_per_located_cli() {
         1
     );
 }
+
+#[tokio::test]
+async fn a_rebind_drops_the_previous_identitys_read_tokens() {
+    let harness = Harness::new(World::default());
+    harness.setup.check().await;
+    let tenant = TenantId::parse(TENANT).unwrap();
+    let before = harness.setup.token_source();
+    before.token(&tenant).await.unwrap();
+    let runs = |harness: &Harness| {
+        harness
+            .actions()
+            .iter()
+            .filter(|action| *action == "account")
+            .count()
+    };
+    let cached = runs(&harness);
+    harness.setup.token_source().token(&tenant).await.unwrap();
+    assert_eq!(runs(&harness), cached, "same binding reuses the cache");
+
+    harness.world().connection = Some((200, identity_body(BLAKE, "Blake Example")));
+    harness.setup.check().await;
+    harness.setup.use_signed_in_account().await.unwrap();
+    let after = harness.setup.token_source();
+    assert!(!Arc::ptr_eq(&before, &after));
+    let rebound = runs(&harness);
+    after.token(&tenant).await.unwrap();
+    // No clock change: a fresh Azure CLI token for the rebound identity.
+    assert_eq!(runs(&harness), rebound + 1);
+
+    let renamed = harness.setup.token_source();
+    harness
+        .world()
+        .organizations
+        .push(("fabrikam", 401, Some(TENANT)));
+    harness.setup.set_organization("fabrikam").await.unwrap();
+    assert!(!Arc::ptr_eq(&renamed, &harness.setup.token_source()));
+}

@@ -4723,6 +4723,8 @@ export async function mountSettings(
           .forEach((button, index) => {
             const person = found.people[index];
             button.onclick = () => {
+              // Results of an earlier query never answer the current one.
+              if (read !== generation) return;
               if (!picker.open || lookupRevision !== revision) {
                 alert.textContent = "Settings changed";
                 alert.hidden = false;
@@ -4762,9 +4764,9 @@ export async function mountSettings(
       const query = input.value.trim();
       clearTimeout(timer);
       alert.hidden = true;
+      matches.replaceChildren();
       if (!query) {
         status.textContent = "";
-        matches.replaceChildren();
         return;
       }
       status.textContent = "Searching";

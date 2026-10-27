@@ -454,7 +454,16 @@ impl Setup {
         })
     }
 
-    /// The token source for reads; rebuilt when Azure CLI moves.
+    /// Drops cached read tokens: they belong to the previously bound identity.
+    fn reset_tokens(&self) {
+        *self
+            .tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// The token source for reads; rebuilt when Azure CLI moves or the
+    /// binding changes.
     pub fn token_source(&self) -> Arc<dyn TokenSource> {
         let az = (self.backends.locate)(Program::Az);
         let mut tokens = self
@@ -630,6 +639,7 @@ impl Setup {
                 };
                 if (self.backends.persist)(&next).is_ok() {
                     inner.binding = next;
+                    self.reset_tokens();
                 } else if binding.identity.is_none() {
                     // Never show an unbound identity as connected; the next
                     // probe retries the write.
@@ -665,6 +675,7 @@ impl Setup {
                 };
                 (self.backends.persist)(&next).map_err(|_| SetupError::Storage)?;
                 inner.binding = next;
+                self.reset_tokens();
                 inner.probed = None;
                 inner.generation += 1;
             }
@@ -690,6 +701,7 @@ impl Setup {
             };
             (self.backends.persist)(&next).map_err(|_| SetupError::Storage)?;
             inner.binding = next;
+            self.reset_tokens();
             inner.generation += 1;
         }
         Ok(self.check().await)

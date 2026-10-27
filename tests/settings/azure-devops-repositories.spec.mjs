@@ -27,9 +27,11 @@ const connected = {
   account: { state: "connected", identity: avery },
   checking: false,
 };
+const DANA = "00000000-0000-0000-0000-000000000004";
 const directory = [
   { id: BLAKE, login: "Blake Example", mail: "blake@contoso.example" },
   { id: CASEY, login: "Blake Two", mail: "blake2@contoso.example" },
+  { id: DANA, login: "Dana Example", mail: "dana@contoso.example" },
 ];
 
 /** In-page fake of the native Azure DevOps setup, repository and people
@@ -38,7 +40,7 @@ async function azureBackend(page, setup = connected) {
   await page.addInitScript(
     ({ setup, AVERY, KEY, directory }) => {
       const original = window.__TAURI_INTERNALS__.invoke;
-      window.__ado = { setup, calls: [], fallback: false };
+      window.__ado = { setup, calls: [], fallback: false, hold: {} };
       const reply = (value) =>
         window.__settingsTrack(
           Promise.resolve(JSON.parse(JSON.stringify(value))),
@@ -69,7 +71,21 @@ async function azureBackend(page, setup = connected) {
               repository: { id: KEY, name: "contoso/Web/app" },
               account_generation: 0,
             });
-          case "search_provider_people":
+          case "search_provider_people": {
+            const held = ado.hold[args.query];
+            if (held)
+              return window.__settingsTrack(
+                held.then(() =>
+                  JSON.parse(
+                    JSON.stringify({
+                      source: "directory",
+                      people: directory.filter((person) =>
+                        person.login.toLowerCase().startsWith(args.query),
+                      ),
+                    }),
+                  ),
+                ),
+              );
             return reply(
               ado.fallback
                 ? {
@@ -83,6 +99,7 @@ async function azureBackend(page, setup = connected) {
                     ),
                   },
             );
+          }
         }
         return Promise.reject(`unexpected ${command}`);
       };
@@ -278,4 +295,56 @@ test("Azure DevOps URLs wait for a connected account", async ({
     dialog.getByRole("button", { name: "Add & configure" }),
   ).toBeDisabled();
   expect(await calls(page, "resolve_provider_repository")).toEqual([]);
+});
+
+test("teammate results of an earlier query are cleared and never picked", async ({
+  page,
+  store,
+}) => {
+  await providerFixture(page, store);
+  await azureBackend(page);
+  await repositoryPage(page, store);
+  const dialog = await addByUrl(page, ADO_URL);
+  await dialog.getByRole("button", { name: "Add & configure" }).click();
+  const editor = page.getByRole("dialog", {
+    name: "contoso/Web/app",
+    exact: true,
+  });
+  const allPulls = editor.getByRole("switch", { name: "All pull requests" });
+  if (await allPulls.isChecked()) await allPulls.setChecked(false);
+  await openFilters(page, editor);
+  await openRule(page, "include_users");
+  await page.locator(".admission-add").click();
+  const picker = page.getByRole("dialog", { name: "Add people", exact: true });
+  const person = picker.getByLabel("Person", { exact: true });
+  await person.fill("bl");
+  await expect(picker.locator("[data-person]")).toHaveCount(2);
+  // The next query's reply is held: the old results must not answer it.
+  await page.evaluate(() => {
+    window.__ado.release = undefined;
+    window.__ado.hold.da = new Promise((resolve) => {
+      window.__ado.release = resolve;
+    });
+  });
+  await person.fill("da");
+  await expect(picker.locator("[data-person]")).toHaveCount(0);
+  await person.press("Enter");
+  await expect(picker).toBeVisible();
+  await page.waitForFunction(() =>
+    window.__ado.calls.some(
+      (call) =>
+        call.command === "search_provider_people" && call.args.query === "da",
+    ),
+  );
+  await page.evaluate(() => window.__ado.release());
+  await expect(picker.locator("[data-person]")).toHaveCount(1);
+  await expect(picker.locator(`[data-person="${DANA}"]`)).toBeVisible();
+  await person.press("Enter");
+  await expect(picker).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Remove Dana Example", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove Blake Example", exact: true }),
+  ).toHaveCount(0);
 });
