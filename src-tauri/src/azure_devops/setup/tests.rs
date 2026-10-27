@@ -495,6 +495,34 @@ async fn binds_the_connection_data_identity_and_rejects_another_one() {
 }
 
 #[tokio::test]
+async fn an_unsaved_first_binding_is_never_shown_connected() {
+    let harness = Harness::new(World {
+        persist_fails: true,
+        ..World::default()
+    });
+    let view = harness.setup.check().await;
+    assert_eq!(view.account, AccountView::Failed);
+    assert_eq!(harness.setup.binding().identity, None);
+
+    harness.world().persist_fails = false;
+    let view = harness.setup.check().await;
+    assert_eq!(
+        view.account,
+        AccountView::Connected {
+            identity: identity(AVERY, "Avery Example")
+        }
+    );
+    harness.world().connection = Some((200, identity_body(BLAKE, "Blake Example")));
+    assert_eq!(
+        harness.setup.check().await.account,
+        AccountView::WrongIdentity {
+            identity: identity(BLAKE, "Blake Example"),
+            expected: identity(AVERY, "Avery Example"),
+        }
+    );
+}
+
+#[tokio::test]
 async fn organization_changes_validate_and_drop_the_previous_identity() {
     let harness = Harness::new(World {
         organizations: vec![
@@ -570,7 +598,17 @@ fn plans_installs_per_platform() {
         InstallPlan::Run {
             installer: Installer::Winget,
             program: PathBuf::from("/fixture/winget.exe"),
-            args: vec!["install", "-e", "--id", "Microsoft.AzureCLI"],
+            args: vec![
+                "install",
+                "-e",
+                "--id",
+                "Microsoft.AzureCLI",
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+                "--disable-interactivity",
+            ],
         }
     );
     assert_eq!(
@@ -578,7 +616,17 @@ fn plans_installs_per_platform() {
         InstallPlan::Run {
             installer: Installer::Winget,
             program: PathBuf::from("/fixture/winget.exe"),
-            args: vec!["upgrade", "-e", "--id", "Microsoft.AzureCLI"],
+            args: vec![
+                "upgrade",
+                "-e",
+                "--id",
+                "Microsoft.AzureCLI",
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+                "--disable-interactivity",
+            ],
         }
     );
     for (platform, homebrew, winget) in [
@@ -650,7 +698,20 @@ async fn installs_with_winget_on_windows() {
         .find(|(_, args, ..)| args[0] == "install")
         .unwrap();
     assert_eq!(program, "/fixture/winget.exe");
-    assert_eq!(args, &["install", "-e", "--id", "Microsoft.AzureCLI"]);
+    assert_eq!(
+        args,
+        &[
+            "install",
+            "-e",
+            "--id",
+            "Microsoft.AzureCLI",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--disable-interactivity",
+        ]
+    );
 }
 
 #[tokio::test]

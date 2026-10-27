@@ -101,11 +101,18 @@ pub fn install_plan(
         (Platform::Windows, _, Some(program)) => InstallPlan::Run {
             installer: Installer::Winget,
             program,
+            // stdin is closed: accept the agreements the user's click implies
+            // and stay on the winget source so msstore terms never prompt.
             args: vec![
                 if upgrade { "upgrade" } else { "install" },
                 "-e",
                 "--id",
                 WINGET_ID,
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+                "--disable-interactivity",
             ],
         },
         _ => InstallPlan::Page,
@@ -459,14 +466,18 @@ impl Setup {
         let mut inner = self.lock();
         inner.probing -= 1;
         if inner.generation == generation && inner.binding == binding {
+            let mut probed = probed;
             if let Some(identity) = &probed.bind {
                 let next = Binding {
                     identity: Some(identity.clone()),
                     ..binding
                 };
-                // An unsaved binding is retried on the next probe.
                 if (self.backends.persist)(&next).is_ok() {
                     inner.binding = next;
+                } else if binding.identity.is_none() {
+                    // Never show an unbound identity as connected; the next
+                    // probe retries the write.
+                    probed.account = AccountView::Failed;
                 }
             }
             inner.probed = Some(probed);
