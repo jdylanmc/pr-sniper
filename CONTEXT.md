@@ -43,7 +43,7 @@ Provider-neutral threads, publication, outcomes and readiness: review threads re
 _Avoid_: GitHub client (for writes)
 
 **Provider Capability**:
-What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Discovery (repositories, people) gates adding a repository; review gates monitoring. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves.
+What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Discovery (repositories, people) gates adding a repository; read gates monitoring (polling, admission); review (read, threads, publish, readiness) gates running a review, so admitted work waits until it is available. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves.
 _Avoid_: GitHub-only check
 
 **Accessible Repository**:
@@ -190,7 +190,7 @@ _Avoid_: Startup checkbox as effective state
 ### Reviews and iterations
 
 **Iteration**:
-One tracked revision of a PR. A new head SHA starts a new Iteration and supersedes older work; a verified reopen after cleanup starts a new one even at the same SHA. Earlier Iterations remain history. Merged or closed PRs move to Reviewed.
+One tracked revision of a PR. A new head SHA starts a new Iteration (Azure DevOps: the latest provider iteration's source commit, so each push is one) and supersedes older work; a verified reopen after cleanup starts a new one even at the same SHA. Earlier Iterations remain history. Merged or closed PRs move to Reviewed.
 _Avoid_: Revision (as tracked unit; "revision" means the provider commit)
 
 **One-review-per-head rule**:

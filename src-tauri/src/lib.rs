@@ -106,6 +106,17 @@ struct GithubAuth {
     pending_failure: Option<GithubAuthFailure>,
     failure: Option<GithubAuthFailure>,
     accounts: BTreeMap<String, GithubAccountState>,
+    /// The bound Azure DevOps identity, a repository account whose sign-in
+    /// Azure CLI owns (ADR 0026). Monitoring only; never a GitHub session.
+    azure_devops: Option<AzureDevopsAccount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AzureDevopsAccount {
+    identity: provider::Person,
+    /// Set by a credential failure; cleared once Settings sees the identity
+    /// connected again, which resumes its parked work.
+    reconnect: Option<ConnectionError>,
 }
 
 struct ActiveGithubAuth {
@@ -210,6 +221,62 @@ impl GithubAuth {
             pending_failure: None,
             failure: None,
             accounts: BTreeMap::new(),
+            azure_devops: None,
+        }
+    }
+
+    /// Follows the Azure DevOps setup: the bound identity, and whether it is
+    /// signed in. `connected: None` keeps the current state.
+    fn set_azure_devops_account(
+        &mut self,
+        identity: Option<provider::Person>,
+        connected: Option<bool>,
+    ) {
+        let previous = self.azure_devops.take();
+        self.azure_devops = identity.map(|identity| {
+            let reconnect = match (connected, previous) {
+                (Some(true), _) => None,
+                (Some(false), Some(previous)) if previous.identity.id == identity.id => {
+                    previous.reconnect.or(Some(ConnectionError::SignedOut))
+                }
+                (Some(false), _) => Some(ConnectionError::SignedOut),
+                (None, Some(previous)) if previous.identity.id == identity.id => previous.reconnect,
+                (None, _) => None,
+            };
+            AzureDevopsAccount {
+                identity,
+                reconnect,
+            }
+        });
+    }
+
+    /// A poll of the Azure DevOps account failed. Only credential failures
+    /// hold its work until it connects again; others retry on their own.
+    fn publish_azure_devops_failure(&mut self, account_id: &str, error: ConnectionError) {
+        if let Some(account) = self
+            .azure_devops
+            .as_mut()
+            .filter(|account| account.identity.id == account_id)
+        {
+            if matches!(
+                monitoring::check_error(error),
+                monitoring::MonitoringError::Recoverable {
+                    failure: monitoring::OperationFailure::Credentials,
+                    ..
+                }
+            ) {
+                account.reconnect = Some(error);
+            }
+        }
+    }
+
+    /// Any repository account, GitHub or Azure DevOps, may finish a poll.
+    fn repository_account_allowed(&self, account_id: &str) -> Result<(), ConnectionError> {
+        match &self.azure_devops {
+            Some(account) if account.identity.id == account_id => {
+                account.reconnect.map_or(Ok(()), Err)
+            }
+            _ => self.account_session_allowed(account_id),
         }
     }
 
@@ -412,6 +479,15 @@ impl GithubAuth {
     }
 
     fn monitoring_accounts(&self) -> BTreeMap<String, monitoring::AccountAvailability> {
+        let azure_devops = self.azure_devops.iter().map(|account| {
+            (
+                account.identity.id.clone(),
+                monitoring::AccountAvailability {
+                    login: account.identity.login.clone(),
+                    connected: account.reconnect.is_none(),
+                },
+            )
+        });
         self.accounts
             .iter()
             .map(|(id, state)| {
@@ -429,12 +505,20 @@ impl GithubAuth {
                     },
                 )
             })
+            .chain(azure_devops)
             .collect()
     }
 
     fn setup_accounts(&self) -> BTreeMap<String, monitoring::AccountAvailability> {
         let mut accounts = self.monitoring_accounts();
         for (id, account) in &mut accounts {
+            if self
+                .azure_devops
+                .as_ref()
+                .is_some_and(|ado| &ado.identity.id == id)
+            {
+                continue;
+            }
             account.connected = matches!(
                 self.accounts.get(id),
                 Some(GithubAccountState::Connected(_))
@@ -891,6 +975,21 @@ pub(crate) fn read_session(
 ) -> Result<(provider::Person, Box<dyn ProviderReader + Send + Sync>), ConnectionError> {
     let (identity, client) = github_session(host, account_id)?;
     Ok((identity, Box::new(client)))
+}
+
+/// Read-interface session for a repository account of either provider.
+pub(crate) fn repository_read_session(
+    app: &tauri::AppHandle,
+    provider: &storage::ProviderId,
+    account_id: &str,
+) -> Result<(provider::Person, Box<dyn ProviderReader + Send + Sync>), ConnectionError> {
+    match provider {
+        storage::ProviderId::Github => read_session(&app.state::<Host>(), account_id),
+        storage::ProviderId::AzureDevops => {
+            let (identity, reader) = azure_devops::host::read_session(app, account_id)?;
+            Ok((identity, Box::new(reader)))
+        }
+    }
 }
 
 /// Full provider session: reads, threads, publication, reviewer outcomes and
@@ -1608,7 +1707,7 @@ fn finish_monitored_ticket(
         monitoring::MonitoringError::Storage("GitHub connection state is unavailable.".into())
     })?;
     let account_available = auth
-        .account_session_allowed(&ticket.provider_account_id)
+        .repository_account_allowed(&ticket.provider_account_id)
         .is_ok();
     let accounts = auth.monitoring_accounts();
     drop(auth);
@@ -1694,7 +1793,8 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
         tauri::async_runtime::spawn_blocking(move || {
             let host = app.state::<Host>();
             let observed = (|| {
-                let (_, client) = read_session(&host, &ticket.provider_account_id)?;
+                let (_, client) =
+                    repository_read_session(&app, &ticket.provider, &ticket.provider_account_id)?;
                 let connection = client.connect(&ticket.name, Some(&ticket.provider_account_id))?;
                 if connection.repository.id != ticket.provider_repository_id {
                     return Err(ConnectionError::RepositoryChanged);
@@ -1743,6 +1843,28 @@ fn poll_repository(
     Ok((connection, pull_requests))
 }
 
+/// One Azure DevOps repository poll as its bound identity. Mentions and the
+/// review-state heartbeat are not read for Azure DevOps yet: admission and
+/// revisions come from the pull requests alone.
+fn poll_azure_devops(
+    app: &tauri::AppHandle,
+    ticket: &monitoring::PollTicket,
+) -> Result<(monitoring::PollResult, follow_up::host::Scan), ConnectionError> {
+    let (identity, reader) = azure_devops::host::read_session(app, &ticket.provider_account_id)?;
+    if identity.id != ticket.provider_account_id {
+        return Err(ConnectionError::WrongIdentity);
+    }
+    let (connection, pull_requests) = poll_repository(&reader, ticket)?;
+    Ok((
+        monitoring::PollResult {
+            connection,
+            pull_requests,
+            states: BTreeMap::new(),
+        },
+        follow_up::host::Scan::default(),
+    ))
+}
+
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
@@ -1755,7 +1877,11 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || {
             let ticket_for_poll = ticket.clone();
             let account_id = ticket.provider_account_id.clone();
+            let provider = ticket.provider.clone();
             let result = (|| {
+                if provider == storage::ProviderId::AzureDevops {
+                    return poll_azure_devops(&app, &ticket_for_poll);
+                }
                 let host = app.state::<Host>();
                 let (identity, client) = provider_session(&host, &account_id)?;
                 if identity.id != ticket_for_poll.provider_account_id {
@@ -1795,10 +1921,13 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             })();
             let connection_failure = result.as_ref().err().copied();
             let host = app.state::<Host>();
-            if matches!(
-                connection_failure,
-                Some(ConnectionError::Network | ConnectionError::Timeout)
-            ) {
+            let github = provider == storage::ProviderId::Github;
+            if github
+                && matches!(
+                    connection_failure,
+                    Some(ConnectionError::Network | ConnectionError::Timeout)
+                )
+            {
                 let observation = connectivity::probe(backpressure::Origin::Github);
                 if let (Ok(store), Ok(now)) = (host.store.lock(), now_seconds()) {
                     if let Err(error) = connectivity::record(
@@ -1811,8 +1940,16 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     }
                 }
             }
-            if let Some(error) = connection_failure {
-                apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error));
+            match connection_failure {
+                Some(error) if github => {
+                    apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error))
+                }
+                Some(error) => {
+                    if let Ok(mut auth) = host.github_auth.lock() {
+                        auth.publish_azure_devops_failure(&account_id, error);
+                    }
+                }
+                None => {}
             }
             let saved = match now_seconds() {
                 Ok(now) => finish_monitored_ticket(
@@ -2111,7 +2248,7 @@ fn resource_session_error(edit: &storage::ResourceEdit, message: &str) -> Resour
         ..
     } = edit
     {
-        if repository.capabilities().read.is_available() {
+        if repository.provider == storage::ProviderId::Github {
             if let Some(account_id) = &repository.provider_account_id {
                 return RepositoryReadError::session(account_id, ConnectionError::Configuration)
                     .into();
@@ -2402,7 +2539,7 @@ async fn admit_explicit_pull_request(
             .provider_account_id
             .as_deref()
             .ok_or("Choose a connected GitHub repository account.")?;
-        if !expected.capabilities().read.is_available() || number == 0 {
+        if expected.provider != storage::ProviderId::Github || number == 0 {
             return Err("Use a supported GitHub pull request URL.".into());
         }
         let read_at = now_seconds()?;
@@ -4298,7 +4435,8 @@ async fn verify_provider_connection(
     let binding = repository
         .account_binding()
         .ok_or(ConnectionError::Configuration)?;
-    if !repository.capabilities().read.is_available() {
+    // Azure DevOps reads go through monitoring, not this GitHub check.
+    if repository.provider != storage::ProviderId::Github {
         return Err(ConnectionError::Configuration);
     }
     let expected = repository.clone();
@@ -4348,7 +4486,7 @@ async fn read_provider_metadata(
     let binding = repository
         .account_binding()
         .ok_or(ConnectionError::Configuration)?;
-    if !repository.capabilities().read.is_available()
+    if repository.provider != storage::ProviderId::Github
         || binding.account.account_id != expected_account_id
     {
         return Err(ConnectionError::WrongIdentity);
@@ -4776,10 +4914,14 @@ pub fn run() {
                 mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
-            app.manage(azure_devops::host::create(
-                app.handle().clone(),
-                azure_devops_binding,
-            )?);
+            let azure_devops_setup =
+                azure_devops::host::create(app.handle().clone(), azure_devops_binding)?;
+            azure_devops::host::sync_account(
+                app.handle(),
+                &azure_devops_setup,
+                &azure_devops_setup.view(),
+            );
+            app.manage(azure_devops_setup);
             app.manage(azure_devops::host::read_transport()?);
             if let Err(error) = control::start(app.handle(), &root) {
                 report(app.handle(), error);

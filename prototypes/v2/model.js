@@ -1374,7 +1374,6 @@
             provider: "azure_devops",
             name: payload.name,
             accountId: AZURE_ACCOUNT,
-            // Azure DevOps pull requests are not polled yet.
             enabled: false,
             scope: false,
             agentIds: [],

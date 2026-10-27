@@ -65,7 +65,7 @@ impl ProviderCapabilities {
             },
             ProviderId::AzureDevops => Self {
                 discovery: Available,
-                read: No(Unavailable::NotImplemented),
+                read: Available,
                 threads: No(Unavailable::NotImplemented),
                 publish: No(Unavailable::NotImplemented),
                 readiness: No(Unavailable::NotImplemented),
@@ -75,8 +75,14 @@ impl ProviderCapabilities {
         }
     }
 
-    /// Everything monitoring and review need: reads, threads, publication and
-    /// readiness.
+    /// What polling and admission need: account, repository and pull request
+    /// reads.
+    pub fn monitor(&self) -> Capability {
+        self.read
+    }
+
+    /// Everything a review run needs: reads, threads, publication and
+    /// readiness. Admitted work waits while it is unavailable.
     pub fn review(&self) -> Capability {
         Capability::all(&[self.read, self.threads, self.publish, self.readiness])
     }

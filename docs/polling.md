@@ -72,6 +72,33 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 - Native execution re-reads gates before intent and again before transmission. Changed head/base, draft, red CI, unresolved threads, queues and insufficient permissions still block.
 - Fixture regression: `actions::tests::readiness` covers poll → teammate barrier → fresh packet → selected exit → approval → merge. No live provider writes or model inference.
 
+## Azure DevOps
+
+Same schedule, admission, retry and parking as GitHub, through the provider read interfaces (`azure_devops/read/pulls.rs`). Auth: Azure CLI token source ([ADR-0026](adr/0026-azure-devops-auth-via-azure-cli.md)).
+
+| Step          | Rule                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| List          | `GET {org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status=active`, `$top`=100 / `$skip` pages; a PR seen twice = `IncompleteRead` (retries). Over 5,000 = `LimitExceeded`. |
+| Tracked       | Missing from the active listing: read on its own (`completed` → Merged, `abandoned` → Closed).                                                                                                         |
+| Revision      | Head = `lastMergeSourceCommit` (latest iteration's source commit): each push is a new Iteration. Base = `lastMergeTargetCommit`.                                                                       |
+| Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                               |
+| Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams); path rules read changed files. No mention scan.                                                   |
+| Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages, ≤ 3,000.                                                                      |
+| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`. No patch text.   |
+| Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401 drops the token and retries once; `Retry-After` reaches the shared retry policy.                                                                  |
+| Reviews       | Admitted jobs wait (`WAITING_FOR_PROVIDER`) while `ProviderCapabilities::review` is unavailable; no review, publication or notification starts.                                                        |
+
+Parked causes (Queue › **Needs attention**):
+
+| Cause       | From                                                                                                                     |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Credentials | NotLoggedIn, NoAccountInTenant, TenantNotFound, InteractionRequired, AzMissing/AzTooOld, 401 after retry, wrong identity |
+| Permission  | TenantAccessBlocked, 403, 404                                                                                            |
+| Network     | Network, Timeout (backoff, then park)                                                                                    |
+| Failed      | Other, MalformedOutput                                                                                                   |
+
+A credential failure marks the bound identity disconnected: no further poll or Azure CLI run until Settings › Azure DevOps sees it connected again, which resumes the parked poll once.
+
 ## Lifecycle reads
 
 - Complete open listing, then explicit reads for admitted active PRs missing from it.

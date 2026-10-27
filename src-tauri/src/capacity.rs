@@ -144,6 +144,9 @@ fn due(operation: &JobOperation, now: i64) -> bool {
 
 /// A superseded run waits for its repository's next successful poll, never a timer.
 pub const WAITING_FOR_POLL: &str = "Waiting for the next poll.";
+/// Admitted work whose provider cannot run a review yet
+/// (`ProviderCapabilities::review`).
+pub const WAITING_FOR_PROVIDER: &str = "Waiting for provider review support.";
 
 pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
     let mut result = Vec::new();
@@ -197,6 +200,14 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         }
         let mut blocked_by = None;
         let mut reason = candidate.blocked;
+        if reason.is_none()
+            && repositories
+                .iter()
+                .find(|repository| repository.id == candidate.job.configuration_id)
+                .is_some_and(|repository| !repository.capabilities().review().is_available())
+        {
+            reason = Some(WAITING_FOR_PROVIDER.into());
+        }
         if reason.is_none()
             && candidate
                 .run

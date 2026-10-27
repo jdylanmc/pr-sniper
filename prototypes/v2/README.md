@@ -98,8 +98,8 @@ The same repository under another acting account is a distinct binding.
 
 A connected Azure DevOps account (demo scenario **connected**) browses its
 organization's projects and repositories, and **+ URL** takes a
-`dev.azure.com` / `*.visualstudio.com` repository URL; added repositories stay
-unmonitored. Its **Add people** is a debounced prefix search over a demo
+`dev.azure.com` / `*.visualstudio.com` repository URL; added repositories are
+set up like GitHub ones. Its **Add people** is a debounced prefix search over a demo
 directory; picks show display names.
 Personal GitHub and organization ownership are illustrated without credentials,
 network requests, or real access validation.

@@ -3,7 +3,7 @@
 
 use super::connection::HttpConnectionTransport;
 use super::read::{Client, HttpTransport, Reader, Transport};
-use super::setup::{Backends, Binding, Platform, Program, Setup, SetupView};
+use super::setup::{AccountView, Backends, Binding, Platform, Program, Setup, SetupView};
 use super::tenant::HttpHeadTransport;
 use super::token_source::system_clock;
 use crate::cli_process::SystemRunner;
@@ -102,24 +102,58 @@ pub fn read_session(
     Ok((reader.identity().clone(), reader))
 }
 
+/// Mirrors the setup into the repository account that monitoring polls as:
+/// its bound identity, and whether it is signed in. A connected identity
+/// resumes work a credential failure parked.
+pub fn sync_account(app: &tauri::AppHandle, setup: &Setup, view: &SetupView) {
+    let identity = setup.binding().identity.map(|identity| Person {
+        id: identity.id,
+        login: identity.display_name,
+    });
+    let connected = match &view.account {
+        AccountView::Connected { identity: signed } => {
+            Some(identity.as_ref().is_some_and(|bound| bound.id == signed.id))
+        }
+        AccountView::SignedOut
+        | AccountView::InteractionRequired
+        | AccountView::WrongIdentity { .. } => Some(false),
+        _ => None,
+    };
+    if let Some(host) = app.try_state::<crate::Host>() {
+        if let Ok(mut auth) = host.github_auth.lock() {
+            auth.set_azure_devops_account(identity, connected);
+        }
+    }
+}
+
 type SetupState<'a> = State<'a, Arc<Setup>>;
 
-#[tauri::command]
-pub fn azure_devops_setup_state(setup: SetupState<'_>) -> SetupView {
-    setup.view()
+fn synced(app: &tauri::AppHandle, setup: &Setup, view: SetupView) -> SetupView {
+    sync_account(app, setup, &view);
+    view
 }
 
 #[tauri::command]
-pub async fn azure_devops_check(setup: SetupState<'_>) -> Result<SetupView, String> {
-    Ok(setup.check().await)
+pub fn azure_devops_setup_state(app: tauri::AppHandle, setup: SetupState<'_>) -> SetupView {
+    synced(&app, &setup, setup.view())
+}
+
+#[tauri::command]
+pub async fn azure_devops_check(
+    app: tauri::AppHandle,
+    setup: SetupState<'_>,
+) -> Result<SetupView, String> {
+    Ok(synced(&app, &setup, setup.check().await))
 }
 
 #[tauri::command]
 pub async fn azure_devops_set_organization(
+    app: tauri::AppHandle,
     setup: SetupState<'_>,
     organization: String,
 ) -> Result<SetupView, String> {
-    Ok(setup.set_organization(&organization).await?)
+    let view = setup.set_organization(&organization).await?;
+    Ok(synced(&app, &setup, view))
 }
 
 #[tauri::command]
@@ -139,7 +173,9 @@ pub async fn azure_devops_cancel(setup: SetupState<'_>) -> Result<SetupView, Str
 
 #[tauri::command]
 pub async fn azure_devops_use_signed_in_account(
+    app: tauri::AppHandle,
     setup: SetupState<'_>,
 ) -> Result<SetupView, String> {
-    Ok(setup.use_signed_in_account().await?)
+    let view = setup.use_signed_in_account().await?;
+    Ok(synced(&app, &setup, view))
 }

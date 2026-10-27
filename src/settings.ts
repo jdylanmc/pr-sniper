@@ -2692,8 +2692,6 @@ export async function mountSettings(
         resolved.account_generation,
       );
       pendingSetup.add(value.id);
-      // Azure DevOps pull requests are not polled yet: start unmonitored.
-      if (provider === "azure_devops") setupMonitoringOff.add(value.id);
       repository = repositories().find((r) => r.id === value.id)!;
     }
     if (resolved.pull_request) {

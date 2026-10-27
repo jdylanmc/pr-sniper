@@ -566,6 +566,7 @@ impl Setup {
                 Err(E::WrongIdentity)
             }
             (AccountView::Offline, ..) => Err(E::Network),
+            (AccountView::TenantAccessBlocked, ..) => Err(E::OrganizationPolicyDenied),
             (AccountView::Failed, ..) => Err(E::BrokenCli),
             (AccountView::Unavailable, ..) => Err(match probed.cli {
                 CliView::Missing | CliView::TooOld { .. } => E::MissingCli,

@@ -434,7 +434,10 @@ fn token_failures_are_typed_without_a_request() {
             TokenError::InteractionRequired { aadsts: 50076 },
             ConnectionError::SignedOut,
         ),
-        (TokenError::TenantAccessBlocked, ConnectionError::SignedOut),
+        (
+            TokenError::TenantAccessBlocked,
+            ConnectionError::OrganizationPolicyDenied,
+        ),
         (TokenError::Network, ConnectionError::Network),
         (TokenError::Timeout, ConnectionError::Timeout),
         (TokenError::MalformedOutput, ConnectionError::BrokenCli),
@@ -670,3 +673,6 @@ fn the_reader_implements_the_provider_read_interfaces() {
         BLAKE
     );
 }
+
+mod polling;
+mod pulls;

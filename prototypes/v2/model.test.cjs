@@ -115,7 +115,7 @@ test("URL intake binds the chosen account and starts with no monitoring authorit
   assert.equal(M.repositoryName("owner/repo"), "owner/repo");
 });
 
-test("Azure DevOps intake binds the Azure DevOps account and starts unmonitored", () => {
+test("Azure DevOps intake binds the Azure DevOps account like a GitHub add", () => {
   const before = M.seed();
   const name = M.azureRepositoryName(
     "https://avery@dev.azure.com/Contoso/Fabrikam%20Web/_git/app/pullrequest/4",
