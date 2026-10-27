@@ -705,6 +705,7 @@ class ReleaseTests(unittest.TestCase):
 
                 pending_receipt = json.loads((win_dir / "choco-submission.json").read_text())
                 self.assertEqual(pending_receipt["state"], "pending_push")
+                self.assertIn("choco-intent.json", {a["name"] for a in self.api.assets})
                 with patch.object(release, "command") as cmd, \
                         self.assertRaisesRegex(
                             release.ReleaseError,
@@ -715,7 +716,58 @@ class ReleaseTests(unittest.TestCase):
                     )
                 cmd.assert_not_called()
 
+                with tempfile.TemporaryDirectory() as fresh_intent_tmp:
+                    fresh_intent_dir = Path(fresh_intent_tmp)
+                    self.windows_assets(fresh_intent_dir, trust_mode="unsigned")
+                    with patch.object(release, "command") as cmd, \
+                            self.assertRaisesRegex(
+                                release.ReleaseError,
+                                "Prior Chocolatey submission intent is unconfirmed",
+                            ):
+                        release.choco_publish(
+                            self.api, fresh_intent_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    cmd.assert_not_called()
+
                 (win_dir / "choco-submission.json").unlink()
+                (win_dir / "choco-intent.json").unlink()
+                self.api.assets = [a for a in self.api.assets if a["name"] != "choco-intent.json"]
+
+                original_request = self.api.request
+
+                def fail_submission_upload(path, method="GET", value=None, missing=False, data=None, content_type=None):
+                    if method == "POST" and path.endswith("name=choco-submission.json"):
+                        raise release.ReleaseError("Simulated post-push receipt upload failure")
+                    return original_request(path, method=method, value=value, missing=missing,
+                                            data=data, content_type=content_type)
+
+                with patch.object(self.api, "request", side_effect=fail_submission_upload), \
+                        patch.object(release, "command", return_value="pushed") as cmd:
+                    with self.assertRaisesRegex(release.ReleaseError, "Simulated post-push"):
+                        release.choco_publish(
+                            self.api, win_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    cmd.assert_called_once()
+                self.assertIn("choco-intent.json", {a["name"] for a in self.api.assets})
+                self.assertNotIn("choco-submission.json", {a["name"] for a in self.api.assets})
+
+                with tempfile.TemporaryDirectory() as fresh_after_drop_tmp:
+                    fresh_drop_dir = Path(fresh_after_drop_tmp)
+                    self.windows_assets(fresh_drop_dir, trust_mode="unsigned")
+                    with patch.object(release, "command") as cmd, \
+                            self.assertRaisesRegex(
+                                release.ReleaseError,
+                                "Prior Chocolatey submission intent is unconfirmed",
+                            ):
+                        release.choco_publish(
+                            self.api, fresh_drop_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    cmd.assert_not_called()
+
+                (win_dir / "choco-submission.json").unlink()
+                (win_dir / "choco-intent.json").unlink()
+                self.api.assets = [a for a in self.api.assets if a["name"] != "choco-intent.json"]
+
                 with patch.object(release, "command", return_value="pushed") as cmd:
                     result = release.choco_publish(
                         self.api, win_dir, status_Reader=lambda *_: "not_found"
@@ -729,7 +781,15 @@ class ReleaseTests(unittest.TestCase):
 
                 submitted_receipt = json.loads((win_dir / "choco-submission.json").read_text())
                 self.assertEqual(submitted_receipt["state"], "submitted")
-                self.assertIn("choco-submission.json", {a["name"] for a in self.api.assets})
+                self.assertTrue({"choco-intent.json", "choco-submission.json"} <= {a["name"] for a in self.api.assets})
+
+                macos_writes_before = len([r for r in self.api.requests if r[0] != "GET"])
+                release.publish(self.api, self.directory)
+                self.assertEqual(len([r for r in self.api.requests if r[0] != "GET"]), macos_writes_before)
+                tap = Api()
+                release.tap_update(self.api, tap, self.directory)
+                release.tap_update(self.api, tap, self.directory)
+                self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
 
                 with patch.object(release, "command") as cmd:
                     rerun_same_dir = release.choco_publish(
@@ -753,7 +813,10 @@ class ReleaseTests(unittest.TestCase):
                         "submitted",
                     )
 
-            for live_state in ("awaiting_moderation", "publicly_approved"):
+            for live_state, expected_asset in (
+                ("awaiting_moderation", "choco-awaiting-moderation.json"),
+                ("publicly_approved", "choco-publicly-approved.json"),
+            ):
                 with patch.object(release, "command") as cmd:
                     result = release.choco_publish(
                         self.api, win_dir, status_Reader=lambda *_, s=live_state: s
@@ -765,16 +828,49 @@ class ReleaseTests(unittest.TestCase):
                         json.loads((win_dir / "choco-submission.json").read_text())["state"],
                         live_state,
                     )
+                    self.assertIn(expected_asset, {a["name"] for a in self.api.assets})
                     cmd.assert_not_called()
 
+                with tempfile.TemporaryDirectory() as fresh_transition_tmp:
+                    fresh_transition_dir = Path(fresh_transition_tmp)
+                    self.windows_assets(fresh_transition_dir, trust_mode="unsigned")
+
+                    def fail_feed(*_):
+                        raise release.ReleaseError("Temporary Chocolatey feed outage")
+
+                    with patch.object(release, "command") as cmd:
+                        recovered = release.choco_publish(
+                            self.api, fresh_transition_dir, status_Reader=fail_feed
+                        )
+                        self.assertEqual(recovered["state"], live_state)
+                        cmd.assert_not_called()
+
+            with patch.object(release, "command") as cmd, \
+                    self.assertRaisesRegex(release.ReleaseError, "Conflicting Chocolatey moderation receipts"):
+                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "rejected")
+            cmd.assert_not_called()
+
+            self.api.assets = [a for a in self.api.assets if a["name"] != "choco-publicly-approved.json"]
+            (win_dir / "choco-publicly-approved.json").unlink()
+            (win_dir / "choco-submission.json").write_bytes((win_dir / "choco-awaiting-moderation.json").read_bytes())
             with patch.object(release, "command") as cmd, \
                     self.assertRaisesRegex(release.ReleaseError, "rejected in moderation"):
                 release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "rejected")
             cmd.assert_not_called()
+            self.assertIn("choco-rejected.json", {a["name"] for a in self.api.assets})
             self.assertEqual(
                 json.loads((win_dir / "choco-submission.json").read_text())["state"],
                 "rejected",
             )
+            with tempfile.TemporaryDirectory() as fresh_rejected_tmp:
+                fresh_rejected_dir = Path(fresh_rejected_tmp)
+                self.windows_assets(fresh_rejected_dir, trust_mode="unsigned")
+                with patch.object(release, "command") as cmd, \
+                        self.assertRaisesRegex(release.ReleaseError, "rejected in moderation"):
+                    release.choco_publish(
+                        self.api, fresh_rejected_dir, status_Reader=lambda *_: "not_found"
+                    )
+                cmd.assert_not_called()
 
 
 if __name__ == "__main__":

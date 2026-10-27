@@ -632,10 +632,12 @@ unchanged:
   `manifest.json` and `SHA256SUMS`), uploads the three Windows assets while
   checking GitHub's SHA-256 `digest`, and verifies unauthenticated public
   downloads via `verify_windows_public` across all six required release assets
-  (plus an optional verified `choco-submission.json` receipt). If all three
-  Windows assets are already uploaded and match local bytes, `publish-windows`
-  returns idempotently; if the macOS asset triplet is missing or only a partial
-  Windows subset exists on the release, it fails closed.
+  (plus any verified Chocolatey state receipt assets). `verify_public` likewise
+  accepts the attached Windows asset triplet and Chocolatey state receipts so
+  macOS `publish` and `tap` reruns stay idempotent. If all three Windows assets
+  are already uploaded and match local bytes, `publish-windows` returns
+  idempotently; if the macOS asset triplet is missing or only a partial Windows
+  subset exists on the release, it fails closed.
 - **`choco-publish`** (`choco_publish` / `verify_choco_nupkg` /
   `choco_moderation_status` / `classify_choco_status`): verifies the live public
   Windows GitHub Release bytes via `verify_windows_public` and inspects the
@@ -646,18 +648,21 @@ unchanged:
   PowerShell scripts; and absence of embedded executables, symlinks or unsafe
   paths) before any Chocolatey operation. It reconciles live Chocolatey
   Community Repository OData status (`publicly_approved`,
-  `awaiting_moderation`, `rejected`, `submitted` or `not_found`) with a durable
-  version-bound `choco-submission.json` receipt checked both locally and on the
-  GitHub Release assets. Live feed states win (`rejected` fails closed;
+  `awaiting_moderation`, `rejected`, `submitted` or `not_found`) with durable,
+  append-only, version-bound state receipt assets on the GitHub Release
+  (`choco-intent.json`, `choco-submission.json`,
+  `choco-awaiting-moderation.json`, `choco-rejected.json`,
+  `choco-publicly-approved.json`) and local `choco-submission.json`. Live feed
+  states persist their corresponding receipt asset (`rejected` fails closed;
   `submitted`, `awaiting_moderation` and `publicly_approved` return idempotently
-  without pushing). Before invoking `choco push`, it writes `state:
-"pending_push"` to `choco-submission.json` so an interrupted or unknown push
-  blocks blind retries (`Prior Chocolatey submission intent is unconfirmed;
-reconcile moderation state before retrying.`); after `choco push` succeeds, it
-  atomically updates `choco-submission.json` to `state: "submitted"` and
-  attaches it to the GitHub Release (verifying its upload digest) so reruns
-  across the OData moderation indexing gap return `state: "submitted"` without
-  pushing a duplicate time.
+  without pushing). Before invoking `choco push`, it writes and uploads
+  `choco-intent.json` (`state: "pending_push"`) to the GitHub Release so an
+  interrupted push or post-push failure blocks blind retries even on a fresh
+  runner (`Prior Chocolatey submission intent is unconfirmed; reconcile
+moderation state before retrying.`); after `choco push` succeeds, it writes
+  and uploads `choco-submission.json` (`state: "submitted"`) so reruns across
+  the OData moderation indexing gap return `state: "submitted"` without pushing
+  a duplicate time.
 
 The remaining release checklist follows. Steps 1-3 apply only to future signed
 releases; steps 4-6 apply to either public trust mode:
