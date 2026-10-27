@@ -3,7 +3,7 @@
 //! commits. A pull request's revision is its latest iteration's source commit
 //! (`lastMergeSourceCommit`), so every new iteration is a new revision.
 
-use super::{Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
+use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
     ChangedFile, ConnectionError, Lifecycle, Person, PullRequest, PullRequestReader,
     RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, TreeEntry,
@@ -18,6 +18,16 @@ const MAX_PULL_REQUESTS: u64 = 5_000;
 const CHANGES_PAGE_SIZE: u64 = 1_000;
 /// Same file bound as GitHub reads.
 const MAX_FILES: usize = 3_000;
+/// Files diffed for review; later files get no patch, like GitHub's.
+const MAX_PATCH_FILES: usize = 300;
+
+/// A changed file's content on one side of the diff.
+enum Side {
+    Absent,
+    Blob(Vec<u8>),
+    /// Not a blob, or too large to diff.
+    Other,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,7 +114,7 @@ fn relative(path: &str) -> Result<String, ConnectionError> {
 }
 
 impl RawPullRequest {
-    fn into_pull_request(self, key: &RepositoryKey) -> Result<PullRequest, ConnectionError> {
+    pub(super) fn into_pull_request(self, key: &RepositoryKey) -> Result<PullRequest, ConnectionError> {
         let repository = crate::azure_devops::tenant::TenantId::parse(&self.repository.id)
             .ok_or(ConnectionError::InvalidResponse)?;
         if repository != key.repository_id {
@@ -183,7 +193,7 @@ impl RawPullRequest {
 }
 
 impl Client {
-    fn git_url(&self, key: &RepositoryKey, path: &[&str], query: &[(&str, &str)]) -> String {
+    pub(super) fn git_url(&self, key: &RepositoryKey, path: &[&str], query: &[(&str, &str)]) -> String {
         let mut segments = vec![
             key.project_id.as_str(),
             "_apis",
@@ -197,7 +207,7 @@ impl Client {
         self.url(&segments, &query)
     }
 
-    fn owns(&self, key: &RepositoryKey) -> Result<(), ConnectionError> {
+    pub(super) fn owns(&self, key: &RepositoryKey) -> Result<(), ConnectionError> {
         if key.organization == self.organization {
             Ok(())
         } else {
@@ -447,7 +457,7 @@ impl Client {
                 ("versionDescriptor.versionType", "commit"),
             ],
         );
-        let response = self.call(Request { url, body: None }).await?;
+        let response = self.call(Request::get(url)).await?;
         if response.oversize {
             return Err(ConnectionError::LimitExceeded);
         }
@@ -487,7 +497,7 @@ impl Client {
         self.owns(key)?;
         let object_id = commit(object_id)?;
         let url = self.git_url(key, &["blobs", &object_id], &[("$format", "octetstream")]);
-        let response = self.call(Request { url, body: None }).await?;
+        let response = self.call(Request::get(url)).await?;
         if response.oversize {
             return Err(ConnectionError::LimitExceeded);
         }
@@ -496,6 +506,25 @@ impl Client {
 }
 
 impl Reader {
+    /// One side of a changed file for its patch.
+    async fn side(
+        &self,
+        key: &RepositoryKey,
+        entry: Option<&TreeEntry>,
+    ) -> Result<Side, ConnectionError> {
+        let Some(entry) = entry else {
+            return Ok(Side::Absent);
+        };
+        if entry.kind != "blob" {
+            return Ok(Side::Other);
+        }
+        match self.client.blob(key, &entry.sha).await {
+            Ok(bytes) if bytes.len() <= diff::MAX_SIDE_BYTES => Ok(Side::Blob(bytes)),
+            Ok(_) | Err(ConnectionError::LimitExceeded) => Ok(Side::Other),
+            Err(error) => Err(error),
+        }
+    }
+
     fn key(&self, repository: &RemoteRepository) -> Result<RepositoryKey, ConnectionError> {
         let key = RepositoryKey::parse(&repository.id).ok_or(ConnectionError::InvalidRepository)?;
         self.client.owns(&key)?;
@@ -623,8 +652,8 @@ impl PullRequestReader for Reader {
         self.files(&key, &pull)
     }
 
-    /// Changed files (no patch text: Azure DevOps serves no diff), the
-    /// iteration's merge base and both trees.
+    /// Changed files, each diffed locally from merge base to head (Azure
+    /// DevOps serves no patch text), the iteration's merge base and both trees.
     fn review_context(
         &self,
         repository: &RemoteRepository,
@@ -649,16 +678,30 @@ impl PullRequestReader for Reader {
                 .await?;
             let head_tree = self.client.tree(&key, head).await?;
             let base_tree = self.client.tree(&key, &base_revision).await?;
+            let mut files = Vec::with_capacity(changes.len());
+            for (index, file) in changes.iter().enumerate() {
+                let patch = if index < MAX_PATCH_FILES {
+                    let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
+                    let old = self.side(&key, base_tree.get(base_path)).await?;
+                    let new = self.side(&key, head_tree.get(&file.path)).await?;
+                    match (old, new) {
+                        (Side::Blob(old), Side::Blob(new)) => diff::patch(Some(&old), Some(&new)),
+                        (Side::Absent, Side::Blob(new)) => diff::patch(None, Some(&new)),
+                        (Side::Blob(old), Side::Absent) => diff::patch(Some(&old), None),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                files.push(ReviewFile {
+                    path: file.path.clone(),
+                    previous_path: file.previous_path.clone(),
+                    status: file.status.clone(),
+                    patch,
+                });
+            }
             Ok(ReviewContext {
-                files: changes
-                    .iter()
-                    .map(|file| ReviewFile {
-                        path: file.path.clone(),
-                        previous_path: file.previous_path.clone(),
-                        status: file.status.clone(),
-                        patch: None,
-                    })
-                    .collect(),
+                files,
                 pull: PullRequest {
                     files: changes,
                     ..pull
