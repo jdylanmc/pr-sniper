@@ -216,9 +216,18 @@ test("signing secrets are absent from install/build/upload and tap credential is
   const windowsBuild = workflow.jobs["windows-build"];
   const windowsPublish = workflow.jobs["windows-publish"];
   const chocolatey = workflow.jobs.chocolatey;
-  assert.deepEqual(windowsBuild.permissions, { contents: "read" });
-  assert.deepEqual(windowsPublish.permissions, { contents: "write" });
-  assert.deepEqual(chocolatey.permissions, { contents: "write" });
+  assert.deepEqual(windowsBuild.permissions, {
+    contents: "read",
+    actions: "read",
+  });
+  assert.deepEqual(windowsPublish.permissions, {
+    contents: "write",
+    actions: "read",
+  });
+  assert.deepEqual(chocolatey.permissions, {
+    contents: "write",
+    actions: "read",
+  });
   assert.equal(windowsBuild.environment, undefined);
   assert.equal(windowsPublish.environment, undefined);
   assert.equal(chocolatey.environment, "pr-sniper-chocolatey");
@@ -236,6 +245,10 @@ test("signing secrets are absent from install/build/upload and tap credential is
     GITHUB_TOKEN: "${{ github.token }}",
     CHOCOLATEY_API_KEY: "${{ secrets.CHOCOLATEY_API_KEY }}",
   });
+  assert.ok(
+    !chocolatey.steps.some((step) => step.run?.includes("choco pack")),
+    "chocolatey job reuses the pre-packed nupkg artifact across retries",
+  );
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (name !== "chocolatey") {
       assert.ok(!JSON.stringify(job).includes("CHOCOLATEY_API_KEY"), name);
@@ -295,6 +308,36 @@ test("publication consumes only this run's verified artifact and contract tests 
       "${{ needs.gate.outputs.sha }}",
     );
   }
+  const chocoUpload = workflow.jobs["windows-publish"].steps.find((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(chocoUpload.if, undefined);
+  assert.equal(chocoUpload.with.name, "chocolatey-release-package");
+  assert.equal(
+    chocoUpload.with.path,
+    "${{ runner.temp }}/pr-sniper-windows-release-assets/pr-sniper.*.nupkg",
+  );
+  assert.equal(chocoUpload.with["if-no-files-found"], "error");
+  assert.equal(chocoUpload.with["retention-days"], 14);
+  assert.equal(chocoUpload.with["compression-level"], 0);
+  const chocoDownloads = workflow.jobs.chocolatey.steps.filter((s) =>
+    s.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.deepEqual(
+    chocoDownloads.map((s) => [s.with.name, s.with.path, s.with["run-id"]]),
+    [
+      [
+        "windows-release-assets",
+        "${{ runner.temp }}/pr-sniper-windows-release-assets",
+        undefined,
+      ],
+      [
+        "chocolatey-release-package",
+        "${{ runner.temp }}/pr-sniper-windows-release-assets",
+        undefined,
+      ],
+    ],
+  );
   assert.ok(
     ci.jobs["macos-native"].steps.some((s) => s.run === "npm run test:release"),
   );

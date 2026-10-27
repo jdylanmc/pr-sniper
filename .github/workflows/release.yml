@@ -143,6 +143,7 @@ jobs:
     runs-on: windows-2022
     permissions:
       contents: read
+      actions: read
     defaults:
       run:
         shell: pwsh
@@ -201,31 +202,10 @@ jobs:
 
   windows-publish:
     needs: [gate, publish, tap, windows-build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      SOURCE_SHA: ${{ needs.gate.outputs.sha }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ needs.gate.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: windows-release-assets
-          path: ${{ runner.temp }}/pr-sniper-windows-release-assets
-      - name: Publish verified Windows release assets
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -B scripts/release.py publish-windows
-
-  chocolatey:
-    needs: [gate, windows-publish]
     runs-on: windows-2022
-    environment: pr-sniper-chocolatey
     permissions:
       contents: write
+      actions: read
     defaults:
       run:
         shell: pwsh
@@ -243,6 +223,10 @@ jobs:
         with:
           name: windows-release-assets
           path: ${{ runner.temp }}/pr-sniper-windows-release-assets
+      - name: Publish verified Windows release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -B scripts/release.py publish-windows
       - name: Generate PublicUnsigned Chocolatey package and pack nupkg
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -256,6 +240,42 @@ jobs:
           .\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned -Installer $installer -Version $manifest.version -Sha256 $manifest.sha256 -Commit $manifest.source_sha -Destination $chocoDir -Url $url -LicenseUrl $license
           choco pack (Join-Path $chocoDir 'pr-sniper.nuspec') --output-directory=$assets
           if ($LASTEXITCODE -ne 0) { throw 'choco pack failed.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chocolatey-release-package
+          path: ${{ runner.temp }}/pr-sniper-windows-release-assets/pr-sniper.*.nupkg
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  chocolatey:
+    needs: [gate, windows-publish]
+    runs-on: windows-2022
+    environment: pr-sniper-chocolatey
+    permissions:
+      contents: write
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SOURCE_SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release-assets
+          path: ${{ runner.temp }}/pr-sniper-windows-release-assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: chocolatey-release-package
+          path: ${{ runner.temp }}/pr-sniper-windows-release-assets
       - name: Publish and reconcile Chocolatey package
         env:
           GITHUB_TOKEN: ${{ github.token }}
