@@ -627,26 +627,37 @@ unchanged:
   `signer_thumbprint` and `signer_subject`), `pr-sniper-VERSION-x64-setup.exe`
   and `WINDOWS-SHA256SUMS` in `$RUNNER_TEMP/pr-sniper-windows-release-assets`.
   It enforces `gate(..., require_windows=True)` for the exact tag/commit,
-  requires an existing published (non-draft) GitHub release so macOS's
-  `pr-sniper-VERSION-aarch64-apple-darwin.zip`, `manifest.json` and `SHA256SUMS`
-  assets are never replaced or orphaned, uploads the three Windows assets while
+  requires an existing published (non-draft) GitHub release that already carries
+  the complete macOS asset triplet (`pr-sniper-VERSION-aarch64-apple-darwin.zip`,
+  `manifest.json` and `SHA256SUMS`), uploads the three Windows assets while
   checking GitHub's SHA-256 `digest`, and verifies unauthenticated public
-  downloads via `verify_windows_public`. If all three Windows assets are already
-  uploaded and match local bytes, `publish-windows` returns idempotently; if
-  only a partial subset exists on the release, it fails closed (`Partial Windows
-release assets exist; reconcile manually before rerunning.`).
-- **`choco-publish`** (`choco_publish` / `choco_moderation_status` /
-  `classify_choco_status`): verifies the live public Windows GitHub Release
-  bytes via `verify_windows_public` before any Chocolatey operation, inspects
-  the Chocolatey Community Repository OData feed to classify package state as
-  `publicly_approved`, `awaiting_moderation`, `rejected`, `submitted` or
-  `not_found`, and returns idempotently without re-running `choco push` when the
-  version is already `submitted`, `awaiting_moderation` or `publicly_approved`.
-  A `rejected` version fails closed (`Chocolatey package version was rejected in
-moderation; do not push duplicate version.`). When `not_found`, it requires
-  `CHOCOLATEY_API_KEY` (stripped from child-process environments and redacted on
-  error), pushes `pr-sniper.VERSION.nupkg` to `https://push.chocolatey.org/`,
-  and returns `state: "submitted"` without claiming `publicly_approved`.
+  downloads via `verify_windows_public` across all six required release assets
+  (plus an optional verified `choco-submission.json` receipt). If all three
+  Windows assets are already uploaded and match local bytes, `publish-windows`
+  returns idempotently; if the macOS asset triplet is missing or only a partial
+  Windows subset exists on the release, it fails closed.
+- **`choco-publish`** (`choco_publish` / `verify_choco_nupkg` /
+  `choco_moderation_status` / `classify_choco_status`): verifies the live public
+  Windows GitHub Release bytes via `verify_windows_public` and inspects the
+  `.nupkg` archive via `verify_choco_nupkg` (`pr-sniper.nuspec` identity,
+  version, commit-pinned license URL, `webview2-runtime` `[154.0.4258.62,)`
+  dependency and unsigned disclosure; `tools/installer.json` provenance, trust
+  mode and immutable release URL; LF-normalized SHA-256 of the five packaged
+  PowerShell scripts; and absence of embedded executables, symlinks or unsafe
+  paths) before any Chocolatey operation. It reconciles live Chocolatey
+  Community Repository OData status (`publicly_approved`,
+  `awaiting_moderation`, `rejected`, `submitted` or `not_found`) with a durable
+  version-bound `choco-submission.json` receipt checked both locally and on the
+  GitHub Release assets. Live feed states win (`rejected` fails closed;
+  `submitted`, `awaiting_moderation` and `publicly_approved` return idempotently
+  without pushing). Before invoking `choco push`, it writes `state:
+"pending_push"` to `choco-submission.json` so an interrupted or unknown push
+  blocks blind retries (`Prior Chocolatey submission intent is unconfirmed;
+reconcile moderation state before retrying.`); after `choco push` succeeds, it
+  atomically updates `choco-submission.json` to `state: "submitted"` and
+  attaches it to the GitHub Release (verifying its upload digest) so reruns
+  across the OData moderation indexing gap return `state: "submitted"` without
+  pushing a duplicate time.
 
 The remaining release checklist follows. Steps 1-3 apply only to future signed
 releases; steps 4-6 apply to either public trust mode:

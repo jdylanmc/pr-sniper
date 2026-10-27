@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import release
@@ -325,6 +326,71 @@ class ReleaseTests(unittest.TestCase):
             with patch.object(self.api, "request", return_value=wrong), self.assertRaises(release.ReleaseError):
                 release.tap_ready(self.api)
 
+    def build_nupkg(self, package_path, manifest, *, nuspec_overrides=None, installer_overrides=None,
+                    extra_entries=None, script_overrides=None):
+        nuspec_meta = {
+            "id": "pr-sniper",
+            "version": manifest["version"],
+            "licenseUrl": f"https://github.com/{release.REPOSITORY}/blob/{manifest['source_sha']}/LICENSE",
+            "dependency_id": "webview2-runtime",
+            "dependency_version": release.CHOCO_WEBVIEW2_VERSION_RANGE,
+            "description": (
+                "UNSIGNED PUBLIC RELEASE: No Authenticode publisher identity. PR Sniper monitors repositories."
+                if manifest.get("trust_mode") == "unsigned"
+                else "PR Sniper monitors configured repositories and prepares human-owned pull request review work."
+            ),
+        }
+        if nuspec_overrides:
+            nuspec_meta.update(nuspec_overrides)
+        nuspec_xml = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">\n'
+            "  <metadata>\n"
+            f"    <id>{nuspec_meta['id']}</id>\n"
+            f"    <version>{nuspec_meta['version']}</version>\n"
+            f"    <licenseUrl>{nuspec_meta['licenseUrl']}</licenseUrl>\n"
+            f'    <dependencies><dependency id="{nuspec_meta["dependency_id"]}" '
+            f'version="{nuspec_meta["dependency_version"]}" /></dependencies>\n'
+            f"    <description>{nuspec_meta['description']}</description>\n"
+            "  </metadata>\n"
+            "</package>\n"
+        )
+        installer_json = {
+            "mode": "PublicUnsigned" if manifest.get("trust_mode") == "unsigned" else "Public",
+            "package_id": "pr-sniper",
+            "version": manifest["version"],
+            "commit": manifest["source_sha"],
+            "target": "x86_64-pc-windows-msvc",
+            "sha256": manifest["sha256"],
+            "url": f"https://github.com/{release.REPOSITORY}/releases/download/{manifest['tag']}/{manifest['filename']}",
+            "signer_thumbprint": manifest.get("signer_thumbprint"),
+            "signer_subject": manifest.get("signer_subject"),
+        }
+        if installer_overrides:
+            installer_json.update(installer_overrides)
+        scripts = {
+            "tools/chocolateyinstall.ps1": (ROOT / "packaging" / "chocolatey" / "chocolateyinstall.ps1").read_bytes(),
+            "tools/chocolateyuninstall.ps1": (ROOT / "packaging" / "chocolatey" / "chocolateyuninstall.ps1").read_bytes(),
+            "tools/removal-state.ps1": (ROOT / "packaging" / "chocolatey" / "removal-state.ps1").read_bytes(),
+            "tools/windows-signature.ps1": (ROOT / "scripts" / "windows-signature.ps1").read_bytes(),
+            "tools/windows-webview2.ps1": (ROOT / "scripts" / "windows-webview2.ps1").read_bytes(),
+        }
+        if script_overrides:
+            scripts.update(script_overrides)
+        with zipfile.ZipFile(package_path, "w") as archive:
+            archive.writestr("pr-sniper.nuspec", nuspec_xml)
+            archive.writestr("tools/installer.json", json.dumps(installer_json))
+            archive.writestr("tools/installer.exe.ignore", "")
+            for entry_name, payload in scripts.items():
+                archive.writestr(entry_name, payload)
+            for entry_name, payload in (extra_entries or {}).items():
+                if isinstance(payload, tuple):
+                    info, data = payload
+                    archive.writestr(info, data)
+                else:
+                    archive.writestr(entry_name, payload)
+        return package_path
+
     def windows_assets(self, directory=None, trust_mode="unsigned", **overrides):
         target = directory or self.directory
         installer = b"fixture Windows NSIS setup executable, never executed"
@@ -347,7 +413,7 @@ class ReleaseTests(unittest.TestCase):
         (target / "WINDOWS-SHA256SUMS").write_bytes(
             f"{manifest['sha256']}  {manifest['filename']}\n".encode()
         )
-        (target / "pr-sniper.0.1.0.nupkg").write_bytes(b"fixture public chocolatey package")
+        self.build_nupkg(target / "pr-sniper.0.1.0.nupkg", manifest)
         return manifest
 
     def windows_pages(self, path, field=None):
@@ -425,8 +491,31 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(self.api, "pages", side_effect=self.windows_pages):
                 with self.assertRaisesRegex(release.ReleaseError, "Published GitHub release"):
                     release.publish_windows(self.api, win_dir)
+                self.api.release = {
+                    "id": 2,
+                    "tag_name": "v0.1.0",
+                    "target_commitish": COMMIT,
+                    "draft": False,
+                    "prerelease": False,
+                }
+                self.api.assets = []
+                uploads_before = len([r for r in self.api.requests if "/assets?name=" in r[1]])
+                with self.assertRaisesRegex(release.ReleaseError, "Existing release assets are incomplete"):
+                    release.publish_windows(self.api, win_dir)
+                self.assertEqual(len([r for r in self.api.requests if "/assets?name=" in r[1]]), uploads_before)
+
+                self.api.release = None
                 self.assets()
                 release.publish(self.api, self.directory)
+                macos_assets = list(self.api.assets)
+
+                self.api.assets = macos_assets[:-1]
+                uploads_before = len([r for r in self.api.requests if "/assets?name=" in r[1]])
+                with self.assertRaisesRegex(release.ReleaseError, "Existing release assets are incomplete"):
+                    release.publish_windows(self.api, win_dir)
+                self.assertEqual(len([r for r in self.api.requests if "/assets?name=" in r[1]]), uploads_before)
+                self.api.assets = list(macos_assets)
+
                 self.api.release["draft"] = True
                 with self.assertRaisesRegex(release.ReleaseError, "Published GitHub release"):
                     release.publish_windows(self.api, win_dir)
@@ -448,10 +537,67 @@ class ReleaseTests(unittest.TestCase):
                 self.api.assets = [a for a in self.api.assets if a["name"] not in (
                     win_manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS"
                 )]
+                release.publish_windows(self.api, win_dir)
+                all_six_assets = list(self.api.assets)
+                self.api.assets = [a for a in all_six_assets if a["name"] in (
+                    win_manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS"
+                )]
+                with self.assertRaisesRegex(release.ReleaseError, "Release assets are incomplete"):
+                    release.verify_windows_public(self.api, win_manifest, win_dir)
+                self.api.assets = [a for a in all_six_assets if a["name"] in (
+                    release.filename("0.1.0"), "manifest.json", "SHA256SUMS"
+                )]
             with patch.object(release, "command", return_value=COMMIT), \
                     patch.object(release, "config_version", return_value="0.1.0"):
                 with self.assertRaises(release.ReleaseError):
                     release.publish_windows(self.api, win_dir)
+
+    def test_verify_choco_nupkg_validates_nuspec_metadata_scripts_and_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as win_tmp:
+            win_dir = Path(win_tmp)
+            unsigned_manifest = self.windows_assets(win_dir, trust_mode="unsigned")
+            nupkg = win_dir / "pr-sniper.0.1.0.nupkg"
+            self.assertEqual(
+                release.verify_choco_nupkg(nupkg, unsigned_manifest, root=ROOT),
+                hashlib.sha256(nupkg.read_bytes()).hexdigest(),
+            )
+            signed_manifest = self.windows_assets(win_dir, trust_mode="signed")
+            self.assertEqual(
+                release.verify_choco_nupkg(nupkg, signed_manifest, root=ROOT),
+                hashlib.sha256(nupkg.read_bytes()).hexdigest(),
+            )
+
+            symlink_info = zipfile.ZipInfo("tools/symlink.ps1")
+            symlink_info.external_attr = 0o120777 << 16
+            for label, kwargs in [
+                ("wrong-sha256", {"installer_overrides": {"sha256": "0" * 64}}),
+                ("wrong-url", {"installer_overrides": {"url": "https://example.invalid/pr-sniper.exe"}}),
+                ("wrong-mode-unsigned", {"installer_overrides": {"mode": "Public"}}),
+                ("unexpected-signer-unsigned", {"installer_overrides": {"signer_subject": "CN=Unexpected"}}),
+                ("wrong-commit", {"installer_overrides": {"commit": "b" * 40}}),
+                ("wrong-target", {"installer_overrides": {"target": "aarch64-pc-windows-msvc"}}),
+                ("wrong-nuspec-id", {"nuspec_overrides": {"id": "pr-sniper-localtest"}}),
+                ("wrong-nuspec-version", {"nuspec_overrides": {"version": "0.1.1"}}),
+                ("wrong-license-url", {"nuspec_overrides": {"licenseUrl": "https://example.invalid/LICENSE"}}),
+                ("wrong-dependency", {"nuspec_overrides": {"dependency_version": "[1.0.0,)"}}),
+                ("missing-unsigned-disclosure", {"nuspec_overrides": {"description": "Missing disclosure"}}),
+                ("embedded-installer-exe", {"extra_entries": {"tools/installer.exe": b"embedded binary"}}),
+                ("traversal-entry", {"extra_entries": {"../escape.txt": b"escape"}}),
+                ("leading-slash-entry", {"extra_entries": {"/abs.txt": b"abs"}}),
+                ("symlink-entry", {"extra_entries": {"tools/symlink.ps1": (symlink_info, b"target")}}),
+                ("tampered-install-script", {"script_overrides": {"tools/chocolateyinstall.ps1": b"Write-Host 'tampered'\n"}}),
+            ]:
+                with self.subTest(case=label):
+                    self.build_nupkg(nupkg, unsigned_manifest, **kwargs)
+                    with self.assertRaises(release.ReleaseError):
+                        release.verify_choco_nupkg(nupkg, unsigned_manifest, root=ROOT)
+
+            self.build_nupkg(nupkg, signed_manifest, installer_overrides={"mode": "PublicUnsigned"})
+            with self.assertRaises(release.ReleaseError):
+                release.verify_choco_nupkg(nupkg, signed_manifest, root=ROOT)
+            self.build_nupkg(nupkg, signed_manifest, installer_overrides={"signer_thumbprint": "B" * 40})
+            with self.assertRaises(release.ReleaseError):
+                release.verify_choco_nupkg(nupkg, signed_manifest, root=ROOT)
 
     def test_classify_choco_status_distinguishes_submitted_awaiting_moderation_rejected_and_approved(self):
         self.assertEqual(release.classify_choco_status(None, push_completed=False), "not_found")
@@ -521,7 +667,7 @@ class ReleaseTests(unittest.TestCase):
         release.publish(self.api, self.directory)
         with tempfile.TemporaryDirectory() as win_tmp:
             win_dir = Path(win_tmp)
-            self.windows_assets(win_dir, trust_mode="unsigned")
+            win_manifest = self.windows_assets(win_dir, trust_mode="unsigned")
             with patch.object(release, "command", return_value=COMMIT), \
                     patch.object(release, "config_version", return_value="0.1.0"), \
                     patch.object(self.api, "pages", side_effect=self.windows_pages):
@@ -532,23 +678,44 @@ class ReleaseTests(unittest.TestCase):
                 release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "not_found")
             self.api.corrupt_download = False
 
-            for existing_state in ("submitted", "awaiting_moderation", "publicly_approved"):
-                with patch.object(release, "command") as cmd:
-                    result = release.choco_publish(
-                        self.api, win_dir, status_Reader=lambda *_, s=existing_state: s
-                    )
-                    self.assertEqual(result["state"], existing_state)
-                    self.assertEqual(result["version"], "0.1.0")
-                    self.assertEqual(result["source_sha"], COMMIT)
-                    cmd.assert_not_called()
-
+            self.build_nupkg(
+                win_dir / "pr-sniper.0.1.0.nupkg",
+                win_manifest,
+                extra_entries={"tools/installer.exe": b"embedded"},
+            )
             with patch.object(release, "command") as cmd, \
-                    self.assertRaisesRegex(release.ReleaseError, "rejected in moderation"):
-                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "rejected")
+                    self.assertRaisesRegex(release.ReleaseError, "must not embed"):
+                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "not_found")
             cmd.assert_not_called()
+            self.build_nupkg(win_dir / "pr-sniper.0.1.0.nupkg", win_manifest)
 
             secret = "super-secret-choco-key-98765"
             with patch.dict(os.environ, {"CHOCOLATEY_API_KEY": secret}):
+                completed = unittest.mock.Mock(
+                    returncode=1, stdout="", stderr=f"push failed for key {secret}"
+                )
+                with patch.object(release.subprocess, "run", return_value=completed) as run_mock:
+                    with self.assertRaises(release.ReleaseError) as ctx:
+                        release.choco_publish(
+                            self.api, win_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    self.assertNotIn(secret, str(ctx.exception))
+                    env_passed = run_mock.call_args.kwargs["env"]
+                    self.assertNotIn("CHOCOLATEY_API_KEY", env_passed)
+
+                pending_receipt = json.loads((win_dir / "choco-submission.json").read_text())
+                self.assertEqual(pending_receipt["state"], "pending_push")
+                with patch.object(release, "command") as cmd, \
+                        self.assertRaisesRegex(
+                            release.ReleaseError,
+                            "Prior Chocolatey submission intent is unconfirmed",
+                        ):
+                    release.choco_publish(
+                        self.api, win_dir, status_Reader=lambda *_: "not_found"
+                    )
+                cmd.assert_not_called()
+
+                (win_dir / "choco-submission.json").unlink()
                 with patch.object(release, "command", return_value="pushed") as cmd:
                     result = release.choco_publish(
                         self.api, win_dir, status_Reader=lambda *_: "not_found"
@@ -560,17 +727,54 @@ class ReleaseTests(unittest.TestCase):
                     })
                     cmd.assert_called_once()
 
-                completed = subprocess_result = unittest.mock.Mock(
-                    returncode=1, stdout="", stderr=f"push failed for key {secret}"
-                )
-                with patch.object(release.subprocess, "run", return_value=completed) as run_mock:
-                    with self.assertRaises(release.ReleaseError) as ctx:
-                        release.choco_publish(
-                            self.api, win_dir, status_Reader=lambda *_: "not_found"
+                submitted_receipt = json.loads((win_dir / "choco-submission.json").read_text())
+                self.assertEqual(submitted_receipt["state"], "submitted")
+                self.assertIn("choco-submission.json", {a["name"] for a in self.api.assets})
+
+                with patch.object(release, "command") as cmd:
+                    rerun_same_dir = release.choco_publish(
+                        self.api, win_dir, status_Reader=lambda *_: "not_found"
+                    )
+                    self.assertEqual(rerun_same_dir["state"], "submitted")
+                    cmd.assert_not_called()
+
+                with tempfile.TemporaryDirectory() as fresh_runner_tmp:
+                    fresh_dir = Path(fresh_runner_tmp)
+                    self.windows_assets(fresh_dir, trust_mode="unsigned")
+                    self.assertFalse((fresh_dir / "choco-submission.json").exists())
+                    with patch.object(release, "command") as cmd:
+                        rerun_fresh_runner = release.choco_publish(
+                            self.api, fresh_dir, status_Reader=lambda *_: "not_found"
                         )
-                    self.assertNotIn(secret, str(ctx.exception))
-                    env_passed = run_mock.call_args.kwargs["env"]
-                    self.assertNotIn("CHOCOLATEY_API_KEY", env_passed)
+                        self.assertEqual(rerun_fresh_runner["state"], "submitted")
+                        cmd.assert_not_called()
+                    self.assertEqual(
+                        json.loads((fresh_dir / "choco-submission.json").read_text())["state"],
+                        "submitted",
+                    )
+
+            for live_state in ("awaiting_moderation", "publicly_approved"):
+                with patch.object(release, "command") as cmd:
+                    result = release.choco_publish(
+                        self.api, win_dir, status_Reader=lambda *_, s=live_state: s
+                    )
+                    self.assertEqual(result["state"], live_state)
+                    self.assertEqual(result["version"], "0.1.0")
+                    self.assertEqual(result["source_sha"], COMMIT)
+                    self.assertEqual(
+                        json.loads((win_dir / "choco-submission.json").read_text())["state"],
+                        live_state,
+                    )
+                    cmd.assert_not_called()
+
+            with patch.object(release, "command") as cmd, \
+                    self.assertRaisesRegex(release.ReleaseError, "rejected in moderation"):
+                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "rejected")
+            cmd.assert_not_called()
+            self.assertEqual(
+                json.loads((win_dir / "choco-submission.json").read_text())["state"],
+                "rejected",
+            )
 
 
 if __name__ == "__main__":

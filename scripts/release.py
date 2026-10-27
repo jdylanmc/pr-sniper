@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 
 REPOSITORY = "jdylanmc/pr-sniper"
 TAP = "jdylanmc/homebrew-pr-sniper"
@@ -29,6 +30,9 @@ CHOCO_PACKAGE_ID = "pr-sniper"
 CHOCO_FEED = "https://community.chocolatey.org/api/v2"
 CHOCO_PUSH_SOURCE = "https://push.chocolatey.org/"
 CHOCO_STATES = ("publicly_approved", "awaiting_moderation", "rejected", "submitted", "not_found")
+CHOCO_RECEIPT = "choco-submission.json"
+CHOCO_RECEIPT_STATES = ("pending_push", "submitted", "awaiting_moderation", "publicly_approved", "rejected")
+CHOCO_WEBVIEW2_VERSION_RANGE = "[154.0.4258.62,)"
 
 
 class ReleaseError(Exception):
@@ -369,6 +373,53 @@ def publish(api, directory=ASSETS):
     verify_public(api, manifest, directory)
 
 
+def choco_receipt_payload(manifest, nupkg_sha256, state):
+    require(state in CHOCO_RECEIPT_STATES, "Invalid Chocolatey submission receipt state.")
+    return {
+        "package_id": CHOCO_PACKAGE_ID,
+        "version": manifest["version"],
+        "tag": manifest["tag"],
+        "source_sha": manifest["source_sha"],
+        "installer_sha256": manifest["sha256"],
+        "nupkg_sha256": nupkg_sha256,
+        "state": state,
+    }
+
+
+def validate_choco_receipt(receipt, manifest, nupkg_sha256=None):
+    expected_keys = {
+        "package_id", "version", "tag", "source_sha",
+        "installer_sha256", "nupkg_sha256", "state",
+    }
+    require(isinstance(receipt, dict) and set(receipt) == expected_keys,
+            "Unexpected Chocolatey submission receipt schema.")
+    require(receipt["package_id"] == CHOCO_PACKAGE_ID
+            and receipt["version"] == manifest["version"]
+            and receipt["tag"] == manifest["tag"]
+            and receipt["source_sha"] == manifest["source_sha"]
+            and receipt["installer_sha256"] == manifest["sha256"],
+            "Chocolatey submission receipt does not match release provenance.")
+    require(isinstance(receipt["nupkg_sha256"], str) and HASH.fullmatch(receipt["nupkg_sha256"]),
+            "Invalid Chocolatey package checksum in submission receipt.")
+    if nupkg_sha256 is not None:
+        require(receipt["nupkg_sha256"] == nupkg_sha256,
+                "Chocolatey submission receipt does not match local package bytes.")
+    require(receipt["state"] in CHOCO_RECEIPT_STATES,
+            "Invalid Chocolatey submission receipt state.")
+    return receipt
+
+
+def write_choco_receipt(receipt_path, manifest, nupkg_sha256, state):
+    require(not receipt_path.is_symlink(), "Chocolatey submission receipt must not be a symlink.")
+    payload = choco_receipt_payload(manifest, nupkg_sha256, state)
+    raw = (json.dumps(payload) + "\n").encode("utf-8")
+    temp_path = receipt_path.parent / f".{receipt_path.name}.tmp"
+    require(not temp_path.is_symlink(), "Temporary Chocolatey submission receipt must not be a symlink.")
+    temp_path.write_bytes(raw)
+    temp_path.replace(receipt_path)
+    return raw
+
+
 def verify_windows_public(api, manifest, local=None):
     require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved; release is not current.")
     release = release_for(api, manifest)
@@ -376,14 +427,24 @@ def verify_windows_public(api, manifest, local=None):
     assets = api.pages(f"/repos/{REPOSITORY}/releases/{release['id']}/assets")
     windows_expected = {manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS"}
     macos_expected = {filename(manifest["version"]), "manifest.json", "SHA256SUMS"}
+    required_names = windows_expected | macos_expected
+    allowed_names = required_names | {CHOCO_RECEIPT}
     names = {asset["name"] for asset in assets}
     require(len(assets) == len(names), "Release assets are duplicated.")
-    require(names == windows_expected or names == (windows_expected | macos_expected),
+    require(required_names <= names <= allowed_names,
             "Release assets are incomplete, duplicated or unexpected.")
     base = f"https://github.com/{REPOSITORY}/releases/download/{manifest['tag']}/"
     for asset in assets:
         require(asset["state"] == "uploaded" and asset["browser_download_url"] == base + asset["name"],
                 "Unexpected public release asset identity.")
+        if asset["name"] == CHOCO_RECEIPT:
+            data = public_bytes(asset["browser_download_url"])
+            try:
+                receipt = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                raise ReleaseError("Published Chocolatey submission receipt is invalid JSON.") from None
+            validate_choco_receipt(receipt, manifest)
+            continue
         if asset["name"] not in windows_expected:
             continue
         data = public_bytes(asset["browser_download_url"])
@@ -417,7 +478,7 @@ def publish_windows(api, directory=WINDOWS_ASSETS):
     require(not present_windows,
             "Partial Windows release assets exist; reconcile manually before rerunning.")
     macos_expected = {filename(manifest["version"]), "manifest.json", "SHA256SUMS"}
-    require(not existing_names or existing_names == macos_expected,
+    require(existing_names == macos_expected,
             "Existing release assets are incomplete or unexpected.")
     for name in windows_names:
         data = (directory / name).read_bytes()
@@ -429,6 +490,126 @@ def publish_windows(api, directory=WINDOWS_ASSETS):
                 "GitHub did not confirm the uploaded Windows bytes' SHA-256 digest.")
     require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved during Windows upload.")
     return verify_windows_public(api, manifest, directory)
+
+
+def verify_choco_nupkg(package_file, manifest, root=Path(".")):
+    package_file = Path(package_file)
+    require(package_file.is_file() and not package_file.is_symlink(),
+            "Chocolatey package file is unavailable.")
+    require(package_file.name == f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
+            and "localtest" not in package_file.name.lower(),
+            "Refusing to publish non-public or mismatched Chocolatey package.")
+    repo_root = Path(root)
+    if repo_root == Path(".") and not (repo_root / "packaging" / "chocolatey").is_dir():
+        repo_root = Path(__file__).resolve().parents[1]
+    try:
+        with zipfile.ZipFile(package_file, "r") as archive:
+            entries = {}
+            for info in archive.infolist():
+                raw_name = info.filename
+                norm_name = raw_name.replace("\\", "/")
+                require(not raw_name.startswith(("/", "\\")) and ":" not in raw_name
+                        and ".." not in norm_name.split("/"),
+                        "Unsafe path in Chocolatey package archive.")
+                require(((info.external_attr >> 16) & 0o170000) != 0o120000
+                        and not (info.external_attr & 0x400),
+                        "Symlink entry is not permitted in Chocolatey package archive.")
+                if info.is_dir() or norm_name.endswith("/"):
+                    continue
+                require(norm_name not in entries, "Duplicate entry in Chocolatey package archive.")
+                require(norm_name.lower() != "tools/installer.exe"
+                        and not norm_name.lower().endswith((".exe", ".dll", ".msi", ".bat", ".cmd")),
+                        "Public Chocolatey package must not embed an installer executable.")
+                entries[norm_name] = info
+
+            require("pr-sniper.nuspec" in entries, "Chocolatey package is missing pr-sniper.nuspec.")
+            try:
+                nuspec_root = ET.fromstring(archive.read(entries["pr-sniper.nuspec"]).decode("utf-8-sig"))
+            except (UnicodeDecodeError, ET.ParseError):
+                raise ReleaseError("Chocolatey nuspec is invalid XML.") from None
+            require(nuspec_root.tag.rsplit("}", 1)[-1] == "package", "Unexpected Chocolatey nuspec root.")
+            meta_elem = next(
+                (child for child in nuspec_root if child.tag.rsplit("}", 1)[-1] == "metadata"),
+                None,
+            )
+            require(meta_elem is not None, "Chocolatey nuspec is missing metadata.")
+            meta_text = {
+                child.tag.rsplit("}", 1)[-1]: (child.text or "").strip()
+                for child in meta_elem
+            }
+            expected_license = f"https://github.com/{REPOSITORY}/blob/{manifest['source_sha']}/LICENSE"
+            require(meta_text.get("id") == CHOCO_PACKAGE_ID
+                    and meta_text.get("version") == manifest["version"]
+                    and meta_text.get("licenseUrl") == expected_license,
+                    "Chocolatey nuspec metadata does not match release provenance.")
+            deps_elem = next(
+                (child for child in meta_elem if child.tag.rsplit("}", 1)[-1] == "dependencies"),
+                None,
+            )
+            require(deps_elem is not None, "Chocolatey nuspec is missing dependencies.")
+            deps = [
+                (elem.attrib.get("id"), elem.attrib.get("version"))
+                for elem in deps_elem.iter()
+                if elem.tag.rsplit("}", 1)[-1] == "dependency"
+            ]
+            require(deps == [("webview2-runtime", CHOCO_WEBVIEW2_VERSION_RANGE)],
+                    "Chocolatey nuspec is missing required webview2-runtime dependency.")
+            description = meta_text.get("description", "")
+            require(bool(description) and "NEVER PUBLISH" not in description,
+                    "Invalid Chocolatey nuspec description.")
+            if manifest["trust_mode"] == "unsigned":
+                require("UNSIGNED PUBLIC RELEASE" in description,
+                        "Unsigned public Chocolatey nuspec must disclose unsigned status.")
+            else:
+                require("UNSIGNED PUBLIC RELEASE" not in description,
+                        "Signed public Chocolatey nuspec must not claim unsigned status.")
+
+            require("tools/installer.json" in entries, "Chocolatey package is missing tools/installer.json.")
+            try:
+                installer_meta = json.loads(archive.read(entries["tools/installer.json"]).decode("utf-8-sig"))
+            except (UnicodeDecodeError, ValueError):
+                raise ReleaseError("Chocolatey installer.json is invalid JSON.") from None
+            require(isinstance(installer_meta, dict), "Invalid Chocolatey installer.json.")
+            expected_url = f"https://github.com/{REPOSITORY}/releases/download/{manifest['tag']}/{manifest['filename']}"
+            require(installer_meta.get("package_id") == CHOCO_PACKAGE_ID
+                    and installer_meta.get("version") == manifest["version"]
+                    and installer_meta.get("commit") == manifest["source_sha"]
+                    and installer_meta.get("target") == "x86_64-pc-windows-msvc"
+                    and installer_meta.get("sha256") == manifest["sha256"]
+                    and installer_meta.get("url") == expected_url,
+                    "Chocolatey installer.json does not match release manifest.")
+            if manifest["trust_mode"] == "unsigned":
+                require(installer_meta.get("mode") == "PublicUnsigned"
+                        and not installer_meta.get("signer_thumbprint")
+                        and not installer_meta.get("signer_subject"),
+                        "Unsigned Chocolatey installer.json must use PublicUnsigned mode without signer identity.")
+            else:
+                require(installer_meta.get("mode") == "Public"
+                        and installer_meta.get("signer_thumbprint") == manifest["signer_thumbprint"]
+                        and installer_meta.get("signer_subject") == manifest["signer_subject"],
+                        "Signed Chocolatey installer.json must use Public mode with matching signer identity.")
+
+            expected_scripts = {
+                "tools/chocolateyinstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyinstall.ps1",
+                "tools/chocolateyuninstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyuninstall.ps1",
+                "tools/removal-state.ps1": repo_root / "packaging" / "chocolatey" / "removal-state.ps1",
+                "tools/windows-signature.ps1": repo_root / "scripts" / "windows-signature.ps1",
+                "tools/windows-webview2.ps1": repo_root / "scripts" / "windows-webview2.ps1",
+            }
+            allowed_tools = set(expected_scripts) | {"tools/installer.json", "tools/installer.exe.ignore"}
+            tool_entries = {name for name in entries if name.startswith("tools/")}
+            require(set(expected_scripts) <= tool_entries <= allowed_tools,
+                    "Chocolatey package tools/ directory has missing or unexpected files.")
+            for entry_name, source_path in expected_scripts.items():
+                require(source_path.is_file() and not source_path.is_symlink(),
+                        f"Checked-in Chocolatey script is unavailable: {source_path}")
+                packaged_bytes = archive.read(entries[entry_name]).replace(b"\r\n", b"\n")
+                checked_in_bytes = source_path.read_bytes().replace(b"\r\n", b"\n")
+                require(hashlib.sha256(packaged_bytes).hexdigest() == hashlib.sha256(checked_in_bytes).hexdigest(),
+                        f"Packaged Chocolatey script does not match checked-in source: {entry_name}")
+    except zipfile.BadZipFile:
+        raise ReleaseError("Invalid Chocolatey package archive.") from None
+    return hashlib.sha256(package_file.read_bytes()).hexdigest()
 
 
 def classify_choco_status(feed_entry, push_completed=False):
@@ -500,34 +681,95 @@ def choco_moderation_status(package_id=CHOCO_PACKAGE_ID, package_version="", *, 
     return classify_choco_status(props)
 
 
-def choco_publish(api, directory=WINDOWS_ASSETS, nupkg_path=None, status_reader=None, status_Reader=None):
+def choco_publish(api, directory=WINDOWS_ASSETS, nupkg_path=None, status_reader=None, status_Reader=None, root=Path(".")):
     manifest = windows_metadata(directory)
-    verify_windows_public(api, manifest, directory)
+    release = verify_windows_public(api, manifest, directory)
     package_file = Path(nupkg_path) if nupkg_path is not None else (directory / f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg")
-    require(package_file.is_file() and not package_file.is_symlink(),
-            "Chocolatey package file is unavailable.")
-    require(package_file.name == f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
-            and "localtest" not in package_file.name.lower(),
-            "Refusing to publish non-public or mismatched Chocolatey package.")
+    nupkg_sha256 = verify_choco_nupkg(package_file, manifest, root=root)
+    receipt_path = directory / CHOCO_RECEIPT
+    local_receipt = None
+    if receipt_path.exists() or receipt_path.is_symlink():
+        require(receipt_path.is_file() and not receipt_path.is_symlink(),
+                "Invalid local Chocolatey submission receipt file.")
+        try:
+            local_receipt = validate_choco_receipt(
+                json.loads(receipt_path.read_text(encoding="utf-8")), manifest, nupkg_sha256
+            )
+        except ValueError:
+            raise ReleaseError("Local Chocolatey submission receipt is invalid JSON.") from None
+    assets = api.pages(f"/repos/{REPOSITORY}/releases/{release['id']}/assets")
+    remote_asset = next((asset for asset in assets if asset["name"] == CHOCO_RECEIPT), None)
+    remote_receipt = None
+    if remote_asset is not None:
+        remote_bytes = public_bytes(remote_asset["browser_download_url"])
+        try:
+            remote_receipt = validate_choco_receipt(
+                json.loads(remote_bytes.decode("utf-8")), manifest, nupkg_sha256
+            )
+        except (UnicodeDecodeError, ValueError):
+            raise ReleaseError("Published Chocolatey submission receipt is invalid JSON.") from None
+    prior_states = [r["state"] for r in (local_receipt, remote_receipt) if r is not None]
+    prior_state = None
+    for candidate in ("rejected", "publicly_approved", "awaiting_moderation", "submitted", "pending_push"):
+        if candidate in prior_states:
+            prior_state = candidate
+            break
+
     reader = status_reader or status_Reader or choco_moderation_status
     raw_status = reader(CHOCO_PACKAGE_ID, manifest["version"])
     current_status = classify_choco_status(raw_status) if isinstance(raw_status, dict) else raw_status
     require(current_status in CHOCO_STATES, "Unknown Chocolatey moderation state.")
+    if current_status == "rejected":
+        write_choco_receipt(receipt_path, manifest, nupkg_sha256, "rejected")
+        raise ReleaseError("Chocolatey package version was rejected in moderation; do not push duplicate version.")
     if current_status in ("publicly_approved", "awaiting_moderation", "submitted"):
+        write_choco_receipt(receipt_path, manifest, nupkg_sha256, current_status)
         return {"version": manifest["version"], "source_sha": manifest["source_sha"], "state": current_status}
-    require(current_status != "rejected",
-            "Chocolatey package version was rejected in moderation; do not push duplicate version.")
+    if prior_state == "rejected":
+        raise ReleaseError("Chocolatey package version was rejected in moderation; do not push duplicate version.")
+    if prior_state == "pending_push":
+        raise ReleaseError("Prior Chocolatey submission intent is unconfirmed; reconcile moderation state before retrying.")
+    if prior_state in ("submitted", "awaiting_moderation", "publicly_approved"):
+        receipt_bytes = write_choco_receipt(receipt_path, manifest, nupkg_sha256, prior_state)
+        if remote_asset is None:
+            result = api.request(
+                f"/repos/{REPOSITORY}/releases/{release['id']}/assets?name={CHOCO_RECEIPT}",
+                "POST",
+                data=receipt_bytes,
+                content_type="application/octet-stream",
+            )
+            require(result["name"] == CHOCO_RECEIPT and result["state"] == "uploaded"
+                    and result["size"] == len(receipt_bytes),
+                    "GitHub Chocolatey submission receipt upload was not confirmed.")
+            require(result.get("digest") == "sha256:" + hashlib.sha256(receipt_bytes).hexdigest(),
+                    "GitHub did not confirm the Chocolatey submission receipt SHA-256 digest.")
+        return {"version": manifest["version"], "source_sha": manifest["source_sha"], "state": prior_state}
+
     api_key = os.environ.get("CHOCOLATEY_API_KEY", "").strip()
     require(api_key, "Required Chocolatey publishing credential is missing.")
     require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before Chocolatey publication.")
+    write_choco_receipt(receipt_path, manifest, nupkg_sha256, "pending_push")
     try:
         command(["choco", "push", str(package_file), "--source", CHOCO_PUSH_SOURCE, "--api-key", api_key])
     except ReleaseError as error:
         raise ReleaseError(str(error).replace(api_key, "[REDACTED]")) from None
+    submitted_state = classify_choco_status(None, push_completed=True)
+    receipt_bytes = write_choco_receipt(receipt_path, manifest, nupkg_sha256, submitted_state)
+    result = api.request(
+        f"/repos/{REPOSITORY}/releases/{release['id']}/assets?name={CHOCO_RECEIPT}",
+        "POST",
+        data=receipt_bytes,
+        content_type="application/octet-stream",
+    )
+    require(result["name"] == CHOCO_RECEIPT and result["state"] == "uploaded"
+            and result["size"] == len(receipt_bytes),
+            "GitHub Chocolatey submission receipt upload was not confirmed.")
+    require(result.get("digest") == "sha256:" + hashlib.sha256(receipt_bytes).hexdigest(),
+            "GitHub did not confirm the Chocolatey submission receipt SHA-256 digest.")
     return {
         "version": manifest["version"],
         "source_sha": manifest["source_sha"],
-        "state": classify_choco_status(None, push_completed=True),
+        "state": submitted_state,
     }
 
 
