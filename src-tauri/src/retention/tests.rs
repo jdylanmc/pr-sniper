@@ -1320,6 +1320,7 @@ fn reads_prepared_in_the_same_second_keep_their_order() {
     evidence(&store);
     let current = store.load_queue_state().unwrap().tracked.remove(0);
     let lifecycle = crate::monitoring::LifecycleTicket {
+        provider: crate::storage::ProviderId::Github,
         configuration_id: current.configuration_id.clone(),
         name: "example/repo".into(),
         provider_account_id: current.account_id.clone(),

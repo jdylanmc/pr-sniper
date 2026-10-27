@@ -31,6 +31,9 @@ const MAX_PEOPLE: usize = 20;
 const MAX_QUERY: usize = 100;
 const MAX_TEXT: usize = 256;
 
+mod pulls;
+pub use pulls::Iteration;
+
 /// One authenticated request: GET, or POST with a JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -44,6 +47,8 @@ pub struct Response {
     pub retry_after: Option<String>,
     pub continuation: Option<String>,
     pub body: Vec<u8>,
+    /// The body exceeded the read limit and was dropped.
+    pub oversize: bool,
 }
 
 #[async_trait]
@@ -94,15 +99,13 @@ impl Transport for HttpTransport {
         let retry_after = header("retry-after");
         let continuation = header("x-ms-continuationtoken");
         let body = response.bytes().await.map_err(|_| NetworkError)?;
+        let oversize = body.len() > BODY_LIMIT;
         Ok(Response {
             status,
             retry_after,
             continuation,
-            body: if body.len() > BODY_LIMIT {
-                Vec::new()
-            } else {
-                body.to_vec()
-            },
+            body: if oversize { Vec::new() } else { body.to_vec() },
+            oversize,
         })
     }
 }
@@ -265,8 +268,9 @@ fn token_error(error: TokenError) -> ConnectionError {
         TokenError::NotLoggedIn
         | TokenError::NoAccountInTenant
         | TokenError::TenantNotFound
-        | TokenError::TenantAccessBlocked
         | TokenError::InteractionRequired { .. } => ConnectionError::SignedOut,
+        // Signing in again cannot lift a cross-tenant access block.
+        TokenError::TenantAccessBlocked => ConnectionError::OrganizationPolicyDenied,
         TokenError::Network => ConnectionError::Network,
         TokenError::Timeout => ConnectionError::Timeout,
         TokenError::MalformedOutput | TokenError::Other { .. } => ConnectionError::BrokenCli,
@@ -867,8 +871,7 @@ impl RepositoryReader for Reader {
         Ok(self.connection(&repository))
     }
 
-    /// Pull requests are not read yet: a pull request URL resolves its
-    /// repository only.
+    /// A pull request URL resolves its repository only.
     fn resolve_repository_target(
         &self,
         input: &str,

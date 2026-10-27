@@ -260,7 +260,9 @@ fn due(state: &Connectivity, wanted: Vec<Scope>, now: i64) -> Vec<Scope> {
 }
 
 /// Services saved work needs reachable, whether or not a probe is due.
-fn wanted_scopes(
+/// Repository-provider scopes are GitHub's: Azure DevOps accounts are never
+/// probed against GitHub, so GitHub reachability cannot hold their polls.
+pub(crate) fn wanted_scopes(
     store: &Store,
     accounts: &std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
 ) -> Result<Vec<Scope>, String> {
@@ -269,13 +271,20 @@ fn wanted_scopes(
     }
     let settings = store.load_settings()?;
     let mut scopes = std::collections::BTreeSet::new();
-    for repository in settings.repositories.iter().filter(|r| r.enabled) {
+    let github = crate::storage::ProviderId::Github;
+    for repository in settings
+        .repositories
+        .iter()
+        .filter(|r| r.enabled && r.provider == github)
+    {
         if let Some(account) = &repository.provider_account_id {
             scopes.insert(Scope::github(account));
         }
     }
     for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts, 0)? {
-        scopes.insert(Scope::github(&ticket.provider_account_id));
+        if ticket.provider == github {
+            scopes.insert(Scope::github(&ticket.provider_account_id));
+        }
     }
     // Planned work must clear the offline gate before its first run can exist.
     for candidate in crate::review::host::candidates(store)?
@@ -284,10 +293,11 @@ fn wanted_scopes(
             c.run.is_none()
                 && c.blocked.is_none()
                 && !crate::monitoring::retired(&c.job)
-                && settings
-                    .repositories
-                    .iter()
-                    .any(|r| r.id == c.job.configuration_id && r.enabled)
+                && settings.repositories.iter().any(|r| {
+                    r.id == c.job.configuration_id
+                        && r.enabled
+                        && r.capabilities().review().is_available()
+                })
         })
     {
         scopes.extend(selection_scopes(

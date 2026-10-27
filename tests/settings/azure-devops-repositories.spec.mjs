@@ -172,10 +172,14 @@ test("adds an Azure DevOps repository by URL and picks teammates with autocomple
     provider_account_id: AVERY,
     provider_repository_id: KEY,
   });
-  // Pull requests are not polled yet, so a new repository starts unmonitored.
+  // Polled like GitHub: a new repository starts monitoring on Save.
+  const monitor = editor.getByRole("switch", {
+    name: "Monitor contoso/Web/app",
+  });
+  await expect(monitor).toBeChecked();
   await expect(
-    editor.getByRole("switch", { name: "Monitor contoso/Web/app" }),
-  ).not.toBeChecked();
+    editor.locator("[data-repository-monitoring-detail]"),
+  ).toContainText("Starts on Save");
 
   const allPulls = editor.getByRole("switch", { name: "All pull requests" });
   if (await allPulls.isChecked()) await allPulls.setChecked(false);
@@ -223,11 +227,14 @@ test("adds an Azure DevOps repository by URL and picks teammates with autocomple
 
   await backOne(page);
   await backOne(page);
+  // No Agent is assigned here, so this Save keeps monitoring off.
+  await monitor.setChecked(false);
   await editor
     .getByRole("button", { name: "Save repository", exact: true })
     .click();
   await expect(editor).toHaveCount(0);
   saved = (await store("snapshot")).settings.repositories;
+  expect(saved[0].enabled).toBe(false);
   const include = saved[0].admission.rules.find(
     (rule) => rule.kind === "include_users",
   );

@@ -566,6 +566,7 @@ impl Setup {
                 Err(E::WrongIdentity)
             }
             (AccountView::Offline, ..) => Err(E::Network),
+            (AccountView::TenantAccessBlocked, ..) => Err(E::OrganizationPolicyDenied),
             (AccountView::Failed, ..) => Err(E::BrokenCli),
             (AccountView::Unavailable, ..) => Err(match probed.cli {
                 CliView::Missing | CliView::TooOld { .. } => E::MissingCli,
@@ -584,6 +585,17 @@ impl Setup {
 
     pub fn binding(&self) -> Binding {
         self.lock().binding.clone()
+    }
+
+    /// A read failed on credentials, so the cached probe is stale: drop it
+    /// (and any probe in flight) so only a fresh probe shows the account
+    /// connected again. The cached read token may be what failed (for
+    /// example another identity's), so it goes too.
+    pub fn forget_probe(&self) {
+        let mut inner = self.lock();
+        inner.probed = None;
+        inner.generation += 1;
+        self.reset_tokens();
     }
 
     pub fn view(&self) -> SetupView {

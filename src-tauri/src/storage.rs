@@ -703,7 +703,7 @@ pub struct RepositoryAuthorization {
 impl RepositoryAuthorization {
     pub fn matches(&self, repository: &Repository) -> bool {
         repository.enabled
-            && repository.capabilities().review().is_available()
+            && repository.capabilities().monitor().is_available()
             && self.name == repository.name
             && Some(&self.account_id) == repository.provider_account_id.as_ref()
             && Some(&self.repository_id) == repository.provider_repository_id.as_ref()
@@ -787,7 +787,7 @@ impl Settings {
             .iter()
             .map(|repository| {
                 let mut issues = Vec::new();
-                if !repository.capabilities().review().is_available()
+                if !repository.capabilities().monitor().is_available()
                     || repository.account_binding().is_none()
                 {
                     issues.push("Bind a supported repository account.".into());
@@ -2241,7 +2241,7 @@ impl Store {
                 value: Some(value),
                 ..
             } if value.enabled
-                && value.capabilities().review().is_available()
+                && value.capabilities().monitor().is_available()
                 && value.account_binding().is_some()
                 && !value.assignments.is_empty() =>
             {
@@ -2256,7 +2256,7 @@ impl Store {
                 .iter()
                 .find(|repository| repository.id == id)
                 .unwrap();
-            if !repository.capabilities().review().is_available()
+            if !repository.capabilities().monitor().is_available()
                 || repository.account_binding().is_none()
             {
                 return Err(format!(

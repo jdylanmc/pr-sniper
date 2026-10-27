@@ -1,7 +1,7 @@
 use crate::admission::AdmissionConfig;
 use crate::policy::{Policy, Schedule, WatchedIdentity};
 use crate::provider::{Connection, ConnectionError, Lifecycle, PullRequest};
-use crate::storage::{SavedResources, Settings, Store};
+use crate::storage::{ProviderId, SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -802,6 +802,7 @@ struct ActivationPreview {
 
 #[derive(Debug, Clone)]
 pub struct PollTicket {
+    pub provider: ProviderId,
     pub health_key: String,
     pub assignment_id: Option<String>,
     pub repository_id: String,
@@ -879,6 +880,7 @@ impl MonitoringError {
 
 #[derive(Clone)]
 struct ConfiguredSchedule {
+    provider: ProviderId,
     health_key: String,
     repository_id: String,
     name: String,
@@ -980,7 +982,7 @@ impl Monitor {
         let binding = repository
             .account_binding()
             .ok_or(ConnectionError::Configuration)?;
-        if !repository.capabilities().review().is_available() {
+        if !repository.capabilities().monitor().is_available() {
             return Err(ConnectionError::Configuration);
         }
         let policy = repository.overrides.effective(&settings.defaults);
@@ -1580,6 +1582,7 @@ impl Monitor {
             "Save this repository's valid configuration before queueing the pull request.",
         )?;
         let ticket = PollTicket {
+            provider: configuration.provider.clone(),
             health_key: configuration.health_key.clone(),
             assignment_id: None,
             repository_id: expected.id.clone(),
@@ -2383,6 +2386,7 @@ impl Monitor {
             self.leases
                 .insert(repository_id.clone(), configuration.health_key.clone());
             tickets.push(PollTicket {
+                provider: configuration.provider.clone(),
                 health_key: configuration.health_key.clone(),
                 assignment_id: configuration.assignment_id.clone(),
                 repository_id: configuration.repository_id.clone(),
@@ -2762,7 +2766,7 @@ impl Monitor {
                 &pull,
             );
             let bound = |job: &QueueJob| {
-                job.provider == "github"
+                job.provider == provider_key(&ticket.provider)
                     && (job.configuration_id == ticket.repository_id
                         || job.configuration_id.is_empty() && job.work.is_none())
                     && job.account_id == ticket.provider_account_id
@@ -2828,7 +2832,7 @@ impl Monitor {
                 };
                 queue.tracked.push(TrackedPullRequest {
                     terminal_observed: false,
-                    provider: "github".into(),
+                    provider: provider_key(&ticket.provider).into(),
                     configuration_id: ticket.repository_id.clone(),
                     account_id: ticket.provider_account_id.clone(),
                     repository_id: ticket.provider_repository_id.clone(),
@@ -3076,7 +3080,7 @@ impl Monitor {
                 let job = QueueJob {
                     work: Some(work),
                     assignment_id: Some(assignment.assignment_id.clone()),
-                    provider: "github".into(),
+                    provider: provider_key(&ticket.provider).into(),
                     account_id: result.connection.identity.id.clone(),
                     account_login: result.connection.identity.login.clone(),
                     configuration_id: configuration.repository_id.clone(),
@@ -3365,7 +3369,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
         .ok();
         let binding = repository.account_binding();
         let provider_supported =
-            binding.is_some() && repository.capabilities().review().is_available();
+            binding.is_some() && repository.capabilities().monitor().is_available();
         let provider_account_id = binding
             .as_ref()
             .map(|binding| binding.account.account_id.clone());
@@ -3373,6 +3377,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             .as_ref()
             .map(|binding| binding.repository.repository_id.clone());
         configured.push(ConfiguredSchedule {
+            provider: repository.provider.clone(),
             health_key: repository.id.clone(),
             repository_id: repository.id.clone(),
             name: repository.name.clone(),
@@ -3403,6 +3408,14 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
         });
     }
     configured
+}
+
+/// The provider name queue jobs, tracked pull requests and operations carry.
+pub(crate) fn provider_key(provider: &ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Github => "github",
+        ProviderId::AzureDevops => "azure_devops",
+    }
 }
 
 fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &PollTicket) -> bool {
@@ -3487,7 +3500,7 @@ fn start_poll_operation(
         resume_at: None,
         backpressure_until: None,
         id: uuid::Uuid::new_v4().to_string(),
-        provider: "github".into(),
+        provider: provider_key(&configuration.provider).into(),
         account_id: configuration
             .provider_account_id
             .clone()
@@ -3934,6 +3947,8 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         ConnectionError::Timeout => (OperationFailure::Timeout, None),
         ConnectionError::SignedOut
         | ConnectionError::WrongIdentity
+        // Azure CLI missing or too old: setup in Settings, like a sign-in.
+        | ConnectionError::MissingCli
         | ConnectionError::MissingScope
         | ConnectionError::ScopeUnverified
         | ConnectionError::OrganizationPolicyDeniedWithMissingScope
@@ -4201,6 +4216,7 @@ pub const LIFECYCLE_SWEEP_SECONDS: i64 = 600;
 /// One repository whose tracked open PRs still need a state-only refresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleTicket {
+    pub provider: ProviderId,
     pub configuration_id: String,
     pub name: String,
     pub provider_account_id: String,
@@ -4280,6 +4296,7 @@ impl Monitor {
                 continue;
             }
             tickets.push(LifecycleTicket {
+                provider: configuration.provider.clone(),
                 configuration_id: configuration.repository_id.clone(),
                 name: configuration.name.clone(),
                 provider_account_id: account.clone(),
@@ -4809,6 +4826,7 @@ mod admission_tests {
     fn ticket_for(settings: &Settings) -> PollTicket {
         let configuration = configured_schedules(settings).remove(0);
         PollTicket {
+            provider: configuration.provider,
             health_key: configuration.health_key,
             assignment_id: None,
             repository_id: configuration.repository_id,
