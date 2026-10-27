@@ -107,6 +107,10 @@ pub(super) trait Runtime {
     fn start_checks(&self) -> Result<(), Error>;
     fn login_status(&self) -> Result<Value, Error>;
     fn quitting(&self) -> bool;
+    /// Azure DevOps setup state and bound account; `None` without setup.
+    fn azure_devops(&self) -> Option<crate::azure_devops::setup::Report>;
+    /// The bound Azure DevOps identity ID, if any.
+    fn azure_devops_identity(&self) -> Option<String>;
 }
 
 pub(super) struct Native<'a> {
@@ -162,6 +166,18 @@ impl Runtime for Native<'_> {
     }
     fn quitting(&self) -> bool {
         self.host.quitting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn azure_devops(&self) -> Option<crate::azure_devops::setup::Report> {
+        use tauri::Manager;
+        let setup = self
+            .app
+            .try_state::<std::sync::Arc<crate::azure_devops::setup::Setup>>()?
+            .inner()
+            .clone();
+        Some(tauri::async_runtime::block_on(setup.report()))
+    }
+    fn azure_devops_identity(&self) -> Option<String> {
+        crate::azure_devops::host::bound_identity(self.app)
     }
 }
 
@@ -312,6 +328,11 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             offset,
             limit,
         } => {
+            // Probed before any lock: an Azure CLI run never holds GitHub state.
+            let azure_devops = match kind {
+                AccountKind::Repository => runtime.azure_devops(),
+                AccountKind::Copilot => None,
+            };
             let generations = runtime.generations().lock().map_err(|_| storage(()))?;
             let accounts = match kind {
                 AccountKind::Repository => {
@@ -331,11 +352,18 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                         .accounts
                 }
             };
-            page(
-                accounts.into_iter().map(|a| value(a).unwrap()).collect(),
-                offset,
-                limit,
-            )
+            let mut values: Vec<Value> = accounts.into_iter().map(|a| value(a).unwrap()).collect();
+            if let Some(account) = azure_devops
+                .as_ref()
+                .and_then(|report| report.account.as_ref())
+            {
+                values.push(value(account)?);
+            }
+            let mut result = page(values, offset, limit)?;
+            if let Some(report) = azure_devops {
+                result["azure_devops"] = value(&report.setup)?;
+            }
+            Ok(result)
         }
         Command::Resources {
             kind,
@@ -477,6 +505,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                     &generations,
                     &edit,
                     account_generation,
+                    runtime.azure_devops_identity().as_deref(),
                 )
                 .map_err(operation)?;
                 let store = runtime.store().lock().map_err(|_| storage(()))?;

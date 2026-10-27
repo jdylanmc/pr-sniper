@@ -96,8 +96,11 @@ Back/Cancel leaves that added row with its monitor switch off; it does not start
 Selecting an existing binding opens its editor instead of adding a duplicate.
 The same repository under another acting account is a distinct binding.
 
-Azure DevOps would browse repositories in the connected organization (with
-project context); it remains **Coming soon**, not a live or mocked connection.
+A connected Azure DevOps account (demo scenario **connected**) browses its
+organization's projects and repositories, and **+ URL** takes a
+`dev.azure.com` / `*.visualstudio.com` repository URL; added repositories stay
+unmonitored. Its **Add people** is a debounced prefix search over a demo
+directory; picks show display names.
 Personal GitHub and organization ownership are illustrated without credentials,
 network requests, or real access validation.
 

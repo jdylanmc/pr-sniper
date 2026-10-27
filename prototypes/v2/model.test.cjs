@@ -115,6 +115,52 @@ test("URL intake binds the chosen account and starts with no monitoring authorit
   assert.equal(M.repositoryName("owner/repo"), "owner/repo");
 });
 
+test("Azure DevOps intake binds the Azure DevOps account and starts unmonitored", () => {
+  const before = M.seed();
+  const name = M.azureRepositoryName(
+    "https://avery@dev.azure.com/Contoso/Fabrikam%20Web/_git/app/pullrequest/4",
+  );
+  assert.equal(name, "contoso/Fabrikam Web/app");
+  assert.equal(
+    M.azureRepositoryName(
+      "https://contoso.visualstudio.com/DefaultCollection/Web/_git/app",
+    ),
+    "contoso/Web/app",
+  );
+  for (const url of [
+    "https://github.com/a/b",
+    "https://dev.azure.com/contoso/Web/app",
+    "http://dev.azure.com/contoso/Web/_git/app",
+  ])
+    assert.throws(() => M.azureRepositoryName(url));
+  const next = M.update(before, "add-repo", {
+    provider: "azure_devops",
+    accountId: M.AZURE_ACCOUNT,
+    name,
+  });
+  const repo = next.repos.at(-1);
+  assert.equal(repo.provider, "azure_devops");
+  assert.equal(repo.accountId, M.AZURE_ACCOUNT);
+  assert.equal(repo.enabled, false);
+  assert.deepEqual(plain(next.reviews), plain(before.reviews));
+  assert.throws(
+    () =>
+      M.update(next, "add-repo", {
+        provider: "azure_devops",
+        accountId: M.AZURE_ACCOUNT,
+        name,
+      }),
+    /already added/,
+  );
+  assert.throws(() =>
+    M.update(before, "add-repo", {
+      provider: "azure_devops",
+      accountId: "github-personal",
+      name,
+    }),
+  );
+});
+
 test("repository intake does not dispatch existing queued work into free capacity", () => {
   const state = M.seed();
   state.reviews
@@ -1231,7 +1277,10 @@ test("rubber duck limits save with capacity and refuse out-of-range values", () 
     limit: 2,
     duck: { calls: 12, timeout: 240, window: 30 },
   });
-  assert.equal(JSON.stringify(state.duck), JSON.stringify({ calls: 12, timeout: 240, window: 30 }));
+  assert.equal(
+    JSON.stringify(state.duck),
+    JSON.stringify({ calls: 12, timeout: 240, window: 30 }),
+  );
   for (const duck of [
     { calls: 0, timeout: 180, window: 15 },
     { calls: 8, timeout: 601, window: 15 },

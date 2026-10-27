@@ -920,3 +920,83 @@ fn views_serialize_as_tagged_values() {
         "invalid_organization"
     );
 }
+
+#[tokio::test]
+async fn reads_use_the_connected_bound_account_without_interaction() {
+    use crate::provider::ConnectionError as E;
+    let harness = Harness::new(World::default());
+    // Never probed: `connected` probes first.
+    let connected = harness.setup.connected().await.unwrap();
+    assert_eq!(connected.organization, "contoso");
+    assert_eq!(connected.tenant.as_str(), TENANT);
+    assert_eq!(connected.identity, identity(AVERY, "Avery Example"));
+    let probes = harness.actions().len();
+    harness.setup.connected().await.unwrap();
+    assert_eq!(
+        harness.actions().len(),
+        probes,
+        "connected is not re-probed"
+    );
+
+    harness.world().connection = Some((200, identity_body(BLAKE, "Blake Example")));
+    harness.setup.check().await;
+    assert_eq!(harness.setup.connected().await, Err(E::WrongIdentity));
+    harness.world().token = Token::Fail(SIGNED_OUT);
+    assert_eq!(harness.setup.connected().await, Err(E::SignedOut));
+    harness.world().token = Token::Fail(MFA);
+    assert_eq!(harness.setup.connected().await, Err(E::SignedOut));
+    harness.world().version = None;
+    assert_eq!(harness.setup.connected().await, Err(E::MissingCli));
+    assert!(!harness
+        .actions()
+        .iter()
+        .any(|action| matches!(action.as_str(), "login" | "install" | "upgrade")));
+
+    let unset = Harness::with(Platform::MacOs, World::default(), Binding::default());
+    assert_eq!(unset.setup.connected().await, Err(E::Configuration));
+}
+
+#[tokio::test]
+async fn reports_setup_state_with_the_bound_account() {
+    let unbound = Harness::with(Platform::MacOs, World::default(), Binding::default());
+    let report = unbound.setup.report().await;
+    assert_eq!(report.setup.organization, OrganizationView::Unset);
+    assert_eq!(report.account, None);
+
+    let harness = Harness::new(World::default());
+    let report = harness.setup.report().await;
+    assert_eq!(report.setup.organization, known());
+    let account = report.account.unwrap();
+    assert_eq!(
+        serde_json::to_value(&account).unwrap(),
+        serde_json::json!({"state":"connected","provider":"azure_devops","account_id":AVERY,
+            "login":"Avery Example","organization":"contoso","connection_generation":0})
+    );
+
+    harness.world().token = Token::Fail(SIGNED_OUT);
+    harness.setup.check().await;
+    let account = harness.setup.report().await.account.unwrap();
+    assert_eq!(account.state, "reconnect_required");
+    assert_eq!(
+        account.reason,
+        Some(crate::provider::ConnectionError::SignedOut)
+    );
+}
+
+#[tokio::test]
+async fn reads_share_one_token_cache_per_located_cli() {
+    let harness = Harness::new(World::default());
+    let first = harness.setup.token_source();
+    assert!(Arc::ptr_eq(&first, &harness.setup.token_source()));
+    let tenant = TenantId::parse(TENANT).unwrap();
+    first.token(&tenant).await.unwrap();
+    harness.setup.token_source().token(&tenant).await.unwrap();
+    assert_eq!(
+        harness
+            .actions()
+            .iter()
+            .filter(|action| *action == "account")
+            .count(),
+        1
+    );
+}

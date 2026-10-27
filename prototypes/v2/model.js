@@ -87,6 +87,26 @@
     requireValue(name && !/^\.+$/.test(name), "Enter a repository name.");
     return `${match[1]}/${name}`;
   }
+  /** Demo Azure DevOps catalog: projects and their repositories. */
+  const azureCatalog = { Web: ["app", "site"], Api: ["gateway"] };
+  /** Demo directory for teammate autocomplete. */
+  const azurePeople = [
+    { name: "Blake Example", mail: "blake@contoso.example" },
+    { name: "Blake Two", mail: "blake2@contoso.example" },
+    { name: "Casey Brooks", mail: "casey@contoso.example" },
+  ];
+  const AZURE_ACCOUNT = "azure-devops";
+  /** `organization/project/repository` from a pasted Azure DevOps URL. */
+  function azureRepositoryName(value) {
+    const match = String(value)
+      .trim()
+      .match(
+        /^https:\/\/(?:[^@/]+@)?(?:dev\.azure\.com\/([a-z0-9-]+)|([a-z0-9-]+)\.visualstudio\.com(?:\/DefaultCollection)?)\/([^/_][^/]*)\/_git\/([^/?#]+)/i,
+      );
+    requireValue(match, "Enter an Azure DevOps repository URL.");
+    const organization = (match[1] ?? match[2]).toLowerCase();
+    return `${organization}/${decodeURIComponent(match[3])}/${decodeURIComponent(match[4])}`;
+  }
   function repositoryOwners(account) {
     return [
       { name: account.name, kind: "Personal" },
@@ -807,14 +827,23 @@
       );
     });
     state.repos.forEach((item) => {
-      requireValue(
-        typeof item.name === "string" && /^[\w.-]+\/[\w.-]+$/.test(item.name),
-        "Use a repository name like owner/repository.",
-      );
-      requireValue(
-        item.accountId === "" || known(item.accountId, "github"),
-        "Choose a repository account.",
-      );
+      if (item.provider === "azure_devops") {
+        requireValue(
+          typeof item.name === "string" &&
+            /^[a-z0-9-]+\/[^/]+\/[^/]+$/.test(item.name) &&
+            item.accountId === AZURE_ACCOUNT,
+          "Use an Azure DevOps organization/project/repository.",
+        );
+      } else {
+        requireValue(
+          typeof item.name === "string" && /^[\w.-]+\/[\w.-]+$/.test(item.name),
+          "Use a repository name like owner/repository.",
+        );
+        requireValue(
+          item.accountId === "" || known(item.accountId, "github"),
+          "Choose a repository account.",
+        );
+      }
       requireValue(
         item.watched === undefined && item.reviewerRequests === undefined,
         "Saved repository uses an outdated filter shape.",
@@ -1327,6 +1356,38 @@
         state.agents = state.agents.filter((item) => item.id !== payload.id);
         break;
       case "add-repo": {
+        if (payload.provider === "azure_devops") {
+          requireValue(
+            payload.accountId === AZURE_ACCOUNT,
+            "Connect Azure DevOps first.",
+          );
+          requireValue(
+            !state.repos.some(
+              (repo) =>
+                repo.accountId === AZURE_ACCOUNT &&
+                repo.name.toLowerCase() === payload.name.toLowerCase(),
+            ),
+            "That repository is already added for this account. Open it from Repositories.",
+          );
+          state.repos.push({
+            id: uid("repo"),
+            provider: "azure_devops",
+            name: payload.name,
+            accountId: AZURE_ACCOUNT,
+            // Azure DevOps pull requests are not polled yet.
+            enabled: false,
+            scope: false,
+            agentIds: [],
+            admission: defaultAdmission(),
+            schedule: "cron",
+            minutes: 15,
+            cron: "*/15 * * * *",
+            zone: "America/New_York",
+            start: "inherit",
+            comments: "inherit",
+          });
+          return validate(state);
+        }
         const account = find(state.accounts, payload.accountId, "Account");
         requireValue(
           account.kind === "github" && account.connected,
@@ -1469,6 +1530,10 @@
     repositoryName,
     repositoryOwners,
     repositoryCatalog,
+    azureCatalog,
+    azurePeople,
+    azureRepositoryName,
+    AZURE_ACCOUNT,
     stages,
     people,
     blockReason,

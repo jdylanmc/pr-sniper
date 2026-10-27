@@ -52,6 +52,17 @@ pub trait RepositoryReader {
     ) -> Result<ResolvedTarget, ConnectionError>;
 }
 
+/// Prefix search for people to pick as teammates.
+pub trait PeopleSearch {
+    /// People whose name or address starts with `query`; `repository` scopes
+    /// the recent-activity fallback.
+    fn search_people(
+        &self,
+        query: &str,
+        repository: Option<&RemoteRepository>,
+    ) -> Result<People, ConnectionError>;
+}
+
 /// Pull request listing, polling, detail, changed files and file content.
 pub trait PullRequestReader {
     fn latest_pull_request_number(
@@ -339,8 +350,8 @@ impl<P> ProviderSession for P where
 /// Brings the provider interfaces into scope for method-call syntax.
 pub mod prelude {
     pub use super::{
-        AccountReader, CheckLogReader, CommentReader, CommentWriter, Guardable, ProviderReader,
-        ProviderReads, ProviderSession, PublicationReader, PullRequestReader,
+        AccountReader, CheckLogReader, CommentReader, CommentWriter, Guardable, PeopleSearch,
+        ProviderReader, ProviderReads, ProviderSession, PublicationReader, PullRequestReader,
         PullRequestStateReader, ReadinessReader, RepositoryReader, ReviewPublisher, ReviewSource,
         ReviewerOutcome, SessionControl, ThreadReader, ThreadWriter,
     };

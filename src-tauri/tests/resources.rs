@@ -824,3 +824,67 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
     let legacy: Selection = serde_json::from_value(legacy).unwrap();
     assert!(legacy.configuration.is_none());
 }
+
+#[test]
+fn azure_devops_repositories_save_guid_people_and_never_inherit_github_watchlists() {
+    use pr_sniper_lib::policy::WatchedIdentity;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut base = settings();
+    base.defaults.watched_authors = vec![WatchedIdentity {
+        id: "11".into(),
+        login: "octo".into(),
+    }];
+    base.repositories.clear();
+    store.save_settings(&base).unwrap();
+    let blake = WatchedIdentity {
+        id: "00000000-0000-0000-0000-000000000002".into(),
+        login: "Blake Example".into(),
+    };
+    let repository = |watched: Vec<WatchedIdentity>| {
+        serde_json::from_value::<pr_sniper_lib::storage::Repository>(json!({
+            "id": REPO, "provider": "azure_devops", "name": "contoso/Fabrikam Web/app",
+            "enabled": false,
+            "provider_account_id": "00000000-0000-0000-0000-000000000001",
+            "provider_repository_id": "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1",
+            "watched_authors": watched,
+        }))
+        .unwrap()
+    };
+    let save = |value| {
+        store.save_resource(ResourceEdit::Repository {
+            id: REPO.into(),
+            expected: None,
+            value: Some(Box::new(value)),
+        })
+    };
+    for invalid in [
+        WatchedIdentity {
+            id: "42".into(),
+            login: "octo".into(),
+        },
+        WatchedIdentity {
+            id: "00000000-0000-0000-0000-00000000000A".into(),
+            login: "Upper Case".into(),
+        },
+        WatchedIdentity {
+            id: blake.id.clone(),
+            login: " ".into(),
+        },
+    ] {
+        assert!(save(repository(vec![invalid])).is_err());
+    }
+    save(repository(vec![blake.clone()])).unwrap();
+    let saved = store.load_settings().unwrap().repositories.remove(0);
+    assert_eq!(saved.watched_authors, std::slice::from_ref(&blake));
+    let admission = serde_json::to_value(saved.admission.unwrap()).unwrap();
+    let include = admission["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|rule| rule["kind"] == "include_users")
+        .unwrap()
+        .clone();
+    // Only the repository's own people; the GitHub default is not inherited.
+    assert_eq!(include["users"], json!([blake]));
+}

@@ -34,6 +34,8 @@ impl Capability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
+    /// Repository discovery and resolution, and people search.
+    pub discovery: Capability,
     /// Account, repository and pull request reads.
     pub read: Capability,
     /// Review thread read, reply and resolve.
@@ -53,6 +55,7 @@ impl ProviderCapabilities {
         use Capability::{Available, Unavailable as No};
         match provider {
             ProviderId::Github => Self {
+                discovery: Available,
                 read: Available,
                 threads: Available,
                 publish: Available,
@@ -61,6 +64,7 @@ impl ProviderCapabilities {
                 approve_and_merge: Available,
             },
             ProviderId::AzureDevops => Self {
+                discovery: Available,
                 read: No(Unavailable::NotImplemented),
                 threads: No(Unavailable::NotImplemented),
                 publish: No(Unavailable::NotImplemented),

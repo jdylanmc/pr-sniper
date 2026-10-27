@@ -21,6 +21,7 @@ struct Fixture {
     launched: Mutex<Vec<String>>,
     polls: Mutex<Vec<String>>,
     head: Mutex<String>,
+    azure: Option<crate::azure_devops::setup::Report>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -62,6 +63,7 @@ impl Fixture {
             launched: Mutex::new(vec![]),
             polls: Mutex::new(vec![]),
             head: Mutex::new("a".repeat(40)),
+            azure: None,
         }
     }
     fn watch(&self, again: bool) -> Value {
@@ -255,6 +257,120 @@ impl Runtime for Fixture {
     fn quitting(&self) -> bool {
         false
     }
+    fn azure_devops(&self) -> Option<crate::azure_devops::setup::Report> {
+        self.azure.clone()
+    }
+    fn azure_devops_identity(&self) -> Option<String> {
+        self.azure
+            .as_ref()?
+            .account
+            .as_ref()
+            .map(|account| account.account_id.clone())
+    }
+}
+
+const AVERY: &str = "00000000-0000-0000-0000-000000000001";
+
+fn azure_report(connected: bool) -> crate::azure_devops::setup::Report {
+    use crate::azure_devops::{connection::Identity, setup::*};
+    let identity = Identity {
+        id: AVERY.into(),
+        display_name: "Avery Example".into(),
+        unique_name: None,
+    };
+    Report {
+        setup: SetupView {
+            cli: CliView::Ready {
+                version: "2.90.0".into(),
+            },
+            minimum: "2.54.0".into(),
+            installer: Installer::Homebrew,
+            organization: OrganizationView::TenantKnown {
+                name: "contoso".into(),
+                tenant: "00000000-0000-0000-0000-00000000000a".into(),
+            },
+            account: if connected {
+                AccountView::Connected { identity }
+            } else {
+                AccountView::SignedOut
+            },
+            checking: false,
+        },
+        account: Some(RepositoryAccount {
+            state: if connected {
+                "connected"
+            } else {
+                "reconnect_required"
+            },
+            provider: "azure_devops",
+            account_id: AVERY.into(),
+            login: "Avery Example".into(),
+            organization: "contoso".into(),
+            connection_generation: 0,
+            reason: (!connected).then_some(crate::provider::ConnectionError::SignedOut),
+        }),
+    }
+}
+
+#[test]
+fn repository_accounts_include_azure_devops_with_setup_state() {
+    let mut fixture = Fixture::new();
+    let github_only = fixture.call(json!({"operation":"accounts","kind":"repository"}));
+    assert_eq!(github_only["result"]["total"], 1);
+    assert!(github_only["result"].get("azure_devops").is_none());
+    fixture.azure = Some(azure_report(false));
+    let accounts = fixture.call(json!({"operation":"accounts","kind":"repository"}));
+    assert_eq!(accounts["ok"], true, "{accounts}");
+    let result = &accounts["result"];
+    assert_eq!(result["total"], 2);
+    assert_eq!(
+        result["values"][1],
+        json!({"state":"reconnect_required","provider":"azure_devops","account_id":AVERY,
+            "login":"Avery Example","organization":"contoso","connection_generation":0,
+            "reason":"signed_out"})
+    );
+    assert_eq!(result["azure_devops"]["cli"]["state"], "ready");
+    assert_eq!(
+        result["azure_devops"]["organization"]["state"],
+        "tenant_known"
+    );
+    assert_eq!(result["azure_devops"]["account"]["state"], "signed_out");
+    let copilot = fixture.call(json!({"operation":"accounts","kind":"copilot"}));
+    assert!(copilot["result"].get("azure_devops").is_none());
+}
+
+#[test]
+fn azure_devops_repositories_save_only_as_the_bound_identity() {
+    let mut fixture = Fixture::new();
+    let id = uuid::Uuid::new_v4().to_string();
+    let repository = json!({"id":id,"provider":"azure_devops",
+        "name":"contoso/Web/app","enabled":false,"provider_account_id":AVERY,
+        "provider_repository_id":format!("contoso/{}/{}",
+            "00000000-0000-0000-0000-0000000000b1","00000000-0000-0000-0000-0000000000c1"),
+        "watched_authors":[{"id":"00000000-0000-0000-0000-000000000002","login":"Blake Example"}]});
+    let save = |fixture: &Fixture| {
+        let revision = fixture.call(json!({"operation":"inspect"}))["result"]["revision"].clone();
+        fixture.call(json!({"operation":"save","revision":revision,
+            "edit":{"kind":"repository","id":id,"expected":null,"value":repository}}))
+    };
+    let unbound = save(&fixture);
+    assert_eq!(unbound["ok"], false, "{unbound}");
+    assert_eq!(unbound["error"]["detail"]["error"], "wrong_identity");
+    fixture.azure = Some(azure_report(true));
+    let saved = save(&fixture);
+    assert_eq!(saved["ok"], true, "{saved}");
+    let repositories =
+        fixture.call(json!({"operation":"resources","kind":"repositories","limit":100}));
+    let stored = repositories["result"]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(id))
+        .unwrap()
+        .clone();
+    assert_eq!(stored["provider"], "azure_devops");
+    assert_eq!(stored["provider_account_id"], AVERY);
+    assert_eq!(stored["watched_authors"][0]["login"], "Blake Example");
 }
 
 #[test]

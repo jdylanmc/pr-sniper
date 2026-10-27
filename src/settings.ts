@@ -42,6 +42,7 @@ import {
   type Repository,
   primaryAssignmentId,
   repositoryProviderContext,
+  azureDevopsOrganization,
 } from "./repositories";
 import { defaultTools, doctrineIds } from "./policy";
 import {
@@ -388,6 +389,8 @@ const reason = (error: unknown): string => {
     invalid_repository: "Invalid repository",
     revision_changed: "Revision changed",
     signed_out: "Reconnect required",
+    missing_cli: "Azure CLI missing",
+    broken_cli: "Azure CLI failed",
     missing_read_permission: "Access denied",
     repository_unavailable: "Repository unavailable",
     rate_limited: "Rate limited",
@@ -525,6 +528,8 @@ export async function mountSettings(
     });
   let githubAccounts: GithubAccount[] = [];
   let repositoryAccountsState: "loading" | "ready" | "unavailable" = "loading";
+  let azureDevops: AzureDevopsSetup | undefined;
+  let azureDevopsRead = 0;
   const pendingSetup = new Set<string>();
   const setupMonitoringOff = new Set<string>();
   let repositoryAutomation: AutomationSnapshot | undefined;
@@ -2436,6 +2441,59 @@ export async function mountSettings(
       });
   }
 
+  /** The connected Azure DevOps identity, if setup is connected. */
+  function azureDevopsIdentity() {
+    return azureDevops?.account.state === "connected"
+      ? azureDevops.account.identity
+      : undefined;
+  }
+
+  function azureDevopsOrganizationName() {
+    return azureDevops && "name" in azureDevops.organization
+      ? azureDevops.organization.name.toLowerCase()
+      : undefined;
+  }
+
+  /** Setup state for Azure DevOps repositories; probes once if unprobed. */
+  async function refreshAzureDevops() {
+    const read = ++azureDevopsRead;
+    let view: AzureDevopsSetup | undefined;
+    try {
+      view = await invoke<AzureDevopsSetup>("azure_devops_setup_state");
+      if (view.organization.state !== "unset" && view.cli.state === "unknown")
+        view = await invoke<AzureDevopsSetup>("azure_devops_check");
+    } catch {
+      view = undefined;
+    }
+    if (read !== azureDevopsRead) return;
+    azureDevops = view;
+    updateRepositoryAccounts?.();
+    refreshRepositoryRows?.();
+  }
+
+  function repositoryAccountLogin(repository: ConfiguredRepository) {
+    if (repository.provider === "azure_devops") {
+      const identity = azureDevopsIdentity();
+      return identity && identity.id === repository.provider_account_id
+        ? identity.display_name
+        : undefined;
+    }
+    return githubAccounts.find(
+      (a) => a.account_id === repository.provider_account_id,
+    )?.login;
+  }
+
+  function repositoryAccountDisconnected(repository: ConfiguredRepository) {
+    if (repository.provider === "azure_devops")
+      return !!azureDevops && !repositoryAccountLogin(repository);
+    const account = githubAccounts.find(
+      (a) => a.account_id === repository.provider_account_id,
+    );
+    return (
+      repositoryAccountsState === "ready" && account?.state !== "connected"
+    );
+  }
+
   function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
@@ -2455,19 +2513,12 @@ export async function mountSettings(
       )!;
       const rowsFor = (disconnectedGroup: boolean) =>
         repositories()
-          .filter((repository) => {
-            const account = githubAccounts.find(
-              (a) => a.account_id === repository.provider_account_id,
-            );
-            const isDisconnected =
-              repositoryAccountsState === "ready" &&
-              account?.state !== "connected";
-            return isDisconnected === disconnectedGroup;
-          })
+          .filter(
+            (repository) =>
+              repositoryAccountDisconnected(repository) === disconnectedGroup,
+          )
           .map((repository) => {
-            const account = githubAccounts.find(
-              (a) => a.account_id === repository.provider_account_id,
-            );
+            const login = repositoryAccountLogin(repository);
             const committed =
               saved.repositories?.find((r) => r.id === repository.id) ??
               repository;
@@ -2475,13 +2526,13 @@ export async function mountSettings(
             const label =
               repositories().filter((r) => r.name === repository.name).length >
               1
-                ? `${repository.name} as ${account?.login ?? "Unavailable"}`
+                ? `${repository.name} as ${login ?? "Unavailable"}`
                 : repository.name;
             return `<div class="native-repository-row repository-monitoring-row"><button type="button" class="repository-open" aria-label="${escape(label)}" data-dirty="${!sameResource(
               repository,
               saved.repositories?.find((r) => r.id === repository.id),
             )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(account?.login ?? "Unavailable")}</small><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(login ?? "Unavailable")}</small><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2496,17 +2547,23 @@ export async function mountSettings(
       disconnected.hidden = !disconnected.innerHTML;
       list.innerHTML = rowsFor(false);
       list.hidden = !list.innerHTML;
+      const browseIcon =
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg>';
+      const azureIdentity = azureDevopsIdentity();
       accounts.innerHTML =
-        repositoryAccountsState === "unavailable"
+        (repositoryAccountsState === "unavailable"
           ? '<p role="alert">Unavailable</p><button data-retry-accounts>Retry</button>'
           : repositoryAccountsState === "loading"
             ? '<p role="status">Loading</p>'
             : githubAccounts
                 .map(
                   (account) =>
-                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub${account.state === "connected" ? "" : " / Reconnect required"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg></button></div>`,
+                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub${account.state === "connected" ? "" : " / Reconnect required"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}>${browseIcon}</button></div>`,
                 )
-                .join("");
+                .join("")) +
+        (azureIdentity
+          ? `<div class="native-repository-row" data-azure-account><span class="settings-row-copy"><strong>${escape(azureIdentity.display_name)}</strong><small>Azure DevOps / ${escape(azureDevopsOrganizationName() ?? "")}</small></span><button type="button" data-browse-azure aria-label="Browse repositories as ${escape(azureIdentity.display_name)}" data-focus-key="browse-azure-devops">${browseIcon}</button></div>`
+          : "");
       accounts
         .querySelector<HTMLButtonElement>("[data-retry-accounts]")
         ?.addEventListener("click", () =>
@@ -2550,6 +2607,13 @@ export async function mountSettings(
             );
         });
       accounts
+        .querySelector<HTMLButtonElement>("[data-browse-azure]")
+        ?.addEventListener("click", (event) => {
+          const identity = azureDevopsIdentity();
+          if (identity)
+            browseAzureDevops(identity, event.currentTarget as HTMLElement);
+        });
+      accounts
         .querySelectorAll<HTMLButtonElement>("[data-browse-account]")
         .forEach((button) => {
           button.onclick = () =>
@@ -2585,9 +2649,11 @@ export async function mountSettings(
       ?.addEventListener("click", () => reload.click());
     rows();
     void refreshRepositoryAutomation(updateMonitoringDetails);
+    void refreshAzureDevops();
   }
 
   async function addAndConfigure(
+    provider: ConfiguredRepository["provider"],
     accountId: string,
     resolved: ResolvedRepository,
     modal: HTMLDialogElement,
@@ -2596,17 +2662,19 @@ export async function mountSettings(
     const requestedRoute = routeGeneration;
     if (
       resolved.identity.id !== accountId ||
-      !githubAccounts.some(
-        (a) =>
-          a.provider === "github" &&
-          a.account_id === accountId &&
-          a.state === "connected",
-      )
+      (provider === "azure_devops"
+        ? azureDevopsIdentity()?.id !== accountId
+        : !githubAccounts.some(
+            (a) =>
+              a.provider === "github" &&
+              a.account_id === accountId &&
+              a.state === "connected",
+          ))
     )
       throw "Reconnect required";
     let repository = repositories().find(
       (r) =>
-        r.provider === "github" &&
+        r.provider === provider &&
         r.provider_account_id === accountId &&
         r.provider_repository_id === resolved.repository.id,
     );
@@ -2616,7 +2684,7 @@ export async function mountSettings(
         name: resolved.repository.name,
         enabled: false,
         cron: DEFAULT_CRON,
-        provider: "github",
+        provider,
         provider_account_id: accountId,
         provider_repository_id: resolved.repository.id,
       };
@@ -2626,6 +2694,8 @@ export async function mountSettings(
         resolved.account_generation,
       );
       pendingSetup.add(value.id);
+      // Azure DevOps pull requests are not polled yet: start unmonitored.
+      if (provider === "azure_devops") setupMonitoringOff.add(value.id);
       repository = repositories().find((r) => r.id === value.id)!;
     }
     if (resolved.pull_request) {
@@ -2738,6 +2808,11 @@ export async function mountSettings(
       }
       if (account.value !== selectedId) account.value = selectedId;
       const github = provider === "github";
+      const azure = provider === "azure_devops";
+      const azureIdentity = azureDevopsIdentity();
+      const azureReady =
+        !!azureIdentity &&
+        azureDevopsOrganization(input.value) === azureDevopsOrganizationName();
       const ready = repositoryAccountsState === "ready";
       const reconnect =
         !!selectedId ||
@@ -2753,26 +2828,32 @@ export async function mountSettings(
         ? "Reconnect GitHub account"
         : "Connect GitHub account";
       retry.hidden = !github || repositoryAccountsState !== "unavailable";
-      submit.disabled = !github || !ready || !actor || submitting || busy;
-      status.textContent = !github
-        ? provider === "azure_devops"
-          ? "Coming soon"
-          : provider === "invalid"
+      submit.disabled = azure
+        ? !azureReady || submitting || busy
+        : !github || !ready || !actor || submitting || busy;
+      status.textContent = azure
+        ? !azureIdentity
+          ? "Not connected"
+          : azureReady
+            ? `Azure DevOps / ${azureIdentity.display_name}`
+            : "Other organization"
+        : !github
+          ? provider === "invalid"
             ? "Invalid URL"
             : "Unsupported"
-        : repositoryAccountsState === "unavailable"
-          ? "Unavailable"
-          : !ready
-            ? "Loading"
-            : actor
-              ? `GitHub / ${actor.login}${actor.warning ? " / Retry verification" : ""}`
-              : selectedId
-                ? `${selectedLogin ?? "Saved account"}: ${unavailable?.reason ? githubAccountFailureMessage(unavailable.reason) : "Reconnect required"}`
-                : available.length
-                  ? "Choose an account"
-                  : reconnect
-                    ? "Reconnect required"
-                    : "Not connected";
+          : repositoryAccountsState === "unavailable"
+            ? "Unavailable"
+            : !ready
+              ? "Loading"
+              : actor
+                ? `GitHub / ${actor.login}${actor.warning ? " / Retry verification" : ""}`
+                : selectedId
+                  ? `${selectedLogin ?? "Saved account"}: ${unavailable?.reason ? githubAccountFailureMessage(unavailable.reason) : "Reconnect required"}`
+                  : available.length
+                    ? "Choose an account"
+                    : reconnect
+                      ? "Reconnect required"
+                      : "Not connected";
     };
     input.oninput = () => {
       invalidate();
@@ -2842,7 +2923,36 @@ export async function mountSettings(
       submitting = true;
       alert.hidden = true;
       update();
+      const azureIdentity = azureDevopsIdentity();
       try {
+        if (repositoryProviderContext(repositoryInput) === "azure_devops") {
+          if (!azureIdentity) throw "Not connected";
+          const resolved = await invoke<ResolvedRepository>(
+            "resolve_provider_repository",
+            {
+              provider: "azure_devops",
+              accountId: azureIdentity.id,
+              repository: repositoryInput,
+            },
+          );
+          if (
+            !modal.open ||
+            !modal.isConnected ||
+            app.closest("[hidden]") ||
+            requestedRoute !== routeGeneration ||
+            read !== generation
+          )
+            return;
+          if (resolved.identity.id !== azureIdentity.id) throw "wrong_identity";
+          await addAndConfigure(
+            "azure_devops",
+            azureIdentity.id,
+            resolved,
+            modal,
+            opener,
+          );
+          return;
+        }
         if (repositoryProviderContext(repositoryInput) !== "github")
           throw "Unsupported";
         if (repositoryAccountsState !== "ready" || !actor)
@@ -2869,13 +2979,18 @@ export async function mountSettings(
             actor.connection_generation !== resolved.account_generation)
         )
           throw "Reconnect required";
-        await addAndConfigure(accountId, resolved, modal, opener);
+        await addAndConfigure("github", accountId, resolved, modal, opener);
       } catch (cause) {
         if (modal.open && read === generation) {
           submitting = false;
           alert.textContent = reason(cause);
           alert.hidden = false;
-          if (repositorySessionFailure(cause))
+          if (
+            repositorySessionFailure(cause)?.accountId === azureIdentity?.id &&
+            azureIdentity
+          )
+            void refreshAzureDevops();
+          else if (repositorySessionFailure(cause))
             window.dispatchEvent(
               new Event("pr-sniper:refresh-provider-accounts"),
             );
@@ -2887,6 +3002,161 @@ export async function mountSettings(
         }
       }
     };
+  }
+
+  function browseAzureDevops(
+    identity: { id: string; display_name: string },
+    opener: HTMLElement,
+  ) {
+    const modal = dialog(
+      `Browse repositories as ${identity.display_name}`,
+      `<label>Project<select data-project aria-label="Project" disabled><option value="">Choose a project</option></select></label>
+      <label>Find a repository<input type="search" data-repository-search placeholder="Search" disabled /></label>
+      <p role="status">Loading</p><p role="alert" hidden></p><button data-retry hidden>Retry</button>
+      <div data-project-results class="native-repository-list"></div>`,
+      opener,
+    );
+    compactEditor(modal, "Back");
+    modal.classList.add("repository-editor");
+    const project = modal.querySelector<HTMLSelectElement>("[data-project]")!;
+    const search = modal.querySelector<HTMLInputElement>(
+      "[data-repository-search]",
+    )!;
+    const status = modal.querySelector<HTMLElement>("[role=status]")!;
+    const alert = modal.querySelector<HTMLElement>("[role=alert]")!;
+    const retry = modal.querySelector<HTMLButtonElement>("[data-retry]")!;
+    const list = modal.querySelector<HTMLElement>("[data-project-results]")!;
+    const browserRoute = routeGeneration;
+    let generation = 0;
+    let results: { id: string; name: string }[] = [];
+    let selecting = false;
+    const current = (read: number) =>
+      modal.open &&
+      modal.isConnected &&
+      read === generation &&
+      browserRoute === routeGeneration &&
+      !app.closest("[hidden]");
+    const fail = (cause: unknown) => {
+      status.textContent = "Unavailable";
+      alert.textContent = reason(cause);
+      alert.hidden = false;
+      retry.hidden = false;
+      if (repositorySessionFailure(cause)) void refreshAzureDevops();
+    };
+    const renderResults = () => {
+      const query = search.value.trim().toLowerCase();
+      const filtered = results.filter((r) =>
+        r.name.toLowerCase().includes(query),
+      );
+      list.innerHTML = filtered
+        .map((r) => {
+          const parts = r.name.split("/");
+          const added = repositories().some(
+            (saved) =>
+              saved.provider === "azure_devops" &&
+              saved.provider_account_id === identity.id &&
+              saved.provider_repository_id === r.id,
+          );
+          return `<button type="button" class="native-repository-row" data-pick="${escape(r.id)}"><span class="settings-row-copy"><strong>${escape(parts.slice(2).join("/"))}</strong><small>${escape(parts[1] ?? "")}</small></span><span>${added ? "Added" : "Add"}</span><span aria-hidden="true">›</span></button>`;
+        })
+        .join("");
+      status.textContent = !results.length
+        ? "None"
+        : !filtered.length
+          ? "No matches"
+          : countLabel(results.length, "repository", "repositories");
+      list
+        .querySelectorAll<HTMLButtonElement>("[data-pick]")
+        .forEach((button) => {
+          button.onclick = async () => {
+            if (selecting) return;
+            selecting = true;
+            const read = generation;
+            const requestedRoute = routeGeneration;
+            list
+              .querySelectorAll<HTMLButtonElement>("button")
+              .forEach((b) => (b.disabled = true));
+            try {
+              if (azureDevopsIdentity()?.id !== identity.id)
+                throw "Reconnect required";
+              const resolved = await invoke<ResolvedRepository>(
+                "resolve_provider_repository",
+                {
+                  provider: "azure_devops",
+                  accountId: identity.id,
+                  repository: button.dataset.pick,
+                },
+              );
+              if (!current(read) || requestedRoute !== routeGeneration) return;
+              if (resolved.identity.id !== identity.id) throw "wrong_identity";
+              if (resolved.repository.id !== button.dataset.pick)
+                throw "Repository changed";
+              await addAndConfigure(
+                "azure_devops",
+                identity.id,
+                resolved,
+                modal,
+                opener,
+              );
+            } catch (cause) {
+              if (current(read)) fail(cause);
+            } finally {
+              selecting = false;
+              if (current(read)) renderResults();
+            }
+          };
+        });
+    };
+    const load = async () => {
+      const read = ++generation;
+      const selected = project.value;
+      results = [];
+      list.replaceChildren();
+      search.disabled = true;
+      alert.hidden = true;
+      retry.hidden = true;
+      status.textContent = "Loading";
+      try {
+        if (!selected) {
+          const result = await invoke<{
+            identity: { id: string };
+            owners: { login: string }[];
+          }>("list_provider_repository_owners", {
+            provider: "azure_devops",
+            accountId: identity.id,
+          });
+          if (!current(read)) return;
+          if (result.identity.id !== identity.id) throw "wrong_identity";
+          project.innerHTML =
+            option("", "Choose a project", "") +
+            result.owners.map((o) => option(o.login, o.login, "")).join("");
+          project.disabled = false;
+          status.textContent = result.owners.length
+            ? countLabel(result.owners.length, "project", "projects")
+            : "None";
+        } else {
+          const result = await invoke<{
+            identity: { id: string };
+            repositories: { id: string; name: string }[];
+          }>("list_provider_repositories", {
+            provider: "azure_devops",
+            accountId: identity.id,
+            owner: selected,
+          });
+          if (!current(read)) return;
+          if (result.identity.id !== identity.id) throw "wrong_identity";
+          results = result.repositories;
+          search.disabled = false;
+          renderResults();
+        }
+      } catch (cause) {
+        if (current(read)) fail(cause);
+      }
+    };
+    project.onchange = () => void load();
+    search.oninput = renderResults;
+    retry.onclick = () => void load();
+    void load();
   }
 
   function browseRepositories(account: GithubAccount, opener: HTMLElement) {
@@ -2976,6 +3246,7 @@ export async function mountSettings(
               if (resolved.repository.id !== selected.id)
                 throw "Repository changed";
               await addAndConfigure(
+                "github",
                 account.account_id,
                 resolved,
                 modal,
@@ -3398,7 +3669,7 @@ export async function mountSettings(
     const pendingPull = pendingPullRequests.get(repository.id);
     const modal = dialog(
       repository.name,
-      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(repository.provider === "github" ? `GitHub / ${githubAccounts.find((account) => account.account_id === repository.provider_account_id)?.login ?? (repository.provider_account_id ? "Unavailable" : "No account")}` : "Azure DevOps")}</p></section>
+      `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(`${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${repositoryAccountLogin(repository) ?? (repository.provider_account_id ? "Unavailable" : "No account")}`)}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
         <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
@@ -3950,7 +4221,11 @@ export async function mountSettings(
         const draw = () => {
           list.replaceChildren();
           const values: string[] = users
-            ? (rule.users ?? []).map((u) => `@${u.login}`)
+            ? (rule.users ?? []).map((u) =>
+                repository.provider === "azure_devops"
+                  ? u.login
+                  : `@${u.login}`,
+              )
             : (rule.paths ?? []);
           values.forEach((value, index) => {
             const row = document.createElement("div");
@@ -4396,12 +4671,140 @@ export async function mountSettings(
     };
   }
 
+  /** Azure DevOps teammate autocomplete: debounced directory prefix search,
+   * recent pull request people when the directory fails. */
+  function azurePersonDialog(
+    opener: HTMLElement,
+    repository: ConfiguredRepository,
+    people: WatchedIdentity[],
+    onAdd: (identity: WatchedIdentity) => void,
+  ) {
+    const picker = dialog(
+      "Add people",
+      `<form class="person-lookup person-search"><label>Person<input name="person" type="search" aria-controls="person-matches" autocomplete="off" spellcheck="false" /></label><p role="status" data-person-status></p><div id="person-matches" class="person-matches" data-person-matches></div><p role="alert" hidden></p><div class="resource-actions"><button type="button" data-cancel-resource>Cancel</button></div></form>`,
+      opener,
+    );
+    resourceEditor(picker);
+    picker.classList.add("repository-editor");
+    const input = picker.querySelector<HTMLInputElement>("[name=person]")!;
+    const status = picker.querySelector<HTMLElement>("[data-person-status]")!;
+    const matches = picker.querySelector<HTMLElement>("[data-person-matches]")!;
+    const alert = picker.querySelector<HTMLElement>("[role=alert]")!;
+    let generation = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const search = async (read: number, query: string) => {
+      const lookupRevision = revision;
+      try {
+        const accountId = repository.provider_account_id;
+        if (!accountId || azureDevopsIdentity()?.id !== accountId)
+          throw "Reconnect required";
+        const found = await invoke<{
+          source: "directory" | "recent";
+          people: { id: string; login: string; mail?: string }[];
+        }>("search_provider_people", {
+          provider: "azure_devops",
+          accountId,
+          repositoryId: repository.provider_repository_id ?? null,
+          query,
+        });
+        if (read !== generation || !picker.open) return;
+        status.textContent = !found.people.length
+          ? "None"
+          : found.source === "recent"
+            ? "Recent"
+            : "";
+        status.dataset.source = found.source;
+        matches.innerHTML = found.people
+          .map(
+            (person) =>
+              `<button type="button" class="person-match" data-person="${escape(person.id)}" aria-label="${escape(person.mail ? `${person.login}, ${person.mail}` : person.login)}"><strong>${escape(person.login)}</strong>${person.mail ? `<small>${escape(person.mail)}</small>` : ""}${people.some((p) => p.id === person.id) ? `<span class="person-added">${icon("check")}</span>` : ""}</button>`,
+          )
+          .join("");
+        matches
+          .querySelectorAll<HTMLButtonElement>("[data-person]")
+          .forEach((button, index) => {
+            const person = found.people[index];
+            button.onclick = () => {
+              if (!picker.open || lookupRevision !== revision) {
+                alert.textContent = "Settings changed";
+                alert.hidden = false;
+                return;
+              }
+              if (people.some((p) => p.id === person.id)) {
+                alert.textContent = "Already added";
+                alert.hidden = false;
+                return;
+              }
+              picker.close();
+              onAdd({ id: person.id, login: person.login });
+            };
+            button.onkeydown = (event) => {
+              const buttons = [
+                ...matches.querySelectorAll<HTMLButtonElement>("button"),
+              ];
+              const at = buttons.indexOf(button);
+              if (event.key === "ArrowDown") buttons[at + 1]?.focus();
+              else if (event.key === "ArrowUp")
+                (buttons[at - 1] ?? input).focus();
+              else return;
+              event.preventDefault();
+            };
+          });
+      } catch (cause) {
+        if (read !== generation || !picker.open) return;
+        status.textContent = "";
+        matches.replaceChildren();
+        alert.textContent = reason(cause);
+        alert.hidden = false;
+        if (repositorySessionFailure(cause)) void refreshAzureDevops();
+      }
+    };
+    input.oninput = () => {
+      const read = ++generation;
+      const query = input.value.trim();
+      clearTimeout(timer);
+      alert.hidden = true;
+      if (!query) {
+        status.textContent = "";
+        matches.replaceChildren();
+        return;
+      }
+      status.textContent = "Searching";
+      timer = setTimeout(() => void search(read, query), 250);
+    };
+    // A search query is not a settings draft edit.
+    for (const type of ["input", "change"])
+      input.addEventListener(type, (event) => event.stopPropagation());
+    input.onkeydown = (event) => {
+      if (event.key !== "ArrowDown") return;
+      const first = matches.querySelector<HTMLButtonElement>("button");
+      if (!first) return;
+      event.preventDefault();
+      first.focus();
+    };
+    picker.querySelector("form")!.onsubmit = (event) => {
+      event.preventDefault();
+      matches.querySelector<HTMLButtonElement>("button")?.click();
+    };
+    picker.addEventListener(
+      "pr-sniper:dialog-closed",
+      () => {
+        generation++;
+        clearTimeout(timer);
+      },
+      { once: true },
+    );
+    input.focus();
+  }
+
   function addPersonDialog(
     opener: HTMLElement,
     repository: ConfiguredRepository,
     people: WatchedIdentity[],
     onAdd: (identity: WatchedIdentity) => void,
   ) {
+    if (repository.provider === "azure_devops")
+      return azurePersonDialog(opener, repository, people, onAdd);
     const availableAccounts = githubAccounts.filter(
       (account) =>
         account.state === "connected" &&

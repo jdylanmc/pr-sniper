@@ -3,6 +3,7 @@
 pub mod az_cli;
 pub mod connection;
 pub mod host;
+pub mod read;
 pub mod setup;
 pub mod tenant;
 pub mod token_source;

@@ -43,6 +43,8 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Session or credential loss, changed connection or unusable authorization clears that account's cached owners/results until fresh lookup. Unusable credential blocks native Save.
 - Missing `repo` scope: explicit reconnect. Org may need admin approval. No retry swaps account or uses GitHub CLI login.
 - **+ URL**: GitHub URL or `owner/repository`, explicit acting GitHub account, stable repo identity validated. AI accounts are not repo accounts.
+- Azure DevOps: the connected bound identity browses projects → repositories, or **+ URL** takes `dev.azure.com/{org}/{project}/_git/{repo}` or `{org}.visualstudio.com/…` in the connected organization. Values: `Azure DevOps / {name}`, Not connected, Other organization. Identity: `{org}/{project ID}/{repository ID}`. Added unmonitored until Azure DevOps polling ships.
+- Azure DevOps **Add people**: debounced prefix search of the directory (IdentityPicker); when it fails, recent pull request authors and reviewers (**Recent**). People save as identity ID + display name.
 - Selecting adds a durable disabled, unassigned row and opens its config. Leaving before Save keeps the disabled row. No repo-count limit.
 - Save writes admission rules and assignments; first valid Save enables monitoring. Rules: [polling.md](polling.md). Existing repos migrated to filters with monitoring off.
 - Back keeps the repo draft for the session. Cancel discards only that repo's unsaved changes. Back/Cancel asks before discarding unsaved assignment or nested Agent fields.

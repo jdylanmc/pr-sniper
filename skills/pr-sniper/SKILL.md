@@ -49,8 +49,9 @@ Use tool input schemas and current resource values; never invent identities.
    grants. `watch_pull_request` with its current repository snapshot and account generation.
    This reuses work and moves eligible queued jobs forward; it never interrupts
    running work or bypasses Wait, teammate reports, retries or capacity.
-4. New repository: ask which **already connected** GitHub account. `resolve_repository`
-   verifies repository identity with that account. Save a disabled repository
+4. New repository: ask which **already connected** GitHub account, or use the
+   connected Azure DevOps account (`list_repository_accounts` reports its setup
+   state). `resolve_repository` verifies repository identity with that account. Save a disabled repository
    first with `save_repository`, then guide assignments. Offer `apply_review_preset` (SOLID + Security teammates,
    Maintainer primary) with explicitly selected Copilot account and model.
    Use `list_models` to list that account's choices; never infer login or model.

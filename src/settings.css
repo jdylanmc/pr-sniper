@@ -815,6 +815,44 @@
 .person-lookup {
   margin-top: 16px;
 }
+.person-matches {
+  display: grid;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.settings-window .person-match {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-slate-243247);
+  background: var(--panel-paper);
+  text-align: left;
+}
+.settings-window .person-match + .person-match {
+  border-top: 1px solid var(--line-slate-eff2f5);
+}
+.settings-window .person-match:hover {
+  background: var(--panel-mist);
+}
+.settings-window .person-match:focus-visible {
+  outline: 2px solid var(--focus-teal-64b8be);
+  outline-offset: -3px;
+}
+.person-match small {
+  grid-column: 1;
+  color: var(--text-slate-58758b);
+  font-size: 12px;
+}
+.person-match .person-added {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+}
 .settings-window summary {
   cursor: pointer;
   padding: 12px 0;

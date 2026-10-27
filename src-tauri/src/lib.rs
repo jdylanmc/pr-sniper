@@ -997,9 +997,13 @@ mod repository_save_account_tests {
             expected: Some(Box::new(repository.clone())),
             value: Some(Box::new(enabled.clone())),
         };
-        assert!(validate_repository_save_account(&auth, &generations, &enable, Some(2)).is_err());
+        assert!(
+            validate_repository_save_account(&auth, &generations, &enable, Some(2), None).is_err()
+        );
         auth.set_failure("22", GithubAuthFailure::Expired);
-        assert!(validate_repository_save_account(&auth, &generations, &enable, Some(3)).is_err());
+        assert!(
+            validate_repository_save_account(&auth, &generations, &enable, Some(3), None).is_err()
+        );
         assert_eq!(store.load_settings().unwrap(), settings);
         auth.accounts.insert(
             "22".into(),
@@ -1008,7 +1012,7 @@ mod repository_save_account_tests {
                 login: "actor".into(),
             }),
         );
-        validate_repository_save_account(&auth, &generations, &enable, Some(3)).unwrap();
+        validate_repository_save_account(&auth, &generations, &enable, Some(3), None).unwrap();
         let committed = store.save_resource(enable).unwrap();
         auth.set_failure("22", GithubAuthFailure::Expired);
         // Account failure is operational state, never a user disablement.
@@ -1018,7 +1022,7 @@ mod repository_save_account_tests {
             expected: Some(Box::new(enabled)),
             value: Some(Box::new(repository)),
         };
-        validate_repository_save_account(&auth, &generations, &disable, None).unwrap();
+        validate_repository_save_account(&auth, &generations, &disable, None, None).unwrap();
         let disabled = store.save_resource(disable).unwrap();
         assert!(!disabled.repositories[0].enabled);
         assert_eq!(disabled.agents, committed.agents);
@@ -1050,11 +1054,14 @@ mod repository_save_account_tests {
             expected: None,
             value: Some(Box::new(repository.clone())),
         };
-        assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_err());
-        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(2)).is_err());
+        assert!(validate_repository_save_account(&auth, &generations, &edit, None, None).is_err());
+        assert!(
+            validate_repository_save_account(&auth, &generations, &edit, Some(2), None).is_err()
+        );
         assert_eq!(
             serde_json::to_value(
-                validate_repository_save_account(&auth, &generations, &edit, Some(2)).unwrap_err()
+                validate_repository_save_account(&auth, &generations, &edit, Some(2), None)
+                    .unwrap_err()
             )
             .unwrap(),
             serde_json::json!("authentication_changed")
@@ -1071,7 +1078,9 @@ mod repository_save_account_tests {
             serde_json::to_value(ResourceSaveError::from("Resource changed")).unwrap(),
             serde_json::json!("Resource changed")
         );
-        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
+        assert!(
+            validate_repository_save_account(&auth, &generations, &edit, Some(3), None).is_ok()
+        );
         for invalid in ["unbound", "enabled", "unsupported"] {
             let mut value = repository.clone();
             match invalid {
@@ -1087,17 +1096,78 @@ mod repository_save_account_tests {
                 expected: None,
                 value: Some(Box::new(value)),
             };
-            assert!(
-                validate_repository_save_account(&auth, &generations, &rejected, Some(3)).is_err()
-            );
+            assert!(validate_repository_save_account(
+                &auth,
+                &generations,
+                &rejected,
+                Some(3),
+                None
+            )
+            .is_err());
         }
         auth.accounts.clear();
-        assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_err());
+        assert!(
+            validate_repository_save_account(&auth, &generations, &edit, Some(3), None).is_err()
+        );
         if let storage::ResourceEdit::Repository { expected, .. } = &mut edit {
             *expected = Some(Box::new(repository));
         }
         // Pausing an existing binding remains possible while disconnected.
-        assert!(validate_repository_save_account(&auth, &generations, &edit, None).is_ok());
+        assert!(validate_repository_save_account(&auth, &generations, &edit, None, None).is_ok());
+    }
+
+    #[test]
+    fn azure_devops_bindings_commit_only_as_the_bound_identity() {
+        const AVERY: &str = "00000000-0000-0000-0000-000000000001";
+        let auth = GithubAuth::new();
+        let generations = BTreeMap::new();
+        let repository: storage::Repository = serde_json::from_value(serde_json::json!({
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "provider": "azure_devops",
+            "name": "contoso/Web/app", "enabled": false, "provider_account_id": AVERY,
+            "provider_repository_id": "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1"
+        }))
+        .unwrap();
+        let add = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: None,
+            value: Some(Box::new(repository.clone())),
+        };
+        // No GitHub account or generation takes part.
+        assert!(
+            validate_repository_save_account(&auth, &generations, &add, Some(0), Some(AVERY))
+                .is_ok()
+        );
+        for identity in [None, Some("00000000-0000-0000-0000-000000000002")] {
+            assert_eq!(
+                serde_json::to_value(
+                    validate_repository_save_account(&auth, &generations, &add, Some(0), identity)
+                        .unwrap_err()
+                )
+                .unwrap(),
+                serde_json::json!({"stage":"session","account_id":AVERY,"error":"wrong_identity"})
+            );
+        }
+        let mut unbound = repository.clone();
+        unbound.provider_account_id = None;
+        unbound.provider_repository_id = None;
+        let unbound = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: None,
+            value: Some(Box::new(unbound)),
+        };
+        assert!(
+            validate_repository_save_account(&auth, &generations, &unbound, None, Some(AVERY))
+                .is_err()
+        );
+        // Unchanged bindings save (or pause) while signed out.
+        let mut edited = repository.clone();
+        edited.cron = "0 * * * *".into();
+        let edit = storage::ResourceEdit::Repository {
+            id: repository.id.clone(),
+            expected: Some(Box::new(repository)),
+            value: Some(Box::new(edited)),
+        };
+        assert!(validate_repository_save_account(&auth, &generations, &edit, None, None).is_ok());
     }
 
     #[test]
@@ -1131,10 +1201,13 @@ mod repository_save_account_tests {
                 expected: None,
                 value: Some(Box::new(repository)),
             };
-            assert!(validate_repository_save_account(&auth, &generations, &edit, Some(3)).is_ok());
+            assert!(
+                validate_repository_save_account(&auth, &generations, &edit, Some(3), None).is_ok()
+            );
             auth.set_failure("22", failure);
-            let result = validate_repository_save_account(&auth, &generations, &edit, Some(3))
-                .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
+            let result =
+                validate_repository_save_account(&auth, &generations, &edit, Some(3), None)
+                    .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
             assert_eq!(
                 serde_json::to_value(result.err().unwrap()).unwrap(),
                 serde_json::json!({
@@ -1975,7 +2048,13 @@ fn save_resource(
         let auth = host.github_auth.lock().map_err(|_| {
             resource_session_error(&edit, "GitHub connection state is unavailable.")
         })?;
-        validate_repository_save_account(&auth, &generations, &edit, account_generation)?;
+        validate_repository_save_account(
+            &auth,
+            &generations,
+            &edit,
+            account_generation,
+            azure_devops::host::bound_identity(&app).as_deref(),
+        )?;
         let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
         let saved = store.save_resource(edit)?;
         let dispatched =
@@ -2042,11 +2121,13 @@ fn resource_session_error(edit: &storage::ResourceEdit, message: &str) -> Resour
     message.into()
 }
 
+/// `azure_devops_identity` is the bound Azure DevOps identity ID, if any.
 fn validate_repository_save_account(
     auth: &GithubAuth,
     generations: &BTreeMap<String, u64>,
     edit: &storage::ResourceEdit,
     resolved_generation: Option<u64>,
+    azure_devops_identity: Option<&str>,
 ) -> Result<(), ResourceSaveError> {
     if let storage::ResourceEdit::Repository {
         expected,
@@ -2054,13 +2135,12 @@ fn validate_repository_save_account(
         ..
     } = edit
     {
-        if !repository.capabilities().read.is_available() {
-            return Err("Azure DevOps repository configuration is coming soon.".into());
+        if !repository.capabilities().discovery.is_available() {
+            return Err("This repository provider is unavailable.".into());
         }
         if expected.is_none() && repository.account_binding().is_none() {
             return Err(
-                "Choose a connected GitHub account and resolve this repository before adding it."
-                    .into(),
+                "Choose a connected account and resolve this repository before adding it.".into(),
             );
         }
         if expected.is_none() && (repository.enabled || !repository.assignments.is_empty()) {
@@ -2071,6 +2151,22 @@ fn validate_repository_save_account(
         let changed_binding = expected.as_ref().is_none_or(|old| {
             old.account_binding() != repository.account_binding() || old.name != repository.name
         });
+        if repository.provider == storage::ProviderId::AzureDevops {
+            // Resolution verified the signed-in identity; binding needs it to
+            // still be the bound one. Pausing stays possible while signed out.
+            if let Some(account_id) = &repository.provider_account_id {
+                if (repository.enabled || changed_binding)
+                    && azure_devops_identity != Some(account_id.as_str())
+                {
+                    return Err(RepositoryReadError::session(
+                        account_id,
+                        ConnectionError::WrongIdentity,
+                    )
+                    .into());
+                }
+            }
+            return Ok(());
+        }
         if let Some(account_id) = &repository.provider_account_id {
             if repository.enabled || changed_binding || resolved_generation.is_some() {
                 auth.account_session_allowed(account_id)
@@ -2095,14 +2191,19 @@ async fn resolve_provider_person(
     login: String,
 ) -> Result<provider::Person, ConnectionError> {
     if !provider::ProviderCapabilities::of(&provider)
-        .read
+        .discovery
         .is_available()
     {
         return Err(ConnectionError::Configuration);
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = app.state::<Host>();
-        read_session(&host, &account_id)?.1.resolve_person(&login)
+    tauri::async_runtime::spawn_blocking(move || match provider {
+        storage::ProviderId::AzureDevops => azure_devops::host::read_session(&app, &account_id)?
+            .1
+            .resolve_person(&login),
+        storage::ProviderId::Github => {
+            let host = app.state::<Host>();
+            read_session(&host, &account_id)?.1.resolve_person(&login)
+        }
     })
     .await
     .map_err(|_| ConnectionError::ProviderFailure)?
@@ -2116,12 +2217,23 @@ async fn list_provider_repositories(
     owner: String,
 ) -> Result<GithubRepositories, RepositoryReadError> {
     if !provider::ProviderCapabilities::of(&provider)
-        .read
+        .discovery
         .is_available()
     {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        if provider == storage::ProviderId::AzureDevops {
+            return azure_devops_read(&app, &account_id, |identity, reader| {
+                let browser = reader.owner_repository_browser(identity, &owner)?;
+                Ok(GithubRepositories {
+                    identity: identity.clone(),
+                    owners: browser.owners,
+                    repositories: browser.repositories,
+                    warnings: browser.warnings,
+                })
+            });
+        }
         let host = app.state::<Host>();
         repository_read(
             &host.github_generations,
@@ -2157,12 +2269,22 @@ async fn list_provider_repository_owners(
     account_id: String,
 ) -> Result<GithubRepositoryOwners, RepositoryReadError> {
     if !provider::ProviderCapabilities::of(&provider)
-        .read
+        .discovery
         .is_available()
     {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        if provider == storage::ProviderId::AzureDevops {
+            return azure_devops_read(&app, &account_id, |identity, reader| {
+                let browser = reader.repository_browser(identity)?;
+                Ok(GithubRepositoryOwners {
+                    identity: identity.clone(),
+                    owners: browser.owners,
+                    warnings: browser.warnings,
+                })
+            });
+        }
         let host = app.state::<Host>();
         repository_read(
             &host.github_generations,
@@ -2191,12 +2313,24 @@ async fn resolve_provider_repository(
     repository: String,
 ) -> Result<GithubRepositoryResolution, RepositoryReadError> {
     if !provider::ProviderCapabilities::of(&provider)
-        .read
+        .discovery
         .is_available()
     {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        if provider == storage::ProviderId::AzureDevops {
+            return azure_devops_read(&app, &account_id, |identity, reader| {
+                let target = reader.resolve_repository_target(&repository, &identity.id)?;
+                Ok(GithubRepositoryResolution {
+                    identity: identity.clone(),
+                    repository: target.connection.repository,
+                    // Azure DevOps reads are fenced by the bound identity.
+                    account_generation: 0,
+                    pull_request: target.pull_request,
+                })
+            });
+        }
         let host = app.state::<Host>();
         repository_read(
             &host.github_generations,
@@ -2216,6 +2350,43 @@ async fn resolve_provider_repository(
     })
     .await
     .map_err(|_| RepositoryReadError::Connection(ConnectionError::ProviderFailure))?
+}
+
+/// Prefix search for teammates; Azure DevOps only. `repository_id` scopes the
+/// recent pull request fallback.
+#[tauri::command]
+async fn search_provider_people(
+    app: tauri::AppHandle,
+    provider: storage::ProviderId,
+    account_id: String,
+    repository_id: Option<String>,
+    query: String,
+) -> Result<provider::People, RepositoryReadError> {
+    if provider != storage::ProviderId::AzureDevops {
+        return Err(ConnectionError::Configuration.into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        azure_devops_read(&app, &account_id, |_, reader| {
+            let repository = repository_id.map(|id| provider::RemoteRepository {
+                id,
+                name: String::new(),
+            });
+            provider::PeopleSearch::search_people(reader, &query, repository.as_ref())
+        })
+    })
+    .await
+    .map_err(|_| RepositoryReadError::Connection(ConnectionError::ProviderFailure))?
+}
+
+/// One Azure DevOps read as the bound identity `account_id`.
+fn azure_devops_read<T>(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    read: impl FnOnce(&provider::Person, &azure_devops::read::Reader) -> Result<T, ConnectionError>,
+) -> Result<T, RepositoryReadError> {
+    let (identity, reader) = azure_devops::host::read_session(app, account_id)
+        .map_err(|error| RepositoryReadError::session(account_id, error))?;
+    read(&identity, &reader).map_err(|error| RepositoryReadError::catalog(account_id, error))
 }
 
 #[tauri::command]
@@ -2911,6 +3082,7 @@ mod repository_read_tests {
             &generations.lock().unwrap(),
             &edit,
             Some(7),
+            None,
         )
         .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
         assert!(
@@ -3235,7 +3407,8 @@ mod repository_read_tests {
                     &auth,
                     &generations.lock().unwrap(),
                     &edit,
-                    Some(7)
+                    Some(7),
+                    None,
                 )
                 .is_err());
             } else {
@@ -3377,6 +3550,7 @@ mod repository_read_tests {
                 &generations.lock().unwrap(),
                 &edit,
                 resolved["account_generation"].as_u64(),
+                None,
             )
             .and_then(|()| store.save_resource(edit).map_err(ResourceSaveError::from));
             let saved = store.load_settings().unwrap();
@@ -4455,6 +4629,7 @@ pub fn run() {
             list_provider_repositories,
             list_provider_repository_owners,
             resolve_provider_repository,
+            search_provider_people,
             admit_explicit_pull_request,
             save_login,
             repair_login,
@@ -4605,6 +4780,7 @@ pub fn run() {
                 app.handle().clone(),
                 azure_devops_binding,
             )?);
+            app.manage(azure_devops::host::read_transport()?);
             if let Err(error) = control::start(app.handle(), &root) {
                 report(app.handle(), error);
             }

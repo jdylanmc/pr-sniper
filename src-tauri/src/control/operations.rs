@@ -639,7 +639,14 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
         Command::Resolve { account_id, url } => value(
             crate::resolve_provider_repository(
                 app.clone(),
-                crate::storage::ProviderId::Github,
+                // Azure DevOps identity GUIDs never collide with GitHub IDs.
+                if crate::azure_devops::host::bound_identity(app).as_deref()
+                    == Some(account_id.as_str())
+                {
+                    crate::storage::ProviderId::AzureDevops
+                } else {
+                    crate::storage::ProviderId::Github
+                },
                 account_id,
                 url,
             )
@@ -691,6 +698,7 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
                     &generations,
                     &edit,
                     account_generation,
+                    crate::azure_devops::host::bound_identity(app).as_deref(),
                 )
                 .map_err(operation)?;
                 let store = host.store.lock().map_err(|_| storage(()))?;
