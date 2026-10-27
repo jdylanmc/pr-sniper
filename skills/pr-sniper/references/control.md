@@ -113,7 +113,7 @@ New resources require UUID IDs, `expected:null`. `value:null` deletes.
 New repositories are disabled, bound to a `resolve` result, and have no
 assignments. Azure DevOps repositories: `provider:"azure_devops"`,
 `provider_repository_id` `{organization}/{project ID}/{repository ID}`, people
-by identity GUID plus display name; their pull requests are polled and admitted, reviews wait for Azure DevOps review support. Then save explicit assignments and enable the human-requested
+by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; approve and approve-and-merge are not offered. Then save explicit assignments and enable the human-requested
 scope. Repository schedules are five-field cron in the saved IANA time zone.
 No generic settings replacement/import, credentials, authentication or shell
 operations exist. Unknown fields and operation names are rejected.
