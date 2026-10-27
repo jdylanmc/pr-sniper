@@ -444,6 +444,29 @@ impl Client {
 }
 
 impl Reader {
+    /// Threads and the iteration source commits they were placed on, read
+    /// while `head` is the latest iteration's source: checked before and after.
+    pub(super) fn threads_at(
+        &self,
+        key: &RepositoryKey,
+        number: u64,
+        head: &str,
+    ) -> Result<(Vec<AdoThread>, BTreeMap<u64, String>), ConnectionError> {
+        self.runtime.block_on(async {
+            self.client.latest_iteration(key, number, head).await?;
+            let threads = self.client.threads(key, number).await?;
+            let iterations = self.client.iterations(key, number).await?;
+            if iterations.last().map(|i| i.source.as_str()) != Some(head) {
+                return Err(ConnectionError::RevisionChanged);
+            }
+            let commits = iterations
+                .into_iter()
+                .map(|iteration| (iteration.id, iteration.source))
+                .collect();
+            Ok((threads, commits))
+        })
+    }
+
     /// Threads and the iteration source commits they were placed on.
     pub(super) fn threads_with_commits(
         &self,
@@ -461,14 +484,5 @@ impl Reader {
                 .collect();
             Ok((threads, commits))
         })
-    }
-
-    pub(super) fn provider_threads(
-        &self,
-        key: &RepositoryKey,
-        number: u64,
-    ) -> Result<Vec<Thread>, ConnectionError> {
-        let (threads, commits) = self.threads_with_commits(key, number)?;
-        Ok(threads.iter().map(|t| t.to_thread(&commits)).collect())
     }
 }

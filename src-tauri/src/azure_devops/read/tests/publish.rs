@@ -287,7 +287,9 @@ fn publishes_inline_threads_at_file_lines_with_iteration_context_then_confirms_b
                 }
             })));
         let context = &body["pullRequestThreadContext"];
-        assert_eq!(context["iterationContext"]["firstComparingIteration"], 1);
+        // Both sides of iteration 2: the left side is the merge base the
+        // review diffed, even for base-side lines after several pushes.
+        assert_eq!(context["iterationContext"]["firstComparingIteration"], 2);
         assert_eq!(context["iterationContext"]["secondComparingIteration"], 2);
         assert_eq!(context["changeTrackingId"], 5);
         assert_eq!(body["threadContext"]["filePath"], "/src/main.rs");
@@ -381,7 +383,8 @@ fn owned_threads_are_marked_replies_answer_and_resolution_is_silent() {
         BLAKE,
         "A human comment.",
     ));
-    wire.json(&threads_url(), threads);
+    iterations(&wire);
+    wire.json(&threads_url(), threads.clone());
     iterations(&wire);
     let owned = session.owned_threads(&run).unwrap();
     assert_eq!(owned.len(), 2);
@@ -389,6 +392,26 @@ fn owned_threads_are_marked_replies_answer_and_resolution_is_silent() {
     assert_eq!(root.review_id.as_deref(), Some(run.id.as_str()));
     assert_eq!(root.original_commit.as_deref(), Some(sha(2).as_str()));
     assert_eq!(root.author_id.as_deref(), Some(AVERY));
+
+    // A push since the accepted head: threads are never read as if at it.
+    wire.json(
+        &git("pullRequests/7/iterations?"),
+        json!({"value": [{"id": 3, "sourceRefCommit": {"commitId": sha(3)}}]}),
+    );
+    assert_eq!(
+        session.owned_threads(&run).err(),
+        Some(ConnectionError::RevisionChanged)
+    );
+    // A root of this publication that no longer verifies is not dropped silently.
+    let mut tampered = threads.clone();
+    tampered["value"][0]["comments"][0]["content"] = json!("Edited.");
+    iterations(&wire);
+    wire.json(&threads_url(), tampered);
+    iterations(&wire);
+    assert_eq!(
+        session.owned_threads(&run).err(),
+        Some(ConnectionError::InvalidResponse)
+    );
 
     let thread_id = owned[0].id.clone();
     assert_eq!(

@@ -11,7 +11,7 @@ use super::{Reader, RepositoryKey};
 use crate::monitoring::OperationFailure;
 use crate::provider::{
     AccountReader, ChangedFile, CheckLogReader, CommentCapability, CommentReader, CommentWriter,
-    Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt, Person,
+    Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt, Ownership, Person,
     PrSnapshot, Provenance, ProviderReads, ProviderReview, ProviderSession, PublicationDiagnostics,
     PublicationReader, PullRequest, PullRequestReader, PullRequestStateReader, ReadGuard,
     ReadinessReader, RemoteRepository, RepositoryBrowser, RepositoryReader, ResolvedTarget,
@@ -96,7 +96,9 @@ pub(super) fn thread_payload(
     let position = json!({"line": comment.line, "offset": 1});
     let mut context = json!({
         "iterationContext": {
-            "firstComparingIteration": 1,
+            // Equal iterations: the left side is the common commit, the
+            // merge base the review diffed against.
+            "firstComparingIteration": iteration,
             "secondComparingIteration": iteration,
         }
     });
@@ -354,15 +356,44 @@ impl Session {
         Ok(key)
     }
 
-    fn owned(&self, publication: &dyn Provenance) -> Result<Vec<Thread>, ConnectionError> {
+    /// Threads read while `head` is the pull request's head. With `proof`,
+    /// only threads rooted in that publication, each verified as owned.
+    fn threads_at(
+        &self,
+        repository_id: &str,
+        number: u64,
+        head: &str,
+        proof: Option<&Ownership>,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        let key = self.key(repository_id)?;
+        let (threads, commits) = self.0.threads_at(&key, number, head)?;
+        let mut result = Vec::new();
+        for thread in threads.iter().map(|t| t.to_thread(&commits)) {
+            if let Some(proof) = proof {
+                let root = thread.root()?;
+                if !proof.root_ids.contains(&root.id) {
+                    continue;
+                }
+                if !thread.owned_by(proof) {
+                    return Err(ConnectionError::InvalidResponse);
+                }
+            }
+            result.push(thread);
+        }
+        Ok(result)
+    }
+
+    fn owned_at(
+        &self,
+        publication: &dyn Provenance,
+        head: Option<&str>,
+    ) -> Result<Vec<Thread>, ConnectionError> {
         let proof = publication.ownership()?;
-        let key = self.key(&proof.repository_id)?;
-        Ok(self
-            .0
-            .provider_threads(&key, proof.number)?
-            .into_iter()
-            .filter(|t| t.owned_by(&proof))
-            .collect())
+        if proof.pull_request_id != proof.number.to_string() {
+            return Err(ConnectionError::RepositoryChanged);
+        }
+        let head = head.unwrap_or(&proof.head_sha);
+        self.threads_at(&proof.repository_id, proof.number, head, Some(&proof))
     }
 
     fn reply(
@@ -404,27 +435,29 @@ impl Session {
 
 impl ThreadReader for Session {
     fn owned_threads(&self, publication: &dyn Provenance) -> Result<Vec<Thread>, ConnectionError> {
-        self.owned(publication)
+        self.owned_at(publication, None)
     }
 
     fn owned_threads_at(
         &self,
         publication: &dyn Provenance,
-        _current_head: &str,
+        current_head: &str,
     ) -> Result<Vec<Thread>, ConnectionError> {
-        self.owned(publication)
+        self.owned_at(publication, Some(current_head))
     }
 
     fn review_threads_at(
         &self,
         _repository_name: &str,
         repository_id: &str,
-        _pull_request_id: &str,
+        pull_request_id: &str,
         number: u64,
-        _current_head: &str,
+        current_head: &str,
     ) -> Result<Vec<Thread>, ConnectionError> {
-        let key = self.key(repository_id)?;
-        self.0.provider_threads(&key, number)
+        if pull_request_id != number.to_string() {
+            return Err(ConnectionError::RepositoryChanged);
+        }
+        self.threads_at(repository_id, number, current_head, None)
     }
 
     fn owned_thread(
@@ -432,7 +465,12 @@ impl ThreadReader for Session {
         publication: &dyn Provenance,
         id: &str,
     ) -> Result<Option<Thread>, ConnectionError> {
-        Ok(self.owned(publication)?.into_iter().find(|t| t.id == id))
+        let proof = publication.ownership()?;
+        let thread = self.review_thread(&proof.repository_id, &proof.pull_request_id, id)?;
+        if thread.as_ref().is_some_and(|t| !t.owned_by(&proof)) {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok(thread)
     }
 
     fn review_thread(
@@ -446,13 +484,13 @@ impl ThreadReader for Session {
         };
         let key = self.key(repository_id)?;
         if thread.key != key || thread.number.to_string() != pull_request_id {
-            return Ok(None);
+            return Err(ConnectionError::RepositoryChanged);
         }
-        Ok(self
-            .0
-            .provider_threads(&key, thread.number)?
-            .into_iter()
-            .find(|t| t.id == id))
+        let (threads, commits) = self.0.threads_with_commits(&key, thread.number)?;
+        Ok(threads
+            .iter()
+            .find(|t| t.reference == thread)
+            .map(|t| t.to_thread(&commits)))
     }
 }
 
