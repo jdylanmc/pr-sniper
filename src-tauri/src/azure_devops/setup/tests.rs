@@ -981,6 +981,40 @@ async fn a_forgotten_probe_is_never_replayed_as_connected() {
 }
 
 #[tokio::test]
+async fn a_forgotten_probe_drops_the_read_token_that_failed() {
+    let harness = Harness::new(World::default());
+    harness.setup.check().await;
+    let tenant = TenantId::parse(TENANT).unwrap();
+    let fetches = |harness: &Harness| {
+        harness
+            .actions()
+            .iter()
+            .filter(|action| *action == "account")
+            .count()
+    };
+    // A poll caches a token for whoever Azure CLI is signed in as, and the
+    // read rejects it.
+    let rejected = harness.setup.token_source();
+    rejected.token(&tenant).await.unwrap();
+    harness.setup.forget_probe();
+
+    // The bound identity signs back in; the binding is unchanged.
+    assert!(matches!(
+        harness.setup.check().await.account,
+        AccountView::Connected { .. }
+    ));
+    let next = harness.setup.token_source();
+    assert!(!Arc::ptr_eq(&rejected, &next));
+    let before = fetches(&harness);
+    next.token(&tenant).await.unwrap();
+    assert_eq!(
+        fetches(&harness),
+        before + 1,
+        "the next read gets a fresh token"
+    );
+}
+
+#[tokio::test]
 async fn reports_setup_state_with_the_bound_account() {
     let unbound = Harness::with(Platform::MacOs, World::default(), Binding::default());
     let report = unbound.setup.report().await;

@@ -589,11 +589,13 @@ impl Setup {
 
     /// A read failed on credentials, so the cached probe is stale: drop it
     /// (and any probe in flight) so only a fresh probe shows the account
-    /// connected again.
+    /// connected again. The cached read token may be what failed (for
+    /// example another identity's), so it goes too.
     pub fn forget_probe(&self) {
         let mut inner = self.lock();
         inner.probed = None;
         inner.generation += 1;
+        self.reset_tokens();
     }
 
     pub fn view(&self) -> SetupView {
