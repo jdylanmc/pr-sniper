@@ -1408,8 +1408,8 @@ function azureDevopsPage() {
     azure.account === "signing_in"
       ? azureAction("azure-cancel", "Cancel", "Cancel sign-in")
       : "",
-    identity
-      ? `<button type="button" class="account-disconnect" data-action="azure-forget" aria-label="Forget ${esc(identity.login)}" title="Forget ${esc(identity.login)}">${icon("plug-off")}</button>`
+    azure.account === "wrong_identity"
+      ? azureAction("azure-use", "Use", `Use ${identity.login}`)
       : "",
   ].join("");
   return `<div class="page-scroll" data-scroll="azure-devops"><div class="settings-list azure-setup">
@@ -2293,7 +2293,7 @@ popover.addEventListener("click", (event) => {
         azure.cli = azure.version ? "too_old" : "missing";
       if (azure.account === "signing_in") azure.account = "signed_out";
     }
-    if (action === "azure-forget") {
+    if (action === "azure-use") {
       azure.bound = azure.identity;
       azure.account = "connected";
     }

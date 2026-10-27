@@ -29,10 +29,10 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
 | Azure CLI    | Version, `≥ 2.54.0`; Missing, Failed, Too old, Installing, Ready                                                                                       | **Install** / **Update** (Homebrew, winget, else install page), Cancel, Re-check |
 | Organization | Name field → tenant ID; Not found, No tenant, Offline                                                                                                  | Save, Retry                                                                      |
-| Account      | `connectionData` name and sign-in name; Signed out, Sign-in required, Access denied, Offline, Failed, Signing in, Connected, Wrong account (`≠` bound) | **Sign in** (confirmed `az login`, 5 min, Cancel), Retry, Forget                 |
+| Account      | `connectionData` name and sign-in name; Signed out, Sign-in required, Access denied, Offline, Failed, Signing in, Connected, Wrong account (`≠` bound) | **Sign in** (confirmed `az login`, 5 min, Cancel), Retry, Use (Wrong account)    |
 
 - Opening probes without interaction. Install and sign-in are tracked, cancellable children; both re-probe when they end. Neither starts from background work. No `az logout`.
-- The first connected identity binds the organization (`state/azure-devops.json`). Forget clears the binding only; Azure CLI stays signed in. A new organization drops the binding.
+- The first connected identity binds the organization (`state/azure-devops.json`). **Use** (Wrong account only) binds the shown signed-in identity instead; Azure CLI is untouched. A new organization drops the binding.
 - Copilot catalog and account settings: [copilot-settings.md](copilot-settings.md).
 
 ## Repositories

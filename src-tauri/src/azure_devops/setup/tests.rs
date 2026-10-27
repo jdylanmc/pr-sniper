@@ -512,8 +512,8 @@ async fn binds_the_connection_data_identity_and_rejects_another_one() {
     );
     assert_eq!(harness.setup.binding(), bound);
 
-    // Forgetting the binding (never `az logout`) lets the current identity bind.
-    let view = harness.setup.forget_account().await.unwrap();
+    // Only an explicit Use rebinds, to the identity shown; never `az logout`.
+    let view = harness.setup.use_signed_in_account().await.unwrap();
     assert_eq!(
         view.account,
         AccountView::Connected {
@@ -525,6 +525,11 @@ async fn binds_the_connection_data_identity_and_rejects_another_one() {
         Some(identity(BLAKE, "Blake Example"))
     );
     assert!(!harness.actions().iter().any(|action| action == "logout"));
+    assert_eq!(
+        harness.setup.use_signed_in_account().await,
+        Err(SetupError::NotReady)
+    );
+    assert_eq!(harness.world().saved.len(), 2);
 }
 
 #[tokio::test]

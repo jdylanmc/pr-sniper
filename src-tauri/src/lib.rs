@@ -4474,7 +4474,7 @@ pub fn run() {
             azure_devops::host::azure_devops_install,
             azure_devops::host::azure_devops_sign_in,
             azure_devops::host::azure_devops_cancel,
-            azure_devops::host::azure_devops_forget_account,
+            azure_devops::host::azure_devops_use_signed_in_account,
             copilot::copilot_auth_state,
             copilot::start_copilot_auth,
             copilot::confirm_copilot_account,

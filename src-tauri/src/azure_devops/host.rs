@@ -88,6 +88,8 @@ pub async fn azure_devops_cancel(setup: SetupState<'_>) -> Result<SetupView, Str
 }
 
 #[tauri::command]
-pub async fn azure_devops_forget_account(setup: SetupState<'_>) -> Result<SetupView, String> {
-    Ok(setup.forget_account().await?)
+pub async fn azure_devops_use_signed_in_account(
+    setup: SetupState<'_>,
+) -> Result<SetupView, String> {
+    Ok(setup.use_signed_in_account().await?)
 }

@@ -71,7 +71,7 @@ The Settings drill-in state machine: Azure CLI (Missing, Failed, Too old, Instal
 _Avoid_: Azure DevOps onboarding, login wizard
 
 **Bound Azure DevOps Identity**:
-The `connectionData` identity first seen for the saved organization; it is the Azure DevOps provider account. Another signed-in identity is Wrong identity until the user signs in as the bound one or forgets the binding.
+The `connectionData` identity first seen for the saved organization; it is the Azure DevOps provider account. Another signed-in identity is Wrong identity until the user signs in as the bound one or chooses **Use** to bind the shown identity.
 _Avoid_: Current az account
 
 ### Agents and grants

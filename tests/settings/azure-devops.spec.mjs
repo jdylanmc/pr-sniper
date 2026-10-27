@@ -155,7 +155,7 @@ test("each setup state shows its values and actions", async ({ page }) => {
       { account: { state: "connected", identity: avery } },
       "account",
       "Connected",
-      ["Forget avery@contoso.example"],
+      [],
     ],
     [
       {
@@ -163,7 +163,7 @@ test("each setup state shows its values and actions", async ({ page }) => {
       },
       "account",
       "Wrong account",
-      ["Sign in to Azure DevOps", "Forget blake@contoso.example"],
+      ["Sign in to Azure DevOps", "Use blake@contoso.example"],
     ],
   ];
   for (const [overrides, key, expected, expectedActions] of cases) {
@@ -356,9 +356,8 @@ test("sign-in needs confirmation, is cancellable and shows the identity", async 
   await expect(setupRow(page, "account").locator("strong")).toHaveText(
     "Avery Example",
   );
-  await expect(
-    page.getByRole("button", { name: "Forget avery@contoso.example" }),
-  ).toBeFocused();
+  // Connected has nothing to undo: no Forget, no rebind.
+  await expect(setupRow(page, "account").locator("button")).toHaveCount(0);
   const made = await calls(page);
   expect(made.filter((c) => c === "azure_devops_sign_in")).toHaveLength(2);
 });
@@ -411,7 +410,7 @@ test("organization saves validated names and wrong identity can be forgotten", a
             expected: avery,
           },
         }),
-        azure_devops_forget_account: (_args, view) => ({
+        azure_devops_use_signed_in_account: (_args, view) => ({
           ...view,
           account: {
             state: "connected",
@@ -445,13 +444,14 @@ test("organization saves validated names and wrong identity can be forgotten", a
   await save.click();
   await expect(page.locator("[data-azure-tenant]")).toHaveText(TENANT);
   await expect(value(page, "account")).toHaveText("Wrong account");
-  await page
-    .getByRole("button", { name: "Forget blake@contoso.example" })
-    .click();
+  await page.getByRole("button", { name: "Use blake@contoso.example" }).click();
   await expect(value(page, "account")).toHaveText("Connected");
   await expect(
-    page.getByRole("button", { name: "Forget blake@contoso.example" }),
-  ).toBeFocused();
+    page.getByRole("button", { name: "Use blake@contoso.example" }),
+  ).toHaveCount(0);
+  await expect(page.locator("[data-azure-identity]")).toHaveText(
+    "blake@contoso.example",
+  );
   await back(page).click();
   await expect(overviewRow(page, "Azure DevOps")).toBeFocused();
   await expect(page.locator('[data-settings-count="azure-devops"]')).toHaveText(

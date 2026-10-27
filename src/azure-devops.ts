@@ -85,9 +85,6 @@ const icons = {
   refresh: svg(
     '<path d="M20 11a8 8 0 0 0-14-4M4 4v4h4M4 13a8 8 0 0 0 14 4m2 3v-4h-4"/>',
   ),
-  forget: svg(
-    '<path d="M9 7V4M15 7V4M7 7h10v4a5 5 0 0 1-10 0V7ZM12 16v4M3 3l18 18"/>',
-  ),
 };
 
 const escape = (value: string) =>
@@ -256,11 +253,11 @@ export function renderAzureDevops(
         account.state === "signing_in"
           ? textAction("cancel", "Cancel", "Cancel sign-in")
           : "",
-        identity
-          ? iconAction(
-              "forget",
-              `Forget ${identity.unique_name ?? identity.display_name}`,
-              "forget",
+        account.state === "wrong_identity"
+          ? textAction(
+              "use",
+              "Use",
+              `Use ${account.identity.unique_name ?? account.identity.display_name}`,
             )
           : "",
       ].join(""),
@@ -371,8 +368,8 @@ export function renderAzureDevops(
           if (action === "install")
             await run("azure_devops_install", {}, button);
           if (action === "cancel") await run("azure_devops_cancel", {}, button);
-          if (action === "forget")
-            await run("azure_devops_forget_account", {}, button);
+          if (action === "use")
+            await run("azure_devops_use_signed_in_account", {}, button);
           if (action === "sign-in") {
             const organization = view?.organization;
             if (organization?.state !== "tenant_known") return;

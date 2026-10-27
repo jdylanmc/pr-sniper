@@ -526,12 +526,20 @@ impl Setup {
         Ok(self.check().await)
     }
 
-    /// Forgets the bound identity; Azure CLI stays signed in.
-    pub async fn forget_account(self: &Arc<Self>) -> Result<SetupView, SetupError> {
+    /// Wrong identity only: binds the shown signed-in identity in place of
+    /// the bound one. Azure CLI is untouched (never `az logout`).
+    pub async fn use_signed_in_account(self: &Arc<Self>) -> Result<SetupView, SetupError> {
         {
             let mut inner = self.lock();
+            let Some(Probed {
+                account: AccountView::WrongIdentity { identity, .. },
+                ..
+            }) = inner.probed.as_ref()
+            else {
+                return Err(SetupError::NotReady);
+            };
             let next = Binding {
-                identity: None,
+                identity: Some(identity.clone()),
                 ..inner.binding.clone()
             };
             (self.backends.persist)(&next).map_err(|_| SetupError::Storage)?;
