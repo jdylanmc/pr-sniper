@@ -12,13 +12,15 @@ use crate::monitoring::OperationFailure;
 use crate::provider::{
     AccountReader, ChangedFile, CheckLogReader, CommentCapability, CommentReader, CommentWriter,
     Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt, Person,
-    PrSnapshot, ProviderReads, ProviderReview, ProviderSession, Provenance,
-    PublicationDiagnostics, PublicationReader, PullRequest, PullRequestReader,
-    PullRequestStateReader, ReadGuard, ReadinessReader, RemoteRepository, RepositoryBrowser,
-    RepositoryReader, ResolvedTarget, ReviewContext, ReviewPublisher, ReviewerOutcome,
-    SessionControl, Thread, ThreadReader, ThreadWriter, TopComment, TreeEntry,
+    PrSnapshot, Provenance, ProviderReads, ProviderReview, ProviderSession, PublicationDiagnostics,
+    PublicationReader, PullRequest, PullRequestReader, PullRequestStateReader, ReadGuard,
+    ReadinessReader, RemoteRepository, RepositoryBrowser, RepositoryReader, ResolvedTarget,
+    ReviewContext, ReviewPublisher, ReviewerOutcome, SessionControl, Thread, ThreadReader,
+    ThreadWriter, TopComment, TreeEntry,
 };
-use crate::publication::{InlineComment, Mutation, Publication, Receipt, RemoteState, WriteFailure};
+use crate::publication::{
+    InlineComment, Mutation, Publication, Receipt, RemoteState, WriteFailure,
+};
 use crate::review::Failure;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -135,7 +137,9 @@ impl Session {
                 .iter()
                 .position(|c| c.body == root.content)
                 .ok_or_else(|| {
-                    Failure::permanent("An Azure DevOps thread of this publication differs from it.")
+                    Failure::permanent(
+                        "An Azure DevOps thread of this publication differs from it.",
+                    )
                 })?;
             let comment = &batch.comments[index];
             if thread.path.as_deref() != Some(comment.path.as_str())
@@ -361,7 +365,12 @@ impl Session {
             .collect())
     }
 
-    fn reply(&self, root_id: &str, number: Option<u64>, body: &str) -> Result<String, WriteFailure> {
+    fn reply(
+        &self,
+        root_id: &str,
+        number: Option<u64>,
+        body: &str,
+    ) -> Result<String, WriteFailure> {
         let (thread, root) = ThreadRef::parse_comment(root_id)
             .filter(|(thread, _)| number.is_none_or(|n| n == thread.number))
             .ok_or_else(|| refused("Unknown Azure DevOps thread."))?;
@@ -375,14 +384,19 @@ impl Session {
     }
 
     fn set_status(&self, thread_id: &str, status: &str) -> Result<(), WriteFailure> {
-        let thread = ThreadRef::parse(thread_id).ok_or_else(|| refused("Unknown Azure DevOps thread."))?;
+        let thread =
+            ThreadRef::parse(thread_id).ok_or_else(|| refused("Unknown Azure DevOps thread."))?;
         self.0
             .runtime
             .block_on(self.0.client.set_thread_status(&thread, status))
             .map_err(write_failure)
     }
 
-    fn readiness(&self, repository: &RemoteRepository, number: u64) -> Result<Readiness, ConnectionError> {
+    fn readiness(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+    ) -> Result<Readiness, ConnectionError> {
         let key = self.key(&repository.id)?;
         self.0.readiness(&key, number)
     }
@@ -471,7 +485,11 @@ impl ThreadWriter for Session {
     }
 
     /// Resolves silently: a status change, no comment.
-    fn resolve_review_thread(&self, thread_id: &str, _request_id: &str) -> Result<(), WriteFailure> {
+    fn resolve_review_thread(
+        &self,
+        thread_id: &str,
+        _request_id: &str,
+    ) -> Result<(), WriteFailure> {
         self.set_status(thread_id, "fixed")
     }
 

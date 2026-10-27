@@ -14,9 +14,7 @@ const DEADLINE: Duration = Duration::from_secs(2);
 /// headers. `None` when a side is not text or too large, or nothing changed.
 pub(super) fn patch(old: Option<&[u8]>, new: Option<&[u8]>) -> Option<String> {
     let (old, new) = (text(old)?, text(new)?);
-    let diff = TextDiff::configure()
-        .timeout(DEADLINE)
-        .diff_lines(old, new);
+    let diff = TextDiff::configure().timeout(DEADLINE).diff_lines(old, new);
     let mut unified = diff.unified_diff();
     unified.context_radius(CONTEXT_LINES);
     let patch: String = unified.iter_hunks().map(|hunk| hunk.to_string()).collect();

@@ -9,8 +9,8 @@ use super::threads::AdoThread;
 use super::{Client, List, Reader, RepositoryKey, Request};
 use crate::azure_devops::tenant::TenantId;
 use crate::provider::{
-    ConnectionError, HumanThread, Lifecycle, Observation, PrSnapshot, ProviderReview,
-    PullRequest, SnapshotCheck, SnapshotComment, SnapshotReview, SnapshotThread,
+    ConnectionError, HumanThread, Lifecycle, Observation, PrSnapshot, ProviderReview, PullRequest,
+    SnapshotCheck, SnapshotComment, SnapshotReview, SnapshotThread,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

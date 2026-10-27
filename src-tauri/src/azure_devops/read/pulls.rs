@@ -114,7 +114,10 @@ fn relative(path: &str) -> Result<String, ConnectionError> {
 }
 
 impl RawPullRequest {
-    pub(super) fn into_pull_request(self, key: &RepositoryKey) -> Result<PullRequest, ConnectionError> {
+    pub(super) fn into_pull_request(
+        self,
+        key: &RepositoryKey,
+    ) -> Result<PullRequest, ConnectionError> {
         let repository = crate::azure_devops::tenant::TenantId::parse(&self.repository.id)
             .ok_or(ConnectionError::InvalidResponse)?;
         if repository != key.repository_id {
@@ -193,7 +196,12 @@ impl RawPullRequest {
 }
 
 impl Client {
-    pub(super) fn git_url(&self, key: &RepositoryKey, path: &[&str], query: &[(&str, &str)]) -> String {
+    pub(super) fn git_url(
+        &self,
+        key: &RepositoryKey,
+        path: &[&str],
+        query: &[(&str, &str)],
+    ) -> String {
         let mut segments = vec![
             key.project_id.as_str(),
             "_apis",
