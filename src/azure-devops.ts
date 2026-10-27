@@ -4,7 +4,7 @@ type Identity = { id: string; display_name: string; unique_name?: string };
 
 export interface AzureDevopsSetup {
   cli:
-    | { state: "unknown" | "missing" }
+    | { state: "unknown" | "missing" | "failed" }
     | { state: "too_old" | "ready"; version: string }
     | { state: "installing"; version: string | null };
   minimum: string;
@@ -35,6 +35,7 @@ export interface AzureDevopsSetup {
 const cliValues: Record<AzureDevopsSetup["cli"]["state"], string> = {
   unknown: "Checking",
   missing: "Missing",
+  failed: "Failed",
   too_old: "Too old",
   installing: "Installing",
   ready: "Ready",

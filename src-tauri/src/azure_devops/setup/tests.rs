@@ -21,6 +21,8 @@ enum Token {
 struct World {
     /// `None`: `az` not installed.
     version: Option<&'static str>,
+    /// A located `az` whose `version` run fails this way.
+    version_failure: Option<Result<Output, RunError>>,
     version_after_install: Option<&'static str>,
     token: Token,
     token_after_login: Token,
@@ -41,6 +43,7 @@ impl Default for World {
     fn default() -> Self {
         Self {
             version: Some("2.90.0"),
+            version_failure: None,
             version_after_install: Some("2.90.0"),
             token: Token::Ok,
             token_after_login: Token::Ok,
@@ -133,7 +136,12 @@ impl CommandRunner for Fake {
             }
             return Ok(output(0, String::new(), ""));
         }
-        let world = self.world.lock().unwrap();
+        let mut world = self.world.lock().unwrap();
+        if action == Some("version") {
+            if let Some(failure) = world.version_failure.take() {
+                return failure;
+            }
+        }
         match action {
             Some("version") => match world.version {
                 Some(version) => Ok(output(
@@ -344,6 +352,31 @@ async fn detects_missing_old_and_ready_azure_cli() {
         if version != Some("2.90.0") {
             assert_eq!(view.account, AccountView::Unavailable);
         }
+    }
+}
+
+#[tokio::test]
+async fn a_located_cli_whose_version_run_fails_is_failed_not_missing() {
+    for failure in [
+        Err(RunError::Timeout),
+        Ok(output(2, String::new(), "ERROR: broken")),
+        Ok(output(0, "not json".into(), "")),
+    ] {
+        let harness = Harness::new(World {
+            version_failure: Some(failure),
+            ..World::default()
+        });
+        let view = harness.setup.check().await;
+        assert_eq!(view.cli, CliView::Failed);
+        assert_eq!(view.account, AccountView::Unavailable);
+        assert_eq!(harness.setup.install(), Err(SetupError::NotReady));
+        assert!(!harness.actions().iter().any(|action| action == "install"));
+        assert_eq!(
+            harness.setup.check().await.cli,
+            CliView::Ready {
+                version: "2.90.0".into()
+            }
+        );
     }
 }
 

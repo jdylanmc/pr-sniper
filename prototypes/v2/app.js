@@ -1334,6 +1334,7 @@ const azureIdentities = {
 // Demo-only setup states; production probes the local Azure CLI.
 const azureScenarios = {
   "cli-missing": { cli: "missing", version: "", account: "unavailable" },
+  "cli-failed": { cli: "failed", account: "unavailable" },
   "cli-too-old": { cli: "too_old", version: "2.53.1", account: "unavailable" },
   "org-not-found": { org: "not_found", account: "unavailable" },
   "tenant-unknown": { org: "tenant_unknown", account: "unavailable" },
@@ -1357,6 +1358,7 @@ let azure = { ...azureDefaults };
 let azureTimer;
 const azureValues = {
   missing: "Missing",
+  failed: "Failed",
   too_old: "Too old",
   installing: "Installing",
   ready: "Ready",

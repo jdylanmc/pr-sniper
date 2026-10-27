@@ -27,7 +27,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 | Row          | Values                                                                                                                                                 | Actions                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| Azure CLI    | Version, `≥ 2.54.0`; Missing, Too old, Installing, Ready                                                                                               | **Install** / **Update** (Homebrew, winget, else install page), Cancel, Re-check |
+| Azure CLI    | Version, `≥ 2.54.0`; Missing, Failed, Too old, Installing, Ready                                                                                       | **Install** / **Update** (Homebrew, winget, else install page), Cancel, Re-check |
 | Organization | Name field → tenant ID; Not found, No tenant, Offline                                                                                                  | Save, Retry                                                                      |
 | Account      | `connectionData` name and sign-in name; Signed out, Sign-in required, Access denied, Offline, Failed, Signing in, Connected, Wrong account (`≠` bound) | **Sign in** (confirmed `az login`, 5 min, Cancel), Retry, Forget                 |
 

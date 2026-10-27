@@ -138,9 +138,18 @@ pub fn sign_in_args(tenant: &TenantId) -> Vec<String> {
 pub enum CliView {
     Unknown,
     Missing,
-    TooOld { version: String },
-    Installing { version: Option<String> },
-    Ready { version: String },
+    TooOld {
+        version: String,
+    },
+    /// Found, but `az version` failed (timeout, exit, malformed output).
+    /// Not installable; Re-check only.
+    Failed,
+    Installing {
+        version: Option<String>,
+    },
+    Ready {
+        version: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -299,17 +308,18 @@ pub async fn probe(backends: &Backends, binding: &Binding) -> Probed {
         Arc::clone(&backends.runner),
         Arc::clone(&backends.clock),
     );
-    let version: Option<AzVersion> = if installed {
-        source.installed_version().await.ok()
+    let version: Result<AzVersion, TokenError> = if installed {
+        source.installed_version().await
     } else {
-        None
+        Err(TokenError::AzMissing)
     };
     let cli = match version {
-        None => CliView::Missing,
-        Some(version) if version < az_cli::MIN_VERSION => CliView::TooOld {
+        Err(TokenError::AzMissing) => CliView::Missing,
+        Err(_) => CliView::Failed,
+        Ok(version) if version < az_cli::MIN_VERSION => CliView::TooOld {
             version: version.to_string(),
         },
-        Some(version) => CliView::Ready {
+        Ok(version) => CliView::Ready {
             version: version.to_string(),
         },
     };
@@ -540,7 +550,7 @@ impl Setup {
                 return Err(SetupError::Busy);
             }
             match inner.probed.as_ref().map(|probed| &probed.cli) {
-                Some(CliView::Ready { .. }) => return Err(SetupError::NotReady),
+                Some(CliView::Ready { .. } | CliView::Failed) => return Err(SetupError::NotReady),
                 Some(CliView::TooOld { .. }) => true,
                 _ => false,
             }

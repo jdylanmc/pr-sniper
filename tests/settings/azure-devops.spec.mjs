@@ -85,6 +85,7 @@ test("each setup state shows its values and actions", async ({ page }) => {
   const cases = [
     [{ cli: { state: "unknown" } }, "cli", "Checking", ["Re-check"]],
     [{ cli: { state: "missing" } }, "cli", "Missing", ["Install Azure CLI"]],
+    [{ cli: { state: "failed" } }, "cli", "Failed", ["Re-check"]],
     [
       { cli: { state: "too_old", version: "2.53.1" } },
       "cli",

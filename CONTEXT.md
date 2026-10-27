@@ -67,7 +67,7 @@ The Microsoft Entra tenant that owns an Azure DevOps organization, read from the
 _Avoid_: Home tenant, directory
 
 **Azure DevOps Setup**:
-The Settings drill-in state machine: Azure CLI (Missing, Too old, Installing, Ready) → organization (Not found, Tenant unknown, Offline, Tenant known) → account (Signed out, Interaction required, Tenant access blocked, Connected, Wrong identity). Probing is never interactive; install and `az login` run only from a user action, sign-in after confirmation. PR Sniper never runs `az logout`.
+The Settings drill-in state machine: Azure CLI (Missing, Failed, Too old, Installing, Ready) → organization (Not found, Tenant unknown, Offline, Tenant known) → account (Signed out, Interaction required, Tenant access blocked, Connected, Wrong identity). Probing is never interactive; install and `az login` run only from a user action, sign-in after confirmation. PR Sniper never runs `az logout`.
 _Avoid_: Azure DevOps onboarding, login wizard
 
 **Bound Azure DevOps Identity**:
