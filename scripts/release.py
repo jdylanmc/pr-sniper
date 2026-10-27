@@ -623,19 +623,37 @@ def verify_choco_nupkg(package_file, manifest, root=Path(".")):
             for info in archive.infolist():
                 raw_name = info.filename
                 norm_name = raw_name.replace("\\", "/")
+                is_dir_entry = info.is_dir() or norm_name.endswith("/")
+                trimmed_name = norm_name[:-1] if norm_name.endswith("/") else norm_name
+                segments = trimmed_name.split("/")
                 require(not raw_name.startswith(("/", "\\")) and ":" not in raw_name
-                        and ".." not in norm_name.split("/"),
+                        and bool(trimmed_name)
+                        and all(seg not in ("", ".", "..") and not seg.endswith((".", " "))
+                                for seg in segments),
                         "Unsafe path in Chocolatey package archive.")
                 require(((info.external_attr >> 16) & 0o170000) != 0o120000
                         and not (info.external_attr & 0x400),
                         "Symlink entry is not permitted in Chocolatey package archive.")
-                if info.is_dir() or norm_name.endswith("/"):
+                if is_dir_entry:
                     continue
-                require(norm_name not in entries, "Duplicate entry in Chocolatey package archive.")
-                require(norm_name.lower() != "tools/installer.exe"
-                        and not norm_name.lower().endswith((".exe", ".dll", ".msi", ".bat", ".cmd")),
+                canonical_name = "/".join(segments).casefold()
+                require(canonical_name not in entries, "Duplicate entry in Chocolatey package archive.")
+                require(canonical_name != "tools/installer.exe"
+                        and not canonical_name.endswith((".exe", ".dll", ".msi", ".bat", ".cmd")),
                         "Public Chocolatey package must not embed an installer executable.")
-                entries[norm_name] = info
+                entries[canonical_name] = info
+
+            expected_scripts = {
+                "tools/chocolateyinstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyinstall.ps1",
+                "tools/chocolateyuninstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyuninstall.ps1",
+                "tools/removal-state.ps1": repo_root / "packaging" / "chocolatey" / "removal-state.ps1",
+                "tools/windows-signature.ps1": repo_root / "scripts" / "windows-signature.ps1",
+                "tools/windows-webview2.ps1": repo_root / "scripts" / "windows-webview2.ps1",
+            }
+            for canonical_name in entries:
+                if canonical_name.endswith((".ps1", ".psm1", ".psd1")):
+                    require(canonical_name in expected_scripts,
+                            "Unexpected PowerShell script in Chocolatey package archive.")
 
             require("pr-sniper.nuspec" in entries, "Chocolatey package is missing pr-sniper.nuspec.")
             try:
@@ -704,13 +722,6 @@ def verify_choco_nupkg(package_file, manifest, root=Path(".")):
                         and installer_meta.get("signer_subject") == manifest["signer_subject"],
                         "Signed Chocolatey installer.json must use Public mode with matching signer identity.")
 
-            expected_scripts = {
-                "tools/chocolateyinstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyinstall.ps1",
-                "tools/chocolateyuninstall.ps1": repo_root / "packaging" / "chocolatey" / "chocolateyuninstall.ps1",
-                "tools/removal-state.ps1": repo_root / "packaging" / "chocolatey" / "removal-state.ps1",
-                "tools/windows-signature.ps1": repo_root / "scripts" / "windows-signature.ps1",
-                "tools/windows-webview2.ps1": repo_root / "scripts" / "windows-webview2.ps1",
-            }
             allowed_tools = set(expected_scripts) | {"tools/installer.json", "tools/installer.exe.ignore"}
             tool_entries = {name for name in entries if name.startswith("tools/")}
             require(set(expected_scripts) <= tool_entries <= allowed_tools,
