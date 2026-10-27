@@ -617,12 +617,26 @@ replaced. Checksum verification is not publisher identity.
 ### Release asset and Chocolatey publication helpers (`scripts/release.py`)
 
 `scripts/release.py` provides bounded, fail-closed helpers for Windows asset
-attachment (`#62`) and Chocolatey submission/moderation reconciliation (`#64`)
-while leaving the existing macOS release workflow and Homebrew tap publisher
-unchanged:
+attachment (`#62`) and Chocolatey submission/moderation reconciliation (`#64`),
+wired into `.github/workflows/release.yml` (`windows-build` ->
+`windows-publish` -> `chocolatey`) while leaving the existing macOS release jobs
+(`gate` -> `tap-ready` -> `sign` -> `publish` -> `tap`) and Homebrew tap
+publisher unchanged:
 
+- **`stage-windows-release`** (`stage_windows_release`): runs in `windows-build`
+  after `check-windows-release`, `npm run build:windows`,
+  `npm run bundle:windows`, `.\scripts\windows-artifact.ps1` and
+  `.\scripts\windows-installer-artifact.ps1`. It verifies the candidate's
+  `installer.json` provenance against the gated tag and commit, stages
+  `pr-sniper-VERSION-x64-setup.exe`, `windows-manifest.json` (`trust_mode:
+"unsigned"`, `architecture: "x86_64"`, `bundle_id: "com.jdylanmc.pr-sniper"`)
+  and `WINDOWS-SHA256SUMS` into `$RUNNER_TEMP/pr-sniper-windows-release-assets`,
+  and validates the staged triplet via `windows_metadata` before uploading the
+  `windows-release-assets` workflow artifact.
 - **`publish-windows`** (`publish_windows` / `windows_metadata` /
-  `verify_windows_public`): validates `windows-manifest.json` (`trust_mode`
+  `verify_windows_public`): runs in `windows-publish` (`needs: [gate, publish,
+windows-build]`) after macOS `publish` has created and published the GitHub
+  Release. It validates `windows-manifest.json` (`trust_mode`
   either `"unsigned"` without signer fields or `"signed"` with 40-hex uppercase
   `signer_thumbprint` and `signer_subject`), `pr-sniper-VERSION-x64-setup.exe`
   and `WINDOWS-SHA256SUMS` in `$RUNNER_TEMP/pr-sniper-windows-release-assets`.
@@ -639,7 +653,11 @@ unchanged:
   idempotently; if the macOS asset triplet is missing or only a partial Windows
   subset exists on the release, it fails closed.
 - **`choco-publish`** (`choco_publish` / `verify_choco_nupkg` /
-  `choco_moderation_status` / `classify_choco_status`): verifies the live public
+  `choco_moderation_status` / `classify_choco_status`): runs in `chocolatey`
+  (`needs: [gate, windows-publish]`, `environment: pr-sniper-chocolatey`) after
+  a separate credential-free step runs `scripts/windows-chocolatey.ps1 -Mode
+PublicUnsigned` and `choco pack` into `$RUNNER_TEMP/pr-sniper-windows-release-assets`.
+  It verifies the live public
   Windows GitHub Release bytes via `verify_windows_public` and inspects the
   `.nupkg` archive via `verify_choco_nupkg` (`pr-sniper.nuspec` identity,
   version, commit-pinned license URL, `webview2-runtime` `[154.0.4258.62,)`
@@ -685,20 +703,22 @@ releases; steps 4-6 apply to either public trust mode:
    a timestamp certificate and successful `signtool verify /pa /all /tw`.
    Tests of this helper do not prove PR Sniper has been signed.
 4. Human chooses a real stable version/tag at the exact green main commit.
-   `python -B scripts/release.py check-windows-release` is a **read-only** future
-   preflight: use the same tag/repository/read-token environment as the macOS
-   gate. It adds the latest exact-commit **main-push** Windows run and both native
-   and installer-acceptance jobs to the existing macOS/version/ancestry/tag
-   checks. Pending, skipped, PR-only or other-commit checks never qualify.
-5. Publish immutable Windows assets (`python -B scripts/release.py publish-windows`)
+   `python -B scripts/release.py check-windows-release` is the **read-only**
+   preflight executed by `windows-build`: use the same tag/repository/read-token
+   environment as the macOS gate. It adds the latest exact-commit **main-push**
+   Windows run and both native and installer-acceptance jobs to the existing
+   macOS/version/ancestry/tag checks. Pending, skipped, PR-only or other-commit
+   checks never qualify.
+5. Publish immutable Windows assets (`python -B scripts/release.py publish-windows`
+   in `windows-publish`) after macOS `publish` has published the release,
    without replacing macOS's existing ZIP/manifest/checksum assets or
    invoking/rewriting the tap publisher. Reconcile any draft/partial/uncertain
-   publication; never move an existing tag or replace signed bytes. The existing
-   macOS release workflow and its exact asset contract are unchanged; it does
-   **not** currently publish Windows.
+   publication; never move an existing tag or replace signed bytes.
 6. Confirm Chocolatey maintainer identity, `pr-sniper` name ownership, approved
-   license/distribution metadata and scoped publisher API key. Independently
-   review and explicitly authorize the first submission (`python -B scripts/release.py choco-publish`).
+   license/distribution metadata and scoped publisher API key in the
+   `pr-sniper-chocolatey` GitHub Environment (`CHOCOLATEY_API_KEY`). The
+   `chocolatey` job generates and packs the `PublicUnsigned` package without API
+   credentials, then runs `python -B scripts/release.py choco-publish`.
    Record **submitted**, **awaiting moderation**, **rejected** and **publicly
    approved** separately. A successful push, local pack or local-feed install is
    not public availability. Respond to moderation requirements, reconcile failed

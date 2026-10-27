@@ -465,6 +465,67 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.windows_metadata(self.directory)
 
+    def test_stage_windows_release_promotes_verified_candidate_and_rejects_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            candidate = base / "candidate"
+            candidate.mkdir()
+            installer = b"fixture Windows NSIS setup executable, never executed"
+            digest = hashlib.sha256(installer).hexdigest()
+            name = release.windows_filename("0.1.0")
+            (candidate / name).write_bytes(installer)
+            meta = {
+                "schema": 1,
+                "version": "0.1.0",
+                "commit": COMMIT,
+                "target": "x86_64-pc-windows-msvc",
+                "filename": name,
+                "sha256": digest,
+                "application_sha256": "1" * 64,
+                "standalone_application_sha256": "2" * 64,
+                "bundle_id": release.BUNDLE_ID,
+                "distribution": "unsigned-ci-candidate-not-a-public-release",
+                "signed": False,
+            }
+            (candidate / "installer.json").write_text(json.dumps(meta), encoding="utf-8")
+            dest = base / "staged"
+            with patch.object(release, "config_version", return_value="0.1.0"):
+                staged = release.stage_windows_release(candidate, dest, root=ROOT)
+                self.assertEqual(staged, {
+                    "version": "0.1.0",
+                    "tag": "v0.1.0",
+                    "source_sha": COMMIT,
+                    "filename": name,
+                    "sha256": digest,
+                    "architecture": "x86_64",
+                    "bundle_id": release.BUNDLE_ID,
+                    "trust_mode": "unsigned",
+                })
+                self.assertEqual((dest / name).read_bytes(), installer)
+                self.assertEqual(
+                    (dest / "WINDOWS-SHA256SUMS").read_text(encoding="ascii"),
+                    f"{digest}  {name}\n",
+                )
+                with self.assertRaisesRegex(release.ReleaseError, "already exists"):
+                    release.stage_windows_release(candidate, dest, root=ROOT)
+
+                for key, bad_val in [
+                    ("commit", "b" * 40),
+                    ("version", "0.1.1"),
+                    ("sha256", "0" * 64),
+                    ("signed", True),
+                    ("distribution", "other"),
+                    ("bundle_id", "other"),
+                ]:
+                    with self.subTest(key=key):
+                        bad_dest = base / f"bad-{key}"
+                        (candidate / "installer.json").write_text(
+                            json.dumps({**meta, key: bad_val}), encoding="utf-8"
+                        )
+                        with self.assertRaises(release.ReleaseError):
+                            release.stage_windows_release(candidate, bad_dest, root=ROOT)
+                        self.assertFalse(bad_dest.exists())
+
     def test_publish_windows_preserves_macos_assets_and_is_idempotent_on_rerun(self):
         macos_manifest = self.assets()
         release.publish(self.api, self.directory)
