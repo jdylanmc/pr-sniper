@@ -1388,13 +1388,14 @@ function azureDevopsPage() {
   const expected =
     azure.account === "wrong_identity" ? azureIdentities[azure.bound] : null;
   const cliActions =
-    azure.cli === "missing"
-      ? azureAction("azure-install", "Install", "Install Azure CLI")
-      : azure.cli === "too_old"
-        ? azureAction("azure-install", "Update", "Update Azure CLI")
-        : azure.cli === "installing"
-          ? azureAction("azure-cancel", "Cancel", "Cancel install")
-          : `<button type="button" class="icon-button" data-action="azure-recheck" aria-label="Re-check" title="Re-check">${icon("refresh")}</button>`;
+    azure.cli === "installing"
+      ? azureAction("azure-cancel", "Cancel", "Cancel install")
+      : (azure.cli === "missing"
+          ? azureAction("azure-install", "Install", "Install Azure CLI")
+          : azure.cli === "too_old"
+            ? azureAction("azure-install", "Update", "Update Azure CLI")
+            : "") +
+        `<button type="button" class="icon-button" data-action="azure-recheck" aria-label="Re-check" title="Re-check">${icon("refresh")}</button>`;
   const accountActions = [
     ["signed_out", "interaction_required", "wrong_identity"].includes(
       azure.account,

@@ -84,13 +84,18 @@ test("each setup state shows its values and actions", async ({ page }) => {
   await openSetup(page);
   const cases = [
     [{ cli: { state: "unknown" } }, "cli", "Checking", ["Re-check"]],
-    [{ cli: { state: "missing" } }, "cli", "Missing", ["Install Azure CLI"]],
+    [
+      { cli: { state: "missing" } },
+      "cli",
+      "Missing",
+      ["Install Azure CLI", "Re-check"],
+    ],
     [{ cli: { state: "failed" } }, "cli", "Failed", ["Re-check"]],
     [
       { cli: { state: "too_old", version: "2.53.1" } },
       "cli",
       "Too old",
-      ["Update Azure CLI"],
+      ["Update Azure CLI", "Re-check"],
     ],
     [
       { cli: { state: "installing", version: null } },
@@ -251,6 +256,36 @@ test("install runs natively, shows Installing, cancels and re-detects", async ({
   expect(made.filter((c) => c === "azure_devops_install")).toHaveLength(2);
   expect(made).toContain("azure_devops_cancel");
   expect(made).not.toContain("azure_devops_sign_in");
+});
+
+test("the install page leaves Re-check to detect an outside install", async ({
+  page,
+}) => {
+  await fakeBackend(
+    page,
+    setup({ cli: { state: "missing" }, installer: "page" }),
+  );
+  await page.addInitScript(() => {
+    window.__ado.next = {
+      azure_devops_check: (_args, view) =>
+        window.__ado.installedOutside
+          ? { ...view, cli: { state: "ready", version: "2.90.0" } }
+          : view,
+    };
+  });
+  await openSetup(page);
+  await page.getByRole("button", { name: "Install Azure CLI" }).click();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(value(page, "cli")).toHaveText("Missing");
+  const recheck = page.getByRole("button", { name: "Re-check" });
+  await expect(recheck).toBeVisible();
+  await page.evaluate(() => {
+    window.__ado.installedOutside = true;
+    window.__ado.calls = [];
+  });
+  await recheck.click();
+  await expect(value(page, "cli")).toHaveText("Ready");
+  expect(await calls(page)).toEqual(["azure_devops_check"]);
 });
 
 test("install failures keep focus on the action and show a value", async ({

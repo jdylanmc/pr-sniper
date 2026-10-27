@@ -205,13 +205,15 @@ export function renderAzureDevops(
       "Azure CLI",
       `<small data-azure-version>${escape(cliVersion ?? "")}</small><small data-azure-minimum>\u2265 ${escape(next.minimum)}</small>`,
       cliValues[cli.state],
-      cli.state === "missing"
-        ? textAction("install", "Install", "Install Azure CLI")
-        : cli.state === "too_old"
-          ? textAction("install", "Update", "Update Azure CLI")
-          : cli.state === "installing"
-            ? textAction("cancel", "Cancel", "Cancel install")
-            : iconAction("check", "Re-check", "refresh"),
+      // Re-check stays beside Install/Update: an install from the page or
+      // a terminal has no tracked job to re-detect it.
+      cli.state === "installing"
+        ? textAction("cancel", "Cancel", "Cancel install")
+        : (cli.state === "missing"
+            ? textAction("install", "Install", "Install Azure CLI")
+            : cli.state === "too_old"
+              ? textAction("install", "Update", "Update Azure CLI")
+              : "") + iconAction("check", "Re-check", "refresh"),
     );
     const name = organization.state === "unset" ? "" : organization.name;
     if (organizationDraft === undefined && document.activeElement !== input)
