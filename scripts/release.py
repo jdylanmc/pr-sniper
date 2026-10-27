@@ -256,8 +256,7 @@ def metadata(directory=ASSETS):
     return manifest
 
 
-def windows_metadata(directory=WINDOWS_ASSETS):
-    manifest = json.loads((directory / "windows-manifest.json").read_text())
+def _validate_windows_manifest_dict(manifest):
     required_keys = {"version", "tag", "source_sha", "filename", "sha256", "architecture", "bundle_id", "trust_mode"}
     allowed_keys = required_keys | {"signer_thumbprint", "signer_subject"}
     require(isinstance(manifest, dict) and required_keys <= set(manifest) <= allowed_keys,
@@ -284,11 +283,17 @@ def windows_metadata(directory=WINDOWS_ASSETS):
         require(isinstance(thumbprint, str) and UPPER_SHA.fullmatch(thumbprint)
                 and isinstance(subject, str) and bool(subject.strip()),
                 "Signed Windows release manifest requires uppercase 40-hex thumbprint and non-empty signer subject.")
+    require(isinstance(manifest["sha256"], str) and HASH.fullmatch(manifest["sha256"]),
+            "Invalid Windows installer checksum in manifest.")
+    return manifest
+
+
+def windows_metadata(directory=WINDOWS_ASSETS):
+    manifest = _validate_windows_manifest_dict(json.loads((directory / "windows-manifest.json").read_text()))
     artifact = directory / manifest["filename"]
     require(artifact.is_file() and not artifact.is_symlink(), "Windows release artifact is unavailable.")
     checksum = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    require(isinstance(manifest["sha256"], str) and HASH.fullmatch(manifest["sha256"])
-            and manifest["sha256"] == checksum,
+    require(manifest["sha256"] == checksum,
             "Windows release bytes do not match the artifact manifest.")
     sums = directory / "WINDOWS-SHA256SUMS"
     require(sums.is_file() and not sums.is_symlink(), "Windows checksum file is unavailable.")
@@ -361,6 +366,19 @@ def verify_public(api, manifest, local=None):
         else:
             require(data.decode() == f"{manifest['sha256']}  {manifest['filename']}\n",
                     "Published checksum file mismatch.")
+    if windows_expected <= names:
+        win_asset = next(asset for asset in assets if asset["name"] == "windows-manifest.json")
+        try:
+            win_manifest = _validate_windows_manifest_dict(
+                json.loads(public_bytes(win_asset["browser_download_url"]).decode("utf-8"))
+            )
+        except (UnicodeDecodeError, ValueError):
+            raise ReleaseError("Published Windows provenance manifest is invalid JSON.") from None
+        require(win_manifest["version"] == manifest["version"]
+                and win_manifest["tag"] == manifest["tag"]
+                and win_manifest["source_sha"] == manifest["source_sha"],
+                "Published Windows provenance manifest does not match macOS release.")
+        verify_windows_public(api, win_manifest)
     return release
 
 

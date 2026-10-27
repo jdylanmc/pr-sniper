@@ -327,7 +327,7 @@ class ReleaseTests(unittest.TestCase):
                 release.tap_ready(self.api)
 
     def build_nupkg(self, package_path, manifest, *, nuspec_overrides=None, installer_overrides=None,
-                    extra_entries=None, script_overrides=None):
+                    extra_entries=None, script_overrides=None, date_time=(2026, 1, 1, 0, 0, 0)):
         nuspec_meta = {
             "id": "pr-sniper",
             "version": manifest["version"],
@@ -378,17 +378,19 @@ class ReleaseTests(unittest.TestCase):
         if script_overrides:
             scripts.update(script_overrides)
         with zipfile.ZipFile(package_path, "w") as archive:
-            archive.writestr("pr-sniper.nuspec", nuspec_xml)
-            archive.writestr("tools/installer.json", json.dumps(installer_json))
-            archive.writestr("tools/installer.exe.ignore", "")
-            for entry_name, payload in scripts.items():
-                archive.writestr(entry_name, payload)
+            for entry_name, payload in [
+                ("pr-sniper.nuspec", nuspec_xml),
+                ("tools/installer.json", json.dumps(installer_json)),
+                ("tools/installer.exe.ignore", ""),
+                *scripts.items(),
+            ]:
+                archive.writestr(zipfile.ZipInfo(entry_name, date_time=date_time), payload)
             for entry_name, payload in (extra_entries or {}).items():
                 if isinstance(payload, tuple):
                     info, data = payload
                     archive.writestr(info, data)
                 else:
-                    archive.writestr(entry_name, payload)
+                    archive.writestr(zipfile.ZipInfo(entry_name, date_time=date_time), payload)
         return package_path
 
     def windows_assets(self, directory=None, trust_mode="unsigned", **overrides):
@@ -791,6 +793,19 @@ class ReleaseTests(unittest.TestCase):
                 release.tap_update(self.api, tap, self.directory)
                 self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
 
+                original_submission_bytes = self.api.bytes["choco-submission.json"]
+                for bad_receipt in [
+                    b"not-json",
+                    json.dumps({**submitted_receipt, "state": "pending_push"}).encode("utf-8"),
+                    json.dumps({**submitted_receipt, "source_sha": "b" * 40}).encode("utf-8"),
+                ]:
+                    self.api.bytes["choco-submission.json"] = bad_receipt
+                    with self.assertRaises(release.ReleaseError):
+                        release.publish(self.api, self.directory)
+                    with self.assertRaises(release.ReleaseError):
+                        release.tap_update(self.api, tap, self.directory)
+                self.api.bytes["choco-submission.json"] = original_submission_bytes
+
                 with patch.object(release, "command") as cmd:
                     rerun_same_dir = release.choco_publish(
                         self.api, win_dir, status_Reader=lambda *_: "not_found"
@@ -812,6 +827,21 @@ class ReleaseTests(unittest.TestCase):
                         json.loads((fresh_dir / "choco-submission.json").read_text())["state"],
                         "submitted",
                     )
+
+                    self.build_nupkg(
+                        fresh_dir / "pr-sniper.0.1.0.nupkg",
+                        win_manifest,
+                        date_time=(2026, 1, 2, 0, 0, 0),
+                    )
+                    with patch.object(release, "command") as cmd, \
+                            self.assertRaisesRegex(
+                                release.ReleaseError,
+                                "does not match local package bytes",
+                            ):
+                        release.choco_publish(
+                            self.api, fresh_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    cmd.assert_not_called()
 
             for live_state, expected_asset in (
                 ("awaiting_moderation", "choco-awaiting-moderation.json"),
