@@ -635,8 +635,8 @@ publisher unchanged:
   `windows-release-assets` workflow artifact.
 - **`publish-windows`** (`publish_windows` / `windows_metadata` /
   `verify_windows_public`): runs in `windows-publish` (`needs: [gate, publish,
-windows-build]`) after macOS `publish` has created and published the GitHub
-  Release. It validates `windows-manifest.json` (`trust_mode`
+tap, windows-build]`) after macOS `publish` and `tap` have completed. It
+  validates `windows-manifest.json` (`trust_mode`
   either `"unsigned"` without signer fields or `"signed"` with 40-hex uppercase
   `signer_thumbprint` and `signer_subject`), `pr-sniper-VERSION-x64-setup.exe`
   and `WINDOWS-SHA256SUMS` in `$RUNNER_TEMP/pr-sniper-windows-release-assets`.
@@ -646,17 +646,23 @@ windows-build]`) after macOS `publish` has created and published the GitHub
   `manifest.json` and `SHA256SUMS`), uploads the three Windows assets while
   checking GitHub's SHA-256 `digest`, and verifies unauthenticated public
   downloads via `verify_windows_public` across all six required release assets
-  (plus any verified Chocolatey state receipt assets). `verify_public` likewise
-  accepts the attached Windows asset triplet and Chocolatey state receipts so
-  macOS `publish` and `tap` reruns stay idempotent. If all three Windows assets
-  are already uploaded and match local bytes, `publish-windows` returns
-  idempotently; if the macOS asset triplet is missing or only a partial Windows
-  subset exists on the release, it fails closed.
+  (plus any verified Chocolatey state receipt assets). After `publish-windows`
+  succeeds, `windows-publish` generates the `PublicUnsigned` package without API
+  credentials (`.\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned`), packs
+  `pr-sniper.VERSION.nupkg` once via `choco pack`, and uploads it as the
+  `chocolatey-release-package` workflow artifact so retries never repack or
+  alter `nupkg_sha256`. `verify_public` likewise accepts the attached Windows
+  asset triplet and Chocolatey state receipts so macOS `publish` and `tap`
+  reruns stay idempotent. If all three Windows assets are already uploaded and
+  match local bytes, `publish-windows` returns idempotently; if the macOS asset
+  triplet is missing or only a partial Windows subset exists on the release, it
+  fails closed.
 - **`choco-publish`** (`choco_publish` / `verify_choco_nupkg` /
   `choco_moderation_status` / `classify_choco_status`): runs in `chocolatey`
   (`needs: [gate, windows-publish]`, `environment: pr-sniper-chocolatey`) after
-  a separate credential-free step runs `scripts/windows-chocolatey.ps1 -Mode
-PublicUnsigned` and `choco pack` into `$RUNNER_TEMP/pr-sniper-windows-release-assets`.
+  downloading the `windows-release-assets` and `chocolatey-release-package`
+  workflow artifacts into `$RUNNER_TEMP/pr-sniper-windows-release-assets`
+  (reusing the exact pre-packed `pr-sniper.VERSION.nupkg` without repacking).
   It verifies the live public
   Windows GitHub Release bytes via `verify_windows_public` and inspects the
   `.nupkg` archive via `verify_choco_nupkg` (`pr-sniper.nuspec` identity,
@@ -710,15 +716,18 @@ releases; steps 4-6 apply to either public trust mode:
    macOS/version/ancestry/tag checks. Pending, skipped, PR-only or other-commit
    checks never qualify.
 5. Publish immutable Windows assets (`python -B scripts/release.py publish-windows`
-   in `windows-publish`) after macOS `publish` has published the release,
+   in `windows-publish`) after macOS `publish` and `tap` have completed,
    without replacing macOS's existing ZIP/manifest/checksum assets or
-   invoking/rewriting the tap publisher. Reconcile any draft/partial/uncertain
+   invoking/rewriting the tap publisher, then generate and pack the
+   `PublicUnsigned` `.nupkg` once without API credentials and upload it as the
+   `chocolatey-release-package` artifact. Reconcile any draft/partial/uncertain
    publication; never move an existing tag or replace signed bytes.
 6. Confirm Chocolatey maintainer identity, `pr-sniper` name ownership, approved
    license/distribution metadata and scoped publisher API key in the
    `pr-sniper-chocolatey` GitHub Environment (`CHOCOLATEY_API_KEY`). The
-   `chocolatey` job generates and packs the `PublicUnsigned` package without API
-   credentials, then runs `python -B scripts/release.py choco-publish`.
+   `chocolatey` job downloads the `chocolatey-release-package` artifact and
+   only runs `python -B scripts/release.py choco-publish` so retries reuse the
+   exact `nupkg_sha256` bound to the release receipts.
    Record **submitted**, **awaiting moderation**, **rejected** and **publicly
    approved** separately. A successful push, local pack or local-feed install is
    not public availability. Respond to moderation requirements, reconcile failed
