@@ -2,6 +2,7 @@ use super::{
     provider::{decimal_id, parse_response, GithubClient, Response, Transport},
     ConnectionError,
 };
+use crate::provider::{PublicationReader, ReviewPublisher};
 use crate::{
     publication::{
         diff_positions, InlineComment, Mutation, Publication, Receipt, RemoteState, WriteFailure,
@@ -51,57 +52,6 @@ impl<T: Transport> GithubClient<T> {
                 duration_ms,
                 uncertain,
             });
-        }
-    }
-
-    pub fn reconcile_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
-        let started = std::time::Instant::now();
-        let found = self.find_review(run);
-        self.publication_observation(
-            PublicationStage::Ownership,
-            None,
-            match &found {
-                Ok(Some(_)) => Outcome::Success,
-                Ok(None) => Outcome::NotRequired,
-                Err(_) => Outcome::Unavailable,
-            },
-            found.as_ref().err(),
-            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            None,
-        );
-        let Some(receipt) = found? else {
-            return Ok(None);
-        };
-        let stage = verification_stage(&receipt.state);
-        let started = std::time::Instant::now();
-        let result = self.verify_comments(run, receipt);
-        self.publication_observation(
-            stage,
-            None,
-            Outcome::Success,
-            match &result {
-                Err(Verify::Mismatch(_, f) | Verify::Failed(f)) => Some(f),
-                _ => None,
-            },
-            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            None,
-        );
-        match result {
-            Ok(receipt) => Ok(Some(receipt)),
-            Err(Verify::Mismatch(_, failure) | Verify::Failed(failure)) => Err(failure),
-        }
-    }
-
-    /// The owned review whose inline comments differ from the frozen batch, if
-    /// that is the only reason it cannot be reconciled. Typed, never message-based.
-    pub fn divergent_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
-        let Some(receipt) = self.find_review(run)? else {
-            return Ok(None);
-        };
-        match self.verify_comments(run, receipt) {
-            Err(Verify::Mismatch(receipt, _)) => Ok(Some(receipt)),
-            Ok(_) => Ok(None),
-            Err(Verify::Failed(failure)) => Err(failure),
         }
     }
 
@@ -318,6 +268,59 @@ impl<T: Transport> GithubClient<T> {
     }
 }
 
+impl<T: Transport> PublicationReader for GithubClient<T> {
+    fn reconcile_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        let started = std::time::Instant::now();
+        let found = self.find_review(run);
+        self.publication_observation(
+            PublicationStage::Ownership,
+            None,
+            match &found {
+                Ok(Some(_)) => Outcome::Success,
+                Ok(None) => Outcome::NotRequired,
+                Err(_) => Outcome::Unavailable,
+            },
+            found.as_ref().err(),
+            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+            None,
+        );
+        let Some(receipt) = found? else {
+            return Ok(None);
+        };
+        let stage = verification_stage(&receipt.state);
+        let started = std::time::Instant::now();
+        let result = self.verify_comments(run, receipt);
+        self.publication_observation(
+            stage,
+            None,
+            Outcome::Success,
+            match &result {
+                Err(Verify::Mismatch(_, f) | Verify::Failed(f)) => Some(f),
+                _ => None,
+            },
+            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+            None,
+        );
+        match result {
+            Ok(receipt) => Ok(Some(receipt)),
+            Err(Verify::Mismatch(_, failure) | Verify::Failed(failure)) => Err(failure),
+        }
+    }
+
+    /// The owned review whose inline comments differ from the frozen batch, if
+    /// that is the only reason it cannot be reconciled. Typed, never message-based.
+    fn divergent_publication(&self, run: &Publication) -> Result<Option<Receipt>, Failure> {
+        let Some(receipt) = self.find_review(run)? else {
+            return Ok(None);
+        };
+        match self.verify_comments(run, receipt) {
+            Err(Verify::Mismatch(receipt, _)) => Ok(Some(receipt)),
+            Ok(_) => Ok(None),
+            Err(Verify::Failed(failure)) => Err(failure),
+        }
+    }
+}
+
 // Inline comments that provably differ, apart from reads that merely failed.
 enum Verify {
     Mismatch(Receipt, Failure),
@@ -398,32 +401,6 @@ fn verify_location(
 }
 
 impl<T: MutationTransport> GithubClient<T> {
-    pub fn mutate_publication(
-        &self,
-        run: &Publication,
-        mutation: Mutation,
-    ) -> Result<Receipt, WriteFailure> {
-        let started = std::time::Instant::now();
-        let result = self.mutate_publication_inner(run, mutation);
-        self.publication_observation(
-            match mutation {
-                Mutation::Create => PublicationStage::Create,
-                Mutation::Submit => PublicationStage::Submit,
-                Mutation::Discard => PublicationStage::Discard,
-            },
-            None,
-            if result.is_ok() {
-                Outcome::Success
-            } else {
-                Outcome::Unavailable
-            },
-            result.as_ref().err().map(|error| &error.failure),
-            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            Some(result.as_ref().err().is_some_and(|error| error.uncertain)),
-        );
-        result
-    }
-
     fn mutate_publication_inner(
         &self,
         run: &Publication,
@@ -531,6 +508,34 @@ impl<T: MutationTransport> GithubClient<T> {
             receipt.comment_ids = previous.comment_ids.clone();
         }
         Ok(receipt)
+    }
+}
+
+impl<T: MutationTransport> ReviewPublisher for GithubClient<T> {
+    fn mutate_publication(
+        &self,
+        run: &Publication,
+        mutation: Mutation,
+    ) -> Result<Receipt, WriteFailure> {
+        let started = std::time::Instant::now();
+        let result = self.mutate_publication_inner(run, mutation);
+        self.publication_observation(
+            match mutation {
+                Mutation::Create => PublicationStage::Create,
+                Mutation::Submit => PublicationStage::Submit,
+                Mutation::Discard => PublicationStage::Discard,
+            },
+            None,
+            if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Unavailable
+            },
+            result.as_ref().err().map(|error| &error.failure),
+            Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+            Some(result.as_ref().err().is_some_and(|error| error.uncertain)),
+        );
+        result
     }
 }
 

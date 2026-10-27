@@ -27,8 +27,16 @@ The provider-issued stable repository ID bound to one explicit Provider Account.
 _Avoid_: Repository name
 
 **Provider Read Interface**:
-Provider-neutral reads: account identity and people (`AccountReader`), repository discovery and resolution (`RepositoryReader`), pull request listing, polling, detail, changed files and file content (`PullRequestReader`). Each provider implements them over neutral Person, repository, pull request, Revision and changed-file types. Feature code reads only through them. Threads, writes and readiness are not yet behind interfaces.
+Provider-neutral reads: account identity and people (`AccountReader`), repository discovery and resolution (`RepositoryReader`), pull request listing, polling, detail, changed files and file content (`PullRequestReader`). Each provider implements them over neutral Person, repository, pull request, Revision and changed-file types. Feature code reads only through them.
 _Avoid_: GitHub client (for reads)
+
+**Provider Write Interface**:
+Provider-neutral threads, publication, outcomes and readiness: review threads read, reply and resolve (`ThreadReader`, `ThreadWriter`), top-level comments (`CommentReader`, `CommentWriter`), review publication with inline threads (`PublicationReader`, `ReviewPublisher`), approve and approve-and-merge (`ReviewerOutcome`), merge readiness and check status (`ReadinessReader`, `PullRequestStateReader`, `CheckLogReader`). Neutral Thread, Comment, Observation and PrSnapshot types. Feature code holds a `ProviderSession` (all of them) or a guarded read-only `ProviderReads`, never a concrete client.
+_Avoid_: GitHub client (for writes)
+
+**Provider Capability**:
+What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves.
+_Avoid_: GitHub-only check
 
 **Accessible Repository**:
 A repository returned for a connected Provider Account through its granted authorization, including repositories owned by another user or organization. Accessibility does not configure or monitor the repository; organization, project, tenant and provider policy can further restrict it.

@@ -345,6 +345,7 @@ fn new_readonly_assignment_tools_need_no_effect_grant_and_native_catalog_filters
             primary: authority.primary,
             grants: Grants::default(),
             review_drafts: false,
+            capabilities: crate::provider::ProviderCapabilities::of(&repo.provider),
             facts: Facts::default(),
         };
         let exits: Vec<_> = offered(&input)

@@ -1,3 +1,4 @@
+use pr_sniper_lib::provider::prelude::*;
 use pr_sniper_lib::{
     github::{
         metadata::{Lifecycle, PullRequest},

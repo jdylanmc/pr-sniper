@@ -1,19 +1,14 @@
 use super::*;
 use crate::{
-    github::{
-        http::HttpTransport,
-        provider::GithubClient,
-        review::GuardedTransport,
-        threads::{Ownership, Provenance},
-    },
     monitoring::{self, PollTicket},
     now_seconds,
     provider::{
-        self, CommentCapability, PullRequest, PullRequestReader, RemoteRepository, RepositoryReader,
+        self, CommentCapability, Ownership, Provenance, ProviderReads, PullRequest,
+        RemoteRepository,
     },
     publication::WriteFailure,
     review::Selection,
-    Host,
+    Host, Session,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -108,7 +103,7 @@ pub(crate) fn scan(
         Ok(())
     });
     guard()?;
-    let (_, client) = crate::github_session(&app.state::<Host>(), &ticket.provider_account_id)?;
+    let (_, client) = crate::provider_session(&app.state::<Host>(), &ticket.provider_account_id)?;
     if identity.id != ticket.provider_account_id {
         return Err(provider::ConnectionError::WrongIdentity);
     }
@@ -695,20 +690,17 @@ impl Native {
             .map_err(|_| Failure::permanent("Thread storage unavailable."))?;
         self.origin_without_lock(&store, run)
     }
-    fn client(&self, run: &FollowUp) -> Result<GithubClient<HttpTransport>, Failure> {
+    fn client(&self, run: &FollowUp) -> Result<Session, Failure> {
         let host = self.app.state::<Host>();
         connection_gate(&host, &run.context.job.account_id, self.generation)?;
-        let (identity, client) = crate::github_session(&host, &run.context.job.account_id)?;
+        let (identity, client) = crate::provider_session(&host, &run.context.job.account_id)?;
         if identity.id != run.context.job.account_id {
             return Err(Failure::permanent("Acting account changed."));
         }
         connection_gate(&host, &run.context.job.account_id, self.generation)?;
         Ok(client)
     }
-    fn read_client(
-        &self,
-        run: &FollowUp,
-    ) -> Result<GithubClient<GuardedTransport<HttpTransport>>, Failure> {
+    fn read_client(&self, run: &FollowUp) -> Result<Box<dyn ProviderReads + Send + Sync>, Failure> {
         let native = self.clone();
         let snapshot = run.clone();
         Ok(self.client(run)?.guarded(Arc::new(move || {

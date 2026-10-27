@@ -1,5 +1,4 @@
 use super::*;
-use crate::provider::AccountReader;
 use crate::{
     feedback::{Context, Record},
     github::threads::{Comment, Thread},
@@ -414,7 +413,7 @@ fn owned_feedback_blocked_migration_keeps_the_operation_until_unblocked() {
 }
 
 struct PreparationWire {
-    during_read: Box<dyn Fn()>,
+    during_read: Box<dyn Fn() + Send + Sync>,
     error: Option<crate::provider::ConnectionError>,
 }
 
@@ -476,7 +475,7 @@ fn owned_feedback_guarded_preparation_preserves_in_flight_tosses_for_both_roles(
                 id: run.job.repository_id.clone(),
                 name: run.job.repository_name.clone(),
             };
-            let outcome = AttemptGuard::new(gate).prepare(client, |client| {
+            let outcome = AttemptGuard::new(gate).prepare(Box::new(client), |client| {
                 if snapshot {
                     client
                         .pr_snapshot(&repo, run.job.number)
@@ -560,7 +559,7 @@ fn preparation_guard_preserves_local_provenance_and_rejects_ignored_refusals() {
             };
             let attempt = AttemptGuard::new(gate);
             let actual = attempt
-                .prepare(client, |client| {
+                .prepare(Box::new(client), |client| {
                     let read = client
                         .pr_snapshot(&repo, 1)
                         .map(|_| ())
@@ -622,7 +621,7 @@ fn preparation_guard_keeps_actual_provider_errors_when_no_guard_refused() {
             name: "example/repo".into(),
         };
         let actual = AttemptGuard::new(gate)
-            .prepare(client, |client| {
+            .prepare(Box::new(client), |client| {
                 client
                     .pr_snapshot(&repo, 1)
                     .map(|_| ())
@@ -634,7 +633,7 @@ fn preparation_guard_keeps_actual_provider_errors_when_no_guard_refused() {
 }
 
 struct FinalSnapshotWire {
-    during_read: Box<dyn Fn()>,
+    during_read: Box<dyn Fn() + Send + Sync>,
 }
 
 impl crate::github::provider::Transport for FinalSnapshotWire {
@@ -701,7 +700,7 @@ fn feedback_change_after_preparation_is_tossed_at_ready_and_wait_finalization() 
         };
         let attempt = AttemptGuard::new(gate);
         let (client, snapshot) = attempt
-            .prepare(client, |client| {
+            .prepare(Box::new(client), |client| {
                 let snapshot = client.pr_snapshot(&repo, 1).map_err(Failure::from)?;
                 Ok((client, snapshot.normalize()))
             })
@@ -717,7 +716,13 @@ fn feedback_change_after_preparation_is_tossed_at_ready_and_wait_finalization() 
         });
 
         let failure = attempt
-            .finish(finalize_local_exit(&client, &repo, 1, &packet, &mut result))
+            .finish(finalize_local_exit(
+                &*client,
+                &repo,
+                1,
+                &packet,
+                &mut result,
+            ))
             .unwrap_err();
         // Even if observation rolls back, the first refusal invalidated this
         // attempt: neither its client nor a late successful result can recover it.
@@ -797,7 +802,7 @@ fn guarded_reads(
             change(&wire_store.lock().unwrap(), &cancelled);
         }
     })));
-    let outcome = AttemptGuard::new(gate).prepare(client, |client| {
+    let outcome = AttemptGuard::new(gate).prepare(Box::new(client), |client| {
         for _ in 0..READS {
             client.current_identity().map_err(Failure::from)?;
         }

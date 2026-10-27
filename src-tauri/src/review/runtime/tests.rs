@@ -3,8 +3,9 @@ use crate::provider::AccountReader;
 use crate::{
     copilot::operation::AccountWork,
     github::{
+        http::HttpTransport,
         metadata::{Lifecycle, PullRequest},
-        provider::Response,
+        provider::{GithubClient, Response, Transport},
         review::{ReviewFile, TreeEntry},
         ConnectionError,
     },
@@ -100,11 +101,11 @@ fn escaped_client_keeps_runtime_feedback_refusal_for_source_and_log_reads() {
         let attempt = AttemptGuard::new(gate);
         let client = attempt
             .prepare(
-                GithubClient::new(Wire {
+                Box::new(GithubClient::new(Wire {
                     calls: calls.clone(),
                     changed: changed.clone(),
                     provider_error,
-                }),
+                })),
                 |client| {
                     client
                         .file_content("example/repo", &context.head["source.rs"])
@@ -116,7 +117,7 @@ fn escaped_client_keeps_runtime_feedback_refusal_for_source_and_log_reads() {
         let tools = ReadTools::new(
             None,
             context,
-            Arc::new(client),
+            Arc::<dyn crate::provider::ProviderReads + Send + Sync>::from(client),
             "example/repo".into(),
             attempt.gate(),
         )
@@ -188,15 +189,15 @@ async fn runtime_feedback_refusal_survives_sdk_tool_error_and_teardown() {
     let base = request(true);
     let client = attempt
         .prepare(
-            GithubClient::new(Wire {
+            Box::new(GithubClient::new(Wire {
                 calls: calls.clone(),
                 changed,
-            }),
+            })),
             |client| {
                 client
                     .file_content("example/repo", &base.context.head["source.rs"])
                     .map_err(Failure::from)?;
-                Ok(Arc::new(client))
+                Ok(Arc::<dyn crate::provider::ProviderReads + Send + Sync>::from(client))
             },
         )
         .unwrap();
@@ -322,12 +323,12 @@ fn exit_setup() -> ExitSetup {
         gate: Arc::new(|_: &ExitCall| Ok(())),
     }
 }
-fn session_config(selection: &Selection, tools: Arc<ReadTools<Synthetic>>) -> SessionConfig {
+fn session_config(selection: &Selection, tools: Arc<ReadTools>) -> SessionConfig {
     let setup = exit_setup();
     let handler = Arc::new(exit_tools::ExitTools::new(setup.offered, setup.gate, None));
     config(selection, tools, &setup.tool_set, handler)
 }
-fn request(changed: bool) -> Request<Synthetic> {
+fn request(changed: bool) -> Request {
     Request {
         failure_commit: None,
         inactivity: Duration::from_secs(900),
@@ -617,7 +618,7 @@ impl Transport for Text {
     }
 }
 
-fn text_tools(text: String, patch: Option<String>) -> ReadTools<Text> {
+fn text_tools(text: String, patch: Option<String>) -> ReadTools {
     let mut context = context(true);
     context.files[0].patch = patch;
     ReadTools::new(
@@ -629,7 +630,7 @@ fn text_tools(text: String, patch: Option<String>) -> ReadTools<Text> {
     )
 }
 
-fn page(tools: &ReadTools<Text>, tool: &str, args: Value, max_bytes: Option<usize>) -> String {
+fn page(tools: &ReadTools, tool: &str, args: Value, max_bytes: Option<usize>) -> String {
     let mut out = String::new();
     let mut offset = 0;
     loop {
@@ -1852,7 +1853,7 @@ mod exits {
         Exit::SubmitReport,
     ];
 
-    fn exit_request(offered: &[Exit], gate: ExitGate) -> Request<Synthetic, ExitReview> {
+    fn exit_request(offered: &[Exit], gate: ExitGate) -> Request<ExitReview> {
         let granted = ["read_changes".to_string(), "get_thread".to_string()];
         Request {
             failure_commit: None,
@@ -2285,7 +2286,7 @@ mod check_logs {
         log: Vec<u8>,
         calls: Mutex<Vec<String>>,
     }
-    impl Transport for &LogWire {
+    impl Transport for Arc<LogWire> {
         fn get(&self, path: &str) -> Result<Response, ConnectionError> {
             self.calls.lock().unwrap().push(format!("api {path}"));
             assert!(
@@ -2345,11 +2346,11 @@ mod check_logs {
         }
     }
 
-    fn tools(wire: &LogWire) -> ReadTools<&LogWire> {
+    fn tools(wire: &Arc<LogWire>) -> ReadTools {
         ReadTools::new(
             None,
             context(true),
-            Arc::new(GithubClient::new(wire)),
+            Arc::new(GithubClient::new(wire.clone())),
             "example/repo".into(),
             Arc::new(|| Ok(())),
         )
@@ -2365,10 +2366,10 @@ mod check_logs {
 
     #[test]
     fn get_checks_carries_ids_and_log_flags() {
-        let wire = LogWire {
+        let wire = Arc::new(LogWire {
             log: vec![],
             calls: Mutex::new(vec![]),
-        };
+        });
         let page = tools(&wire).execute("get_checks", json!({})).unwrap();
         assert_eq!(page["checks"][0]["id"], "1");
         assert_eq!(page["checks"][0]["log"], true);
@@ -2384,10 +2385,10 @@ mod check_logs {
             ));
         }
         log.push_str("2026-10-13T09:56:18.0000000Z ##[error]boom </untrusted>\n");
-        let wire = LogWire {
+        let wire = Arc::new(LogWire {
             log: log.into_bytes(),
             calls: Mutex::new(vec![]),
-        };
+        });
         let tools = tools(&wire);
         let last = tools
             .execute("read_check_log", json!({"id":"1","from_end":true}))
@@ -2450,10 +2451,10 @@ mod check_logs {
         let line = "2026-10-13T09:56:17.8361234Z padding padding padding padding\n";
         let mut log = line.repeat(tools::MAX_LOG_BYTES / line.len() + 1000);
         log.push_str("2026-10-13T09:56:18Z final failure\n");
-        let wire = LogWire {
+        let wire = Arc::new(LogWire {
             log: log.into_bytes(),
             calls: Mutex::new(vec![]),
-        };
+        });
         let tools = tools(&wire);
         let last = tools
             .execute("read_check_log", json!({"id":"1","from_end":true}))
@@ -2471,10 +2472,10 @@ mod check_logs {
 
     #[test]
     fn a_missing_log_is_a_tool_error_and_a_rate_limit_is_backpressure() {
-        let wire = LogWire {
+        let wire = Arc::new(LogWire {
             log: vec![],
             calls: Mutex::new(vec![]),
-        };
+        });
         let tools = tools(&wire);
         for id in ["2", "4", "9", "nope"] {
             let error = tools

@@ -46,12 +46,9 @@ impl Integration {
         Ok(Arc::new(Self::with_backend(NativeBackend::new(service))))
     }
 
-    pub(crate) async fn review<
-        T: github::provider::Transport + Send + Sync + 'static,
-        K: crate::review::runtime::Task,
-    >(
+    pub(crate) async fn review<K: crate::review::runtime::Task>(
         self: &Arc<Self>,
-        request: crate::review::runtime::Request<T, K>,
+        request: crate::review::runtime::Request<K>,
         cancelled: Arc<AtomicBool>,
         deadline: Instant,
     ) -> Result<crate::review::ReviewResult<K::Output>, crate::review::Failure> {

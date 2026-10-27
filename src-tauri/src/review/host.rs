@@ -2,7 +2,7 @@ use super::{key, runtime, Failure, ReviewRun, Selection};
 use crate::{
     monitoring::{self, OperationState, QueueJob},
     now_seconds,
-    provider::{PullRequestReader, RemoteRepository, RepositoryReader},
+    provider::RemoteRepository,
     Host,
 };
 use serde::Serialize;
@@ -709,7 +709,7 @@ async fn execute_attempt(
                 remote_gate(&preparation_app, &preparation_run)?;
                 let host = preparation_app.state::<Host>();
                 let (identity, client) =
-                    crate::github_session(&host, &preparation_run.job.account_id)
+                    crate::provider_session(&host, &preparation_run.job.account_id)
                         .map_err(Failure::from)?;
                 preparation_attempt.prepare(client, |client| {
                     let repo = RemoteRepository {
@@ -740,7 +740,8 @@ async fn execute_attempt(
                             &preparation_run.job.head_sha,
                         )
                         .map_err(Failure::from)?;
-                    let client = Arc::new(client);
+                    let client: Arc<dyn crate::provider::ProviderReads + Send + Sync> =
+                        Arc::from(client);
                     let packet = {
                         let write_capability = client
                             .connect(&repo.name, Some(&preparation_run.job.account_id))
@@ -950,7 +951,7 @@ async fn execute_attempt(
             let local_trace = diagnostics.clone();
             result = tauri::async_runtime::spawn_blocking(move || {
                 Failure::caught(Some(&*local_trace), || {
-                    finalize_local_exit(&client_after, &repo, number, &final_packet, &mut result)?;
+                    finalize_local_exit(&*client_after, &repo, number, &final_packet, &mut result)?;
                     Ok(result)
                 })
             })
@@ -1069,11 +1070,11 @@ impl AttemptGuard {
         }
     }
 
-    pub(super) fn prepare<T: crate::github::threads::QueryTransport, R>(
+    pub(super) fn prepare<G: crate::provider::Guardable + ?Sized, R>(
         &self,
-        client: crate::github::provider::GithubClient<T>,
+        client: Box<G>,
         prepare: impl FnOnce(
-            crate::github::provider::GithubClient<crate::github::review::GuardedTransport<T>>,
+            Box<dyn crate::provider::ProviderReads + Send + Sync>,
         ) -> Result<R, Failure>,
     ) -> Result<R, Failure> {
         let gate = self.gate();
@@ -1107,8 +1108,8 @@ impl runtime::FailureCommitment for AttemptGuard {
     }
 }
 
-pub(crate) fn finalize_local_exit<T: crate::github::threads::QueryTransport>(
-    client: &crate::github::provider::GithubClient<T>,
+pub(crate) fn finalize_local_exit(
+    client: &dyn crate::provider::PullRequestStateReader,
     repo: &RemoteRepository,
     number: u64,
     packet: &crate::packet::PacketRecord,

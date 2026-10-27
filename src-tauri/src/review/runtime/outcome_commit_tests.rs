@@ -79,8 +79,8 @@ async fn ordering_case(inactivity: bool, earlier_feedback: bool) {
         returned_ok: AtomicBool::new(false),
     });
     let client = attempt
-        .prepare(GithubClient::new(Wire(held.clone())), |client| {
-            Ok(Arc::new(client))
+        .prepare(Box::new(GithubClient::new(Wire(held.clone()))), |client| {
+            Ok(Arc::<dyn crate::provider::ProviderReads + Send + Sync>::from(client))
         })
         .unwrap();
     let reads = ReadTools::new(
@@ -326,8 +326,8 @@ async fn selection_case(interrupt: Option<Interrupt>, client_start: bool) {
         returned_ok: AtomicBool::new(false),
     });
     let client = attempt
-        .prepare(GithubClient::new(Wire(held.clone())), |client| {
-            Ok(Arc::new(client))
+        .prepare(Box::new(GithubClient::new(Wire(held.clone()))), |client| {
+            Ok(Arc::<dyn crate::provider::ProviderReads + Send + Sync>::from(client))
         })
         .unwrap();
     let reads = ReadTools::new(

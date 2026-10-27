@@ -1,6 +1,7 @@
 use super::*;
 use crate::exits::ReplyComment;
 use crate::github::actions::{HumanThread, ProviderReview};
+use crate::storage::ProviderId;
 use serde_json::json;
 
 const ALL_TOOLS: [&str; 6] = [
@@ -24,6 +25,7 @@ fn base() -> GateInput {
             include_self: false,
         },
         review_drafts: false,
+        capabilities: ProviderCapabilities::of(&ProviderId::Github),
         facts: Facts::default(),
     }
 }
@@ -294,6 +296,29 @@ fn roles_and_assignment_tools_intersect_with_the_gates() {
     narrow.tools = vec!["ready_for_human".into(), "read_changes".into()];
     let ids: Vec<_> = offered(&narrow).iter().map(|(e, _)| e.id()).collect();
     assert_eq!(ids, ["ready_for_human", "lgtm"]);
+}
+
+#[test]
+fn a_provider_without_approve_and_merge_denies_it_and_signs_off_by_approval() {
+    let mut input = base();
+    input.capabilities = ProviderCapabilities::of(&ProviderId::AzureDevops);
+    input.capabilities.approve = crate::provider::Capability::Available;
+    assert_eq!(
+        offer(&input, Exit::ApproveAndMerge),
+        Some(Offer::Denied(UNSUPPORTED.into()))
+    );
+    assert_eq!(
+        offer(&input, Exit::ApprovePullRequest),
+        Some(Offer::Offered)
+    );
+    assert_eq!(lgtm_action(&input), LgtmAction::Approve);
+    input.capabilities.approve =
+        crate::provider::Capability::Unavailable(crate::provider::Unavailable::NotImplemented);
+    assert_eq!(
+        offer(&input, Exit::ApprovePullRequest),
+        Some(Offer::Denied(UNSUPPORTED.into()))
+    );
+    assert_eq!(lgtm_action(&input), LgtmAction::Ready);
 }
 
 #[test]

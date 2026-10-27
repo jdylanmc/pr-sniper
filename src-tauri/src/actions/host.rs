@@ -1,8 +1,8 @@
 use super::*;
-use crate::provider::RepositoryReader;
 use crate::{
-    github::{actions::Action, provider::RemoteRepository},
-    now_seconds, Host,
+    now_seconds,
+    provider::{Action, RemoteRepository},
+    Host,
 };
 use std::sync::{atomic::Ordering, Mutex};
 use tauri::Manager;
@@ -45,7 +45,7 @@ impl MutationOwner {
 }
 
 fn observation(app: &tauri::AppHandle, job: &QueueJob) -> Result<Observation, Failure> {
-    let (_, client) = crate::github_session(&app.state::<Host>(), &job.account_id)?;
+    let (_, client) = crate::provider_session(&app.state::<Host>(), &job.account_id)?;
     let connection = client.connect(&job.repository_name, Some(&job.account_id))?;
     if connection.repository.id != job.repository_id {
         return Err(Failure::permanent("Repository binding changed."));
@@ -237,7 +237,7 @@ impl ActionEnvironment for Native {
                 uncertain: false,
             })?;
         let (_, client) =
-            crate::github_session(&self.app.state::<Host>(), &effect.observation.account_id)
+            crate::provider_session(&self.app.state::<Host>(), &effect.observation.account_id)
                 .map_err(|e| crate::publication::WriteFailure {
                     failure: e.into(),
                     uncertain: false,
@@ -342,9 +342,9 @@ fn settle_native(
         packet::settle(&store, item_id, &observation, now_seconds()?)?
     };
     for settle in settles {
-        let (_, client) = crate::github_session(&host, &settle.job.account_id)
+        let (_, client) = crate::provider_session(&host, &settle.job.account_id)
             .map_err(|_| "GitHub session unavailable.".to_string())?;
-        packet::consume_settled(&host.store, &client, &settle)?;
+        packet::consume_settled(&host.store, &*client, &settle)?;
     }
     Ok(())
 }

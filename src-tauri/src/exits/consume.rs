@@ -3,13 +3,10 @@
 
 use super::ExitOutcome;
 use crate::{
-    github::{
-        provider::{GithubClient, RemoteRepository},
-        state::{OwnWrites, PrSnapshot},
-        threads::QueryTransport,
-    },
+    github::state::{OwnWrites, PrSnapshot},
     monitoring::QueueJob,
     pr_state::{self, Consumed},
+    provider::{PullRequestStateReader, RemoteRepository},
     retention::Binding,
     review::{ReviewResult, ReviewRun, RunMode},
     storage::Store,
@@ -22,8 +19,8 @@ pub fn state_seq(job: &QueueJob) -> u64 {
 }
 
 /// Hash of the PR state as it is now.
-pub fn fresh_hash<T: QueryTransport>(
-    client: &GithubClient<T>,
+pub fn fresh_hash(
+    client: &dyn PullRequestStateReader,
     repo: &RemoteRepository,
     number: u64,
 ) -> Result<String, String> {
@@ -41,9 +38,9 @@ pub fn consume(store: &Store, job: &QueueJob, baseline: &str) -> Result<Consumed
 
 /// After a confirmed write: re-read the snapshot and consume (see [`settle_fresh`]).
 /// The read runs without the store lock; only the consume takes it.
-pub fn consume_after<T: QueryTransport>(
+pub fn consume_after(
     store: &Mutex<Store>,
-    client: &GithubClient<T>,
+    client: &dyn PullRequestStateReader,
     repo: &RemoteRepository,
     job: &QueueJob,
     review_operation_id: &str,

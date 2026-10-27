@@ -14,7 +14,7 @@
 //! Optional: `PR_SNIPER_LIVE_MODEL` (default `gpt-5-mini`), `PR_SNIPER_LIVE_STORE`
 //! (store root; default under the target directory).
 
-use crate::provider::{AccountReader, PullRequestReader, RepositoryReader};
+use crate::provider::prelude::*;
 use crate::{
     exit_writes::{self, Dependency, ExitWrite},
     exits::{consume, ExitOutcome},
@@ -360,7 +360,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
         )
     };
     let mut prepared = packet_run::prepare(
-        &live.client,
+        &(live.client.clone() as Arc<dyn ProviderReads + Send + Sync>),
         &live.repo,
         &run,
         &context,
@@ -451,7 +451,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
     // Host check for a local-only exit: the state it read must still be the state.
     let result = result.and_then(|mut result| {
         if let Some(ExitOutcome::ReadyForHuman { .. }) = &result.output.exit {
-            let fresh = consume::fresh_hash(&live.client, &live.repo, run.job.number)
+            let fresh = consume::fresh_hash(&*live.client, &live.repo, run.job.number)
                 .map_err(Failure::permanent)?;
             if Some(fresh) != record.state_hash {
                 return Err(Failure::tossed("PR state moved during the run."));
@@ -586,7 +586,7 @@ impl publication::Environment for Publish<'_> {
         }
         consume::consume_after(
             &self.live.store,
-            &self.live.client,
+            &*self.live.client,
             &self.live.repo,
             &run.review.job,
             &run.review.operation.id,
@@ -702,7 +702,7 @@ impl exit_writes::Environment for Writes<'_> {
     fn confirmed(&mut self, write: &ExitWrite) -> Result<(), Failure> {
         consume::consume_after(
             &self.live.store,
-            &self.live.client,
+            &*self.live.client,
             &self.live.repo,
             &write.job,
             &write.review_operation_id,

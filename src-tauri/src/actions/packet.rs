@@ -404,6 +404,15 @@ pub fn ready(
     } {
         return Err("This provider action is not opted in.".into());
     }
+    let capabilities = crate::provider::ProviderCapabilities::of(&run.basis.repository.provider);
+    if !match action {
+        Action::Approve => capabilities.approve,
+        Action::Merge => capabilities.approve_and_merge,
+    }
+    .is_available()
+    {
+        return Err(crate::exits::gates::UNSUPPORTED.into());
+    }
     if action == Action::Approve {
         let existing = observation.reviews.iter().rev().find(|r| {
             r.actor_id == observation.account_id
@@ -448,6 +457,7 @@ pub fn ready(
             include_self: permissions.include_self,
         },
         review_drafts: false,
+        capabilities: crate::provider::ProviderCapabilities::of(&run.basis.repository.provider),
         facts,
     };
     // A sign-off approves whatever the branch's mergeability: only its merge waits
@@ -677,7 +687,7 @@ pub fn open(ledger: &Ledger, item_id: &str) -> bool {
 /// Consume `job`'s state after its writes: re-read, baseline, mark settled.
 pub fn consume_settled(
     app_store: &std::sync::Mutex<Store>,
-    client: &crate::github::provider::GithubClient<crate::github::http::HttpTransport>,
+    client: &dyn crate::provider::PullRequestStateReader,
     settle: &Settle,
 ) -> Result<(), String> {
     let repo = RemoteRepository {

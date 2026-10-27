@@ -5,7 +5,11 @@ use super::{
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-pub use crate::provider::{ReviewContext, ReviewFile, TreeEntry};
+use crate::provider::{
+    CheckLogReader, Guardable, ProviderReads, ProviderSession, PublicationDiagnostics, ReadGuard,
+    SessionControl,
+};
+pub use crate::provider::{JobLog, ReviewContext, ReviewFile, TreeEntry};
 
 pub struct GuardedTransport<T> {
     transport: T,
@@ -44,11 +48,30 @@ impl<T: super::threads::QueryTransport> super::threads::QueryTransport for Guard
     }
 }
 
+impl<T: super::threads::QueryTransport + Send + Sync + 'static> Guardable for GithubClient<T> {
+    fn guarded(self: Box<Self>, guard: ReadGuard) -> Box<dyn ProviderReads + Send + Sync> {
+        Box::new(GithubClient::guarded(*self, guard))
+    }
+}
+
+impl<T> SessionControl for GithubClient<T>
+where
+    T: super::publication::MutationTransport
+        + super::threads::QueryTransport
+        + Send
+        + Sync
+        + 'static,
+{
+    fn with_publication_diagnostics(
+        self: Box<Self>,
+        sink: PublicationDiagnostics,
+    ) -> Box<dyn ProviderSession + Send + Sync> {
+        Box::new(GithubClient::with_publication_diagnostics(*self, sink))
+    }
+}
+
 impl<T: Transport> GithubClient<T> {
-    pub fn guarded(
-        self,
-        guard: Arc<dyn Fn() -> Result<(), ConnectionError> + Send + Sync>,
-    ) -> GithubClient<GuardedTransport<T>> {
+    pub fn guarded(self, guard: ReadGuard) -> GithubClient<GuardedTransport<T>> {
         let mut client = GithubClient::new(GuardedTransport {
             transport: self.transport,
             guard,
@@ -86,11 +109,13 @@ impl<T: Transport> GithubClient<T> {
         }
         Ok(result)
     }
+}
 
+impl<T: Transport> CheckLogReader for GithubClient<T> {
     /// One GitHub Actions job log, at most the last `tail` bytes. `None`: there is no log to
     /// read (absent, expired or not permitted). The API answers with a redirect to a signed
     /// blob URL, fetched without credentials.
-    pub fn job_log(
+    fn job_log(
         &self,
         name: &str,
         job_id: u64,
@@ -137,11 +162,4 @@ impl<T: Transport> GithubClient<T> {
             },
         }
     }
-}
-
-/// Raw job log bytes; `truncated_head` when only the tail was kept.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobLog {
-    pub bytes: Vec<u8>,
-    pub truncated_head: bool,
 }

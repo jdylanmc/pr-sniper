@@ -7,14 +7,10 @@ use super::{
 };
 use crate::{
     exits::gates::{self, Facts, GateInput, Grants},
-    github::{
-        actions::Observation,
-        provider::{GithubClient, Transport},
-        state::PrSnapshot,
-        threads::QueryTransport,
-    },
     packet::{self, reads, Directive, Packet, PacketInput, Role},
-    provider::{RemoteRepository, ReviewContext},
+    provider::{
+        prelude::*, Observation, PrSnapshot, ProviderCapabilities, RemoteRepository, ReviewContext,
+    },
 };
 use std::sync::Arc;
 
@@ -49,6 +45,7 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
             include_self: actions.include_self,
         },
         review_drafts: config.repository.review_drafts,
+        capabilities: ProviderCapabilities::of(&config.repository.provider),
         facts,
     })
 }
@@ -74,17 +71,14 @@ pub(crate) struct Caller<'a> {
 /// Build the packet and the run's tool set from state read right now.
 /// A head that moved since the job was queued is a superseded state, not a failure;
 /// any other change since enqueue is simply read fresh from `snapshot`.
-pub(crate) fn prepare<T>(
-    client: &Arc<GithubClient<T>>,
+pub(crate) fn prepare(
+    client: &Arc<dyn ProviderReads + Send + Sync>,
     repo: &RemoteRepository,
     run: &ReviewRun,
     context: &ReviewContext,
     snapshot: &PrSnapshot,
     caller: Caller<'_>,
-) -> Result<Prepared, Failure>
-where
-    T: Transport + QueryTransport + Send + Sync + 'static,
-{
+) -> Result<Prepared, Failure> {
     let Caller {
         acting_login,
         write_capability,
@@ -330,18 +324,15 @@ fn own_sign_off_facts(
 }
 
 /// Re-read the PR at exit time: a moved state tosses the run, a gate may deny the exit.
-fn exit_gate<T>(
-    client: Arc<GithubClient<T>>,
+fn exit_gate(
+    client: Arc<dyn ProviderReads + Send + Sync>,
     repo: RemoteRepository,
     run: &ReviewRun,
     context: &ReviewContext,
     base: GateInput,
     write_capability: bool,
     ownership: Vec<crate::github::threads::Ownership>,
-) -> Result<ExitGate, Failure>
-where
-    T: Transport + QueryTransport + Send + Sync + 'static,
-{
+) -> Result<ExitGate, Failure> {
     let number = run.job.number;
     let pull_request_id = run.job.pull_request_id.clone();
     let (head, target) = (context.pull.head_sha.clone(), context.pull.base_sha.clone());

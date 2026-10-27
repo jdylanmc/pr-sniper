@@ -60,8 +60,7 @@ pub struct GithubClient<T: Transport> {
     pub(super) publication_diagnostics: Option<PublicationDiagnostics>,
 }
 
-pub type PublicationDiagnostics =
-    std::sync::Arc<dyn Fn(crate::storage::diagnostics::Event) + Send + Sync>;
+pub use crate::provider::PublicationDiagnostics;
 
 impl<T: Transport> GithubClient<T> {
     pub fn new(transport: T) -> Self {

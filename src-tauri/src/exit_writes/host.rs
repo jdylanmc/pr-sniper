@@ -1,11 +1,5 @@
 use super::*;
-use crate::{
-    github::{http::HttpTransport, provider::GithubClient},
-    monitoring::OperationFailure,
-    now_seconds,
-    provider::{PullRequestReader, RemoteRepository},
-    Host,
-};
+use crate::{monitoring::OperationFailure, now_seconds, provider::RemoteRepository, Host, Session};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
@@ -127,11 +121,11 @@ impl Native {
         Ok(())
     }
 
-    fn client(&self, write: &ExitWrite) -> Result<GithubClient<HttpTransport>, Failure> {
+    fn client(&self, write: &ExitWrite) -> Result<Session, Failure> {
         self.connection(write)?;
         let host = self.app.state::<Host>();
         let (identity, client) =
-            crate::github_session(&host, &write.job.account_id).map_err(Failure::from)?;
+            crate::provider_session(&host, &write.job.account_id).map_err(Failure::from)?;
         if identity.id != write.job.account_id {
             return Err(Failure::permanent("The acting GitHub account changed."));
         }
@@ -347,7 +341,7 @@ impl Environment for Native {
         let client = self.client(write)?;
         crate::exits::consume::consume_after(
             &self.app.state::<Host>().store,
-            &client,
+            &*client,
             &Self::repository(write),
             &write.job,
             &write.review_operation_id,

@@ -1,7 +1,7 @@
 use crate::admission::AdmissionConfig;
 use crate::policy::{Policy, Schedule, WatchedIdentity};
 use crate::provider::{Connection, ConnectionError, Lifecycle, PullRequest};
-use crate::storage::{ProviderId, SavedResources, Settings, Store};
+use crate::storage::{SavedResources, Settings, Store};
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -980,9 +980,7 @@ impl Monitor {
         let binding = repository
             .account_binding()
             .ok_or(ConnectionError::Configuration)?;
-        if binding.account.provider != ProviderId::Github
-            || binding.repository.provider != ProviderId::Github
-        {
+        if !repository.capabilities().review().is_available() {
             return Err(ConnectionError::Configuration);
         }
         let policy = repository.overrides.effective(&settings.defaults);
@@ -3366,10 +3364,8 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
         )
         .ok();
         let binding = repository.account_binding();
-        let provider_supported = binding.as_ref().is_some_and(|binding| {
-            binding.account.provider == ProviderId::Github
-                && binding.repository.provider == ProviderId::Github
-        });
+        let provider_supported =
+            binding.is_some() && repository.capabilities().review().is_available();
         let provider_account_id = binding
             .as_ref()
             .map(|binding| binding.account.account_id.clone());

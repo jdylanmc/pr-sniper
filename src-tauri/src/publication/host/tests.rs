@@ -1,11 +1,12 @@
 use super::*;
 use crate::github::{
     metadata::{Lifecycle, PullRequest},
-    provider::{Response, Transport},
+    provider::{GithubClient, Response, Transport},
     publication::{MutationTransport, Request},
     review::ReviewContext,
     ConnectionError, Identity,
 };
+use crate::provider::{PublicationReader, ReviewPublisher};
 use crate::review::{ReviewRun, Selection};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
