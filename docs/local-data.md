@@ -24,6 +24,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 | `state/pr-state.json`                                                               | Per-PR heartbeat baseline, pending state, `state_seq`, error count, local summary              |
 | `state/queue-selection.json`                                                        | Selected queue item                                                                            |
 | `state/automation.json`                                                             | Pause + capacity gate                                                                          |
+| `state/azure-devops.json`                                                           | Azure DevOps organization and bound identity (ID, names); no secret                            |
 | `state/notifications.json`                                                          | Request identities, observed transitions, send intent, outcomes                                |
 | `state/actions.json`                                                                | Approve/Merge: immutable basis, FIFO identity, attempts, result                                |
 | `state/reviews.json`, `state/reviews/`                                              | Review runs: manifest of content-addressed `run-*.json`; repeated snapshots in `part-*.json`   |

@@ -145,6 +145,16 @@ export const test = base.extend({
           }
           if (["github_auth_state", "copilot_auth_state"].includes(command))
             return Promise.resolve({ accounts: [], flow: { state: "idle" } });
+          // Azure DevOps setup never reaches a real Azure CLI or network.
+          if (command.startsWith("azure_devops_"))
+            return Promise.resolve({
+              cli: { state: "missing" },
+              minimum: "2.54.0",
+              installer: "page",
+              organization: { state: "unset" },
+              account: { state: "unavailable" },
+              checking: false,
+            });
           const request = window
             .__settingsInvoke(command, args)
             .then((value) => {

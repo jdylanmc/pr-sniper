@@ -1,6 +1,9 @@
 //! Azure DevOps authentication delegated to the Azure CLI (ADR 0026).
 
 pub mod az_cli;
+pub mod connection;
+pub mod host;
+pub mod setup;
 pub mod tenant;
 pub mod token_source;
 

@@ -739,7 +739,47 @@ async function check(engine, name) {
     await settings();
     await page.locator('[data-page="accounts"]').click();
     await settle();
-    assert.equal(await page.locator(".settings-list .settings-row").count(), 2);
+    assert.equal(await page.locator(".settings-list .settings-row").count(), 3);
+    await page.locator('[data-page="azure-devops"]').click();
+    await settle();
+    assert.equal(
+      await page.locator("#page-title").textContent(),
+      "Azure DevOps",
+    );
+    assert.equal(await page.locator(".azure-row").count(), 3);
+    const azureValue = (row) =>
+      page.locator(`[data-azure-row="${row}"] .row-value`).textContent();
+    assert.equal(await azureValue("cli"), "Ready");
+    assert.equal(await azureValue("account"), "Signed out");
+    await page.locator('[aria-label="Sign in to Azure DevOps"]').click();
+    assert.equal(await azureValue("account"), "Signing in");
+    await page.locator('[aria-label="Cancel sign-in"]').click();
+    assert.equal(await azureValue("account"), "Signed out");
+    await page.locator('[aria-label="Sign in to Azure DevOps"]').click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector('[data-azure-row="account"] .row-value')
+        ?.textContent.includes("Connected"),
+    );
+    await page.locator(".scenario-details summary").click();
+    await page
+      .locator('[data-action="azure-scenario"][data-id="cli-missing"]')
+      .click();
+    assert.equal(await azureValue("cli"), "Missing");
+    await page.locator('[aria-label="Install Azure CLI"]').click();
+    assert.equal(await azureValue("cli"), "Installing");
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-azure-row="cli"] .row-value')
+          ?.textContent === "Ready",
+    );
+    await page.locator(".scenario-details summary").click();
+    await page
+      .locator('[data-action="azure-scenario"][data-id="wrong-account"]')
+      .click();
+    assert.equal(await azureValue("account"), "Wrong account");
+    await snapshot("azure-devops-wrong-account");
+    await back();
     await page.locator('[data-page="github"]').click();
     await settle();
     assert.equal(await page.locator(".account-row").count(), 2);

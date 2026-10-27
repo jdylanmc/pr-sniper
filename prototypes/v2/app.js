@@ -123,6 +123,7 @@ const connectionProviders = [
     group: "Repositories",
     mark: "Az",
     available: false,
+    page: "azure-devops",
     description: "Organizations, projects, and repositories",
   },
   {
@@ -1325,12 +1326,119 @@ function voiceEditor(id) {
   return `<div class="page-scroll" data-scroll="voice-editor"><form data-form="voice" data-id="${esc(id ?? "")}" class="editor-form">${field("Voice name", input("name", item.name))}${field("Style", `<textarea name="body" rows="8" required>${esc(item.body)}</textarea>`)}<label class="voice-guardrails"><input type="checkbox" name="guardrails" ${checked(item.guardrails)} /><span>Fixed guardrails: tone only; critique code, never people</span></label>${editorFooter("voice", id)}</form></div>`;
 }
 
+const AZURE_TENANT = "00000000-0000-0000-0000-00000000000a";
+const azureIdentities = {
+  avery: { name: "Avery Example", login: "avery@contoso.example" },
+  blake: { name: "Blake Example", login: "blake@contoso.example" },
+};
+// Demo-only setup states; production probes the local Azure CLI.
+const azureScenarios = {
+  "cli-missing": { cli: "missing", version: "", account: "unavailable" },
+  "cli-too-old": { cli: "too_old", version: "2.53.1", account: "unavailable" },
+  "org-not-found": { org: "not_found", account: "unavailable" },
+  "tenant-unknown": { org: "tenant_unknown", account: "unavailable" },
+  offline: { org: "offline", account: "unavailable" },
+  "signed-out": { account: "signed_out" },
+  "sign-in-required": { account: "interaction_required" },
+  "access-denied": { account: "tenant_access_blocked" },
+  connected: { account: "connected", identity: "avery" },
+  "wrong-account": { account: "wrong_identity", identity: "blake" },
+};
+const azureDefaults = {
+  cli: "ready",
+  version: "2.90.0",
+  name: "contoso",
+  org: "tenant_known",
+  account: "signed_out",
+  identity: null,
+  bound: "avery",
+};
+let azure = { ...azureDefaults };
+let azureTimer;
+const azureValues = {
+  missing: "Missing",
+  too_old: "Too old",
+  installing: "Installing",
+  ready: "Ready",
+  not_found: "Not found",
+  tenant_unknown: "No tenant",
+  offline: "Offline",
+  tenant_known: "",
+  unavailable: "",
+  signed_out: "Signed out",
+  signing_in: "Signing in",
+  interaction_required: "Sign-in required",
+  tenant_access_blocked: "Access denied",
+  connected: "Connected",
+  wrong_identity: "Wrong account",
+};
+
+function azureAction(action, label, name = label) {
+  return `<button type="button" class="secondary-action azure-action" data-action="${action}" aria-label="${esc(name)}">${esc(label)}</button>`;
+}
+
+function azureRow(key, symbol, title, copy, value, actions) {
+  return `<div class="azure-row" data-azure-row="${key}"><span class="row-symbol">${icon(symbol)}</span><span class="row-copy"><strong>${esc(title)}</strong>${copy}</span><span class="row-value">${esc(value)}</span>${actions}</div>`;
+}
+
+function azureDevopsPage() {
+  const identity = azure.identity ? azureIdentities[azure.identity] : null;
+  const expected =
+    azure.account === "wrong_identity" ? azureIdentities[azure.bound] : null;
+  const cliActions =
+    azure.cli === "missing"
+      ? azureAction("azure-install", "Install", "Install Azure CLI")
+      : azure.cli === "too_old"
+        ? azureAction("azure-install", "Update", "Update Azure CLI")
+        : azure.cli === "installing"
+          ? azureAction("azure-cancel", "Cancel", "Cancel install")
+          : `<button type="button" class="icon-button" data-action="azure-recheck" aria-label="Re-check" title="Re-check">${icon("refresh")}</button>`;
+  const accountActions = [
+    ["signed_out", "interaction_required", "wrong_identity"].includes(
+      azure.account,
+    )
+      ? azureAction("azure-sign-in", "Sign in", "Sign in to Azure DevOps")
+      : "",
+    azure.account === "tenant_access_blocked"
+      ? azureAction("azure-recheck", "Retry", "Retry account")
+      : "",
+    azure.account === "signing_in"
+      ? azureAction("azure-cancel", "Cancel", "Cancel sign-in")
+      : "",
+    identity
+      ? `<button type="button" class="account-disconnect" data-action="azure-forget" aria-label="Forget ${esc(identity.login)}" title="Forget ${esc(identity.login)}">${icon("plug-off")}</button>`
+      : "",
+  ].join("");
+  return `<div class="page-scroll" data-scroll="azure-devops"><div class="settings-list azure-setup">
+    ${azureRow("cli", "terminal", "Azure CLI", `<small>${esc(azure.version)}</small><small>\u2265 2.54.0</small>`, azureValues[azure.cli], cliActions)}
+    ${azureRow("organization", "folder", "Organization", `<form data-form="azure-org" class="azure-org"><input name="organization" aria-label="Organization" value="${esc(azure.name)}" maxlength="50" autocomplete="off" spellcheck="false" required pattern="[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?" /><button type="submit" class="icon-button" aria-label="Save organization" title="Save organization">${icon("check")}</button></form><small>${azure.org === "tenant_known" ? AZURE_TENANT : ""}</small>`, azureValues[azure.org], azure.org === "offline" ? azureAction("azure-recheck", "Retry", "Retry organization") : "")}
+    ${azureRow("account", "people", identity?.name ?? "Account", identity ? `<small>${esc(identity.login)}</small>${expected ? `<small>\u2260 ${esc(expected.login)}</small>` : ""}` : "", azureValues[azure.account], accountActions)}
+  </div>
+  <details class="scenario-details"><summary>Prototype scenarios</summary>${Object.keys(
+    azureScenarios,
+  )
+    .map(
+      (scenario) =>
+        `<button class="text-action" type="button" data-action="azure-scenario" data-id="${scenario}">${esc(scenario)}</button>`,
+    )
+    .join("")}</details></div>`;
+}
+
+function azureFinish(change) {
+  clearTimeout(azureTimer);
+  azureTimer = setTimeout(() => {
+    Object.assign(azure, change);
+    if (route().page === "azure-devops") render();
+  }, 900);
+}
+
 function accountsPage() {
   const count = (kind) =>
     state.accounts.filter((account) => account.kind === kind).length;
   return `<div class="page-scroll" data-scroll="accounts"><div class="settings-list">
     ${settingsRow("GitHub Copilot", "AI access", `${count("copilot")} connected`, "spark", "copilot")}
     ${settingsRow("GitHub", "Repository access", `${count("github")} connected`, "pull-request", "github")}
+    ${settingsRow("Azure DevOps", "Repository access", azure.name, "pull-request", "azure-devops")}
   </div></div>`;
 }
 
@@ -1366,12 +1474,12 @@ function addAccountPage() {
             .filter((provider) => provider.group === group)
             .map(
               (provider) =>
-                `<button class="provider-option" type="button" data-provider="${provider.id}" ${provider.available ? `data-page="account-signin" data-id="${provider.id}"` : 'disabled aria-disabled="true"'} aria-label="${provider.name}${provider.available ? ", add demo account" : ", coming soon"}"><span class="provider-mark" data-brand="${provider.id}">${provider.mark}</span><span class="row-copy"><strong>${provider.name}</strong><small>${provider.description}</small></span>${provider.available ? icon("chevron") : '<span class="coming-soon">Coming soon</span>'}</button>`,
+                `<button class="provider-option" type="button" data-provider="${provider.id}" ${provider.available ? `data-page="account-signin" data-id="${provider.id}"` : provider.page ? `data-page="${provider.page}"` : 'disabled aria-disabled="true"'} aria-label="${provider.name}${provider.available ? ", add demo account" : provider.page ? "" : ", coming soon"}"><span class="provider-mark" data-brand="${provider.id}">${provider.mark}</span><span class="row-copy"><strong>${provider.name}</strong><small>${provider.description}</small></span>${provider.available || provider.page ? icon("chevron") : '<span class="coming-soon">Coming soon</span>'}</button>`,
             )
             .join("")}</div></section>`,
       )
       .join("")}
-    <p class="section-note">${group === "AI providers" ? "Copilot is the first available AI integration, not a preselected provider. Direct integrations are distinct from models offered through Copilot." : group === "Repositories" ? "GitHub is available in this mock. Azure DevOps is coming soon." : "Only GitHub and Copilot can be added in this mock. Direct AI integrations are distinct from models offered through Copilot."}</p>
+    <p class="section-note">${group === "AI providers" ? "Copilot is the first available AI integration, not a preselected provider. Direct integrations are distinct from models offered through Copilot." : group === "Repositories" ? "GitHub is available in this mock. Azure DevOps opens its setup." : "Only GitHub and Copilot can be added in this mock. Direct AI integrations are distinct from models offered through Copilot."}</p>
     <button class="quiet-action wide" type="button" data-action="cancel-account">Cancel</button></div>`;
 }
 
@@ -1434,7 +1542,8 @@ function notificationTypeRows() {
 }
 
 let controlSkillUnavailable =
-  new URLSearchParams(location.search).get("control-installation") === "unavailable";
+  new URLSearchParams(location.search).get("control-installation") ===
+  "unavailable";
 function preferencesPage() {
   const labels = {
     automaticStart: [
@@ -1553,6 +1662,7 @@ function render(direction = 0, focus = false) {
     repo: "Repository",
     copilot: "GitHub Copilot",
     github: "GitHub",
+    "azure-devops": "Azure DevOps",
     changelog: "Changelog",
     "repo-browser": "Browse",
     "repo-url": "Add by URL",
@@ -1648,6 +1758,9 @@ function render(direction = 0, focus = false) {
     case "copilot":
     case "github":
       html = accountKindPage(current.page);
+      break;
+    case "azure-devops":
+      html = azureDevopsPage();
       break;
     case "changelog":
       html = changelogPage();
@@ -1870,6 +1983,19 @@ stage.addEventListener("submit", (event) => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
   try {
+    if (form.dataset.form === "azure-org") {
+      const name = new FormData(form).get("organization").trim();
+      if (!form.reportValidity()) return;
+      azure = {
+        ...azure,
+        name,
+        org: "tenant_known",
+        account: azure.cli === "ready" ? "signed_out" : "unavailable",
+        identity: null,
+      };
+      render();
+      return;
+    }
     if (form.dataset.form === "repo-url") {
       const data = new FormData(form);
       addRepository(data.get("repository"), data.get("accountId"));
@@ -2102,7 +2228,8 @@ popover.addEventListener("click", (event) => {
   if (action === "install-control-skill" || action === "remove-control-skill") {
     if (controlSkillUnavailable) {
       controlSkillUnavailable = false;
-      document.querySelector("[data-skill-status]").textContent = "Not installed";
+      document.querySelector("[data-skill-status]").textContent =
+        "Not installed";
       button.textContent = "Install";
       return;
     }
@@ -2143,6 +2270,32 @@ popover.addEventListener("click", (event) => {
   if (action === "cancel-account") {
     if (!storageBlocked) notice.hidden = true;
     returnToAccounts();
+    return;
+  }
+  if (action.startsWith("azure-")) {
+    if (action === "azure-scenario")
+      azure = { ...azureDefaults, ...azureScenarios[id] };
+    if (action === "azure-install") {
+      azure.cli = "installing";
+      azureFinish({ cli: "ready", version: "2.90.0", account: "signed_out" });
+    }
+    if (action === "azure-sign-in") {
+      if (!confirm(`az login --tenant ${AZURE_TENANT}`)) return;
+      azure.account = "signing_in";
+      azureFinish({ account: "connected", identity: azure.bound });
+    }
+    if (action === "azure-cancel") {
+      clearTimeout(azureTimer);
+      if (azure.cli === "installing")
+        azure.cli = azure.version ? "too_old" : "missing";
+      if (azure.account === "signing_in") azure.account = "signed_out";
+    }
+    if (action === "azure-forget") {
+      azure.bound = azure.identity;
+      azure.account = "connected";
+    }
+    remember();
+    render();
     return;
   }
   if (action === "account-signin-failed") {

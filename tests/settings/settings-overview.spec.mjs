@@ -57,7 +57,7 @@ for (const viewport of [
       [
         "Git Repository",
         "GitHub",
-        ["Azure DevOps", "Bitbucket"],
+        ["Bitbucket"],
         ".github-auth-card",
         ".copilot-auth-card",
       ],
@@ -72,6 +72,14 @@ for (const viewport of [
         await expect(planned).toContainText("Coming soon");
         await expect(planned).toHaveAttribute("aria-disabled", "true");
         await expect(planned.locator("button,a,input")).toHaveCount(0);
+      }
+      if (category === "Git Repository") {
+        await expect(row(page, "Azure DevOps")).toBeVisible();
+        await expect(
+          page.locator(".settings-provider-planned").filter({
+            hasText: "Azure DevOps",
+          }),
+        ).toHaveCount(0);
       }
       await expect(page.locator(".settings-savebar")).toBeHidden();
       await expect(page.locator(card)).toBeHidden();

@@ -22,7 +22,17 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - **Reconnect** and sign-in again use the same device-code flow; the code is shown before the browser opens. A sign-in whose provider account ID matches a saved account renews that account's credential in place and clears **Reconnect required**; its parked credentials failures resume.
 - Connecting does not assign repos, models or automation.
 - GitHub connect uses the PR Sniper GitHub OAuth App, scope `repo` ([ADR-0003](adr/0003-github-browser-oauth.md)). Verification and PR reads: [polling.md](polling.md).
-- Disabled future providers: Claude, Codex, Grok. **Coming soon**: Azure DevOps, Bitbucket.
+- Disabled future providers: Claude, Codex, Grok. **Coming soon**: Bitbucket.
+- **Git Repository** → **Azure DevOps**: three rows, values and actions only ([ADR 0026](adr/0026-azure-devops-auth-via-azure-cli.md)).
+
+| Row          | Values                                                                                                                                                 | Actions                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| Azure CLI    | Version, `≥ 2.54.0`; Missing, Too old, Installing, Ready                                                                                               | **Install** / **Update** (Homebrew, winget, else install page), Cancel, Re-check |
+| Organization | Name field → tenant ID; Not found, No tenant, Offline                                                                                                  | Save, Retry                                                                      |
+| Account      | `connectionData` name and sign-in name; Signed out, Sign-in required, Access denied, Offline, Failed, Signing in, Connected, Wrong account (`≠` bound) | **Sign in** (confirmed `az login`, 5 min, Cancel), Retry, Forget                 |
+
+- Opening probes without interaction. Install and sign-in are tracked, cancellable children; both re-probe when they end. Neither starts from background work. No `az logout`.
+- The first connected identity binds the organization (`state/azure-devops.json`). Forget clears the binding only; Azure CLI stays signed in. A new organization drops the binding.
 - Copilot catalog and account settings: [copilot-settings.md](copilot-settings.md).
 
 ## Repositories

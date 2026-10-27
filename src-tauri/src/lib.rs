@@ -4468,6 +4468,13 @@ pub fn run() {
             confirm_github_account,
             cancel_github_auth,
             disconnect_github_auth,
+            azure_devops::host::azure_devops_setup_state,
+            azure_devops::host::azure_devops_check,
+            azure_devops::host::azure_devops_set_organization,
+            azure_devops::host::azure_devops_install,
+            azure_devops::host::azure_devops_sign_in,
+            azure_devops::host::azure_devops_cancel,
+            azure_devops::host::azure_devops_forget_account,
             copilot::copilot_auth_state,
             copilot::start_copilot_auth,
             copilot::confirm_copilot_account,
@@ -4570,6 +4577,7 @@ pub fn run() {
             #[cfg(windows)]
             let executable = std::env::current_exe()?;
             let notifications = notifications::host::Coordinator::new(app.handle(), &store, &root);
+            let azure_devops_binding = azure_devops::host::load(&store);
             app.manage(Host {
                 panel: panel::Panel::default(),
                 store: Mutex::new(store),
@@ -4593,6 +4601,10 @@ pub fn run() {
                 mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
+            app.manage(azure_devops::host::create(
+                app.handle().clone(),
+                azure_devops_binding,
+            )?);
             if let Err(error) = control::start(app.handle(), &root) {
                 report(app.handle(), error);
             }

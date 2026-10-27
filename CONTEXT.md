@@ -66,6 +66,14 @@ _Avoid_: Azure DevOps login, PAT, app registration
 The Microsoft Entra tenant that owns an Azure DevOps organization, read from the unauthenticated `X-VSS-ResourceTenant` header. Distinct outcomes: found, organization not found, missing tenant, all-zero tenant. Several organizations may share one tenant.
 _Avoid_: Home tenant, directory
 
+**Azure DevOps Setup**:
+The Settings drill-in state machine: Azure CLI (Missing, Too old, Installing, Ready) → organization (Not found, Tenant unknown, Offline, Tenant known) → account (Signed out, Interaction required, Tenant access blocked, Connected, Wrong identity). Probing is never interactive; install and `az login` run only from a user action, sign-in after confirmation. PR Sniper never runs `az logout`.
+_Avoid_: Azure DevOps onboarding, login wizard
+
+**Bound Azure DevOps Identity**:
+The `connectionData` identity first seen for the saved organization; it is the Azure DevOps provider account. Another signed-in identity is Wrong identity until the user signs in as the bound one or forgets the binding.
+_Avoid_: Current az account
+
 ### Agents and grants
 
 **Agent**:
