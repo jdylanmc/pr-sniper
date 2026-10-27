@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::prelude::*;
 use crate::{
     capacity::Coordinator as Capacity,
     github::{
@@ -208,7 +209,8 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         result: None,
     };
     let env = env(&store);
-    let client = Arc::new(GithubClient::new(env.wire.clone()));
+    let client: Arc<dyn crate::provider::ProviderReads + Send + Sync> =
+        Arc::new(GithubClient::new(env.wire.clone()));
     let repo = RemoteRepository {
         id: "100".into(),
         name: "example/repo".into(),

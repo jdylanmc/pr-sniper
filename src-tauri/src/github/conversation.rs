@@ -3,52 +3,11 @@ use super::{
     publication::{MutationTransport, Request},
     ConnectionError,
 };
+pub use crate::provider::TopComment;
+use crate::provider::{CommentReader, CommentWriter};
 use crate::{publication::WriteFailure, review::Failure};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TopComment {
-    pub id: String,
-    pub body: String,
-    pub author_id: Option<String>,
-    pub author_login: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl TopComment {
-    pub fn eligible_other_user(&self, account: &str) -> bool {
-        self.author_id.as_deref().is_some_and(|id| id != account)
-            && !self.body.contains("<!-- pr-sniper:")
-            && !self.body.trim().is_empty()
-    }
-    pub fn mentions(&self, login: &str, _account: &str) -> bool {
-        if self.body.contains("<!-- pr-sniper:") {
-            return false;
-        }
-        let text = self.body.to_ascii_lowercase();
-        let target = format!("@{}", login.to_ascii_lowercase());
-        let identity = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-        !login.is_empty()
-            && text.match_indices(&target).any(|(index, _)| {
-                text[..index]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !identity(c) && c != '@')
-                    && text[index + target.len()..]
-                        .chars()
-                        .next()
-                        .is_none_or(identity_negated)
-            })
-    }
-}
-
-fn identity_negated(c: char) -> bool {
-    !(c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
 
 fn parse(value: &Value) -> Result<TopComment, ConnectionError> {
     let id = value["id"]
@@ -87,8 +46,8 @@ fn parse(value: &Value) -> Result<TopComment, ConnectionError> {
     })
 }
 
-impl<T: Transport> GithubClient<T> {
-    pub fn top_comments(
+impl<T: Transport> CommentReader for GithubClient<T> {
+    fn top_comments(
         &self,
         repo: &RemoteRepository,
         number: u64,
@@ -128,8 +87,8 @@ impl<T: Transport> GithubClient<T> {
     }
 }
 
-impl<T: MutationTransport> GithubClient<T> {
-    pub fn reply_to_mention(
+impl<T: MutationTransport> CommentWriter for GithubClient<T> {
+    fn reply_to_mention(
         &self,
         repo: &RemoteRepository,
         number: u64,

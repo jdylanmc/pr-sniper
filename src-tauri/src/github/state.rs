@@ -1,351 +1,20 @@
-//! Provider-side PR state for the heartbeat diff.
-//!
-//! `PrSnapshot` is the raw read. `NormalizedSnapshot` keeps only fields that
-//! change when a human-visible PR state changes: sorted, no timestamps, no
-//! transient provider values. Its hash is what the heartbeat compares.
+//! GitHub reads of PR state ([`PrSnapshot`]) for the heartbeat diff.
 
 use super::{
     provider::{GithubClient, RemoteRepository},
     threads::QueryTransport,
     ConnectionError,
 };
-use serde::{Deserialize, Serialize};
+use crate::provider::PullRequestStateReader;
+pub use crate::provider::{
+    NormalizedComment, NormalizedSnapshot, OwnWrites, PrSnapshot, SnapshotCheck, SnapshotComment,
+    SnapshotReview, SnapshotThread, StateMarks,
+};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// PRs per GraphQL request. Each PR costs about one rate-limit point.
 const BATCH: usize = 10;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotCheck {
-    pub name: String,
-    pub status: String,
-    pub conclusion: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotComment {
-    pub id: String,
-    pub body: String,
-    pub commit: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotThread {
-    pub id: String,
-    pub resolved: bool,
-    pub outdated: bool,
-    pub comments: Vec<SnapshotComment>,
-    pub comment_total: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotReview {
-    pub actor: String,
-    pub state: String,
-    pub head: Option<String>,
-}
-
-/// Raw provider read of one PR. Public so the packet builder and exits can
-/// re-read fresh state at consume time and after their own writes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrSnapshot {
-    pub number: u64,
-    pub pull_request_id: String,
-    pub title: String,
-    pub body: String,
-    pub labels: Vec<String>,
-    /// Source branch name; information for the packet, never part of the state hash.
-    #[serde(default)]
-    pub head_ref: String,
-    pub head: String,
-    pub base: String,
-    pub state: String,
-    pub draft: bool,
-    pub mergeable: String,
-    pub review_decision: Option<String>,
-    pub reviews: Vec<SnapshotReview>,
-    pub checks: Vec<SnapshotCheck>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_checks: Vec<String>,
-    pub check_total: u64,
-    pub threads: Vec<SnapshotThread>,
-    pub thread_total: u64,
-    pub comments: Vec<SnapshotComment>,
-    pub comment_total: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NormalizedComment {
-    pub id: String,
-    pub body_hash: String,
-    pub resolved: bool,
-    pub outdated: bool,
-    pub commit: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NormalizedSnapshot {
-    pub head: String,
-    pub base: String,
-    pub text_hash: String,
-    pub lifecycle: String,
-    pub mergeable: String,
-    pub review_decision: Option<String>,
-    pub approvals: Vec<(String, String)>,
-    pub labels: Vec<String>,
-    pub checks: Vec<(String, String, String)>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_checks: Vec<String>,
-    pub check_total: u64,
-    pub comments: Vec<NormalizedComment>,
-    pub thread_total: u64,
-    pub comment_total: u64,
-}
-
-fn digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
-}
-
-impl PrSnapshot {
-    /// Stable view: sorted, deduplicated, no timestamps. A re-read of an
-    /// unchanged PR yields an identical value whatever order the provider used.
-    pub fn normalize(&self) -> NormalizedSnapshot {
-        let lifecycle = match self.state.as_str() {
-            "MERGED" => "merged",
-            "CLOSED" => "closed",
-            _ if self.draft => "draft",
-            _ => "open",
-        };
-        // UNKNOWN is a transient provider computation, not a PR change.
-        let mergeable = if self.mergeable == "CONFLICTING" {
-            "conflicting"
-        } else {
-            "ok"
-        };
-        let mut labels = self.labels.clone();
-        labels.sort();
-        labels.dedup();
-        let mut approvals: Vec<_> = self
-            .reviews
-            .iter()
-            .filter(|r| r.state == "APPROVED")
-            .map(|r| (r.actor.clone(), r.head.clone().unwrap_or_default()))
-            .collect();
-        approvals.sort();
-        approvals.dedup();
-        let mut checks: Vec<_> = self
-            .checks
-            .iter()
-            .map(|c| {
-                (
-                    c.name.clone(),
-                    check_status(&c.status).to_string(),
-                    c.conclusion.to_ascii_lowercase(),
-                )
-            })
-            .collect();
-        checks.sort();
-        checks.dedup();
-        let mut required_checks = self.required_checks.clone();
-        required_checks.sort();
-        required_checks.dedup();
-        let mut comments: Vec<_> = self
-            .comments
-            .iter()
-            .map(|c| NormalizedComment {
-                id: c.id.clone(),
-                body_hash: digest(&c.body),
-                resolved: false,
-                outdated: false,
-                commit: c.commit.clone(),
-            })
-            .collect();
-        for thread in &self.threads {
-            for c in &thread.comments {
-                comments.push(NormalizedComment {
-                    id: c.id.clone(),
-                    body_hash: digest(&c.body),
-                    resolved: thread.resolved,
-                    outdated: thread.outdated,
-                    commit: c.commit.clone(),
-                });
-            }
-        }
-        comments.sort_by(|a, b| a.id.cmp(&b.id));
-        comments.dedup_by(|a, b| a.id == b.id);
-        NormalizedSnapshot {
-            head: self.head.clone(),
-            base: self.base.clone(),
-            text_hash: digest(&format!("{}\n{}", self.title, self.body)),
-            lifecycle: lifecycle.into(),
-            mergeable: mergeable.into(),
-            review_decision: self.review_decision.clone(),
-            approvals,
-            labels,
-            checks,
-            required_checks,
-            check_total: self.check_total,
-            comments,
-            thread_total: self.thread_total,
-            comment_total: self.comment_total
-                + self.threads.iter().map(|t| t.comment_total).sum::<u64>(),
-        }
-    }
-}
-
-fn check_status(status: &str) -> &'static str {
-    match status {
-        "COMPLETED" | "SUCCESS" | "FAILURE" | "ERROR" => "done",
-        _ => "pending",
-    }
-}
-
-impl NormalizedSnapshot {
-    pub fn ci_pending(&self) -> bool {
-        !self.ci_failed()
-            && (self.checks.iter().any(|(_, status, _)| status == "pending")
-                || self
-                    .required_checks
-                    .iter()
-                    .any(|required| !self.checks.iter().any(|(name, _, _)| name == required)))
-    }
-
-    /// No check reported and none required: CI not created yet, or no CI at all.
-    /// Not pending: a local sign-off judged on it (conflicts) must not toss.
-    pub fn ci_unknown(&self) -> bool {
-        self.checks.is_empty() && self.required_checks.is_empty()
-    }
-
-    /// CI settled green: checks reported, none pending or failed.
-    pub fn ci_green(&self) -> bool {
-        !self.checks.is_empty() && !self.ci_failed() && !self.ci_pending()
-    }
-
-    /// CI failed on the head: any check concluded as a failure.
-    pub fn ci_failed(&self) -> bool {
-        self.checks.iter().any(|(_, _, conclusion)| {
-            matches!(
-                conclusion.as_str(),
-                "failure"
-                    | "error"
-                    | "cancelled"
-                    | "timed_out"
-                    | "action_required"
-                    | "startup_failure"
-            )
-        })
-    }
-
-    /// The review revision: what a review reads. CI progress and results,
-    /// mergeability and labels are provider metadata for the same code and
-    /// conversation; exit gates read them fresh instead.
-    pub fn review_view(&self) -> Self {
-        Self {
-            mergeable: String::new(),
-            labels: Vec::new(),
-            checks: Vec::new(),
-            required_checks: Vec::new(),
-            check_total: 0,
-            ..self.clone()
-        }
-    }
-
-    /// Hash of the review revision ([`Self::review_view`]); what the heartbeat compares.
-    pub fn hash(&self) -> String {
-        digest(&serde_json::to_string(&self.review_view()).expect("normalized snapshot serializes"))
-    }
-
-    /// Hash of the whole snapshot, as baselines were recorded before
-    /// [`Self::hash`] left out CI and metadata. Only translates stored hashes.
-    pub fn legacy_hash(&self) -> String {
-        digest(&serde_json::to_string(self).expect("normalized snapshot serializes"))
-    }
-}
-
-/// Compact packet-time state: enough to tell the host's own writes from anyone
-/// else's change after an exit, without comment authors.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StateMarks {
-    /// Acting account login: its approval is an own write.
-    pub actor: String,
-    /// Digest of the review revision's non-conversation fields except the review
-    /// decision and own approval. CI, mergeability and labels are not review changes.
-    pub fields: String,
-    pub review_decision: Option<String>,
-    /// The acting account approved the head.
-    pub own_approval: bool,
-    /// Comment id -> body digest.
-    pub comments: BTreeMap<String, String>,
-    pub resolved_threads: Vec<String>,
-}
-
-/// Ids the host itself wrote after the packet: comments (batch and replies) and
-/// threads it resolved.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OwnWrites {
-    pub comments: std::collections::BTreeSet<String>,
-    pub resolved_threads: std::collections::BTreeSet<String>,
-}
-
-impl StateMarks {
-    pub fn of(snapshot: &PrSnapshot, actor: &str) -> Self {
-        let n = snapshot.normalize();
-        let approvals: Vec<_> = n.approvals.iter().filter(|(a, _)| a != actor).collect();
-        let fields =
-            digest(&json!([n.head, n.base, n.text_hash, n.lifecycle, approvals]).to_string());
-        let comments = snapshot
-            .comments
-            .iter()
-            .chain(snapshot.threads.iter().flat_map(|t| &t.comments))
-            .map(|c| (c.id.clone(), digest(&c.body)))
-            .collect();
-        Self {
-            actor: actor.into(),
-            fields,
-            review_decision: snapshot.review_decision.clone(),
-            own_approval: snapshot.reviews.iter().any(|r| {
-                r.actor == actor
-                    && r.state == "APPROVED"
-                    && r.head.as_deref() == Some(&snapshot.head)
-            }),
-            comments,
-            resolved_threads: snapshot
-                .threads
-                .iter()
-                .filter(|t| t.resolved)
-                .map(|t| t.id.clone())
-                .collect(),
-        }
-    }
-
-    /// `fresh` holds a change that is not one of `own`: a new or edited comment,
-    /// a thread resolved or reopened by someone else, or any other field.
-    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites) -> bool {
-        let now = Self::of(fresh, &self.actor);
-        if now.fields != self.fields
-            || (now.review_decision != self.review_decision
-                && now.own_approval == self.own_approval)
-        {
-            return true;
-        }
-        if now
-            .comments
-            .iter()
-            .any(|(id, body)| match self.comments.get(id) {
-                Some(before) => before != body,
-                None => !own.comments.contains(id),
-            })
-        {
-            return true;
-        }
-        fresh.threads.iter().any(|t| {
-            t.resolved != self.resolved_threads.contains(&t.id)
-                && !own.resolved_threads.contains(&t.id)
-        })
-    }
-}
 
 const FRAGMENT: &str = r#"fragment S on PullRequest {
   fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid headRefName
@@ -505,9 +174,9 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
     })
 }
 
-impl<T: QueryTransport> GithubClient<T> {
+impl<T: QueryTransport> PullRequestStateReader for GithubClient<T> {
     /// One PR, read fresh. Used at consume time and after own writes.
-    pub fn pr_snapshot(
+    fn pr_snapshot(
         &self,
         repo: &RemoteRepository,
         number: u64,
@@ -519,7 +188,7 @@ impl<T: QueryTransport> GithubClient<T> {
 
     /// Heartbeat read: up to `BATCH` PRs per GraphQL request via aliases.
     /// A PR the provider no longer returns is absent from the map.
-    pub fn pr_snapshots(
+    fn pr_snapshots(
         &self,
         repo: &RemoteRepository,
         numbers: &[u64],

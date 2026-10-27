@@ -1,9 +1,8 @@
 use super::*;
 use crate::{
-    github::{http::HttpTransport, provider::GithubClient},
     now_seconds,
-    provider::{CommentCapability, PullRequestReader, RemoteRepository, RepositoryReader},
-    Host,
+    provider::{CommentCapability, ProviderReads, RemoteRepository},
+    Host, Session,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -371,7 +370,7 @@ impl Native {
         &self,
         run: &Publication,
         check_policy: bool,
-    ) -> Result<GithubClient<crate::github::review::GuardedTransport<HttpTransport>>, Failure> {
+    ) -> Result<Box<dyn ProviderReads + Send + Sync>, Failure> {
         let client = self.session(run)?;
         let guard = Native {
             app: self.app.clone(),
@@ -396,10 +395,10 @@ impl Native {
         })))
     }
 
-    fn session(&self, run: &Publication) -> Result<GithubClient<HttpTransport>, Failure> {
+    fn session(&self, run: &Publication) -> Result<Session, Failure> {
         self.connection_gate(run)?;
         let host = self.app.state::<Host>();
-        let (identity, client) = crate::github_session(&host, &run.review.job.account_id)
+        let (identity, client) = crate::provider_session(&host, &run.review.job.account_id)
             .map_err(|error| self.failures.connection_error(error))?;
         if identity.id != run.review.job.account_id {
             return Err(Failure::permanent("The acting GitHub account changed."));
@@ -760,7 +759,7 @@ impl Environment for Native {
         };
         crate::exits::consume::consume_after(
             &self.app.state::<Host>().store,
-            &client,
+            &*client,
             &repo,
             &run.review.job,
             &run.review.operation.id,

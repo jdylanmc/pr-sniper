@@ -703,7 +703,7 @@ pub struct RepositoryAuthorization {
 impl RepositoryAuthorization {
     pub fn matches(&self, repository: &Repository) -> bool {
         repository.enabled
-            && repository.provider == ProviderId::Github
+            && repository.capabilities().review().is_available()
             && self.name == repository.name
             && Some(&self.account_id) == repository.provider_account_id.as_ref()
             && Some(&self.repository_id) == repository.provider_repository_id.as_ref()
@@ -787,7 +787,7 @@ impl Settings {
             .iter()
             .map(|repository| {
                 let mut issues = Vec::new();
-                if repository.provider != ProviderId::Github
+                if !repository.capabilities().review().is_available()
                     || repository.account_binding().is_none()
                 {
                     issues.push("Bind a supported repository account.".into());
@@ -1333,6 +1333,11 @@ impl Repository {
         (self.primary_assignment_id() == Some(assignment.id.as_str()))
             .then_some(assignment.rubber_duck.as_deref())
             .flatten()
+    }
+
+    /// What PR Sniper offers for this repository's provider.
+    pub fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+        crate::provider::ProviderCapabilities::of(&self.provider)
     }
 
     pub fn account_binding(&self) -> Option<RepositoryAccountBinding> {
@@ -2248,7 +2253,7 @@ impl Store {
                 value: Some(value),
                 ..
             } if value.enabled
-                && value.provider == ProviderId::Github
+                && value.capabilities().review().is_available()
                 && value.account_binding().is_some()
                 && !value.assignments.is_empty() =>
             {
@@ -2263,7 +2268,9 @@ impl Store {
                 .iter()
                 .find(|repository| repository.id == id)
                 .unwrap();
-            if repository.provider != ProviderId::Github || repository.account_binding().is_none() {
+            if !repository.capabilities().review().is_available()
+                || repository.account_binding().is_none()
+            {
                 return Err(format!(
                     "{}: bind a supported GitHub account and repository before enabling monitoring.",
                     repository.name

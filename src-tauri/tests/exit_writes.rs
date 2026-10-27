@@ -2,6 +2,7 @@
 mod fake_github;
 
 use fake_github::{self as fake, foreign_thread, owned_thread, Fault, Wire, ASSIGNMENT, HEAD};
+use pr_sniper_lib::provider::prelude::*;
 use pr_sniper_lib::{
     exit_writes::{self, Dependency, Environment, ExitWrite, Outcome, Phase, StepState},
     github::{

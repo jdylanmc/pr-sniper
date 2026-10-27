@@ -2,7 +2,7 @@
 //! Run at packet build (offered set + reasons in the packet) and again at exit time.
 
 use super::{Exit, ExitCall, LgtmAction, WaitReason};
-use crate::github::actions::{Action, Observation};
+use crate::provider::{Action, Observation, ProviderCapabilities};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +101,8 @@ pub struct GateInput {
     pub primary: bool,
     pub grants: Grants,
     pub review_drafts: bool,
+    /// What the repository's provider offers; an unavailable outcome is denied.
+    pub capabilities: ProviderCapabilities,
     pub facts: Facts,
 }
 
@@ -352,10 +354,12 @@ fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
         return vec![];
     }
     let merge = input.grants.merge
+        && input.capabilities.approve_and_merge.is_available()
         && input.tools.iter().any(|t| t == Exit::ApproveAndMerge.id())
         && (!f.author_is_acting || input.grants.include_self)
         && f.wait_merge_blocker.is_none();
     let approve = (input.grants.approve || input.grants.merge)
+        && input.capabilities.approve.is_available()
         && input
             .tools
             .iter()
@@ -376,10 +380,15 @@ fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
     reasons
 }
 
+/// Denial of an outcome the repository's provider does not offer.
+pub const UNSUPPORTED: &str = "The repository's provider does not offer this action.";
+
 fn approve_denial(input: &GateInput) -> Option<String> {
     let f = &input.facts;
     Some(if !(input.grants.approve || input.grants.merge) {
         "No Approve grant.".into()
+    } else if !input.capabilities.approve.is_available() {
+        UNSUPPORTED.into()
     } else if !f.open {
         "PR is closed or merged.".into()
     } else if f.draft {
@@ -401,6 +410,9 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     let f = &input.facts;
     if !input.grants.merge {
         return Some("No Approve & Merge grant.".into());
+    }
+    if !input.capabilities.approve_and_merge.is_available() {
+        return Some(UNSUPPORTED.into());
     }
     if !f.author_is_acting {
         if let Some(reason) = approve_denial(input) {
@@ -436,9 +448,10 @@ fn merge_denial(input: &GateInput) -> Option<String> {
 /// The sign-off's action: the assignment's strongest granted authority. Grants alone
 /// decide it; the tool list only gates the legacy explicit approve exits.
 pub fn lgtm_action(input: &GateInput) -> LgtmAction {
-    if input.grants.merge {
+    let capabilities = &input.capabilities;
+    if input.grants.merge && capabilities.approve_and_merge.is_available() {
         LgtmAction::Merge
-    } else if input.grants.approve {
+    } else if (input.grants.approve || input.grants.merge) && capabilities.approve.is_available() {
         LgtmAction::Approve
     } else {
         LgtmAction::Ready

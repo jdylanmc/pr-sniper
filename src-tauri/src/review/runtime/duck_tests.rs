@@ -102,7 +102,7 @@ fn limits(max_calls: u32, call_timeout_seconds: u32) -> DuckLimits {
     }
 }
 
-fn primary_request(setup: DuckSetup) -> Request<Synthetic> {
+fn primary_request(setup: DuckSetup) -> Request {
     let granted: Vec<String> = ["read_changes", "read_source", crate::review::duck::TOOL]
         .map(String::from)
         .to_vec();
@@ -121,7 +121,7 @@ fn primary_request(setup: DuckSetup) -> Request<Synthetic> {
             packet_text: "packet".into(),
         },
         context: context(true),
-        client: Arc::new(GithubClient::new(Synthetic)),
+        client: Arc::new(crate::github::provider::GithubClient::new(Synthetic)),
         repository_name: "example/repo".into(),
         selection: selection(),
         before_send: Arc::new(|| Ok(())),

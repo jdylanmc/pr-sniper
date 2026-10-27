@@ -1,187 +1,16 @@
 use super::{
-    conversation::TopComment,
     provider::{parse_response, GithubClient, RemoteRepository, Transport},
     publication::{MutationTransport, Request},
     threads::QueryTransport,
     ConnectionError,
 };
+pub use crate::provider::{
+    Action, HumanThread, MergeMethod, Observation, OutcomeReceipt as Receipt, ProviderReview,
+    BEHIND_BASE,
+};
+use crate::provider::{CommentReader, ReadinessReader, ReviewerOutcome};
 use crate::{publication::WriteFailure, review::Failure};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    Approve,
-    Merge,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum MergeMethod {
-    Merge,
-    Rebase,
-    Squash,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderReview {
-    pub id: String,
-    pub actor_id: String,
-    pub head: String,
-    pub state: String,
-    pub body: String,
-    pub submitted_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HumanThread {
-    pub id: String,
-    pub resolved: bool,
-    pub outdated: bool,
-    pub resolved_by: Option<String>,
-    pub comments: Vec<Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Observation {
-    pub write_capability: bool,
-    pub node_id: String,
-    pub repository_id: String,
-    pub pull_request_id: String,
-    pub account_id: String,
-    pub author_id: String,
-    pub head_repository_id: Option<String>,
-    pub head: String,
-    pub base: String,
-    pub base_name: String,
-    pub merge_rules: Option<Vec<Value>>,
-    pub merge_rules_error: Option<String>,
-    pub state: String,
-    pub draft: bool,
-    pub permission: String,
-    pub mergeable: String,
-    pub merge_state: String,
-    pub review_decision: Option<String>,
-    pub checks: Option<String>,
-    pub check_contexts: Vec<Value>,
-    pub in_merge_queue: bool,
-    pub method: Option<MergeMethod>,
-    pub protection: Value,
-    pub threads: Vec<HumanThread>,
-    pub reviews: Vec<ProviderReview>,
-    pub comments: Vec<TopComment>,
-    pub merged_by: Option<String>,
-    pub merged_at: Option<String>,
-    pub merge_commit: Option<String>,
-}
-
-/// Merge blocker when branch protection needs an up-to-date branch.
-pub const BEHIND_BASE: &str =
-    "Branch is behind base; the author must update it. PR Sniper never updates branches.";
-
-impl Observation {
-    pub fn common_blocker(&self) -> Option<String> {
-        if self.state != "OPEN" {
-            return Some(format!("GitHub reports {}.", self.state));
-        }
-        if self.draft {
-            return Some("Draft pull requests cannot be approved or merged.".into());
-        }
-        if !self.write_capability
-            || !matches!(self.permission.as_str(), "WRITE" | "MAINTAIN" | "ADMIN")
-        {
-            return Some(
-                "The acting account lacks verified repository write/review authority.".into(),
-            );
-        }
-        self.pending_review_blocker()
-    }
-    fn pending_review_blocker(&self) -> Option<String> {
-        self.reviews.iter().any(|r| r.state == "PENDING").then(|| {
-            "An account review is still pending; it will not be submitted or replaced by automation.".into()
-        })
-    }
-    /// Others' threads and requested changes block merge, never approval.
-    pub fn discussion_blocker(&self) -> Option<String> {
-        if let Some(reason) = self.pending_review_blocker() {
-            return Some(reason);
-        }
-        if self.threads.iter().any(|t| !t.resolved) {
-            return Some(
-                "Unresolved provider discussions remain, including outdated threads.".into(),
-            );
-        }
-        let mut latest = std::collections::BTreeMap::new();
-        for review in &self.reviews {
-            if review.state == "APPROVED"
-                || review.state == "CHANGES_REQUESTED"
-                || review.state == "DISMISSED"
-            {
-                latest.insert(&review.actor_id, review);
-            }
-        }
-        if latest.values().any(|r| r.state == "CHANGES_REQUESTED") {
-            return Some("A provider reviewer is still requesting changes.".into());
-        }
-        None
-    }
-    pub fn blocker(&self, action: Action) -> Option<String> {
-        if let Some(reason) = self.common_blocker() {
-            return Some(reason);
-        }
-        match action {
-            Action::Approve if self.author_id == self.account_id => {
-                Some("GitHub does not allow the PR author to approve their own PR.".into())
-            }
-            Action::Approve => None,
-            Action::Merge if self.discussion_blocker().is_some() => self.discussion_blocker(),
-            Action::Merge if self.in_merge_queue => {
-                Some("This PR is in a provider merge queue; direct merge is unavailable.".into())
-            }
-            Action::Merge if self.merge_rules_error.is_some() => self.merge_rules_error.clone(),
-            Action::Merge if self.merge_rules.is_none() => {
-                Some("Active repository rules could not be verified for direct merge.".into())
-            }
-            Action::Merge
-                if self
-                    .merge_rules
-                    .as_ref()
-                    .is_some_and(|rules| rules.iter().any(|r| r["type"] == "merge_queue")) =>
-            {
-                Some(
-                    "Repository rules require a merge queue; direct merge is not permitted.".into(),
-                )
-            }
-            Action::Merge if self.method.is_none() => {
-                Some("No provider-selected supported merge method is available.".into())
-            }
-            Action::Merge if self.checks.as_deref() != Some("SUCCESS") => {
-                Some("Current-head CI has not been verified green.".into())
-            }
-            // PR Sniper never updates a branch; only the author can.
-            Action::Merge if self.merge_state == "BEHIND" => Some(BEHIND_BASE.into()),
-            Action::Merge if self.mergeable != "MERGEABLE" || self.merge_state != "CLEAN" => {
-                Some(format!(
-                    "Provider merge readiness is {}/{}; no bypass is permitted.",
-                    self.mergeable, self.merge_state
-                ))
-            }
-            Action::Merge
-                if self.review_decision.as_deref() == Some("REVIEW_REQUIRED")
-                    || self.review_decision.as_deref() == Some("CHANGES_REQUESTED")
-                    || (self.protection["requiresApprovingReviews"] == true
-                        && self.review_decision.as_deref() != Some("APPROVED")) =>
-            {
-                Some("Provider-required reviews are not satisfied.".into())
-            }
-            Action::Merge => None,
-        }
-    }
-}
 
 fn text(value: &Value) -> Result<String, ConnectionError> {
     value
@@ -226,24 +55,8 @@ fn complete(value: &Value) -> Result<&Vec<Value>, ConnectionError> {
     Ok(nodes)
 }
 
-#[cfg(test)]
-mod complete_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn a_further_page_is_a_limit_but_a_count_mismatch_is_incomplete() {
-        let more = json!({"totalCount": 101, "pageInfo": {"hasNextPage": true}, "nodes": [{}]});
-        assert_eq!(complete(&more), Err(ConnectionError::LimitExceeded));
-        let short = json!({"totalCount": 2, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
-        assert_eq!(complete(&short), Err(ConnectionError::IncompleteRead));
-        let whole = json!({"totalCount": 1, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
-        assert_eq!(complete(&whole).map(Vec::len), Ok(1));
-    }
-}
-
-impl<T: QueryTransport> GithubClient<T> {
-    pub fn action_observation(
+impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
+    fn action_observation(
         &self,
         repo: &RemoteRepository,
         number: u64,
@@ -460,10 +273,18 @@ impl<T: QueryTransport> GithubClient<T> {
         }
         Ok(observation)
     }
+
+    fn action_reviews(
+        &self,
+        repo: &RemoteRepository,
+        number: u64,
+    ) -> Result<Vec<ProviderReview>, ConnectionError> {
+        self.reviews(repo, number)
+    }
 }
 
 impl<T: Transport> GithubClient<T> {
-    pub fn action_reviews(
+    fn reviews(
         &self,
         repo: &RemoteRepository,
         number: u64,
@@ -492,18 +313,8 @@ impl<T: Transport> GithubClient<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Receipt {
-    pub id: String,
-    pub actor_id: String,
-    pub head: String,
-    pub action: Action,
-    pub merge_commit: Option<String>,
-}
-
-impl<T: MutationTransport> GithubClient<T> {
-    pub fn approve_exact(
+impl<T: MutationTransport> ReviewerOutcome for GithubClient<T> {
+    fn approve_exact(
         &self,
         repo: &RemoteRepository,
         number: u64,
@@ -518,12 +329,10 @@ impl<T: MutationTransport> GithubClient<T> {
         // Idempotent against the provider: an approval this account already
         // gave on this head (a lost response, a reopened PR whose local
         // evidence is gone) is the receipt; nothing is posted twice.
-        let existing = self
-            .action_reviews(repo, number)
-            .map_err(|e| WriteFailure {
-                failure: e.into(),
-                uncertain: false,
-            })?;
+        let existing = self.reviews(repo, number).map_err(|e| WriteFailure {
+            failure: e.into(),
+            uncertain: false,
+        })?;
         if let Some(review) = existing
             .iter()
             .find(|r| r.actor_id == account && r.head == head && r.state == "APPROVED")
@@ -580,7 +389,8 @@ impl<T: MutationTransport> GithubClient<T> {
             uncertain: true,
         })
     }
-    pub fn merge_exact(
+
+    fn merge_exact(
         &self,
         observation: &Observation,
         request_id: &str,
@@ -627,5 +437,21 @@ impl<T: MutationTransport> GithubClient<T> {
             failure: e.into(),
             uncertain: true,
         })
+    }
+}
+
+#[cfg(test)]
+mod complete_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_further_page_is_a_limit_but_a_count_mismatch_is_incomplete() {
+        let more = json!({"totalCount": 101, "pageInfo": {"hasNextPage": true}, "nodes": [{}]});
+        assert_eq!(complete(&more), Err(ConnectionError::LimitExceeded));
+        let short = json!({"totalCount": 2, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
+        assert_eq!(complete(&short), Err(ConnectionError::IncompleteRead));
+        let whole = json!({"totalCount": 1, "pageInfo": {"hasNextPage": false}, "nodes": [{}]});
+        assert_eq!(complete(&whole).map(Vec::len), Ok(1));
     }
 }

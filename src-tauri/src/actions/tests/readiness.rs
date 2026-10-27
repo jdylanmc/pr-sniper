@@ -1269,7 +1269,8 @@ fn prepare_owned(
         });
     }
     let prepared = packet_run::prepare(
-        &Arc::new(GithubClient::new(env.wire.clone())),
+        &(Arc::new(GithubClient::new(env.wire.clone()))
+            as Arc<dyn crate::provider::ProviderReads + Send + Sync>),
         &RemoteRepository {
             id: "100".into(),
             name: "example/repo".into(),

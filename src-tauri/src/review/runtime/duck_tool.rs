@@ -10,10 +10,7 @@ use super::{
 use crate::{
     copilot::operation::Operation,
     exits::{Exit, ExitCall},
-    github::{
-        provider::{GithubClient, Transport},
-        Identity,
-    },
+    github::Identity,
     monitoring::OperationFailure,
     packet::{Directive, PacketInput, ToolFacts},
     provider::ReviewContext,
@@ -176,10 +173,10 @@ impl DuckEngine {
     }
 }
 
-pub(super) struct DuckTool<T: Transport> {
+pub(super) struct DuckTool {
     pub engine: Arc<DuckEngine>,
     pub context: ReviewContext,
-    pub github: Arc<GithubClient<T>>,
+    pub github: Arc<dyn crate::provider::ReviewSource + Send + Sync>,
     pub repository_name: String,
     pub facts: Arc<ToolFacts>,
     pub primary_exit: Arc<ExitState>,
@@ -207,12 +204,12 @@ pub(super) struct DuckTool<T: Transport> {
 pub(super) type ClaimEvidence =
     Arc<dyn Fn(&duck::EvidenceRef) -> Result<(), duck::Unserved> + Send + Sync>;
 
-impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
+impl DuckTool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: Arc<DuckEngine>,
         context: ReviewContext,
-        github: Arc<GithubClient<T>>,
+        github: Arc<dyn crate::provider::ReviewSource + Send + Sync>,
         repository_name: String,
         facts: Arc<ToolFacts>,
         primary_exit: Arc<ExitState>,
@@ -618,7 +615,7 @@ impl<T: Transport + Send + Sync + 'static> DuckTool<T> {
         session: &github_copilot_sdk::session::Session,
         packet_text: String,
         names: &[String],
-        reads: &ReadTools<T>,
+        reads: &ReadTools,
         exits: &ExitTools,
         diagnostics: Option<&Arc<crate::review::diagnostics::Trace>>,
         usage: &Mutex<(u64, u64, u64)>,
@@ -741,7 +738,7 @@ fn error(message: &str) -> ToolResult {
 }
 
 #[async_trait]
-impl<T: Transport + Send + Sync + 'static> ToolHandler for DuckTool<T> {
+impl ToolHandler for DuckTool {
     async fn call(
         &self,
         invocation: ToolInvocation,

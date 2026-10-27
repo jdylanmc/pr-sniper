@@ -893,6 +893,18 @@ pub(crate) fn read_session(
     Ok((identity, Box::new(client)))
 }
 
+/// Full provider session: reads, threads, publication, reviewer outcomes and
+/// readiness; callers never depend on a concrete provider client.
+pub(crate) type Session = Box<dyn provider::ProviderSession + Send + Sync>;
+
+pub(crate) fn provider_session(
+    host: &Host,
+    account_id: &str,
+) -> Result<(provider::Person, Session), ConnectionError> {
+    let (identity, client) = github_session(host, account_id)?;
+    Ok((identity, Box::new(client)))
+}
+
 /// Unpublished read-interface session; see `acquire_github_session`.
 pub(crate) fn acquire_read_session(
     host: &Host,
@@ -1672,11 +1684,11 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             let account_id = ticket.provider_account_id.clone();
             let result = (|| {
                 let host = app.state::<Host>();
-                let (identity, client) = github_session(&host, &account_id)?;
+                let (identity, client) = provider_session(&host, &account_id)?;
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
                 }
-                let (connection, mut pull_requests) = poll_repository(&client, &ticket_for_poll)?;
+                let (connection, mut pull_requests) = poll_repository(&*client, &ticket_for_poll)?;
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
@@ -2020,7 +2032,7 @@ fn resource_session_error(edit: &storage::ResourceEdit, message: &str) -> Resour
         ..
     } = edit
     {
-        if repository.provider == storage::ProviderId::Github {
+        if repository.capabilities().read.is_available() {
             if let Some(account_id) = &repository.provider_account_id {
                 return RepositoryReadError::session(account_id, ConnectionError::Configuration)
                     .into();
@@ -2042,7 +2054,7 @@ fn validate_repository_save_account(
         ..
     } = edit
     {
-        if repository.provider != storage::ProviderId::Github {
+        if !repository.capabilities().read.is_available() {
             return Err("Azure DevOps repository configuration is coming soon.".into());
         }
         if expected.is_none() && repository.account_binding().is_none() {
@@ -2082,7 +2094,10 @@ async fn resolve_provider_person(
     account_id: String,
     login: String,
 ) -> Result<provider::Person, ConnectionError> {
-    if !matches!(provider, storage::ProviderId::Github) {
+    if !provider::ProviderCapabilities::of(&provider)
+        .read
+        .is_available()
+    {
         return Err(ConnectionError::Configuration);
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -2100,7 +2115,10 @@ async fn list_provider_repositories(
     account_id: String,
     owner: String,
 ) -> Result<GithubRepositories, RepositoryReadError> {
-    if !matches!(provider, storage::ProviderId::Github) {
+    if !provider::ProviderCapabilities::of(&provider)
+        .read
+        .is_available()
+    {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -2138,7 +2156,10 @@ async fn list_provider_repository_owners(
     provider: storage::ProviderId,
     account_id: String,
 ) -> Result<GithubRepositoryOwners, RepositoryReadError> {
-    if provider != storage::ProviderId::Github {
+    if !provider::ProviderCapabilities::of(&provider)
+        .read
+        .is_available()
+    {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -2169,7 +2190,10 @@ async fn resolve_provider_repository(
     account_id: String,
     repository: String,
 ) -> Result<GithubRepositoryResolution, RepositoryReadError> {
-    if !matches!(provider, storage::ProviderId::Github) {
+    if !provider::ProviderCapabilities::of(&provider)
+        .read
+        .is_available()
+    {
         return Err(ConnectionError::Configuration.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -2207,7 +2231,7 @@ async fn admit_explicit_pull_request(
             .provider_account_id
             .as_deref()
             .ok_or("Choose a connected GitHub repository account.")?;
-        if expected.provider != storage::ProviderId::Github || number == 0 {
+        if !expected.capabilities().read.is_available() || number == 0 {
             return Err("Use a supported GitHub pull request URL.".into());
         }
         let read_at = now_seconds()?;
@@ -4100,7 +4124,7 @@ async fn verify_provider_connection(
     let binding = repository
         .account_binding()
         .ok_or(ConnectionError::Configuration)?;
-    if !matches!(binding.account.provider, storage::ProviderId::Github) {
+    if !repository.capabilities().read.is_available() {
         return Err(ConnectionError::Configuration);
     }
     let expected = repository.clone();
@@ -4150,7 +4174,7 @@ async fn read_provider_metadata(
     let binding = repository
         .account_binding()
         .ok_or(ConnectionError::Configuration)?;
-    if !matches!(binding.account.provider, storage::ProviderId::Github)
+    if !repository.capabilities().read.is_available()
         || binding.account.account_id != expected_account_id
     {
         return Err(ConnectionError::WrongIdentity);

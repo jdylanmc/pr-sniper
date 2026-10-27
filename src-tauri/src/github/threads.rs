@@ -3,78 +3,11 @@ use super::{
     publication::{MutationTransport, Request},
     ConnectionError,
 };
-use crate::{
-    publication::{Publication, RemoteState, WriteFailure},
-    review::Failure,
-};
-use serde::{Deserialize, Serialize};
+pub use crate::provider::{Comment, Ownership, Provenance, Thread};
+use crate::provider::{ThreadReader, ThreadWriter};
+use crate::{publication::WriteFailure, review::Failure};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-
-/// Enough to authenticate the original roots without retaining their text or
-/// pretending a compact receipt is a historical execution configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Ownership {
-    pub publication_id: String,
-    pub configuration_id: String,
-    pub account_id: String,
-    pub repository_id: String,
-    pub repository_name: String,
-    pub pull_request_id: String,
-    pub number: u64,
-    pub head_sha: String,
-    pub assignment_id: String,
-    pub agent_id: String,
-    pub review_id: String,
-    pub root_ids: Vec<String>,
-    pub body_hashes: BTreeSet<String>,
-}
-
-pub trait Provenance {
-    fn ownership(&self) -> Result<Ownership, ConnectionError>;
-}
-
-impl Provenance for Ownership {
-    fn ownership(&self) -> Result<Ownership, ConnectionError> {
-        Ok(self.clone())
-    }
-}
-
-impl Provenance for Publication {
-    fn ownership(&self) -> Result<Ownership, ConnectionError> {
-        let receipt = self
-            .receipts
-            .last()
-            .filter(|r| r.state == RemoteState::Commented)
-            .ok_or(ConnectionError::InvalidResponse)?;
-        let batch = self
-            .batch
-            .as_ref()
-            .ok_or(ConnectionError::InvalidResponse)?;
-        let job = &self.review.job;
-        Ok(Ownership {
-            publication_id: self.id.clone(),
-            configuration_id: job.configuration_id.clone(),
-            account_id: job.account_id.clone(),
-            repository_id: job.repository_id.clone(),
-            repository_name: job.repository_name.clone(),
-            pull_request_id: job.pull_request_id.clone(),
-            number: job.number,
-            head_sha: job.head_sha.clone(),
-            assignment_id: self.review.assignment_id.clone(),
-            agent_id: self.review.selection.agent.id.clone(),
-            review_id: receipt.review_id.clone(),
-            root_ids: receipt.comment_ids.clone(),
-            body_hashes: batch.comments.iter().map(|c| body_hash(&c.body)).collect(),
-        })
-    }
-}
-
-fn body_hash(body: &str) -> String {
-    format!("{:x}", Sha256::digest(body.as_bytes()))
-}
 
 pub trait QueryTransport: Transport {
     fn query(&self, query: &str, variables: Value) -> Result<Response, ConnectionError>;
@@ -87,93 +20,6 @@ const COMMENTS: &str = r#"comments(first:100,after:$commentCursor) {
     replyTo { fullDatabaseId } pullRequestReview { fullDatabaseId } originalCommit { oid }
   }
 }"#;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Comment {
-    pub id: String,
-    pub body: String,
-    pub author_id: Option<String>,
-    pub author_login: Option<String>,
-    pub reply_to: Option<String>,
-    pub review_id: Option<String>,
-    pub original_commit: Option<String>,
-    pub created_at: String,
-    pub published_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Thread {
-    pub id: String,
-    pub resolved: bool,
-    pub can_reply: bool,
-    pub comments: Vec<Comment>,
-}
-
-impl Thread {
-    pub fn root(&self) -> Result<&Comment, ConnectionError> {
-        self.comments
-            .first()
-            .filter(|c| c.reply_to.is_none())
-            .ok_or(ConnectionError::InvalidResponse)
-    }
-
-    /// Root for observation only: the first comment when it is a root, else the
-    /// earliest comment that has no parent. `None` means the thread is malformed.
-    pub fn tolerant_root(&self) -> Option<&Comment> {
-        self.root().ok().or_else(|| {
-            self.comments
-                .iter()
-                .enumerate()
-                .filter(|(_, comment)| comment.reply_to.is_none())
-                .min_by_key(|(index, comment)| (&comment.published_at, *index))
-                .map(|(_, comment)| comment)
-        })
-    }
-
-    pub fn latest_external(&self, account: &str) -> Option<&Comment> {
-        self.comments
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter(|(_, comment)| {
-                !(comment.author_id.as_deref() == Some(account)
-                    && comment.body.contains("<!-- pr-sniper:reply:"))
-            })
-            .max_by_key(|(index, comment)| (&comment.published_at, *index))
-            .map(|(_, comment)| comment)
-    }
-
-    pub fn latest_other_user(&self, account: &str) -> Option<&Comment> {
-        self.comments
-            .iter()
-            .filter(|comment| {
-                comment.author_id.as_deref().is_some_and(|id| id != account)
-                    && !comment.body.contains("<!-- pr-sniper:")
-            })
-            .max_by_key(|comment| (&comment.published_at, &comment.id))
-    }
-
-    /// Owned when any saved proof verifies the root. Agent resolution is limited to these.
-    pub fn owned_by_any(&self, proofs: &[Ownership]) -> bool {
-        proofs.iter().any(|proof| self.owned_by(proof))
-    }
-
-    pub fn owned_by(&self, publication: &impl Provenance) -> bool {
-        let Ok(root) = self.root() else {
-            return false;
-        };
-        let Ok(proof) = publication.ownership() else {
-            return false;
-        };
-        proof.root_ids.contains(&root.id)
-            && root.author_id.as_deref() == Some(&proof.account_id)
-            && root.review_id.as_deref() == Some(&proof.review_id)
-            && root.original_commit.as_deref() == Some(&proof.head_sha)
-            && proof.body_hashes.contains(&body_hash(&root.body))
-    }
-}
 
 impl<T: QueryTransport> GithubClient<T> {
     pub(super) fn graph(&self, query: &str, variables: Value) -> Result<Value, ConnectionError> {
@@ -199,47 +45,6 @@ impl<T: QueryTransport> GithubClient<T> {
             return Err(ConnectionError::IncompleteRead);
         }
         Ok(value["data"].clone())
-    }
-
-    pub fn owned_threads(
-        &self,
-        publication: &impl Provenance,
-    ) -> Result<Vec<Thread>, ConnectionError> {
-        self.owned_threads_at(publication, &publication.ownership()?.head_sha)
-    }
-
-    pub fn owned_threads_at(
-        &self,
-        publication: &impl Provenance,
-        current_head: &str,
-    ) -> Result<Vec<Thread>, ConnectionError> {
-        let publication = publication.ownership()?;
-        self.review_threads(
-            &publication.repository_name,
-            &publication.repository_id,
-            &publication.pull_request_id,
-            publication.number,
-            current_head,
-            Some(&publication),
-        )
-    }
-
-    pub fn review_threads_at(
-        &self,
-        repository_name: &str,
-        repository_id: &str,
-        pull_request_id: &str,
-        number: u64,
-        current_head: &str,
-    ) -> Result<Vec<Thread>, ConnectionError> {
-        self.review_threads(
-            repository_name,
-            repository_id,
-            pull_request_id,
-            number,
-            current_head,
-            None,
-        )
     }
 
     fn review_threads(
@@ -336,54 +141,6 @@ impl<T: QueryTransport> GithubClient<T> {
         Ok(result)
     }
 
-    pub fn owned_thread(
-        &self,
-        publication: &impl Provenance,
-        id: &str,
-    ) -> Result<Option<Thread>, ConnectionError> {
-        let publication = publication.ownership()?;
-        let thread =
-            self.review_thread(&publication.repository_id, &publication.pull_request_id, id)?;
-        if thread
-            .as_ref()
-            .is_some_and(|thread| !thread.owned_by(&publication))
-        {
-            return Err(ConnectionError::InvalidResponse);
-        }
-        Ok(thread)
-    }
-
-    pub fn review_thread(
-        &self,
-        repository_id: &str,
-        pull_request_id: &str,
-        id: &str,
-    ) -> Result<Option<Thread>, ConnectionError> {
-        let query = format!(
-            r#"query($id:ID!,$commentCursor:String) {{
-          node(id:$id) {{ ... on PullRequestReviewThread {{
-            id isResolved viewerCanReply repository {{ databaseId }}
-            pullRequest {{ fullDatabaseId }} {COMMENTS}
-          }} }}
-        }}"#
-        );
-        let data = self.graph(&query, json!({"id":id,"commentCursor":Value::Null}))?;
-        let node = &data["node"];
-        if node.is_null() {
-            return Ok(None);
-        }
-        if number(&node["repository"]["databaseId"])? != repository_id
-            || number(&node["pullRequest"]["fullDatabaseId"])? != pull_request_id
-        {
-            return Err(ConnectionError::RepositoryChanged);
-        }
-        let thread = self.complete_thread(node)?;
-        if thread.id != id {
-            return Err(ConnectionError::InvalidResponse);
-        }
-        Ok(Some(thread))
-    }
-
     fn complete_thread(&self, node: &Value) -> Result<Thread, ConnectionError> {
         let id = text(&node["id"])?;
         let resolved = node["isResolved"]
@@ -460,10 +217,98 @@ impl<T: QueryTransport> GithubClient<T> {
     }
 }
 
-impl<T: MutationTransport> GithubClient<T> {
-    pub fn reply_to_thread(
+impl<T: QueryTransport> ThreadReader for GithubClient<T> {
+    fn owned_threads(&self, publication: &dyn Provenance) -> Result<Vec<Thread>, ConnectionError> {
+        self.owned_threads_at(publication, &publication.ownership()?.head_sha)
+    }
+
+    fn owned_threads_at(
         &self,
-        publication: &impl Provenance,
+        publication: &dyn Provenance,
+        current_head: &str,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        let publication = publication.ownership()?;
+        self.review_threads(
+            &publication.repository_name,
+            &publication.repository_id,
+            &publication.pull_request_id,
+            publication.number,
+            current_head,
+            Some(&publication),
+        )
+    }
+
+    fn review_threads_at(
+        &self,
+        repository_name: &str,
+        repository_id: &str,
+        pull_request_id: &str,
+        number: u64,
+        current_head: &str,
+    ) -> Result<Vec<Thread>, ConnectionError> {
+        self.review_threads(
+            repository_name,
+            repository_id,
+            pull_request_id,
+            number,
+            current_head,
+            None,
+        )
+    }
+
+    fn owned_thread(
+        &self,
+        publication: &dyn Provenance,
+        id: &str,
+    ) -> Result<Option<Thread>, ConnectionError> {
+        let publication = publication.ownership()?;
+        let thread =
+            self.review_thread(&publication.repository_id, &publication.pull_request_id, id)?;
+        if thread
+            .as_ref()
+            .is_some_and(|thread| !thread.owned_by(&publication))
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok(thread)
+    }
+
+    fn review_thread(
+        &self,
+        repository_id: &str,
+        pull_request_id: &str,
+        id: &str,
+    ) -> Result<Option<Thread>, ConnectionError> {
+        let query = format!(
+            r#"query($id:ID!,$commentCursor:String) {{
+          node(id:$id) {{ ... on PullRequestReviewThread {{
+            id isResolved viewerCanReply repository {{ databaseId }}
+            pullRequest {{ fullDatabaseId }} {COMMENTS}
+          }} }}
+        }}"#
+        );
+        let data = self.graph(&query, json!({"id":id,"commentCursor":Value::Null}))?;
+        let node = &data["node"];
+        if node.is_null() {
+            return Ok(None);
+        }
+        if number(&node["repository"]["databaseId"])? != repository_id
+            || number(&node["pullRequest"]["fullDatabaseId"])? != pull_request_id
+        {
+            return Err(ConnectionError::RepositoryChanged);
+        }
+        let thread = self.complete_thread(node)?;
+        if thread.id != id {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok(Some(thread))
+    }
+}
+
+impl<T: MutationTransport> ThreadWriter for GithubClient<T> {
+    fn reply_to_thread(
+        &self,
+        publication: &dyn Provenance,
         root_id: &str,
         body: &str,
     ) -> Result<String, WriteFailure> {
@@ -480,7 +325,7 @@ impl<T: MutationTransport> GithubClient<T> {
         )
     }
 
-    pub fn reply_to_review_thread(
+    fn reply_to_review_thread(
         &self,
         repository_name: &str,
         number: u64,
@@ -545,29 +390,25 @@ impl<T: MutationTransport> GithubClient<T> {
             uncertain: true,
         })
     }
-}
 
-impl<T: MutationTransport> GithubClient<T> {
     /// Resolves one review thread. Callers verify ownership first; this never decides it.
     /// Resolving a resolved thread is a no-op, so an uncertain result is safe to re-verify.
-    pub fn resolve_review_thread(
-        &self,
-        thread_id: &str,
-        request_id: &str,
-    ) -> Result<(), WriteFailure> {
+    fn resolve_review_thread(&self, thread_id: &str, request_id: &str) -> Result<(), WriteFailure> {
         self.set_review_thread(thread_id, request_id, true)
     }
 
     /// Undoes PR Sniper's own resolution when its accepted snapshot changed during the
     /// write. Unresolving an unresolved thread is a no-op.
-    pub fn unresolve_review_thread(
+    fn unresolve_review_thread(
         &self,
         thread_id: &str,
         request_id: &str,
     ) -> Result<(), WriteFailure> {
         self.set_review_thread(thread_id, request_id, false)
     }
+}
 
+impl<T: MutationTransport> GithubClient<T> {
     fn set_review_thread(
         &self,
         thread_id: &str,
