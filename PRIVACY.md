@@ -35,8 +35,12 @@ and keeps everything else on your device.
   its own sign-in data in its configuration folder. PR Sniper keeps these
   tokens in memory only and stores no Azure DevOps secret. It runs Azure CLI
   with telemetry and auto-upgrade turned off and never changes your Azure CLI
-  configuration. To find your organization's Microsoft Entra tenant, PR Sniper
-  sends an unauthenticated request to `dev.azure.com/<organization>`. It then
+  configuration, except `az login` when you choose **Sign in** and confirm. It
+  never signs you out. **Install** runs Homebrew (macOS) or winget (Windows)
+  only when you choose it, else opens the Azure CLI install page. To find
+  your organization's Microsoft Entra tenant, PR Sniper sends an
+  unauthenticated request to `dev.azure.com/<organization>`, then reads your
+  Azure DevOps identity (`connectionData`) to bind the account. It then
   reads pull request data from Azure DevOps and, only when your settings allow
   it, writes to it, as it does for GitHub. Microsoft's terms and privacy
   statement apply.
@@ -49,6 +53,7 @@ and keeps everything else on your device.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Sign-in tokens                           | macOS Keychain; Windows Credential Manager. Never in files.                                                          |
 | Azure DevOps tokens                      | Memory only. Azure CLI keeps its own sign-in data.                                                                   |
+| Azure DevOps organization and identity   | `state/azure-devops.json` in the folder below: organization name, identity ID, display and sign-in name              |
 | Settings, queue, reviews, notifications  | macOS: `~/Library/Application Support/com.jdylanmc.pr-sniper/`; Windows: `%LOCALAPPDATA%\com.jdylanmc.pr-sniper\`    |
 | Diagnostics logs (content-free)          | `state/` in the folder above. Shared only if you copy them yourself.                                                 |
 | Copilot runtime                          | Your user cache folder, under `github-copilot-sdk`                                                                   |

@@ -60,6 +60,13 @@ pub trait CommandRunner: Send + Sync {
     async fn run(&self, invocation: Invocation<'_>) -> Result<Output, RunError>;
 }
 
+#[async_trait]
+impl<R: CommandRunner + ?Sized> CommandRunner for std::sync::Arc<R> {
+    async fn run(&self, invocation: Invocation<'_>) -> Result<Output, RunError> {
+        (**self).run(invocation).await
+    }
+}
+
 pub struct SystemRunner;
 
 fn command(invocation: &Invocation<'_>) -> tokio::process::Command {

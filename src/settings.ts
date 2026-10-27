@@ -11,6 +11,11 @@ import {
   type GithubAccount,
 } from "./github-auth";
 import {
+  azureDevopsSummary,
+  renderAzureDevops,
+  type AzureDevopsSetup,
+} from "./azure-devops";
+import {
   renderCopilotAuth,
   modelSelectable,
   reasoningEfforts,
@@ -116,6 +121,7 @@ type Section =
   | "git-repository"
   | "copilot"
   | "github"
+  | "azure-devops"
   | "repositories"
   | "doctrines"
   | "voices"
@@ -149,6 +155,7 @@ const sections: Record<Section, string> = {
   "git-repository": "Git Repository",
   copilot: "GitHub Copilot",
   github: "GitHub",
+  "azure-devops": "Azure DevOps",
   repositories: "Repositories",
   doctrines: "Doctrines",
   voices: "Voices",
@@ -499,6 +506,7 @@ export async function mountSettings(
     "git-repository": "accounts",
     copilot: "ai-tooling",
     github: "git-repository",
+    "azure-devops": "git-repository",
   };
   let accountRead = 0;
   let busy = false;
@@ -847,9 +855,14 @@ export async function mountSettings(
       (!!options.embedded &&
         (section === "home" ||
           accountOverview ||
-          ["copilot", "github", "agents", "doctrines", "voices"].includes(
-            section,
-          )));
+          [
+            "copilot",
+            "github",
+            "azure-devops",
+            "agents",
+            "doctrines",
+            "voices",
+          ].includes(section)));
     settingsHeading.hidden = section === "home";
     if (options.embedded)
       app.dispatchEvent(
@@ -887,6 +900,7 @@ export async function mountSettings(
       else renderAccountOverview();
     }
     if (section === "copilot" || section === "github") renderAccounts();
+    if (section === "azure-devops") renderAzureDevopsSetup();
     if (section === "repositories") renderRepositories();
     if (section === "doctrines") renderDoctrines();
     if (section === "voices") renderVoices();
@@ -1000,9 +1014,8 @@ export async function mountSettings(
               .map((provider) => comingSoon(provider.label, "agents"))
               .join("")
           : overviewRow("github", "Reading...", "repositories") +
-            ["Azure DevOps", "Bitbucket"]
-              .map((label) => comingSoon(label, "repositories"))
-              .join("");
+            overviewRow("azure-devops", "", "repositories") +
+            comingSoon("Bitbucket", "repositories");
     content.innerHTML = `<div class="settings-overview"><nav class="settings-home-group" aria-label="${sections[section]}">${rows}</nav></div>`;
     content
       .querySelectorAll<HTMLButtonElement>("[data-settings-destination]")
@@ -1016,6 +1029,35 @@ export async function mountSettings(
         };
       });
     refreshAccountSummaries();
+    const azureSummary = content.querySelector<HTMLElement>(
+      '[data-settings-count="azure-devops"]',
+    );
+    if (azureSummary)
+      void invoke<AzureDevopsSetup>("azure_devops_setup_state").then(
+        (view) => {
+          if (azureSummary.isConnected)
+            azureSummary.textContent = azureDevopsSummary(view);
+        },
+        () => {
+          if (azureSummary.isConnected)
+            azureSummary.textContent = "Unavailable";
+        },
+      );
+  }
+
+  function renderAzureDevopsSetup() {
+    const root = document.createElement("div");
+    content.append(root);
+    renderAzureDevops(root, {
+      confirmSignIn: (tenant, opener) =>
+        confirmDialog(
+          "Sign in",
+          `<code>az login --tenant ${escape(tenant)}</code>`,
+          "Sign in",
+          opener,
+        ),
+      showError,
+    });
   }
 
   function refreshAccountSummaries() {

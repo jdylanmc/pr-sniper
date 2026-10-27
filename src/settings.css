@@ -4199,3 +4199,51 @@
 .panel-shell .shared-resource-editor .agent-section textarea:focus-visible {
   outline-offset: -3px;
 }
+.settings-window .azure-devops-row:hover {
+  background: transparent;
+}
+.azure-devops-row .settings-row-copy small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.azure-devops-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+}
+.azure-devops-actions:empty {
+  display: none;
+}
+.azure-devops-organization {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.azure-devops-organization input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+.azure-devops-organization input[aria-invalid="true"] {
+  border-color: var(--line-red-a03134);
+}
+.settings-window button.azure-devops-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-slate-7a8aa0);
+}
+.settings-window button.azure-devops-icon:hover:not(:disabled) {
+  background: var(--panel-mist);
+  color: var(--panel-ink);
+}

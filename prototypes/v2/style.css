@@ -3916,3 +3916,33 @@ input.switch:focus-visible {
   --control-teal-327e84: #59b8c0;
 }
 /* GENERATED:END */
+.azure-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 12px;
+}
+.azure-row + .azure-row {
+  border-top: 1px solid var(--line-slate-edf1f4);
+}
+.azure-org {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.azure-org input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+.azure-action {
+  flex: none;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.azure-row .row-copy small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
