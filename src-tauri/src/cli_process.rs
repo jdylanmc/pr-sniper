@@ -69,6 +69,28 @@ impl<R: CommandRunner + ?Sized> CommandRunner for std::sync::Arc<R> {
 
 pub struct SystemRunner;
 
+/// Windows runs `.cmd`/`.bat` files through cmd.exe, which re-parses the
+/// command line. Rust escapes batch arguments (and refuses ones it cannot),
+/// but defense in depth: a batch script only receives arguments made of
+/// characters cmd.exe treats literally. Ours are fixed literals and
+/// validated GUIDs, so this never rejects a real invocation.
+fn is_batch(program: &Path) -> bool {
+    program.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    })
+}
+
+pub fn batch_safe(arg: &str) -> bool {
+    !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'/' | b'_'))
+}
+
+fn admissible(invocation: &Invocation<'_>) -> bool {
+    !is_batch(invocation.program) || invocation.args.iter().all(|arg| batch_safe(arg))
+}
+
 fn command(invocation: &Invocation<'_>) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(invocation.program);
     command.args(invocation.args);
@@ -89,6 +111,9 @@ fn command(invocation: &Invocation<'_>) -> tokio::process::Command {
 #[async_trait]
 impl CommandRunner for SystemRunner {
     async fn run(&self, invocation: Invocation<'_>) -> Result<Output, RunError> {
+        if !admissible(&invocation) {
+            return Err(RunError::Failed);
+        }
         let mut child = command(&invocation)
             .spawn()
             .map_err(|error| match error.kind() {
@@ -221,6 +246,81 @@ mod tests {
                 .len(),
             64
         );
+    }
+
+    #[test]
+    fn batch_scripts_only_receive_arguments_cmd_treats_literally() {
+        let run = |program: &str, args: &[&str]| {
+            admissible(&Invocation {
+                program: Path::new(program),
+                args,
+                env: &POLICY,
+                limits: limits(1_000, 16),
+            })
+        };
+        let token = [
+            "account",
+            "get-access-token",
+            "--resource",
+            "499b84ac-1321-427f-aa17-267ca6975798",
+            "--output",
+            "json",
+        ];
+        assert!(run("C:/Program Files/wbin/az.cmd", &token));
+        assert!(run(
+            "C:/wbin/AZ.BAT",
+            &["499b84ac-1321-427f-aa17-267ca6975798/.default"]
+        ));
+        for hostile in [
+            "", "a b", "a&calc", "x|y", "%PATH%", "!x!", "\"", "^", "a\nb", "<", ">", "(", "é",
+        ] {
+            assert!(!run("C:/wbin/az.cmd", &["login", hostile]), "{hostile:?}");
+            assert!(!run("C:/wbin/az.bat", &[hostile]), "{hostile:?}");
+            // Native executables get the arguments verbatim, without cmd.exe.
+            assert!(run("C:/wbin/winget.exe", &[hostile]));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Rejected before spawning: a missing script is not even looked up.
+        let rejected = runtime.block_on(SystemRunner.run(Invocation {
+            program: Path::new("/nonexistent/pr-sniper-fixture/az.cmd"),
+            args: &["a&calc"],
+            env: &POLICY,
+            limits: limits(1_000, 16),
+        }));
+        assert_eq!(rejected.unwrap_err(), RunError::Failed);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runs_a_batch_script_in_a_directory_with_spaces() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pr-sniper-batch-{}", uuid::Uuid::new_v4()));
+        let directory = root.join("Program Files").join("wbin");
+        std::fs::create_dir_all(&directory).unwrap();
+        let script = directory.join("fixture.cmd");
+        std::fs::write(&script, b"@echo off\r\necho %1 %2\r\nexit /b 4\r\n").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let output = runtime
+            .block_on(SystemRunner.run(Invocation {
+                program: &script,
+                args: &["--tenant", "499b84ac-1321-427f-aa17-267ca6975798"],
+                env: &POLICY,
+                limits: limits(10_000, 256),
+            }))
+            .unwrap();
+        assert_eq!(output.code, Some(4));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "--tenant 499b84ac-1321-427f-aa17-267ca6975798"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

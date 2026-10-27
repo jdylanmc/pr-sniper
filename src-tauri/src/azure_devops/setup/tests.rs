@@ -850,6 +850,8 @@ async fn signs_in_to_the_organization_tenant_then_reprobes() {
             "none"
         ]
     );
+    // Passable to `az.cmd` on Windows.
+    assert!(args.iter().all(|arg| crate::cli_process::batch_safe(arg)));
     assert_eq!(*timeout, Duration::from_secs(300));
     assert!(removed.contains(&"COPILOT_AGENT_SESSION_ID"));
     assert_eq!(
