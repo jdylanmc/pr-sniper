@@ -325,6 +325,253 @@ class ReleaseTests(unittest.TestCase):
             with patch.object(self.api, "request", return_value=wrong), self.assertRaises(release.ReleaseError):
                 release.tap_ready(self.api)
 
+    def windows_assets(self, directory=None, trust_mode="unsigned", **overrides):
+        target = directory or self.directory
+        installer = b"fixture Windows NSIS setup executable, never executed"
+        manifest = {
+            "version": "0.1.0",
+            "tag": "v0.1.0",
+            "source_sha": COMMIT,
+            "filename": release.windows_filename("0.1.0"),
+            "sha256": hashlib.sha256(installer).hexdigest(),
+            "architecture": "x86_64",
+            "bundle_id": release.BUNDLE_ID,
+            "trust_mode": trust_mode,
+        }
+        if trust_mode == "signed":
+            manifest["signer_thumbprint"] = "A" * 40
+            manifest["signer_subject"] = "CN=Dylan McCurry"
+        manifest.update(overrides)
+        (target / release.windows_filename("0.1.0")).write_bytes(installer)
+        (target / "windows-manifest.json").write_text(json.dumps(manifest))
+        (target / "WINDOWS-SHA256SUMS").write_bytes(
+            f"{manifest['sha256']}  {manifest['filename']}\n".encode()
+        )
+        (target / "pr-sniper.0.1.0.nupkg").write_bytes(b"fixture public chocolatey package")
+        return manifest
+
+    def windows_pages(self, path, field=None):
+        if "windows.yml" in path:
+            return [{**self.api.ci, "id": 10}]
+        if "/runs/10/jobs" in path:
+            return [{"name": "windows", "conclusion": "success"},
+                    {"name": "windows-installer-acceptance", "conclusion": "success"}]
+        if "/actions/workflows/" in path:
+            return [self.api.ci]
+        if "/jobs" in path:
+            return [{"name": "macos", "conclusion": self.api.ci["conclusion"]}]
+        if path.endswith("/assets"):
+            return self.api.assets
+        raise AssertionError(path)
+
+    def test_windows_metadata_validates_unsigned_and_signed_manifests_and_checksums(self):
+        self.assertEqual(release.windows_filename("0.1.0"), "pr-sniper-0.1.0-x64-setup.exe")
+        for invalid in ["01.0.0", "1.0.0-beta", "1.0", "../bad"]:
+            with self.subTest(invalid=invalid), self.assertRaises(release.ReleaseError):
+                release.windows_filename(invalid)
+        unsigned = self.windows_assets(trust_mode="unsigned")
+        self.assertEqual(release.windows_metadata(self.directory), unsigned)
+        signed = self.windows_assets(trust_mode="signed")
+        self.assertEqual(release.windows_metadata(self.directory), signed)
+        for bad_overrides in [
+            {"trust_mode": "unsigned", "signer_thumbprint": "A" * 40, "signer_subject": None},
+            {"trust_mode": "unsigned", "signer_subject": "CN=Unexpected"},
+            {"trust_mode": "signed", "signer_thumbprint": "a" * 40},
+            {"trust_mode": "signed", "signer_thumbprint": "ABCD"},
+            {"trust_mode": "signed", "signer_subject": "   "},
+            {"trust_mode": "ad-hoc"},
+            {"architecture": "arm64"},
+            {"source_sha": "b" * 40},
+            {"tag": "v0.2.0"},
+            {"bundle_id": "other"},
+            {"sha256": "0" * 64},
+            {"filename": "pr-sniper-0.1.0-aarch64-apple-darwin.zip"},
+            {"unexpected": "field"},
+        ]:
+            with self.subTest(overrides=bad_overrides):
+                self.windows_assets(**{"trust_mode": "signed", **bad_overrides})
+                with self.assertRaises(release.ReleaseError):
+                    release.windows_metadata(self.directory)
+        self.windows_assets(trust_mode="unsigned")
+        (self.directory / "WINDOWS-SHA256SUMS").write_text("bad  pr-sniper-0.1.0-x64-setup.exe\n")
+        with self.assertRaises(release.ReleaseError):
+            release.windows_metadata(self.directory)
+
+    def test_publish_windows_preserves_macos_assets_and_is_idempotent_on_rerun(self):
+        macos_manifest = self.assets()
+        release.publish(self.api, self.directory)
+        with tempfile.TemporaryDirectory() as win_tmp:
+            win_dir = Path(win_tmp)
+            win_manifest = self.windows_assets(win_dir, trust_mode="unsigned")
+            with patch.object(release, "command", return_value=COMMIT), \
+                    patch.object(release, "config_version", return_value="0.1.0"), \
+                    patch.object(self.api, "pages", side_effect=self.windows_pages):
+                release.publish_windows(self.api, win_dir)
+                names = {asset["name"] for asset in self.api.assets}
+                self.assertEqual(names, {
+                    macos_manifest["filename"], "manifest.json", "SHA256SUMS",
+                    win_manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS",
+                })
+                writes_before = len([r for r in self.api.requests if r[0] != "GET"])
+                release.publish_windows(self.api, win_dir)
+                self.assertEqual(len([r for r in self.api.requests if r[0] != "GET"]), writes_before)
+
+    def test_publish_windows_refuses_missing_draft_or_partial_release_and_bad_digest_or_gate(self):
+        with tempfile.TemporaryDirectory() as win_tmp:
+            win_dir = Path(win_tmp)
+            win_manifest = self.windows_assets(win_dir, trust_mode="unsigned")
+            with patch.object(release, "command", return_value=COMMIT), \
+                    patch.object(release, "config_version", return_value="0.1.0"), \
+                    patch.object(self.api, "pages", side_effect=self.windows_pages):
+                with self.assertRaisesRegex(release.ReleaseError, "Published GitHub release"):
+                    release.publish_windows(self.api, win_dir)
+                self.assets()
+                release.publish(self.api, self.directory)
+                self.api.release["draft"] = True
+                with self.assertRaisesRegex(release.ReleaseError, "Published GitHub release"):
+                    release.publish_windows(self.api, win_dir)
+                self.api.release["draft"] = False
+                self.api.assets.append({
+                    "name": "windows-manifest.json",
+                    "state": "uploaded",
+                    "size": 10,
+                    "digest": "sha256:" + "0" * 64,
+                    "browser_download_url": f"https://github.com/{release.REPOSITORY}/releases/download/v0.1.0/windows-manifest.json",
+                })
+                with self.assertRaisesRegex(release.ReleaseError, "Partial Windows release assets"):
+                    release.publish_windows(self.api, win_dir)
+                self.api.assets = [a for a in self.api.assets if a["name"] != "windows-manifest.json"]
+                self.api.wrong_digest = True
+                with self.assertRaisesRegex(release.ReleaseError, "digest"):
+                    release.publish_windows(self.api, win_dir)
+                self.api.wrong_digest = False
+                self.api.assets = [a for a in self.api.assets if a["name"] not in (
+                    win_manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS"
+                )]
+            with patch.object(release, "command", return_value=COMMIT), \
+                    patch.object(release, "config_version", return_value="0.1.0"):
+                with self.assertRaises(release.ReleaseError):
+                    release.publish_windows(self.api, win_dir)
+
+    def test_classify_choco_status_distinguishes_submitted_awaiting_moderation_rejected_and_approved(self):
+        self.assertEqual(release.classify_choco_status(None, push_completed=False), "not_found")
+        self.assertEqual(release.classify_choco_status(None, push_completed=True), "submitted")
+        self.assertEqual(
+            release.classify_choco_status({"IsApproved": False, "PackageStatus": "Pending"}),
+            "awaiting_moderation",
+        )
+        self.assertEqual(
+            release.classify_choco_status({"IsApproved": False, "SubmittedStatus": "Waiting"}),
+            "awaiting_moderation",
+        )
+        self.assertEqual(
+            release.classify_choco_status({"IsApproved": False, "PackageStatus": "Rejected"}),
+            "rejected",
+        )
+        self.assertEqual(
+            release.classify_choco_status({"IsApproved": True, "PackageStatus": "Approved"}),
+            "publicly_approved",
+        )
+        for pending in [
+            release.classify_choco_status(None, push_completed=True),
+            release.classify_choco_status({"IsApproved": False, "PackageStatus": "Pending"}),
+        ]:
+            self.assertNotEqual(pending, "publicly_approved")
+
+        class FeedOpener:
+            def __init__(self, body=None, code=200):
+                self.body = body
+                self.code = code
+
+            def open(self, request, timeout=90):
+                if self.code != 200:
+                    raise release.urllib.error.HTTPError(request.full_url, self.code, "error", {}, None)
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.read.return_value = self.body.encode("utf-8")
+                return response
+
+        self.assertEqual(
+            release.choco_moderation_status("pr-sniper", "0.1.0", opener=FeedOpener(code=404)),
+            "not_found",
+        )
+        self.assertEqual(
+            release.choco_moderation_status(
+                "pr-sniper",
+                "0.1.0",
+                opener=FeedOpener(json.dumps({"d": {"IsApproved": False, "PackageStatus": "Pending"}})),
+            ),
+            "awaiting_moderation",
+        )
+        self.assertEqual(
+            release.choco_moderation_status(
+                "pr-sniper",
+                "0.1.0",
+                opener=FeedOpener(
+                    '<entry xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" '
+                    'xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">'
+                    "<m:properties><d:IsApproved>true</d:IsApproved><d:PackageStatus>Approved</d:PackageStatus></m:properties>"
+                    "</entry>"
+                ),
+            ),
+            "publicly_approved",
+        )
+
+    def test_choco_publish_verifies_public_windows_bytes_handles_moderation_states_and_redacts_api_key(self):
+        self.assets()
+        release.publish(self.api, self.directory)
+        with tempfile.TemporaryDirectory() as win_tmp:
+            win_dir = Path(win_tmp)
+            self.windows_assets(win_dir, trust_mode="unsigned")
+            with patch.object(release, "command", return_value=COMMIT), \
+                    patch.object(release, "config_version", return_value="0.1.0"), \
+                    patch.object(self.api, "pages", side_effect=self.windows_pages):
+                release.publish_windows(self.api, win_dir)
+
+            self.api.corrupt_download = True
+            with self.assertRaises(release.ReleaseError):
+                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "not_found")
+            self.api.corrupt_download = False
+
+            for existing_state in ("submitted", "awaiting_moderation", "publicly_approved"):
+                with patch.object(release, "command") as cmd:
+                    result = release.choco_publish(
+                        self.api, win_dir, status_Reader=lambda *_, s=existing_state: s
+                    )
+                    self.assertEqual(result["state"], existing_state)
+                    self.assertEqual(result["version"], "0.1.0")
+                    self.assertEqual(result["source_sha"], COMMIT)
+                    cmd.assert_not_called()
+
+            with patch.object(release, "command") as cmd, \
+                    self.assertRaisesRegex(release.ReleaseError, "rejected in moderation"):
+                release.choco_publish(self.api, win_dir, status_Reader=lambda *_: "rejected")
+            cmd.assert_not_called()
+
+            secret = "super-secret-choco-key-98765"
+            with patch.dict(os.environ, {"CHOCOLATEY_API_KEY": secret}):
+                with patch.object(release, "command", return_value="pushed") as cmd:
+                    result = release.choco_publish(
+                        self.api, win_dir, status_Reader=lambda *_: "not_found"
+                    )
+                    self.assertEqual(result, {
+                        "version": "0.1.0",
+                        "source_sha": COMMIT,
+                        "state": "submitted",
+                    })
+                    cmd.assert_called_once()
+
+                completed = subprocess_result = unittest.mock.Mock(
+                    returncode=1, stdout="", stderr=f"push failed for key {secret}"
+                )
+                with patch.object(release.subprocess, "run", return_value=completed) as run_mock:
+                    with self.assertRaises(release.ReleaseError) as ctx:
+                        release.choco_publish(
+                            self.api, win_dir, status_Reader=lambda *_: "not_found"
+                        )
+                    self.assertNotIn(secret, str(ctx.exception))
+                    env_passed = run_mock.call_args.kwargs["env"]
+                    self.assertNotIn("CHOCOLATEY_API_KEY", env_passed)
+
 
 if __name__ == "__main__":
     unittest.main()

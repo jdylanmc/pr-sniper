@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 REPOSITORY = "jdylanmc/pr-sniper"
 TAP = "jdylanmc/homebrew-pr-sniper"
@@ -20,8 +21,14 @@ BUNDLE_ID = "com.jdylanmc.pr-sniper"
 WORKFLOW = ".github/workflows/macos.yml"
 VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 SHA = re.compile(r"[0-9a-f]{40}")
+UPPER_SHA = re.compile(r"[0-9A-F]{40}")
 HASH = re.compile(r"[0-9a-f]{64}")
 ASSETS = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pr-sniper-release-assets"
+WINDOWS_ASSETS = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pr-sniper-windows-release-assets"
+CHOCO_PACKAGE_ID = "pr-sniper"
+CHOCO_FEED = "https://community.chocolatey.org/api/v2"
+CHOCO_PUSH_SOURCE = "https://push.chocolatey.org/"
+CHOCO_STATES = ("publicly_approved", "awaiting_moderation", "rejected", "submitted", "not_found")
 
 
 class ReleaseError(Exception):
@@ -64,12 +71,23 @@ def config_version(root=Path(".")):
 def command(args, timeout=120):
     try:
         environment = {key: value for key, value in os.environ.items()
-                       if not key.startswith("APPLE_") and key not in ("GITHUB_TOKEN", "HOMEBREW_TAP_TOKEN")}
+                       if not key.startswith("APPLE_")
+                       and key not in ("GITHUB_TOKEN", "HOMEBREW_TAP_TOKEN", "CHOCOLATEY_API_KEY")}
         result = subprocess.run(args, check=False, capture_output=True, timeout=timeout, text=True, env=environment)
     except (OSError, subprocess.TimeoutExpired):
         raise ReleaseError("Command could not complete: " + str(args[0])) from None
-    require(result.returncode == 0, "Command failed: " + str(args[0])
-            + (": " + result.stderr[-3000:] if args[0] == "brew" else ""))
+    detail = ""
+    if args[0] == "brew":
+        detail = ": " + result.stderr[-3000:]
+    elif args[0] == "choco":
+        raw_detail = (result.stderr or result.stdout)[-3000:]
+        for secret in [os.environ.get("CHOCOLATEY_API_KEY", ""),
+                       *[args[index + 1] for index, arg in enumerate(args[:-1]) if arg == "--api-key"]]:
+            if secret:
+                raw_detail = raw_detail.replace(secret, "[REDACTED]")
+        if raw_detail:
+            detail = ": " + raw_detail
+    require(result.returncode == 0, "Command failed: " + str(args[0]) + detail)
     return result.stdout.strip()
 
 
@@ -176,6 +194,10 @@ def filename(release_version):
     return f"pr-sniper-{release_version}-aarch64-apple-darwin.zip"
 
 
+def windows_filename(release_version):
+    return f"pr-sniper-{version('v' + release_version)}-x64-setup.exe"
+
+
 def cask(release_version, checksum):
     filename(release_version)
     require(HASH.fullmatch(checksum), "Invalid asset checksum.")
@@ -219,6 +241,47 @@ def metadata(directory=ASSETS):
     checksum = hashlib.sha256(artifact.read_bytes()).hexdigest()
     require(HASH.fullmatch(manifest["sha256"]) and manifest["sha256"] == checksum,
             "Release bytes do not match the signed artifact manifest.")
+    return manifest
+
+
+def windows_metadata(directory=WINDOWS_ASSETS):
+    manifest = json.loads((directory / "windows-manifest.json").read_text())
+    required_keys = {"version", "tag", "source_sha", "filename", "sha256", "architecture", "bundle_id", "trust_mode"}
+    allowed_keys = required_keys | {"signer_thumbprint", "signer_subject"}
+    require(isinstance(manifest, dict) and required_keys <= set(manifest) <= allowed_keys,
+            "Unexpected Windows release manifest.")
+    require(isinstance(manifest["version"], str) and version(manifest["tag"]) == manifest["version"]
+            and isinstance(manifest["source_sha"], str) and SHA.fullmatch(manifest["source_sha"]),
+            "Invalid Windows release version or source.")
+    if os.environ.get("SOURCE_SHA"):
+        require(manifest["source_sha"] == os.environ["SOURCE_SHA"],
+                "Windows artifact provenance does not match this workflow's gated commit.")
+    if os.environ.get("GITHUB_REF_NAME"):
+        require(manifest["tag"] == os.environ["GITHUB_REF_NAME"],
+                "Windows artifact provenance does not match this workflow's gated tag.")
+    require(manifest["filename"] == windows_filename(manifest["version"])
+            and manifest["architecture"] == "x86_64" and manifest["bundle_id"] == BUNDLE_ID,
+            "Wrong Windows release platform, identity or filename.")
+    require(manifest["trust_mode"] in ("unsigned", "signed"), "Invalid Windows release trust mode.")
+    if manifest["trust_mode"] == "unsigned":
+        require(manifest.get("signer_thumbprint") is None and manifest.get("signer_subject") is None,
+                "Unsigned Windows release manifest must not include signer identity.")
+    else:
+        thumbprint = manifest.get("signer_thumbprint")
+        subject = manifest.get("signer_subject")
+        require(isinstance(thumbprint, str) and UPPER_SHA.fullmatch(thumbprint)
+                and isinstance(subject, str) and bool(subject.strip()),
+                "Signed Windows release manifest requires uppercase 40-hex thumbprint and non-empty signer subject.")
+    artifact = directory / manifest["filename"]
+    require(artifact.is_file() and not artifact.is_symlink(), "Windows release artifact is unavailable.")
+    checksum = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    require(isinstance(manifest["sha256"], str) and HASH.fullmatch(manifest["sha256"])
+            and manifest["sha256"] == checksum,
+            "Windows release bytes do not match the artifact manifest.")
+    sums = directory / "WINDOWS-SHA256SUMS"
+    require(sums.is_file() and not sums.is_symlink(), "Windows checksum file is unavailable.")
+    require(sums.read_bytes().decode() == f"{manifest['sha256']}  {manifest['filename']}\n",
+            "Windows checksum file mismatch.")
     return manifest
 
 
@@ -306,6 +369,168 @@ def publish(api, directory=ASSETS):
     verify_public(api, manifest, directory)
 
 
+def verify_windows_public(api, manifest, local=None):
+    require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved; release is not current.")
+    release = release_for(api, manifest)
+    require(release and not release["draft"], "Release is not publicly published.")
+    assets = api.pages(f"/repos/{REPOSITORY}/releases/{release['id']}/assets")
+    windows_expected = {manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS"}
+    macos_expected = {filename(manifest["version"]), "manifest.json", "SHA256SUMS"}
+    names = {asset["name"] for asset in assets}
+    require(len(assets) == len(names), "Release assets are duplicated.")
+    require(names == windows_expected or names == (windows_expected | macos_expected),
+            "Release assets are incomplete, duplicated or unexpected.")
+    base = f"https://github.com/{REPOSITORY}/releases/download/{manifest['tag']}/"
+    for asset in assets:
+        require(asset["state"] == "uploaded" and asset["browser_download_url"] == base + asset["name"],
+                "Unexpected public release asset identity.")
+        if asset["name"] not in windows_expected:
+            continue
+        data = public_bytes(asset["browser_download_url"])
+        if local is not None:
+            require(data == (local / asset["name"]).read_bytes(),
+                    "Published Windows bytes differ from local release assets.")
+        if asset["name"] == manifest["filename"]:
+            require(hashlib.sha256(data).hexdigest() == manifest["sha256"],
+                    "Published Windows installer checksum mismatch.")
+        elif asset["name"] == "windows-manifest.json":
+            require(json.loads(data) == manifest, "Published Windows provenance manifest mismatch.")
+        else:
+            require(data.decode() == f"{manifest['sha256']}  {manifest['filename']}\n",
+                    "Published Windows checksum file mismatch.")
+    return release
+
+
+def publish_windows(api, directory=WINDOWS_ASSETS):
+    manifest = windows_metadata(directory)
+    gated = gate(api, manifest["tag"], require_windows=True)
+    require(gated["sha"] == manifest["source_sha"], "Windows release source does not match gated commit.")
+    release = release_for(api, manifest)
+    require(release and not release["draft"],
+            "Published GitHub release must exist before attaching Windows assets.")
+    assets = api.pages(f"/repos/{REPOSITORY}/releases/{release['id']}/assets")
+    windows_names = (manifest["filename"], "windows-manifest.json", "WINDOWS-SHA256SUMS")
+    existing_names = {asset["name"] for asset in assets}
+    present_windows = existing_names & set(windows_names)
+    if present_windows == set(windows_names):
+        return verify_windows_public(api, manifest, directory)
+    require(not present_windows,
+            "Partial Windows release assets exist; reconcile manually before rerunning.")
+    macos_expected = {filename(manifest["version"]), "manifest.json", "SHA256SUMS"}
+    require(not existing_names or existing_names == macos_expected,
+            "Existing release assets are incomplete or unexpected.")
+    for name in windows_names:
+        data = (directory / name).read_bytes()
+        result = api.request(f"/repos/{REPOSITORY}/releases/{release['id']}/assets?name={name}", "POST",
+                             data=data, content_type="application/octet-stream")
+        require(result["name"] == name and result["state"] == "uploaded" and result["size"] == len(data),
+                "GitHub Windows asset upload was not confirmed.")
+        require(result.get("digest") == "sha256:" + hashlib.sha256(data).hexdigest(),
+                "GitHub did not confirm the uploaded Windows bytes' SHA-256 digest.")
+    require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved during Windows upload.")
+    return verify_windows_public(api, manifest, directory)
+
+
+def classify_choco_status(feed_entry, push_completed=False):
+    if feed_entry is None:
+        return "submitted" if push_completed else "not_found"
+    if isinstance(feed_entry, str):
+        normalized = feed_entry.strip().lower()
+        if normalized in CHOCO_STATES:
+            return normalized
+        raise ReleaseError("Unrecognized Chocolatey moderation status.")
+    require(isinstance(feed_entry, dict) and bool(feed_entry),
+            "Unrecognized Chocolatey moderation status.")
+    explicit = str(feed_entry.get("state") or feed_entry.get("status")
+                   or feed_entry.get("moderation_status") or "").strip().lower()
+    if explicit in CHOCO_STATES:
+        return explicit
+    package_status = str(feed_entry.get("PackageStatus") or feed_entry.get("package_status") or "").strip().lower()
+    submitted_status = str(feed_entry.get("SubmittedStatus") or feed_entry.get("submitted_status") or "").strip().lower()
+    raw_approved = feed_entry.get("IsApproved", feed_entry.get("is_approved"))
+    if isinstance(raw_approved, str):
+        approved = raw_approved.strip().lower() == "true"
+    elif isinstance(raw_approved, bool):
+        approved = raw_approved
+    else:
+        approved = None
+    if "reject" in package_status or "reject" in submitted_status or explicit == "rejected":
+        return "rejected"
+    if approved is True and package_status in ("", "approved", "active", "published", "exempted"):
+        return "publicly_approved"
+    if approved is False or package_status in ("pending", "waiting", "submitted", "validating", "verifying", "responded", "ready", "pendingmoderation", "awaitingmoderation") \
+            or submitted_status in ("pending", "waiting", "submitted", "validating", "verifying", "responded", "ready"):
+        return "awaiting_moderation"
+    raise ReleaseError("Unrecognized Chocolatey moderation status.")
+
+
+def choco_moderation_status(package_id=CHOCO_PACKAGE_ID, package_version="", *, opener=None):
+    require(package_id == CHOCO_PACKAGE_ID, "Unexpected Chocolatey package ID.")
+    version("v" + package_version)
+    url = f"{CHOCO_FEED}/Packages(Id='{package_id}',Version='{package_version}')"
+    client = opener if opener is not None else urllib.request.build_opener(NoRedirect())
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/json, application/atom+xml, application/xml;q=0.9",
+        "User-Agent": "pr-sniper-release",
+    })
+    try:
+        with client.open(request, timeout=90) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return "not_found"
+        raise ReleaseError(f"Chocolatey feed query failed with HTTP {error.code}.") from None
+    except OSError:
+        raise ReleaseError("Chocolatey feed query could not complete.") from None
+    stripped = raw.strip()
+    require(stripped, "Empty Chocolatey feed response.")
+    if stripped.startswith("{"):
+        payload = json.loads(stripped)
+        entry = payload.get("d", payload) if isinstance(payload, dict) else None
+        require(isinstance(entry, dict), "Unexpected Chocolatey JSON feed entry.")
+        return classify_choco_status(entry)
+    root = ET.fromstring(stripped)
+    props = {}
+    for elem in root.iter():
+        local_name = elem.tag.rsplit("}", 1)[-1]
+        if local_name in ("IsApproved", "PackageStatus", "SubmittedStatus", "Id", "Version") and elem.text is not None:
+            props[local_name] = elem.text.strip()
+    if not props and root.tag.rsplit("}", 1)[-1] == "feed":
+        return "not_found"
+    return classify_choco_status(props)
+
+
+def choco_publish(api, directory=WINDOWS_ASSETS, nupkg_path=None, status_reader=None, status_Reader=None):
+    manifest = windows_metadata(directory)
+    verify_windows_public(api, manifest, directory)
+    package_file = Path(nupkg_path) if nupkg_path is not None else (directory / f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg")
+    require(package_file.is_file() and not package_file.is_symlink(),
+            "Chocolatey package file is unavailable.")
+    require(package_file.name == f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
+            and "localtest" not in package_file.name.lower(),
+            "Refusing to publish non-public or mismatched Chocolatey package.")
+    reader = status_reader or status_Reader or choco_moderation_status
+    raw_status = reader(CHOCO_PACKAGE_ID, manifest["version"])
+    current_status = classify_choco_status(raw_status) if isinstance(raw_status, dict) else raw_status
+    require(current_status in CHOCO_STATES, "Unknown Chocolatey moderation state.")
+    if current_status in ("publicly_approved", "awaiting_moderation", "submitted"):
+        return {"version": manifest["version"], "source_sha": manifest["source_sha"], "state": current_status}
+    require(current_status != "rejected",
+            "Chocolatey package version was rejected in moderation; do not push duplicate version.")
+    api_key = os.environ.get("CHOCOLATEY_API_KEY", "").strip()
+    require(api_key, "Required Chocolatey publishing credential is missing.")
+    require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before Chocolatey publication.")
+    try:
+        command(["choco", "push", str(package_file), "--source", CHOCO_PUSH_SOURCE, "--api-key", api_key])
+    except ReleaseError as error:
+        raise ReleaseError(str(error).replace(api_key, "[REDACTED]")) from None
+    return {
+        "version": manifest["version"],
+        "source_sha": manifest["source_sha"],
+        "state": classify_choco_status(None, push_completed=True),
+    }
+
+
 def tap_ready(api):
     repository = api.request(f"/repos/{TAP}")
     require(repository["full_name"] == TAP and repository["default_branch"] == "main"
@@ -371,10 +596,14 @@ def main():
         tap_ready(Github(os.environ.get("HOMEBREW_TAP_TOKEN")))
     elif action == "publish":
         publish(api)
+    elif action == "publish-windows":
+        publish_windows(api)
     elif action == "tap":
         tap_update(api, Github(os.environ.get("HOMEBREW_TAP_TOKEN")))
+    elif action == "choco-publish":
+        print(json.dumps(choco_publish(api)))
     else:
-        raise ReleaseError("Expected check, gate, check-windows-release, tap-ready, publish or tap.")
+        raise ReleaseError("Expected check, gate, check-windows-release, tap-ready, publish, publish-windows, tap or choco-publish.")
 
 
 if __name__ == "__main__":
