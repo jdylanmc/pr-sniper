@@ -130,17 +130,20 @@ export function createServer() {
       s.page(schema, true),
       (args) => ({ operation: "resources", kind, ...args }),
     );
-  for (const [name, kind] of [
-    ["list_repository_accounts", "repository"],
-    ["list_copilot_accounts", "copilot"],
-  ])
-    register(
-      name,
-      `List existing connected ${kind} identities safely; no credentials or login flow. Repository accounts include the generation required for validated binding/watch commands.`,
-      s.pageInput,
-      s.page(s.account),
-      (args) => ({ operation: "accounts", kind, ...args }),
-    );
+  register(
+    "list_repository_accounts",
+    "List existing connected repository identities safely; no credentials or login flow. Accounts include the generation required for validated binding/watch commands; azure_devops reports Azure DevOps setup state, and its bound identity is an account.",
+    s.pageInput,
+    s.page(s.account).extend({ azure_devops: s.azureDevopsSetup.optional() }),
+    (args) => ({ operation: "accounts", kind: "repository", ...args }),
+  );
+  register(
+    "list_copilot_accounts",
+    "List existing connected copilot identities safely; no credentials or login flow.",
+    s.pageInput,
+    s.page(s.account),
+    (args) => ({ operation: "accounts", kind: "copilot", ...args }),
+  );
   register(
     "list_queue",
     "Read bounded PR state and exact native candidate/operation identities. Completed work is not retryable; explicit review again uses watch_pull_request.",
@@ -182,7 +185,7 @@ export function createServer() {
   );
   register(
     "resolve_repository",
-    "Resolve a URL through one explicitly selected already-connected repository account. Returns verified repository identity and connection generation; does not configure or enable it.",
+    "Resolve a URL through one explicitly selected already-connected repository account (GitHub, or the bound Azure DevOps identity for dev.azure.com/*.visualstudio.com URLs). Returns verified repository identity and connection generation; does not configure or enable it.",
     { account_id: s.id, url: s.id },
     z
       .object({

@@ -59,6 +59,23 @@ export function repositoryProviderContext(
   return "unsupported";
 }
 
+/** Lowercase Azure DevOps organization of a pasted repository URL. */
+export function azureDevopsOrganization(input: string): string | undefined {
+  try {
+    const url = new URL(input.trim());
+    const host = url.hostname.toLowerCase();
+    const organization =
+      host === "dev.azure.com"
+        ? url.pathname.split("/").filter(Boolean)[0]
+        : host.endsWith(".visualstudio.com")
+          ? host.slice(0, -".visualstudio.com".length)
+          : undefined;
+    return organization?.toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function primaryAssignmentId(
   repository: Repository,
 ): string | undefined {

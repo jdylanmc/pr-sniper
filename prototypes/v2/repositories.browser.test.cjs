@@ -172,6 +172,53 @@ async function check(engine, name) {
       await page.evaluate(() => document.activeElement.dataset.focusKey),
       "browse-github-personal",
     );
+    // Azure DevOps: connected account browses projects; teammates autocomplete.
+    await click("#back-button");
+    await click('[data-page="accounts"]');
+    await click('[data-page="azure-devops"]');
+    await click(".scenario-details summary");
+    await click('[data-action="azure-scenario"][data-id="connected"]');
+    await click("#back-button");
+    await click("#back-button");
+    await click('[data-page="repos"]');
+    await click('[data-page="ado-browser"]');
+    assert.equal(await page.locator("#ado-project").inputValue(), "Web");
+    await page.locator("#ado-project").selectOption("Api");
+    await page.waitForTimeout(250);
+    await click('[data-name="contoso/Api/gateway"]');
+    repo = (await state()).repos.at(-1);
+    assert.equal(repo.provider, "azure_devops");
+    assert.equal(repo.name, "contoso/Api/gateway");
+    assert.equal(repo.enabled, false);
+    await capture("azure-devops-added");
+    await page.locator('input[name="admissionAll"]').uncheck();
+    await click('[data-action="open-filters"]');
+    await click('[data-action="open-rule"][data-kind="include_users"]');
+    await page.locator("[data-person-search]").fill("bl");
+    await page.waitForTimeout(400);
+    assert.equal(await page.locator('[data-action="pick-person"]').count(), 2);
+    await capture("azure-devops-people");
+    await click('[data-action="pick-person"][data-name="Blake Example"]');
+    assert.equal(
+      await page.locator(".admission-values .person-handle").innerText(),
+      "Blake Example",
+    );
+    await click("#back-button");
+    await click("#back-button");
+    await click('[data-form="repo"] button[type="submit"]');
+    repo = (await state()).repos.find((item) => item.id === repo.id);
+    assert.equal(repo.provider, "azure_devops");
+    assert.deepEqual(
+      repo.admission.rules.find((rule) => rule.kind === "include_users").users,
+      ["Blake Example"],
+    );
+    await click('[data-page="repo-url"]');
+    await page
+      .locator('[name="repository"]')
+      .fill("https://dev.azure.com/contoso/Web/_git/app");
+    await click('[data-form="repo-url"] button[type="submit"]');
+    assert.equal((await state()).repos.at(-1).name, "contoso/Web/app");
+    await click("#back-button");
     // Saved data from before admission filters migrates on load.
     await page.evaluate((key) => {
       const saved = JSON.parse(localStorage.getItem(key));
@@ -208,7 +255,7 @@ async function check(engine, name) {
     assert.deepEqual(errors, []);
     assert.deepEqual(external, []);
     console.log(
-      `${name}: repository browse, owner filter, URL, duplicate, persistence, keyboard, compact and empty-state checks passed`,
+      `${name}: repository browse, owner filter, URL, duplicate, persistence, keyboard, compact, Azure DevOps and empty-state checks passed`,
     );
   } finally {
     await browser.close();

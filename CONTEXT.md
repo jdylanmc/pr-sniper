@@ -26,6 +26,14 @@ _Avoid_: Logged-in user
 The provider-issued stable repository ID bound to one explicit Provider Account.
 _Avoid_: Repository name
 
+**Azure DevOps Repository Identity**:
+`{organization}/{project ID}/{repository ID}`: lowercase organization and project and repository GUIDs, stable across renames. Resolved from a project/repository pick, a pasted `dev.azure.com` or `*.visualstudio.com` URL, or the ID itself, only in the connected organization as the Bound Azure DevOps Identity.
+_Avoid_: Repository URL as identity
+
+**Teammate Search**:
+Azure DevOps people autocomplete (`PeopleSearch`): debounced IdentityPicker prefix search over users; when the directory fails, the repository's recent pull request authors and reviewers. A pick saves identity ID (GUID) plus display name.
+_Avoid_: Login lookup (GitHub)
+
 **Provider Read Interface**:
 Provider-neutral reads: account identity and people (`AccountReader`), repository discovery and resolution (`RepositoryReader`), pull request listing, polling, detail, changed files and file content (`PullRequestReader`). Each provider implements them over neutral Person, repository, pull request, Revision and changed-file types. Feature code reads only through them.
 _Avoid_: GitHub client (for reads)
@@ -35,7 +43,7 @@ Provider-neutral threads, publication, outcomes and readiness: review threads re
 _Avoid_: GitHub client (for writes)
 
 **Provider Capability**:
-What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves.
+What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Discovery (repositories, people) gates adding a repository; review gates monitoring. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves.
 _Avoid_: GitHub-only check
 
 **Accessible Repository**:

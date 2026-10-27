@@ -11,6 +11,32 @@ pub struct Person {
     pub login: String,
 }
 
+/// One person a people search found: provider ID, display handle and,
+/// when the provider returns one, a mail address to tell namesakes apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PersonMatch {
+    pub id: String,
+    pub login: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mail: Option<String>,
+}
+
+/// Where a people search's matches came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeopleSource {
+    /// The provider's people directory.
+    Directory,
+    /// Recent pull request authors and reviewers, after the directory failed.
+    Recent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct People {
+    pub source: PeopleSource,
+    pub people: Vec<PersonMatch>,
+}
+
 /// The commits one pull request state points at: its head and the target
 /// branch tip (not the merge base; see `ReviewContext::base_revision`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

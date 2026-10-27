@@ -181,7 +181,7 @@ test("URL requires explicit choice across accounts, rejects unsupported provider
   await form
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/repo");
-  await expect(form.locator("[role=status]")).toContainText("Coming soon");
+  await expect(form.locator("[role=status]")).toContainText("Not connected");
   await expect(
     form.getByRole("button", { name: "Add & configure" }),
   ).toBeDisabled();

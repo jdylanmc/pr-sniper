@@ -404,6 +404,38 @@ struct Inner {
 pub struct Setup {
     backends: Backends,
     inner: Mutex<Inner>,
+    /// One token cache per located Azure CLI, shared by repository reads.
+    tokens: Mutex<Option<(PathBuf, Arc<dyn TokenSource>)>>,
+}
+
+/// The bound identity as a repository account, as control tools list it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepositoryAccount {
+    /// `connected` or `reconnect_required`.
+    pub state: &'static str,
+    pub provider: &'static str,
+    pub account_id: String,
+    pub login: String,
+    pub organization: String,
+    /// Azure DevOps reads are fenced by the bound identity, not a generation.
+    pub connection_generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::provider::ConnectionError>,
+}
+
+/// Setup state plus the bound repository account, if any.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Report {
+    pub setup: SetupView,
+    pub account: Option<RepositoryAccount>,
+}
+
+/// A connected account: the organization, its tenant and the bound identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connected {
+    pub organization: String,
+    pub tenant: TenantId,
+    pub identity: Identity,
 }
 
 impl Setup {
@@ -418,7 +450,130 @@ impl Setup {
                 generation: 0,
                 probing: 0,
             }),
+            tokens: Mutex::default(),
         })
+    }
+
+    /// Drops cached read tokens: they belong to the previously bound identity.
+    fn reset_tokens(&self) {
+        *self
+            .tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// The token source for reads; rebuilt when Azure CLI moves or the
+    /// binding changes.
+    pub fn token_source(&self) -> Arc<dyn TokenSource> {
+        let az = (self.backends.locate)(Program::Az);
+        let mut tokens = self
+            .tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let (Some((path, source)), Some(az)) = (tokens.as_ref(), az.as_ref()) {
+            if path == az {
+                return Arc::clone(source);
+            }
+        }
+        let source: Arc<dyn TokenSource> = Arc::new(AzCliTokenSource::new(
+            az.clone(),
+            Arc::clone(&self.backends.runner),
+            Arc::clone(&self.backends.clock),
+        ));
+        *tokens = az.map(|az| (az, Arc::clone(&source)));
+        source
+    }
+
+    /// Setup state and the bound account; probes once if never probed.
+    pub async fn report(self: &Arc<Self>) -> Report {
+        let probed = self.lock().probed.is_some();
+        let setup = if probed {
+            self.view()
+        } else {
+            self.check().await
+        };
+        let inner = self.lock();
+        let account = match (&inner.binding.identity, &inner.binding.organization) {
+            (Some(bound), Some(organization)) => {
+                use crate::provider::ConnectionError as E;
+                let reason = match &setup.account {
+                    AccountView::Connected { identity } if identity.id == bound.id => None,
+                    AccountView::Connected { .. } | AccountView::WrongIdentity { .. } => {
+                        Some(E::WrongIdentity)
+                    }
+                    AccountView::Offline => Some(E::Network),
+                    AccountView::Failed => Some(E::BrokenCli),
+                    AccountView::Unavailable => Some(match setup.cli {
+                        CliView::Missing | CliView::TooOld { .. } => E::MissingCli,
+                        CliView::Failed => E::BrokenCli,
+                        _ => E::Configuration,
+                    }),
+                    _ => Some(E::SignedOut),
+                };
+                Some(RepositoryAccount {
+                    state: if reason.is_none() {
+                        "connected"
+                    } else {
+                        "reconnect_required"
+                    },
+                    provider: "azure_devops",
+                    account_id: bound.id.clone(),
+                    login: bound.display_name.clone(),
+                    organization: organization.clone(),
+                    connection_generation: 0,
+                    reason,
+                })
+            }
+            _ => None,
+        };
+        Report { setup, account }
+    }
+
+    /// The connected account, probing first unless already connected.
+    /// Never interactive.
+    pub async fn connected(
+        self: &Arc<Self>,
+    ) -> Result<Connected, crate::provider::ConnectionError> {
+        use crate::provider::ConnectionError as E;
+        let connected = |inner: &Inner| {
+            matches!(
+                inner.probed.as_ref().map(|probed| &probed.account),
+                Some(AccountView::Connected { .. })
+            )
+        };
+        if !connected(&self.lock()) {
+            self.check().await;
+        }
+        let inner = self.lock();
+        let probed = inner.probed.as_ref().ok_or(E::Configuration)?;
+        match (
+            &probed.account,
+            &probed.tenant,
+            &inner.binding.organization,
+            &inner.binding.identity,
+        ) {
+            (
+                AccountView::Connected { identity },
+                Some(tenant),
+                Some(organization),
+                Some(bound),
+            ) if identity.id == bound.id => Ok(Connected {
+                organization: organization.clone(),
+                tenant: tenant.clone(),
+                identity: identity.clone(),
+            }),
+            (AccountView::Connected { .. } | AccountView::WrongIdentity { .. }, ..) => {
+                Err(E::WrongIdentity)
+            }
+            (AccountView::Offline, ..) => Err(E::Network),
+            (AccountView::Failed, ..) => Err(E::BrokenCli),
+            (AccountView::Unavailable, ..) => Err(match probed.cli {
+                CliView::Missing | CliView::TooOld { .. } => E::MissingCli,
+                CliView::Failed => E::BrokenCli,
+                _ => E::Configuration,
+            }),
+            _ => Err(E::SignedOut),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -484,6 +639,7 @@ impl Setup {
                 };
                 if (self.backends.persist)(&next).is_ok() {
                     inner.binding = next;
+                    self.reset_tokens();
                 } else if binding.identity.is_none() {
                     // Never show an unbound identity as connected; the next
                     // probe retries the write.
@@ -519,6 +675,7 @@ impl Setup {
                 };
                 (self.backends.persist)(&next).map_err(|_| SetupError::Storage)?;
                 inner.binding = next;
+                self.reset_tokens();
                 inner.probed = None;
                 inner.generation += 1;
             }
@@ -544,6 +701,7 @@ impl Setup {
             };
             (self.backends.persist)(&next).map_err(|_| SetupError::Storage)?;
             inner.binding = next;
+            self.reset_tokens();
             inner.generation += 1;
         }
         Ok(self.check().await)

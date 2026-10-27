@@ -789,25 +789,38 @@ function collectionPage(kind) {
     <button type="button" class="floating-pill" data-page="${editor}">${icon("plus")}${label}</button>`;
 }
 
+/** The connected Azure DevOps identity's name, if setup is connected. */
+const azureAccountName = () =>
+  azure.account === "connected" ? azureIdentities[azure.identity]?.name : null;
+const isAzure = (repo) => repo?.provider === "azure_devops";
+
 function repositoriesPage() {
   const accounts = state.accounts.filter(
     (account) => account.kind === "github",
   );
+  const azureName = azureAccountName();
   const connected = (repo) =>
-    state.accounts.some(
-      (account) => account.id === repo.accountId && account.connected,
-    );
+    isAzure(repo)
+      ? !!azureName
+      : state.accounts.some(
+          (account) => account.id === repo.accountId && account.connected,
+        );
   const accountName = (repo) =>
-    state.accounts.find((item) => item.id === repo.accountId)?.name ??
-    state.forgotten.find((item) => item.id === repo.accountId)?.name ??
-    "unbound";
+    isAzure(repo)
+      ? (azureName ?? "unbound")
+      : (state.accounts.find((item) => item.id === repo.accountId)?.name ??
+        state.forgotten.find((item) => item.id === repo.accountId)?.name ??
+        "unbound");
+  const azureRow = azureName
+    ? `<div class="repository-account"><span class="provider-mark" data-brand="azure-devops">AZ</span><span class="row-copy"><strong>${esc(azureName)}</strong><small>${esc(azure.name)}</small></span><button class="repository-browse" data-page="ado-browser" data-focus-key="browse-azure-devops" aria-label="Browse repositories as ${esc(azureName)}" title="Browse repositories">${icon("search")}</button></div>`
+    : "";
   const row = (repo, live) =>
-    `<div class="repo-row"><button type="button" class="settings-row repo-open" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>GitHub / ${esc(accountName(repo))}</small></span>${icon("chevron")}</button><button type="button" class="mini-switch" role="switch" aria-checked="${repo.enabled}" aria-label="Monitor ${esc(repo.name)}" data-action="toggle-repo" data-id="${esc(repo.id)}" data-focus-key="toggle-${esc(repo.id)}" ${disabled(!live)}></button></div>`;
+    `<div class="repo-row"><button type="button" class="settings-row repo-open" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>${isAzure(repo) ? "Azure DevOps" : "GitHub"} / ${esc(accountName(repo))}</small></span>${icon("chevron")}</button><button type="button" class="mini-switch" role="switch" aria-checked="${repo.enabled}" aria-label="Monitor ${esc(repo.name)}" data-action="toggle-repo" data-id="${esc(repo.id)}" data-focus-key="toggle-${esc(repo.id)}" ${disabled(!live)}></button></div>`;
   const live = state.repos.filter(connected);
   const lost = state.repos.filter((repo) => !connected(repo));
   return `<div class="page-scroll has-fab" data-scroll="repos">
     ${live.length ? `<div class="settings-list repository-items">${live.map((repo) => row(repo, true)).join("")}</div>` : ""}
-    <div class="settings-list repository-accounts">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") || `<button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button>`}</div>
+    <div class="settings-list repository-accounts">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") + azureRow || `<button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button>`}</div>
     ${lost.length ? `<div class="settings-list repository-items repository-disconnected">${lost.map((repo) => row(repo, false)).join("")}</div>` : ""}
   </div>
   <button type="button" class="floating-pill" data-page="repo-url" data-focus-key="repo-url" aria-label="Add repository by URL" title="Add repository by URL">${icon("plus")}URL</button>`;
@@ -851,21 +864,60 @@ function repositoryResults(account) {
   );
 }
 
+/** Azure DevOps projects and repositories of the connected organization. */
+function azureBrowserPage() {
+  const name = azureAccountName();
+  if (!name)
+    return empty(
+      "Account unavailable",
+      "Connect Azure DevOps before browsing.",
+    );
+  const projects = Object.keys(Demo.azureCatalog);
+  route().project ??= projects[0];
+  return `<div class="page-scroll" data-scroll="ado-browser">
+    ${field("Project", `<select id="ado-project">${projects.map((project) => option(project, project, route().project)).join("")}</select>`)}
+    ${field("Find a repository", `<input type="search" id="ado-filter" value="${esc(route().query ?? "")}" placeholder="Search" autocomplete="off" />`)}
+    <div class="settings-list" id="ado-results">${azureResults()}</div>
+  </div>`;
+}
+
+function azureResults() {
+  const project = route().project;
+  return Demo.azureCatalog[project]
+    .filter((repository) =>
+      repository.toLowerCase().includes((route().query ?? "").toLowerCase()),
+    )
+    .map((repository) => {
+      const name = `${azure.name}/${project}/${repository}`;
+      const existing = state.repos.some(
+        (repo) => isAzure(repo) && repo.name === name,
+      );
+      return `<button class="settings-row" data-action="pick-repo" data-provider="azure_devops" data-name="${esc(name)}" data-id="${Demo.AZURE_ACCOUNT}" data-focus-key="pick-${esc(name)}"><span class="row-copy"><strong>${esc(repository)}</strong><small>${esc(project)}</small></span><span class="row-value">${existing ? "Added" : "Add"}</span>${icon(existing ? "chevron" : "plus")}</button>`;
+    })
+    .join("");
+}
+
 function repositoryUrlPage() {
   const accounts = state.accounts.filter(
     (account) => account.kind === "github" && account.connected,
   );
-  if (!accounts.length)
+  if (!accounts.length && !azureAccountName())
     return `<div class="page-scroll" data-scroll="repo-url">${empty("Connect GitHub first", "A repository needs an acting account.")}<button class="primary-action wide" data-page="accounts">Open Accounts</button></div>`;
   return `<div class="page-scroll" data-scroll="repo-url"><form class="editor-form" data-form="repo-url">
     ${field("Repository URL", '<input name="repository" placeholder="https://github.com/owner/repository" required autocomplete="off" spellcheck="false" />')}
-    ${field("Acting GitHub account", `<select name="accountId" required>${option("", "Choose an account", "")}${accounts.map((account) => option(account.id, account.name, "")).join("")}</select>`)}
+    ${field("Acting GitHub account", `<select name="accountId">${option("", "Choose an account", "")}${accounts.map((account) => option(account.id, account.name, "")).join("")}</select>`)}
     <div class="editor-actions"><button class="primary-action" type="submit">Add & configure</button><button class="secondary-action" type="button" data-action="back">Cancel</button></div>
   </form></div>`;
 }
 
-function addRepository(name, accountId) {
-  const normalized = Demo.repositoryName(name);
+function addRepository(name, accountId, provider = "github") {
+  let normalized;
+  try {
+    normalized = provider === "azure_devops" ? name : Demo.repositoryName(name);
+  } catch (error) {
+    showError(error.message);
+    return;
+  }
   let repo = state.repos.find(
     (item) =>
       item.accountId === accountId &&
@@ -875,7 +927,7 @@ function addRepository(name, accountId) {
     if (
       !perform(
         "add-repo",
-        { name: normalized, accountId },
+        { name: normalized, accountId, provider },
         "Repository added. Configure it before monitoring.",
         false,
       )
@@ -1028,7 +1080,7 @@ function repoEditor(id) {
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
     <details class="group-card repo-disclosure"><summary>Repository</summary>
-      <div class="repo-fields" hidden>${row("Name", input("name", repo.name))}${row("Account", accountSelect("github", repo.accountId, "accountId", false))}</div>
+      <div class="repo-fields" hidden>${row("Name", input("name", repo.name))}${row("Account", isAzure(saved) ? `<span class="kv-value">${esc(azureAccountName() ?? "unbound")}</span><input type="hidden" name="accountId" value="${esc(repo.accountId)}" />` : accountSelect("github", repo.accountId, "accountId", false))}</div>
       ${plain("edit-repo-fields", "Edit repository")}
       ${plain("unbind-account", "Unbind account")}
       ${plain("delete-repo", "Remove repository", "danger")}
@@ -1092,6 +1144,7 @@ function initRepoForm(form) {
     values?.admission ?? saved?.admission ?? Demo.defaultAdmission(),
   );
   form._route = [...(route().draft?.admissionRoute ?? [])];
+  form._provider = saved?.provider ?? "github";
   renderRepoLists(form);
   syncAdmission(form);
   syncSchedule(form);
@@ -1159,17 +1212,48 @@ function renderAdmission(form) {
   pageTitle.textContent = ruleLabels[rule.kind];
   const users = rule.kind.endsWith("_users");
   const values = users ? rule.users : rule.paths;
+  // Azure DevOps people are display names, not handles.
+  const person = (value) =>
+    form._provider === "azure_devops" ? value : handle(value);
   const list = `<section class="group-card admission-values">${values
     .map(
       (value, index) =>
-        `<div class="assign-row"><span class="person-handle" title="${esc(value)}">${users ? esc(handle(value)) : `<code>${esc(value)}</code>`}</span><button type="button" class="row-trash" data-action="remove-value" data-index="${index}" aria-label="Remove ${esc(users ? handle(value) : value)}" title="Remove">${icon("trash")}</button></div>`,
+        `<div class="assign-row"><span class="person-handle" title="${esc(value)}">${users ? esc(person(value)) : `<code>${esc(value)}</code>`}</span><button type="button" class="row-trash" data-action="remove-value" data-index="${index}" aria-label="Remove ${esc(users ? person(value) : value)}" title="Remove">${icon("trash")}</button></div>`,
     )
     .join("")}</section>`;
+  if (users && form._provider === "azure_devops") {
+    view.innerHTML = `${list}<div class="person-search"><input type="search" data-person-search aria-label="Person" autocomplete="off" spellcheck="false" /><div class="settings-list person-matches" data-person-matches></div></div>`;
+    return;
+  }
   if (users) {
     const choices = Demo.people.filter((person) => !values.includes(person));
     view.innerHTML = `${list}<select class="picker" data-picker="people" aria-label="Add people" hidden><option value="">Choose a person</option>${choices.map((person) => `<option value="${esc(person)}">${esc(person)}</option>`).join("")}</select><button type="button" class="floating-pill" data-action="add-people" ${disabled(!choices.length)}>${icon("plus")}Add people</button>`;
   } else
     view.innerHTML = `${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
+}
+
+/** Directory people whose name or address starts with the query. */
+function renderPersonMatches(form) {
+  const search = form.querySelector("[data-person-search]");
+  const list = form.querySelector("[data-person-matches]");
+  if (!search || !list) return;
+  const query = search.value.trim().toLowerCase();
+  const values = currentRule(form).users;
+  list.innerHTML = query
+    ? Demo.azurePeople
+        .filter((person) =>
+          person.name
+            .toLowerCase()
+            .split(" ")
+            .concat(person.name.toLowerCase(), person.mail)
+            .some((text) => text.startsWith(query)),
+        )
+        .map(
+          (person) =>
+            `<button type="button" class="settings-row" data-action="pick-person" data-name="${esc(person.name)}" aria-label="${esc(`${person.name}, ${person.mail}`)}" ${disabled(values.includes(person.name))}><span class="row-copy"><strong>${esc(person.name)}</strong><small>${esc(person.mail)}</small></span>${values.includes(person.name) ? icon("check") : icon("plus")}</button>`,
+        )
+        .join("")
+    : "";
 }
 
 function pushAdmission(form, name) {
@@ -1668,6 +1752,7 @@ function render(direction = 0, focus = false) {
     "azure-devops": "Azure DevOps",
     changelog: "Changelog",
     "repo-browser": "Browse",
+    "ado-browser": "Browse",
     "repo-url": "Add by URL",
     doctrines: "Doctrines",
     doctrine: "Doctrine",
@@ -1739,6 +1824,9 @@ function render(direction = 0, focus = false) {
       break;
     case "repo-browser":
       html = repositoryBrowserPage();
+      break;
+    case "ado-browser":
+      html = azureBrowserPage();
       break;
     case "repo-url":
       html = repositoryUrlPage();
@@ -1904,6 +1992,11 @@ function readForm(form) {
         {
           repo: {
             id,
+            ...(state.repos.find((repo) => repo.id === id)?.provider
+              ? {
+                  provider: state.repos.find((repo) => repo.id === id).provider,
+                }
+              : {}),
             name: value("name"),
             accountId: value("accountId"),
             enabled: bool("enabled"),
@@ -2001,6 +2094,28 @@ stage.addEventListener("submit", (event) => {
     }
     if (form.dataset.form === "repo-url") {
       const data = new FormData(form);
+      const url = String(data.get("repository"));
+      if (
+        /^https:\/\/([^/]*@)?(dev\.azure\.com|[^/]+\.visualstudio\.com)\//i.test(
+          url,
+        )
+      ) {
+        let name;
+        try {
+          name = Demo.azureRepositoryName(url);
+        } catch (error) {
+          showError(error.message);
+          return;
+        }
+        if (!azureAccountName() || !name.startsWith(`${azure.name}/`)) {
+          showError(
+            azureAccountName() ? "Other organization" : "Not connected",
+          );
+          return;
+        }
+        addRepository(name, Demo.AZURE_ACCOUNT, "azure_devops");
+        return;
+      }
       addRepository(data.get("repository"), data.get("accountId"));
       return;
     }
@@ -2080,6 +2195,18 @@ stage.addEventListener("input", (event) => {
     });
     return;
   }
+  if (event.target.id === "ado-filter") {
+    route().query = event.target.value;
+    stage.querySelector("#ado-results").innerHTML = azureResults();
+    return;
+  }
+  if (event.target.matches("[data-person-search]")) {
+    const form = event.target.closest("form");
+    clearTimeout(form._personTimer);
+    // Debounced prefix search, as the app queries the directory.
+    form._personTimer = setTimeout(() => renderPersonMatches(form), 250);
+    return;
+  }
   if (event.target.id === "repository-filter") {
     route().query = event.target.value;
     const account = state.accounts.find((item) => item.id === route().id);
@@ -2107,6 +2234,13 @@ stage.addEventListener("change", (event) => {
       // The choice still applies for this page.
     }
     applyTheme();
+    return;
+  }
+  if (event.target.id === "ado-project") {
+    route().project = event.target.value;
+    route().query = "";
+    render();
+    stage.querySelector("#ado-project").focus();
     return;
   }
   if (event.target.id === "repository-owner") {
@@ -2255,7 +2389,7 @@ popover.addEventListener("click", (event) => {
     return;
   }
   if (action === "pick-repo") {
-    addRepository(button.dataset.name, id);
+    addRepository(button.dataset.name, id, button.dataset.provider);
     return;
   }
   if (action === "review") {
@@ -2412,6 +2546,12 @@ popover.addEventListener("click", (event) => {
       const picker = form.querySelector('[data-picker="agents"]');
       picker.hidden = !picker.hidden;
       if (!picker.hidden) picker.focus();
+    },
+    "pick-person": () => {
+      addAdmissionValue(form, button.dataset.name);
+      form
+        .querySelector("[data-person-search]")
+        ?.focus({ preventScroll: true });
     },
     "add-people": () => {
       const picker = form.querySelector('[data-picker="people"]');

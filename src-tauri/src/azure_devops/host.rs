@@ -2,10 +2,12 @@
 //! from an explicit Settings action; no background path reaches them.
 
 use super::connection::HttpConnectionTransport;
+use super::read::{Client, HttpTransport, Reader, Transport};
 use super::setup::{Backends, Binding, Platform, Program, Setup, SetupView};
 use super::tenant::HttpHeadTransport;
 use super::token_source::system_clock;
 use crate::cli_process::SystemRunner;
+use crate::provider::{ConnectionError, Person};
 use crate::storage::Store;
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -50,6 +52,54 @@ pub fn create(app: tauri::AppHandle, binding: Binding) -> Result<Arc<Setup>, Str
         },
         binding,
     ))
+}
+
+/// Azure DevOps REST transport for repository reads.
+pub struct ReadTransport(Arc<dyn Transport>);
+
+pub fn read_transport() -> Result<ReadTransport, String> {
+    Ok(ReadTransport(Arc::new(
+        HttpTransport::new().map_err(|_| "HTTP client unavailable.")?,
+    )))
+}
+
+/// The bound Azure DevOps identity ID, if any.
+pub fn bound_identity(app: &tauri::AppHandle) -> Option<String> {
+    app.try_state::<Arc<Setup>>()?
+        .binding()
+        .identity
+        .map(|identity| identity.id)
+}
+
+/// Repository reads as `account_id`, the bound and signed-in identity. Runs
+/// off the async runtime (a blocking thread); never interactive.
+pub fn read_session(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<(Person, Reader), ConnectionError> {
+    let setup = app
+        .try_state::<Arc<Setup>>()
+        .ok_or(ConnectionError::Configuration)?
+        .inner()
+        .clone();
+    let transport = Arc::clone(
+        &app.try_state::<ReadTransport>()
+            .ok_or(ConnectionError::Configuration)?
+            .0,
+    );
+    let runtime = tauri::async_runtime::handle().inner().clone();
+    let connected = runtime.block_on(setup.connected())?;
+    if connected.identity.id != account_id {
+        return Err(ConnectionError::WrongIdentity);
+    }
+    let client = Client::new(
+        setup.token_source(),
+        transport,
+        connected.tenant,
+        &connected.organization,
+    );
+    let reader = Reader::open(client, runtime, &connected.identity)?;
+    Ok((reader.identity().clone(), reader))
 }
 
 type SetupState<'a> = State<'a, Arc<Setup>>;

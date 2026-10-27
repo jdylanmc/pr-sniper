@@ -1030,27 +1030,12 @@ impl Settings {
                 .map_err(|error| format!("{}: {error}", repository.name))?;
             repository.overrides.effective(&self.defaults).validate()?;
             if let Some(admission) = &repository.admission {
-                admission.validate()?;
+                admission.validate_for(&repository.provider)?;
             }
-            let mut watched_ids = HashSet::new();
-            for identity in &repository.watched_authors {
-                let valid_id = identity
-                    .id
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|id| *id > 0 && id.to_string() == identity.id);
-                if valid_id.is_none() || !watched_ids.insert(&identity.id) {
-                    return Err(
-                        "Watched GitHub account IDs must be unique positive decimal numbers."
-                            .into(),
-                    );
-                }
-                if identity.login.trim().is_empty()
-                    || identity.login.chars().any(char::is_whitespace)
-                {
-                    return Err("Each watched GitHub identity needs a nonempty login display label without whitespace.".into());
-                }
-            }
+            crate::admission::validate_identities(
+                &repository.provider,
+                &repository.watched_authors,
+            )?;
             let mut assignment_ids = HashSet::new();
             for assignment in &repository.assignments {
                 if uuid::Uuid::parse_str(&assignment.id).is_err()
@@ -1257,10 +1242,13 @@ impl Settings {
 /// Legacy effective values: defaults plus overrides plus the repository list.
 fn seeded_admission(repository: &Repository, defaults: &Policy) -> AdmissionConfig {
     let policy = repository.overrides.effective(defaults);
-    AdmissionConfig::from_legacy(
-        &crate::monitoring::effective_watched_authors(repository, &policy),
-        policy.reviewer_assignment,
-    )
+    // Default watched authors are GitHub accounts; another provider's
+    // repository starts from its own people only.
+    let watched_authors = match repository.provider {
+        ProviderId::Github => crate::monitoring::effective_watched_authors(repository, &policy),
+        ProviderId::AzureDevops => repository.watched_authors.clone(),
+    };
+    AdmissionConfig::from_legacy(&watched_authors, policy.reviewer_assignment)
 }
 
 /// One-time, idempotent: repositories without `admission` get it materialized

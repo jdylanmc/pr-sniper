@@ -16,6 +16,44 @@ const [queueItem] = JSON.parse(
     "utf8",
   ),
 ).values;
+const AVERY = "00000000-0000-0000-0000-000000000001";
+const AZURE_REPOSITORY = `contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1`;
+// Native shapes pinned by the dispatcher and Azure DevOps setup tests.
+const azureAccounts = {
+  values: [
+    {
+      state: "connected",
+      provider: "azure_devops",
+      account_id: AVERY,
+      login: "Avery Example",
+      organization: "contoso",
+      connection_generation: 0,
+    },
+  ],
+  total: 1,
+  next_offset: null,
+  azure_devops: {
+    cli: { state: "ready", version: "2.90.0" },
+    minimum: "2.54.0",
+    installer: "homebrew",
+    organization: {
+      state: "tenant_known",
+      name: "contoso",
+      tenant: "00000000-0000-0000-0000-00000000000a",
+    },
+    account: {
+      state: "connected",
+      identity: { id: AVERY, display_name: "Avery Example" },
+    },
+    checking: false,
+  },
+};
+const azureResolution = {
+  identity: { id: AVERY, login: "Avery Example" },
+  repository: { id: AZURE_REPOSITORY, name: "contoso/Web/app" },
+  account_generation: 0,
+  pull_request: null,
+};
 async function fixture(mode) {
   const base = path.resolve("src-tauri/target");
   await fs.mkdir(base, { recursive: true });
@@ -40,16 +78,20 @@ async function fixture(mode) {
               total: 1,
               next_offset: null,
             }
-          : request.operation === "watch"
-            ? {
-                state: "waiting",
-                reason: "paused",
-                paused: true,
-                prioritized: 0,
-                item_id: null,
-                replayed: false,
-              }
-            : null;
+          : request.operation === "accounts"
+            ? azureAccounts
+            : request.operation === "resolve"
+              ? azureResolution
+              : request.operation === "watch"
+                ? {
+                    state: "waiting",
+                    reason: "paused",
+                    paused: true,
+                    prioritized: 0,
+                    item_id: null,
+                    replayed: false,
+                  }
+                : null;
     return result
       ? { protocol, ok: true, result }
       : {
@@ -248,6 +290,81 @@ test("MCP watch preserves exact scope, pause, override and explicit rerun intent
       1,
       "Unsupported grant expansion never reaches native watch",
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("MCP lists, resolves and saves Azure DevOps repositories with setup state", async () => {
+  const f = await fixture("modern");
+  try {
+    const accounts = await f.client.callTool({
+      name: "list_repository_accounts",
+      arguments: {},
+    });
+    assert.equal(accounts.isError, false, JSON.stringify(accounts));
+    assert.deepEqual(accounts.structuredContent.result, azureAccounts);
+    const { operation, kind } = f.calls.at(-1);
+    assert.deepEqual(
+      { operation, kind },
+      { operation: "accounts", kind: "repository" },
+    );
+    const url = "https://dev.azure.com/contoso/Web/_git/app";
+    const resolved = await f.client.callTool({
+      name: "resolve_repository",
+      arguments: { account_id: AVERY, url },
+    });
+    assert.equal(resolved.isError, false, JSON.stringify(resolved));
+    assert.deepEqual(resolved.structuredContent.result, azureResolution);
+    assert.equal(f.calls.at(-1).operation, "resolve");
+    assert.equal(f.calls.at(-1).account_id, AVERY);
+    assert.equal(f.calls.at(-1).url, url);
+    const id = randomUUID();
+    const value = {
+      id,
+      provider: "azure_devops",
+      name: "contoso/Web/app",
+      enabled: false,
+      provider_account_id: AVERY,
+      provider_repository_id: AZURE_REPOSITORY,
+      watched_authors: [
+        { id: "00000000-0000-0000-0000-000000000002", login: "Blake Example" },
+      ],
+    };
+    const validate = await f.client.callTool({
+      name: "validate_repository",
+      arguments: { id, expected: null, value },
+    });
+    // The fixture app answers validation with a conflict; the request reached it.
+    assert.equal(validate.isError, true);
+    assert.equal(f.calls.at(-1).operation, "validate");
+    assert.deepEqual(f.calls.at(-1).edit, {
+      kind: "repository",
+      id,
+      expected: null,
+      value,
+    });
+    const request = (
+      await f.client.callTool({ name: "prepare_request", arguments: {} })
+    ).structuredContent;
+    await f.client.callTool({
+      name: "save_repository",
+      arguments: {
+        ...request,
+        revision: "a".repeat(64),
+        id,
+        expected: null,
+        value,
+        account_generation: 0,
+      },
+    });
+    assert.deepEqual(f.calls.at(-1).edit, {
+      kind: "repository",
+      id,
+      expected: null,
+      value,
+    });
+    assert.equal(f.calls.at(-1).account_generation, 0);
   } finally {
     await f.close();
   }

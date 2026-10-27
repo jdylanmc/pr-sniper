@@ -141,7 +141,7 @@ test("unsupported URL never borrows a GitHub identity and PR intake waits for co
   await dialog
     .getByLabel("Repository URL")
     .fill("https://dev.azure.com/org/project/_git/repository");
-  await expect(dialog.getByRole("status")).toContainText("Coming soon");
+  await expect(dialog.getByRole("status")).toContainText("Not connected");
   await expect(dialog.getByRole("status")).not.toContainText("fixture");
   await expect(dialog.getByLabel("Acting GitHub account")).toBeHidden();
   await expect(

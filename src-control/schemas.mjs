@@ -200,9 +200,56 @@ export const account = z
     provider: z.string(),
     account_id: id,
     login: id,
+    organization: z.string().optional(),
     warning: z.string().optional(),
     reason: z.string().optional(),
     connection_generation: z.number().int().optional(),
+  })
+  .passthrough();
+const tagged = (states, fields = {}) =>
+  z.object({ state: z.enum(states), ...fields }).passthrough();
+const azureIdentity = z
+  .object({ id, display_name: z.string(), unique_name: z.string().optional() })
+  .passthrough();
+/** Azure DevOps setup: Azure CLI, organization and account state. */
+export const azureDevopsSetup = z
+  .object({
+    cli: tagged([
+      "unknown",
+      "missing",
+      "too_old",
+      "failed",
+      "installing",
+      "ready",
+    ]),
+    minimum: z.string(),
+    installer: z.enum(["homebrew", "winget", "page"]),
+    organization: tagged([
+      "unset",
+      "unknown",
+      "not_found",
+      "tenant_unknown",
+      "offline",
+      "tenant_known",
+    ]),
+    account: tagged(
+      [
+        "unavailable",
+        "signed_out",
+        "signing_in",
+        "interaction_required",
+        "tenant_access_blocked",
+        "offline",
+        "failed",
+        "connected",
+        "wrong_identity",
+      ],
+      {
+        identity: azureIdentity.optional(),
+        expected: azureIdentity.optional(),
+      },
+    ),
+    checking: z.boolean(),
   })
   .passthrough();
 export const health = z

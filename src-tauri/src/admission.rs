@@ -5,6 +5,7 @@
 
 use crate::policy::WatchedIdentity;
 use crate::provider::{ChangedFile, PullRequest};
+use crate::storage::ProviderId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -138,6 +139,11 @@ impl AdmissionConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_for(&ProviderId::Github)
+    }
+
+    /// Validates rules whose people are identities of `provider`.
+    pub fn validate_for(&self, provider: &ProviderId) -> Result<(), String> {
         let mut kinds = HashSet::new();
         for rule in &self.rules {
             if !kinds.insert(rule.kind) {
@@ -154,7 +160,7 @@ impl AdmissionConfig {
             if rule.users.is_some() && !takes_users || rule.paths.is_some() && !takes_paths {
                 return Err("Admission rule values do not belong to this rule kind.".into());
             }
-            validate_users(rule.users())?;
+            validate_users(provider, rule.users())?;
             validate_paths(rule.paths())?;
         }
         Ok(())
@@ -286,26 +292,54 @@ fn matches_any(rule: &AdmissionRule, name: &str) -> bool {
         .any(|pattern| glob_matches(pattern, name))
 }
 
-fn validate_users(users: &[WatchedIdentity]) -> Result<(), String> {
+fn validate_users(provider: &ProviderId, users: &[WatchedIdentity]) -> Result<(), String> {
     if users.len() > MAX_VALUES_PER_RULE {
         return Err(format!(
             "An admission rule can list at most {MAX_VALUES_PER_RULE} users."
         ));
     }
+    validate_identities(provider, users)
+}
+
+/// People of one provider: unique stable IDs (GitHub: positive decimal;
+/// Azure DevOps: lowercase identity GUID) with a display label (GitHub: the
+/// login, no whitespace; Azure DevOps: the display name).
+pub fn validate_identities(provider: &ProviderId, users: &[WatchedIdentity]) -> Result<(), String> {
     let mut ids = HashSet::new();
     for identity in users {
-        let valid_id = identity
-            .id
-            .parse::<u64>()
-            .ok()
-            .filter(|id| *id > 0 && id.to_string() == identity.id);
-        if valid_id.is_none() || !ids.insert(&identity.id) {
-            return Err(
-                "Watched GitHub account IDs must be unique positive decimal numbers.".into(),
-            );
-        }
-        if identity.login.trim().is_empty() || identity.login.chars().any(char::is_whitespace) {
-            return Err("Each watched GitHub identity needs a nonempty login display label without whitespace.".into());
+        match provider {
+            ProviderId::Github => {
+                let valid_id = identity
+                    .id
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|id| *id > 0 && id.to_string() == identity.id);
+                if valid_id.is_none() || !ids.insert(&identity.id) {
+                    return Err(
+                        "Watched GitHub account IDs must be unique positive decimal numbers."
+                            .into(),
+                    );
+                }
+                if identity.login.trim().is_empty()
+                    || identity.login.chars().any(char::is_whitespace)
+                {
+                    return Err("Each watched GitHub identity needs a nonempty login display label without whitespace.".into());
+                }
+            }
+            ProviderId::AzureDevops => {
+                let valid_id = crate::azure_devops::tenant::TenantId::parse(&identity.id)
+                    .is_some_and(|id| id.as_str() == identity.id);
+                if !valid_id || !ids.insert(&identity.id) {
+                    return Err("Azure DevOps people need unique identity IDs.".into());
+                }
+                if identity.login.trim() != identity.login
+                    || identity.login.is_empty()
+                    || identity.login.len() > 256
+                    || identity.login.chars().any(char::is_control)
+                {
+                    return Err("Each Azure DevOps person needs a display name.".into());
+                }
+            }
         }
         if crate::policy::validate_configuration_text(&identity.login).is_err() {
             return Err("Credentials and tokens must not be stored in configuration.".into());
@@ -906,6 +940,41 @@ mod tests {
         let mut misplaced = rule(IncludeUsers, true);
         misplaced.paths = Some(vec![]);
         assert!(filtered(vec![misplaced]).validate().is_err());
+    }
+
+    #[test]
+    fn azure_devops_people_are_guid_identities_with_display_names() {
+        use crate::storage::ProviderId::AzureDevops;
+        let person = |id: &str, login: &str| WatchedIdentity {
+            id: id.into(),
+            login: login.into(),
+        };
+        let avery = "00000000-0000-0000-0000-000000000001";
+        let config = |people: Vec<WatchedIdentity>| {
+            let mut rule = AdmissionRule::new(AdmissionRuleKind::IncludeUsers, true);
+            rule.users = Some(people);
+            filtered(vec![rule])
+        };
+        assert!(config(vec![person(avery, "Avery Example")])
+            .validate_for(&AzureDevops)
+            .is_ok());
+        // GitHub rules still require decimal IDs and whitespace-free logins.
+        assert!(config(vec![person(avery, "Avery Example")])
+            .validate()
+            .is_err());
+        for invalid in [
+            vec![person("11", "octo")],
+            vec![person("0000000A-0000-0000-0000-000000000001", "Avery")],
+            vec![person(avery, "")],
+            vec![person(avery, " Avery")],
+            vec![person(avery, "Avery\nExample")],
+            vec![person(avery, "Avery"), person(avery, "Avery Two")],
+        ] {
+            assert!(
+                config(invalid.clone()).validate_for(&AzureDevops).is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]
