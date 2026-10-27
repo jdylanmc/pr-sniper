@@ -102,6 +102,20 @@ pub fn read_session(
     Ok((reader.identity().clone(), reader))
 }
 
+/// Whether `account` shows the bound identity signed in; `None` when it
+/// tells nothing new (not probed, offline, busy).
+pub fn signed_in(account: &AccountView, bound: Option<&Person>) -> Option<bool> {
+    match account {
+        AccountView::Connected { identity } => {
+            Some(bound.is_some_and(|bound| bound.id == identity.id))
+        }
+        AccountView::SignedOut
+        | AccountView::InteractionRequired
+        | AccountView::WrongIdentity { .. } => Some(false),
+        _ => None,
+    }
+}
+
 /// Mirrors the setup into the repository account that monitoring polls as:
 /// its bound identity, and whether it is signed in. A connected identity
 /// resumes work a credential failure parked.
@@ -110,18 +124,26 @@ pub fn sync_account(app: &tauri::AppHandle, setup: &Setup, view: &SetupView) {
         id: identity.id,
         login: identity.display_name,
     });
-    let connected = match &view.account {
-        AccountView::Connected { identity: signed } => {
-            Some(identity.as_ref().is_some_and(|bound| bound.id == signed.id))
-        }
-        AccountView::SignedOut
-        | AccountView::InteractionRequired
-        | AccountView::WrongIdentity { .. } => Some(false),
-        _ => None,
-    };
+    let connected = signed_in(&view.account, identity.as_ref());
     if let Some(host) = app.try_state::<crate::Host>() {
         if let Ok(mut auth) = host.github_auth.lock() {
             auth.set_azure_devops_account(identity, connected);
+        }
+    }
+}
+
+/// A poll as `account_id` failed. A credential failure holds the account and
+/// drops the cached probe, so it stays held until a fresh probe (Settings)
+/// sees it connected.
+pub fn poll_failed(app: &tauri::AppHandle, account_id: &str, error: ConnectionError) {
+    let held = app.try_state::<crate::Host>().is_some_and(|host| {
+        host.github_auth
+            .lock()
+            .is_ok_and(|mut auth| auth.publish_azure_devops_failure(account_id, error))
+    });
+    if held {
+        if let Some(setup) = app.try_state::<Arc<Setup>>() {
+            setup.forget_probe();
         }
     }
 }

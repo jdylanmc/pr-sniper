@@ -957,6 +957,30 @@ async fn reads_use_the_connected_bound_account_without_interaction() {
 }
 
 #[tokio::test]
+async fn a_forgotten_probe_is_never_replayed_as_connected() {
+    let harness = Harness::new(World::default());
+    harness.setup.check().await;
+    assert!(matches!(
+        harness.setup.view().account,
+        AccountView::Connected { .. }
+    ));
+    // A poll failed on credentials: the cached Connected is stale.
+    harness.world().token = Token::Fail(SIGNED_OUT);
+    harness.setup.forget_probe();
+    assert_eq!(harness.setup.view().account, AccountView::Unavailable);
+    assert_eq!(harness.setup.view().cli, CliView::Unknown);
+    assert_eq!(
+        harness.setup.connected().await,
+        Err(crate::provider::ConnectionError::SignedOut)
+    );
+    harness.world().token = Token::Ok;
+    assert!(matches!(
+        harness.setup.check().await.account,
+        AccountView::Connected { .. }
+    ));
+}
+
+#[tokio::test]
 async fn reports_setup_state_with_the_bound_account() {
     let unbound = Harness::with(Platform::MacOs, World::default(), Binding::default());
     let report = unbound.setup.report().await;

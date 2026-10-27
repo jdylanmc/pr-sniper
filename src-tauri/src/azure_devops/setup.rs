@@ -587,6 +587,15 @@ impl Setup {
         self.lock().binding.clone()
     }
 
+    /// A read failed on credentials, so the cached probe is stale: drop it
+    /// (and any probe in flight) so only a fresh probe shows the account
+    /// connected again.
+    pub fn forget_probe(&self) {
+        let mut inner = self.lock();
+        inner.probed = None;
+        inner.generation += 1;
+    }
+
     pub fn view(&self) -> SetupView {
         let inner = self.lock();
         let probed = inner.probed.as_ref();

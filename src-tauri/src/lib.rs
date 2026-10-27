@@ -251,8 +251,8 @@ impl GithubAuth {
     }
 
     /// A poll of the Azure DevOps account failed. Only credential failures
-    /// hold its work until it connects again; others retry on their own.
-    fn publish_azure_devops_failure(&mut self, account_id: &str, error: ConnectionError) {
+    /// hold its work until it connects again (true); others retry on their own.
+    fn publish_azure_devops_failure(&mut self, account_id: &str, error: ConnectionError) -> bool {
         if let Some(account) = self
             .azure_devops
             .as_mut()
@@ -266,8 +266,10 @@ impl GithubAuth {
                 }
             ) {
                 account.reconnect = Some(error);
+                return true;
             }
         }
+        false
     }
 
     /// Any repository account, GitHub or Azure DevOps, may finish a poll.
@@ -1944,11 +1946,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 Some(error) if github => {
                     apply_account_connection_failure(&host, &account_id, &Err::<(), _>(error))
                 }
-                Some(error) => {
-                    if let Ok(mut auth) = host.github_auth.lock() {
-                        auth.publish_azure_devops_failure(&account_id, error);
-                    }
-                }
+                Some(error) => azure_devops::host::poll_failed(&app, &account_id, error),
                 None => {}
             }
             let saved = match now_seconds() {

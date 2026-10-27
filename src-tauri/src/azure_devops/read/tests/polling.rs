@@ -123,6 +123,19 @@ fn signed_in_wire(listing: Value) -> Arc<FakeWire> {
     wire
 }
 
+fn monitor_accounts() -> std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>
+{
+    let mut auth = crate::GithubAuth::new();
+    auth.set_azure_devops_account(
+        Some(Person {
+            id: AVERY.into(),
+            login: "Avery Example".into(),
+        }),
+        None,
+    );
+    auth.monitoring_accounts()
+}
+
 fn next_ticket(monitor: &mut Monitor, store: &Store, now: i64) -> PollTicket {
     let mut tickets = monitor.prepare_checks(store, now, true).unwrap();
     assert_eq!(tickets.len(), 1);
@@ -157,6 +170,11 @@ fn admits_picked_teammates_ignores_drafts_and_takes_each_iteration_as_a_revision
         work[0].reason.as_deref(),
         Some(crate::capacity::WAITING_FOR_PROVIDER)
     );
+    // GitHub reachability is never probed for, or holds, Azure DevOps work.
+    let accounts = monitor_accounts();
+    assert!(crate::connectivity::wanted_scopes(&store, &accounts)
+        .unwrap()
+        .is_empty());
 
     // A push makes a new iteration: a new revision supersedes the old work.
     let ticket = next_ticket(&mut monitor, &store, NOW + 900);
@@ -289,7 +307,7 @@ fn a_credential_failure_waits_for_sign_in_without_another_attempt() {
     });
     let result = poll(tokens, &Arc::new(FakeWire::default()), &ticket);
     assert_eq!(result.as_ref().err(), Some(&ConnectionError::SignedOut));
-    auth.publish_azure_devops_failure(AVERY, ConnectionError::SignedOut);
+    assert!(auth.publish_azure_devops_failure(AVERY, ConnectionError::SignedOut));
     assert!(auth.repository_account_allowed(AVERY).is_err());
     let accounts = auth.monitoring_accounts();
     monitor
@@ -317,15 +335,34 @@ fn a_credential_failure_waits_for_sign_in_without_another_attempt() {
             .unwrap()
             .is_empty());
     }
+    // Replaying Settings without a fresh probe (the failure dropped it)
+    // tells nothing new and keeps the hold.
+    let stale = crate::azure_devops::host::signed_in(
+        &crate::azure_devops::setup::AccountView::Unavailable,
+        Some(&avery),
+    );
+    assert_eq!(stale, None);
+    auth.set_azure_devops_account(Some(avery.clone()), stale);
+    assert!(!auth.monitoring_accounts()[AVERY].connected);
     // A failure that is not about credentials never holds the account.
-    auth.publish_azure_devops_failure(AVERY, ConnectionError::Network);
+    assert!(!auth.publish_azure_devops_failure(AVERY, ConnectionError::Network));
     assert_eq!(
         auth.repository_account_allowed(AVERY),
         Err(ConnectionError::SignedOut)
     );
 
-    // Settings sees the identity connected again: the parked poll resumes.
-    auth.set_azure_devops_account(Some(avery), Some(true));
+    // A fresh probe sees the identity connected again: the parked poll resumes.
+    let fresh = crate::azure_devops::host::signed_in(
+        &crate::azure_devops::setup::AccountView::Connected {
+            identity: Identity {
+                id: AVERY.into(),
+                display_name: "Avery Example".into(),
+                unique_name: None,
+            },
+        },
+        Some(&avery),
+    );
+    auth.set_azure_devops_account(Some(avery), fresh);
     let accounts = auth.monitoring_accounts();
     assert!(accounts[AVERY].connected);
     monitor
