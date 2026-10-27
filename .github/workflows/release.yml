@@ -200,7 +200,7 @@ jobs:
           compression-level: 0
 
   windows-publish:
-    needs: [gate, publish, windows-build]
+    needs: [gate, publish, tap, windows-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

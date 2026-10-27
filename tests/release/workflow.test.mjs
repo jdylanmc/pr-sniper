@@ -167,6 +167,7 @@ test("only explicit stable tag release events can enter the secret-bearing pipel
   assert.deepEqual(workflow.jobs["windows-publish"].needs, [
     "gate",
     "publish",
+    "tap",
     "windows-build",
   ]);
   assert.deepEqual(workflow.jobs.chocolatey.needs, ["gate", "windows-publish"]);
