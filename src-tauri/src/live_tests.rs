@@ -1,6 +1,6 @@
 //! Live end-to-end checks of the review-packet path against the disposable sandbox
 //! repository and the real Copilot runtime. Never in CI: every test is `#[ignore]`
-//! and returns early unless `PR_SNIPER_LIVE=1`.
+//! and returns early unless `PR_SNIPER_LIVE=1` and `PR_SNIPER_LIVE_COPILOT_USER` is set.
 //!
 //! Drives production code: `GithubClient` over HTTPS, `pr_snapshot`, the heartbeat
 //! (`PrStates::observe`), `review::host::request`/`prepare_dispatch`,
@@ -10,7 +10,8 @@
 //! by thin environments over the same client calls.
 //!
 //! Run (owner-authorized sandbox only):
-//! `PR_SNIPER_LIVE=1 cargo test --locked live_tests -- --ignored --nocapture --test-threads=1`
+//! `PR_SNIPER_LIVE=1 PR_SNIPER_LIVE_COPILOT_USER=<login> cargo test --locked live_tests -- --ignored --nocapture --test-threads=1`
+//! Required: `PR_SNIPER_LIVE_COPILOT_USER` (gh login of the Copilot AI account).
 //! Optional: `PR_SNIPER_LIVE_MODEL` (default `gpt-5-mini`), `PR_SNIPER_LIVE_STORE`
 //! (store root; default under the target directory).
 
@@ -93,9 +94,11 @@ fn live(name: &str) -> Option<Live> {
     let client = GithubClient::new(HttpTransport::from_token_pair(&token(LOGIN)).unwrap());
     let identity = client.current_identity().expect("identity");
     assert_eq!(identity.login, LOGIN);
-    // jdylanmc has Copilot Free (model list: `auto` only); the AI account is separate.
-    let copilot_user = std::env::var("PR_SNIPER_LIVE_COPILOT_USER")
-        .unwrap_or_else(|_| "dylanmccurry_microsoft".into());
+    // The Copilot AI account may differ from the repository account.
+    let Ok(copilot_user) = std::env::var("PR_SNIPER_LIVE_COPILOT_USER") else {
+        eprintln!("skipped: PR_SNIPER_LIVE_COPILOT_USER is not set");
+        return None;
+    };
     let pair = token(&copilot_user);
     let copilot = GithubClient::new(HttpTransport::from_token_pair(&pair).unwrap())
         .current_identity()

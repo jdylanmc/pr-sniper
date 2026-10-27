@@ -3,12 +3,12 @@
 - Date: 2026-10-13. Branch: `feat/packet-live`.
 - Sandbox: `jdylanmc/pr-sniper-sandbox` (private, owner-authorized). PR #1 clean docs, #2 bug (`average` off-by-one, `os.system`), #3 CI red.
 - GitHub account: `jdylanmc` (author of all three PRs: every PR is self-authored).
-- Copilot account: separate work account, token mode (`jdylanmc` has Copilot Free; its model list is `auto` only and `auto` returns HTTP 400).
+- Copilot account: `PR_SNIPER_LIVE_COPILOT_USER` (gh login), token mode. The Copilot AI account may differ from the repository account (a plan whose model list is `auto` only returns HTTP 400 for `auto`).
 - Models: `gpt-5-mini` (development runs), `gpt-5.4-mini` (final runs).
-- Harness: `src-tauri/src/live_tests.rs`. Every test `#[ignore]`, returns early unless `PR_SNIPER_LIVE=1`. CI never runs it.
+- Harness: `src-tauri/src/live_tests.rs`. Every test `#[ignore]`, returns early unless `PR_SNIPER_LIVE=1` and `PR_SNIPER_LIVE_COPILOT_USER` is set. CI never runs it.
 
 ```sh
-PR_SNIPER_LIVE=1 PR_SNIPER_LIVE_MODEL=gpt-5.4-mini PR_SNIPER_LIVE_STORE=<dir> \
+PR_SNIPER_LIVE=1 PR_SNIPER_LIVE_COPILOT_USER=<login> PR_SNIPER_LIVE_MODEL=gpt-5.4-mini PR_SNIPER_LIVE_STORE=<dir> \
   cargo test --locked --lib live_tests -- --ignored --nocapture --test-threads=1
 ```
 
