@@ -884,22 +884,25 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
     "save-if": "false",
   });
   const winPublish = workflow.jobs["windows-publish"];
-  assert.equal(winPublish["runs-on"], "ubuntu-latest");
-  assert.deepEqual(runs(winPublish), [
-    "python3 -B scripts/release.py publish-windows",
-  ]);
+  assert.equal(winPublish["runs-on"], "windows-2022");
+  assert.deepEqual(winPublish.defaults, { run: { shell: "pwsh" } });
+  const winPublishRuns = runs(winPublish);
+  assert.equal(winPublishRuns.length, 2);
+  assert.equal(
+    winPublishRuns[0],
+    "python -B scripts/release.py publish-windows",
+  );
+  assert.match(
+    winPublishRuns[1],
+    /\.\\scripts\\windows-chocolatey\.ps1 -Mode PublicUnsigned/,
+  );
+  assert.match(winPublishRuns[1], /choco pack/);
+  assert.doesNotMatch(winPublishRuns[1], /CHOCOLATEY_API_KEY|choco push/);
   const chocoJob = workflow.jobs.chocolatey;
   assert.equal(chocoJob["runs-on"], "windows-2022");
   assert.deepEqual(chocoJob.defaults, { run: { shell: "pwsh" } });
   const chocoRuns = runs(chocoJob);
-  assert.equal(chocoRuns.length, 2);
-  assert.match(
-    chocoRuns[0],
-    /\.\\scripts\\windows-chocolatey\.ps1 -Mode PublicUnsigned/,
-  );
-  assert.match(chocoRuns[0], /choco pack/);
-  assert.doesNotMatch(chocoRuns[0], /CHOCOLATEY_API_KEY|choco push/);
-  assert.equal(chocoRuns[1], "python -B scripts/release.py choco-publish");
+  assert.deepEqual(chocoRuns, ["python -B scripts/release.py choco-publish"]);
 });
 
 test("base and upgrade metadata hash the extracted payload, not Tauri's restored standalone executable", () => {
