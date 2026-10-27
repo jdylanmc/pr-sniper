@@ -718,7 +718,13 @@ fn normal_review_execution_invalidates_own_inputs_authority_and_repository_gates
             }
             "repository name" => settings.repositories[0].name = "example/other".into(),
             "repository provider" => {
-                settings.repositories[0].provider = pr_sniper_lib::storage::ProviderId::AzureDevops;
+                let repository = &mut settings.repositories[0];
+                repository.provider = pr_sniper_lib::storage::ProviderId::AzureDevops;
+                // GitHub people are not Azure DevOps identities.
+                repository.watched_authors.clear();
+                for rule in repository.admission.iter_mut().flat_map(|a| &mut a.rules) {
+                    rule.users = rule.users.take().map(|_| Vec::new());
+                }
             }
             "watched authors" => settings.repositories[0].watched_authors.clear(),
             "reviewer trigger" => settings.defaults.reviewer_assignment = false,

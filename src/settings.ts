@@ -389,8 +389,6 @@ const reason = (error: unknown): string => {
     invalid_repository: "Invalid repository",
     revision_changed: "Revision changed",
     signed_out: "Reconnect required",
-    missing_cli: "Azure CLI missing",
-    broken_cli: "Azure CLI failed",
     missing_read_permission: "Access denied",
     repository_unavailable: "Repository unavailable",
     rate_limited: "Rate limited",
