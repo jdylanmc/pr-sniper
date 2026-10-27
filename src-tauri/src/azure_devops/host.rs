@@ -2,7 +2,7 @@
 //! from an explicit Settings action; no background path reaches them.
 
 use super::connection::HttpConnectionTransport;
-use super::read::{Client, HttpTransport, Reader, Transport};
+use super::read::{Client, HttpTransport, Reader, Session, Transport};
 use super::setup::{AccountView, Backends, Binding, Platform, Program, Setup, SetupView};
 use super::tenant::HttpHeadTransport;
 use super::token_source::system_clock;
@@ -100,6 +100,16 @@ pub fn read_session(
     );
     let reader = Reader::open(client, runtime, &connected.identity)?;
     Ok((reader.identity().clone(), reader))
+}
+
+/// Every provider interface as `account_id`: reads, threads, publication and
+/// readiness. Off the async runtime only; never interactive.
+pub fn session(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<(Person, Session), ConnectionError> {
+    let (identity, reader) = read_session(app, account_id)?;
+    Ok((identity, Session::new(reader)))
 }
 
 /// Whether `account` shows the bound identity signed in; `None` when it

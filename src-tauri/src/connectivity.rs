@@ -69,11 +69,19 @@ impl Connectivity {
 }
 
 pub fn scopes(run: &ReviewRun) -> Vec<Scope> {
-    selection_scopes(&run.job.account_id, Some(&run.selection))
+    selection_scopes(&run.job, Some(&run.selection))
 }
 
-pub fn selection_scopes(account: &str, selection: Option<&crate::review::Selection>) -> Vec<Scope> {
-    let mut scopes = vec![Scope::github(account)];
+/// Services a job's review needs: its GitHub account (an Azure DevOps job
+/// never waits on GitHub reachability) and the selected AI accounts.
+pub fn selection_scopes(
+    job: &crate::monitoring::QueueJob,
+    selection: Option<&crate::review::Selection>,
+) -> Vec<Scope> {
+    let mut scopes = Vec::new();
+    if job.provider != crate::monitoring::provider_key(&crate::storage::ProviderId::AzureDevops) {
+        scopes.push(Scope::github(&job.account_id));
+    }
     if let Some(account) = selection.and_then(|s| s.agent.ai_account.as_ref()) {
         scopes.push(Scope::copilot(&account.account_id));
     }
@@ -301,7 +309,7 @@ pub(crate) fn wanted_scopes(
         })
     {
         scopes.extend(selection_scopes(
-            &candidate.job.account_id,
+            &candidate.job,
             candidate.planned_selection.as_ref(),
         ));
     }

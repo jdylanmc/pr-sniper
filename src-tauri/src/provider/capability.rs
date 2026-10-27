@@ -66,9 +66,9 @@ impl ProviderCapabilities {
             ProviderId::AzureDevops => Self {
                 discovery: Available,
                 read: Available,
-                threads: No(Unavailable::NotImplemented),
-                publish: No(Unavailable::NotImplemented),
-                readiness: No(Unavailable::NotImplemented),
+                threads: Available,
+                publish: Available,
+                readiness: Available,
                 approve: No(Unavailable::NotImplemented),
                 approve_and_merge: No(Unavailable::NotSupported),
             },

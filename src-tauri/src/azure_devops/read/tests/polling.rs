@@ -163,18 +163,17 @@ fn admits_picked_teammates_ignores_drafts_and_takes_each_iteration_as_a_revision
     );
     assert_eq!(jobs[0].author_id.as_deref(), Some(BLAKE));
     assert_eq!(jobs[0].repository_id, key().id());
-    // Admitted, but no review starts until the provider can run one.
+    // Admitted, and the provider can run its review.
     let work = crate::capacity::candidates(&store, NOW).unwrap();
     assert_eq!(work.len(), 1);
-    assert_eq!(
-        work[0].reason.as_deref(),
-        Some(crate::capacity::WAITING_FOR_PROVIDER)
-    );
-    // GitHub reachability is never probed for, or holds, Azure DevOps work.
+    assert_eq!(work[0].reason, None);
+    // GitHub reachability is never probed for, or holds, Azure DevOps work;
+    // only its AI account is.
     let accounts = monitor_accounts();
     assert!(crate::connectivity::wanted_scopes(&store, &accounts)
         .unwrap()
-        .is_empty());
+        .iter()
+        .all(|scope| matches!(scope, crate::backpressure::Scope::Copilot { .. })));
 
     // A push makes a new iteration: a new revision supersedes the old work.
     let ticket = next_ticket(&mut monitor, &store, NOW + 900);
