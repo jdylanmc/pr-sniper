@@ -145,8 +145,10 @@ async fn requests_the_azure_devops_resource_for_the_tenant_without_agent_session
             "json"
         ]
     );
-    for (_, removed) in invocations.iter() {
+    for (args, removed) in invocations.iter() {
         assert!(removed.contains(&"COPILOT_AGENT_SESSION_ID"));
+        // Passable to `az.cmd` on Windows.
+        assert!(args.iter().all(|arg| crate::cli_process::batch_safe(arg)));
     }
 }
 

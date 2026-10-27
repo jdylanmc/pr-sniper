@@ -52,4 +52,9 @@
   folder; sign-out and revocation follow Azure CLI and Microsoft Entra.
 - Azure CLI must be installed and signed in. Background acquisition is never
   interactive; sign-in and install are user-initiated (#247).
-- Windows `az.cmd` fallbacks and installer detection: #252.
+- Windows: Azure CLI is `az.cmd`, found in absolute PATH entries, then
+  `%ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin` and its `%ProgramFiles(x86)%`
+  twin, so a winget install from Settings is found although the running app's
+  PATH is stale. cmd.exe re-parses batch command lines, so `cli_process` only
+  passes a `.cmd`/`.bat` program arguments of `[A-Za-z0-9._/-]` (fixed literals
+  and validated GUIDs), on top of Rust's batch argument escaping.

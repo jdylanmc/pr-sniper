@@ -5,6 +5,7 @@
 use super::token_source::{AccessToken, TokenError};
 use crate::cli_process::{EnvPolicy, RunError};
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
@@ -22,15 +23,43 @@ pub const ENV: EnvPolicy = EnvPolicy {
     ],
 };
 
-/// Windows `CLI2\wbin` fallbacks and installer detection: #252.
+/// On Windows Azure CLI is a batch script; `cli_process` only passes it
+/// arguments that need no cmd.exe quoting.
 #[cfg(windows)]
 const PROGRAM: &str = "az.cmd";
 #[cfg(not(windows))]
 const PROGRAM: &str = "az";
 
+/// Absolute PATH entries, then the platform install directories.
 pub fn discover() -> Option<PathBuf> {
     let paths = std::env::var_os("PATH").unwrap_or_default();
-    crate::process_path::find(&[PROGRAM], &paths, &[])
+    #[cfg(windows)]
+    let fallback = windows_install_dirs(|name| std::env::var_os(name));
+    #[cfg(not(windows))]
+    let fallback = Vec::new();
+    crate::process_path::find(&[PROGRAM], &paths, &fallback)
+}
+
+/// Where the Azure CLI installer (also run by winget) puts `az.cmd`. Searched
+/// after PATH because a running app keeps the PATH it started with, so an
+/// install from Settings is found without a restart.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_install_dirs(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for name in ["ProgramFiles", "ProgramFiles(x86)"] {
+        let Some(root) = var(name).filter(|root| !root.is_empty()) else {
+            continue;
+        };
+        let dir = PathBuf::from(root)
+            .join("Microsoft SDKs")
+            .join("Azure")
+            .join("CLI2")
+            .join("wbin");
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -159,6 +188,60 @@ pub fn classify(exit_code: Option<i32>, stderr: &[u8]) -> TokenError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_azure_cli_on_path_first_then_in_the_installer_directories() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pr-sniper-az-{}", uuid::Uuid::new_v4()));
+        let program_files = root.join("Program Files");
+        let program_files_x86 = root.join("Program Files (x86)");
+        let env = |name: &str| match name {
+            "ProgramFiles" => Some(program_files.clone().into_os_string()),
+            "ProgramFiles(x86)" => Some(program_files_x86.clone().into_os_string()),
+            _ => None,
+        };
+        let wbin = |base: &PathBuf| base.join("Microsoft SDKs/Azure/CLI2/wbin");
+        let dirs = windows_install_dirs(env);
+        assert_eq!(dirs, [wbin(&program_files), wbin(&program_files_x86)]);
+        let x86 = wbin(&program_files_x86);
+        std::fs::create_dir_all(&x86).unwrap();
+        std::fs::write(x86.join("az.cmd"), b"not executed").unwrap();
+        // A stale PATH (no Azure CLI entry) still finds a fresh install.
+        let path = std::env::join_paths([root.join("bin")]).unwrap();
+        assert_eq!(
+            crate::process_path::find(&["az.cmd"], &path, &dirs),
+            Some(x86.join("az.cmd"))
+        );
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin").join("az.cmd"), b"not executed").unwrap();
+        assert_eq!(
+            crate::process_path::find(&["az.cmd"], &path, &dirs),
+            Some(root.join("bin").join("az.cmd"))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn skips_unset_and_duplicate_program_files_directories() {
+        assert!(windows_install_dirs(|_| None).is_empty());
+        let same = |name: &str| match name {
+            "ProgramFiles" | "ProgramFiles(x86)" => Some(OsString::from("/pf")),
+            _ => Some(OsString::new()),
+        };
+        assert_eq!(windows_install_dirs(same).len(), 1);
+        let empty_x64 = |name: &str| {
+            Some(OsString::from(if name == "ProgramFiles" {
+                ""
+            } else {
+                "/x86"
+            }))
+        };
+        assert_eq!(
+            windows_install_dirs(empty_x64),
+            [PathBuf::from("/x86").join("Microsoft SDKs/Azure/CLI2/wbin")]
+        );
+    }
 
     #[test]
     fn classifies_captured_azure_cli_failures() {
