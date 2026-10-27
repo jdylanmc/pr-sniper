@@ -91,14 +91,14 @@ fn live(name: &str) -> Option<Live> {
         eprintln!("skipped: PR_SNIPER_LIVE is not 1");
         return None;
     }
-    let client = GithubClient::new(HttpTransport::from_token_pair(&token(LOGIN)).unwrap());
-    let identity = client.current_identity().expect("identity");
-    assert_eq!(identity.login, LOGIN);
     // The Copilot AI account may differ from the repository account.
     let Ok(copilot_user) = std::env::var("PR_SNIPER_LIVE_COPILOT_USER") else {
         eprintln!("skipped: PR_SNIPER_LIVE_COPILOT_USER is not set");
         return None;
     };
+    let client = GithubClient::new(HttpTransport::from_token_pair(&token(LOGIN)).unwrap());
+    let identity = client.current_identity().expect("identity");
+    assert_eq!(identity.login, LOGIN);
     let pair = token(&copilot_user);
     let copilot = GithubClient::new(HttpTransport::from_token_pair(&pair).unwrap())
         .current_identity()
