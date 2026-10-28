@@ -178,7 +178,11 @@ impl Coordinator {
         Ok(())
     }
 
-    fn launch(app: &tauri::AppHandle, review_id: &str, manual: bool) -> Result<(), String> {
+    pub(crate) fn launch(
+        app: &tauri::AppHandle,
+        review_id: &str,
+        manual: bool,
+    ) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());

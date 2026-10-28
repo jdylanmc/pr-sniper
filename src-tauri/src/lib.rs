@@ -49,7 +49,7 @@ use provider::{
 };
 use serde::Serialize;
 use startup::{LoginRegistration, RegistrationStatus};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -1628,6 +1628,70 @@ async fn retry_monitoring_operation(
     .await
     .map_err(|_| "The monitoring operation could not be retried.".to_string())??;
     start_checks(&app, false)
+}
+
+/// Queue **Retry all**: re-arms every parked failure a human need not judge,
+/// through the per-item Retry paths. Polls go first, so reviews restart on
+/// fresh data. Returns the item counts.
+#[tauri::command]
+async fn retry_all_parked(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        if host.quitting.load(Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".to_string());
+        }
+        let now = now_seconds()?;
+        let health = host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?
+            .snapshot();
+        let (plan, mut done, polled, batch) = {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let plan = queue::retry_all::plan(&store, health)?;
+            let mut polled = BTreeSet::new();
+            {
+                let mut monitor = host
+                    .monitor
+                    .lock()
+                    .map_err(|_| "Monitoring is unavailable.")?;
+                for id in plan.items.iter().flat_map(|(_, r)| &r.polls) {
+                    if !polled.contains(id)
+                        && monitor.manual_retry_operation(&store, id, now).is_ok()
+                    {
+                        polled.insert(id.clone());
+                    }
+                }
+            }
+            let done = queue::retry_all::rearm(&store, &plan, now);
+            let batch = host.ai.dispatch(&store, now)?;
+            (plan, done, polled, batch)
+        };
+        capacity::launch_batch(&app, batch);
+        if !polled.is_empty() {
+            start_checks(&app, false)?;
+        }
+        let mut published = BTreeSet::new();
+        for (id, recovery) in &plan.items {
+            if recovery.polls.iter().any(|poll| polled.contains(poll)) {
+                done.insert(id.clone());
+            }
+            for review in &recovery.publications {
+                if published.contains(review)
+                    || publication::host::Coordinator::launch(&app, review, true).is_ok()
+                {
+                    published.insert(review.clone());
+                    done.insert(id.clone());
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "retried": done.len(),
+            "skipped": plan.skipped + plan.items.len() - done.len(),
+        }))
+    })
+    .await
+    .map_err(|_| "Retry all could not finish.".to_string())?
 }
 
 fn now_seconds() -> Result<i64, String> {
@@ -4844,6 +4908,7 @@ pub fn run() {
             notifications::host::open_notification,
             monitoring_snapshot,
             retry_monitoring_operation,
+            retry_all_parked,
             review::host::start_review,
             review::host::retry_packet_state,
             review::host::cancel_review,
