@@ -706,7 +706,11 @@ fn one_signed_reply_has_a_confirmed_receipt_and_cannot_repeat() {
     assert_eq!(fixture.writes(), 1);
     assert_eq!(run.phase, Phase::Published);
     assert_eq!(run.receipt.as_deref(), Some("200"));
-    assert!(run.body.as_ref().unwrap().ends_with("\u{f05b} PR Sniper"));
+    assert!(run
+        .body
+        .as_ref()
+        .unwrap()
+        .ends_with(pr_sniper_lib::exit_writes::SIGNATURE));
     assert!(follow_up::publish(&mut fixture, &mut run).is_err());
     assert_eq!(fixture.writes(), 1);
     let Observation::Owned(current) = fixture.observe(&run).unwrap() else {

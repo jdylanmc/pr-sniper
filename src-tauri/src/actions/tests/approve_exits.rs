@@ -191,6 +191,7 @@ fn approve_sends_only_the_marker_then_the_confirmed_write_consumes_the_state() {
     assert_eq!(effect.action, Action::Approve);
     // No status chatter: the agent's comment stays local.
     assert!(effect.body.starts_with("<!-- pr-sniper:action:"));
+    assert!(effect.body.ends_with(crate::exit_writes::SIGNATURE));
     assert!(!effect.body.contains("Reviewed the diff. Looks right."));
     let mut env = env(&store);
     host::execute_action(&mut env, &effect).unwrap();

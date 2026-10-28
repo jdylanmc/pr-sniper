@@ -603,7 +603,7 @@ Before specification, Dylan settled the remaining product choices:
 
 - Launch at login is opt-in.
 - `` is the canonical crosshair application icon and brand mark.
-- ` PR Sniper` is the canonical machine-review signature.
+- `🔫 PR Sniper automated review` is the canonical machine-review signature.
 
 The independent specification review surfaced further product ambiguities.
 Dylan settled them as follows:

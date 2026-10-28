@@ -771,8 +771,8 @@ impl FollowUp {
             ),
             _ => String::new(),
         };
-        let body = format!("Automated follow-up by PR Sniper / Agent {} / model {}.\n\n{target}{}\n\nEvidence at {}:\n\n{}\n<!-- pr-sniper:reply:{} -->\n\n\u{f05b} PR Sniper",
-            self.context.selection.agent.name, result.model, result.output.body, self.context.job.head_sha, citations, self.id);
+        let body = format!("Automated follow-up by PR Sniper / Agent {} / model {}.\n\n{target}{}\n\nEvidence at {}:\n\n{}\n<!-- pr-sniper:reply:{} -->\n\n{}",
+            self.context.selection.agent.name, result.model, result.output.body, self.context.job.head_sha, citations, self.id, crate::exit_writes::SIGNATURE);
         if body.chars().count() > 65_536 {
             return Err(Failure::permanent(
                 "Reply exceeds GitHub's body limit; nothing was truncated.",

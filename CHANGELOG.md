@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Sign review bodies, replies and approvals with `🔫 PR Sniper automated review`
+  instead of a Private Use Area icon glyph that GitHub and Azure DevOps render as
+  an unknown character. Comments signed the old way stay recognized (#289).
+
 ## 0.5.3 - 2026-10-28
 
 Website Windows installation switcher and NuGet dependency range verification for Chocolatey packages.
