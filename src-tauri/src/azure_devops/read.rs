@@ -31,14 +31,62 @@ const MAX_PEOPLE: usize = 20;
 const MAX_QUERY: usize = 100;
 const MAX_TEXT: usize = 256;
 
+mod diff;
 mod pulls;
+mod readiness;
+mod session;
+mod threads;
 pub use pulls::Iteration;
+pub use session::Session;
 
-/// One authenticated request: GET, or POST with a JSON body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Post,
+    Patch,
+    Delete,
+}
+
+/// One authenticated request; POST and PATCH carry a JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    pub method: Method,
     pub url: String,
     pub body: Option<Value>,
+}
+
+impl Request {
+    pub fn get(url: String) -> Self {
+        Self {
+            method: Method::Get,
+            url,
+            body: None,
+        }
+    }
+
+    pub fn post(url: String, body: Value) -> Self {
+        Self {
+            method: Method::Post,
+            url,
+            body: Some(body),
+        }
+    }
+
+    pub fn patch(url: String, body: Value) -> Self {
+        Self {
+            method: Method::Patch,
+            url,
+            body: Some(body),
+        }
+    }
+
+    pub fn delete(url: String) -> Self {
+        Self {
+            method: Method::Delete,
+            url,
+            body: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,13 +121,17 @@ impl HttpTransport {
 #[async_trait]
 impl Transport for HttpTransport {
     async fn send(&self, request: &Request, token: &AccessToken) -> Result<Response, NetworkError> {
+        let builder = match request.method {
+            Method::Get => self.0.get(&request.url),
+            Method::Post => self.0.post(&request.url),
+            Method::Patch => self.0.patch(&request.url),
+            Method::Delete => self.0.delete(&request.url),
+        };
         let builder = match &request.body {
-            Some(body) => self
-                .0
-                .post(&request.url)
+            Some(body) => builder
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_vec(body).map_err(|_| NetworkError)?),
-            None => self.0.get(&request.url),
+            None => builder,
         };
         let response = builder
             .bearer_auth(token.secret())
@@ -337,6 +389,8 @@ pub struct Client {
     transport: Arc<dyn Transport>,
     tenant: TenantId,
     organization: String,
+    /// Checked before and after every request of a guarded session.
+    guard: Option<crate::provider::ReadGuard>,
 }
 
 impl Client {
@@ -351,6 +405,7 @@ impl Client {
             transport,
             tenant,
             organization: organization.to_ascii_lowercase(),
+            guard: None,
         }
     }
 
@@ -370,6 +425,17 @@ impl Client {
     }
 
     async fn call(&self, request: Request) -> Result<Response, ConnectionError> {
+        if let Some(guard) = &self.guard {
+            guard()?;
+        }
+        let response = self.send(request).await?;
+        if let Some(guard) = &self.guard {
+            guard()?;
+        }
+        Ok(response)
+    }
+
+    async fn send(&self, request: Request) -> Result<Response, ConnectionError> {
         let (request, transport) = (&request, &self.transport);
         with_token(
             self.source.as_ref(),
@@ -380,7 +446,7 @@ impl Client {
                     .await
                     .map_err(|_| Rejection::Failed(ConnectionError::Network))?;
                 match response.status {
-                    200 => Ok(response),
+                    200 | 201 | 204 => Ok(response),
                     // A suppressed FedAuth redirect is a 401; a 203 sign-in page or
                     // a redirect is the same refusal.
                     401 | 203 | 300..=399 => Err(Rejection::Unauthorized),
@@ -400,7 +466,7 @@ impl Client {
         &self,
         url: String,
     ) -> Result<(T, Response), ConnectionError> {
-        let response = self.call(Request { url, body: None }).await?;
+        let response = self.call(Request::get(url)).await?;
         let value =
             serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
         Ok((value, response))
@@ -409,7 +475,7 @@ impl Client {
     /// The identity the tenant token belongs to.
     pub async fn identity(&self) -> Result<Identity, ConnectionError> {
         let url = self.url(&["_apis", "connectionData"], &[]);
-        let response = self.call(Request { url, body: None }).await?;
+        let response = self.call(Request::get(url)).await?;
         connection::parse_identity(&response.body)
             .map_err(|_| ConnectionError::InvalidResponse)?
             .ok_or(ConnectionError::SignedOut)
@@ -558,16 +624,16 @@ impl Client {
             &[("api-version", PICKER_API_VERSION)],
         );
         let response = self
-            .call(Request {
+            .call(Request::post(
                 url,
-                body: Some(json!({
+                json!({
                     "query": query,
                     "identityTypes": ["user"],
                     "operationScopes": ["ims", "source"],
                     "properties": ["DisplayName", "Mail"],
                     "options": {"MinResults": 5, "MaxResults": MAX_PEOPLE},
-                })),
-            })
+                }),
+            ))
             .await?;
         let raw: Raw =
             serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;

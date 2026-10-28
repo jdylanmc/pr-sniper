@@ -301,7 +301,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         });
         let offline = connectivity
             .offline(&crate::connectivity::selection_scopes(
-                &candidate.job.account_id,
+                &candidate.job,
                 candidate
                     .run
                     .as_ref()

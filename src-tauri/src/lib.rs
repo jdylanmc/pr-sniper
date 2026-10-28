@@ -63,6 +63,7 @@ use tauri::{
 };
 
 struct Host {
+    app: tauri::AppHandle,
     panel: panel::Panel,
     store: Mutex<Store>,
     monitor: Mutex<monitoring::Monitor>,
@@ -274,12 +275,7 @@ impl GithubAuth {
 
     /// Any repository account, GitHub or Azure DevOps, may finish a poll.
     fn repository_account_allowed(&self, account_id: &str) -> Result<(), ConnectionError> {
-        match &self.azure_devops {
-            Some(account) if account.identity.id == account_id => {
-                account.reconnect.map_or(Ok(()), Err)
-            }
-            _ => self.account_session_allowed(account_id),
-        }
+        self.account_session_allowed(account_id)
     }
 
     fn view(&self) -> GithubAuthView {
@@ -395,7 +391,23 @@ impl GithubAuth {
         }
     }
 
+    /// Whether `account_id` is the bound Azure DevOps identity.
+    fn azure_devops_account(&self, account_id: &str) -> bool {
+        self.azure_devops
+            .as_ref()
+            .is_some_and(|account| account.identity.id == account_id)
+    }
+
+    /// Sessions of a GitHub account, or of the bound Azure DevOps identity
+    /// while it is signed in.
     fn account_session_allowed(&self, account_id: &str) -> Result<(), ConnectionError> {
+        if let Some(account) = self
+            .azure_devops
+            .as_ref()
+            .filter(|account| account.identity.id == account_id)
+        {
+            return account.reconnect.map_or(Ok(()), Err);
+        }
         match self.accounts.get(account_id) {
             Some(GithubAccountState::Connected(_)) => Ok(()),
             Some(GithubAccountState::ReconnectRequired { reason, .. })
@@ -975,8 +987,8 @@ pub(crate) fn read_session(
     host: &Host,
     account_id: &str,
 ) -> Result<(provider::Person, Box<dyn ProviderReader + Send + Sync>), ConnectionError> {
-    let (identity, client) = github_session(host, account_id)?;
-    Ok((identity, Box::new(client)))
+    let (identity, client) = provider_session(host, account_id)?;
+    Ok((identity, client))
 }
 
 /// Read-interface session for a repository account of either provider.
@@ -998,10 +1010,21 @@ pub(crate) fn repository_read_session(
 /// readiness; callers never depend on a concrete provider client.
 pub(crate) type Session = Box<dyn provider::ProviderSession + Send + Sync>;
 
+/// The account's provider decides the session: the bound Azure DevOps
+/// identity, else a GitHub account.
 pub(crate) fn provider_session(
     host: &Host,
     account_id: &str,
 ) -> Result<(provider::Person, Session), ConnectionError> {
+    let azure_devops = host
+        .github_auth
+        .lock()
+        .map_err(|_| ConnectionError::Configuration)?
+        .azure_devops_account(account_id);
+    if azure_devops {
+        let (identity, session) = azure_devops::host::session(&host.app, account_id)?;
+        return Ok((identity, Box::new(session)));
+    }
     let (identity, client) = github_session(host, account_id)?;
     Ok((identity, Box::new(client)))
 }
@@ -1845,26 +1868,49 @@ fn poll_repository(
     Ok((connection, pull_requests))
 }
 
-/// One Azure DevOps repository poll as its bound identity. Mentions and the
-/// review-state heartbeat are not read for Azure DevOps yet: admission and
-/// revisions come from the pull requests alone.
+/// One Azure DevOps repository poll as its bound identity: admission and
+/// revisions from the pull requests, and the review-state heartbeat (threads,
+/// votes, policies and statuses) of tracked open ones. Mentions are not read.
 fn poll_azure_devops(
     app: &tauri::AppHandle,
     ticket: &monitoring::PollTicket,
 ) -> Result<(monitoring::PollResult, follow_up::host::Scan), ConnectionError> {
-    let (identity, reader) = azure_devops::host::read_session(app, &ticket.provider_account_id)?;
+    let (identity, session) = azure_devops::host::session(app, &ticket.provider_account_id)?;
     if identity.id != ticket.provider_account_id {
         return Err(ConnectionError::WrongIdentity);
     }
-    let (connection, pull_requests) = poll_repository(&reader, ticket)?;
+    let (connection, pull_requests) = poll_repository(&session, ticket)?;
+    let states = tracked_states(&session, &connection, &pull_requests, ticket)?;
     Ok((
         monitoring::PollResult {
             connection,
             pull_requests,
-            states: BTreeMap::new(),
+            states,
         },
         follow_up::host::Scan::default(),
     ))
+}
+
+/// One batched state read for every tracked open pull request: the heartbeat
+/// diff compares these, so comments and CI count, not just head.
+fn tracked_states(
+    reader: &(impl provider::PullRequestStateReader + ?Sized),
+    connection: &Connection,
+    pull_requests: &[PullRequest],
+    ticket: &monitoring::PollTicket,
+) -> Result<BTreeMap<String, provider::PrSnapshot>, ConnectionError> {
+    let tracked_open: std::collections::BTreeSet<_> =
+        ticket.tracked.iter().map(|(id, _)| id).collect();
+    let numbers: Vec<u64> = pull_requests
+        .iter()
+        .filter(|p| p.state == provider::Lifecycle::Open && tracked_open.contains(&p.id))
+        .map(|p| p.number)
+        .collect();
+    Ok(reader
+        .pr_snapshots(&connection.repository, &numbers)?
+        .into_values()
+        .map(|s| (s.pull_request_id.clone(), s))
+        .collect())
 }
 
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
@@ -1896,22 +1942,8 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     &mut pull_requests,
                     &connection.identity,
                 )?;
-                // One batched read for every tracked open PR: the heartbeat
-                // diff compares these, so comments and CI count, not just head.
-                let tracked_open: std::collections::BTreeSet<_> =
-                    ticket_for_poll.tracked.iter().map(|(id, _)| id).collect();
-                let numbers: Vec<u64> = pull_requests
-                    .iter()
-                    .filter(|p| {
-                        p.state == provider::Lifecycle::Open && tracked_open.contains(&p.id)
-                    })
-                    .map(|p| p.number)
-                    .collect();
-                let states = client
-                    .pr_snapshots(&connection.repository, &numbers)?
-                    .into_values()
-                    .map(|s| (s.pull_request_id.clone(), s))
-                    .collect();
+                let states =
+                    tracked_states(&*client, &connection, &pull_requests, &ticket_for_poll)?;
                 Ok((
                     monitoring::PollResult {
                         connection,
@@ -4890,6 +4922,7 @@ pub fn run() {
             let notifications = notifications::host::Coordinator::new(app.handle(), &store, &root);
             let azure_devops_binding = azure_devops::host::load(&store);
             app.manage(Host {
+                app: app.handle().clone(),
                 panel: panel::Panel::default(),
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),

@@ -261,6 +261,9 @@ fn review_context_reads_both_trees_and_content_at_commits() {
         )
         .json(&git("items?"), tree(11))
         .json(&git("items?"), tree(12))
+        // Diffed for the review context first, then read as content.
+        .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
         .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
         .on(&git(&format!("blobs/{}?", sha(12))), blob(&[0, 159, 146, 150]))
         .on(
@@ -280,7 +283,10 @@ fn review_context_reads_both_trees_and_content_at_commits() {
     assert_eq!(context.base_revision, sha(800));
     assert_eq!(context.pull.files.len(), 1);
     assert_eq!(context.files[0].path, "src/main.rs");
-    assert!(context.files[0].patch.is_none());
+    assert_eq!(
+        context.files[0].patch.as_deref(),
+        Some("@@ -1 +1 @@\n-fn old() {}\n+fn main() {}")
+    );
     assert_eq!(
         context.head.keys().collect::<Vec<_>>(),
         ["src", "src/main.rs"]

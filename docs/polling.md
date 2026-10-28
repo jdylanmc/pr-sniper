@@ -84,9 +84,11 @@ Same schedule, admission, retry and parking as GitHub, through the provider read
 | Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                               |
 | Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams); path rules read changed files. No mention scan.                                                   |
 | Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages, ≤ 3,000.                                                                      |
-| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`. No patch text.   |
+| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                  |
+| Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                           |
 | Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401 drops the token and retries once; `Retry-After` reaches the shared retry policy.                                                                  |
-| Reviews       | Admitted jobs wait (`WAITING_FOR_PROVIDER`) while `ProviderCapabilities::review` is unavailable; no review, publication or notification starts.                                                        |
+| Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                    |
+| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                 |
 
 Parked causes (Queue › **Needs attention**):
 

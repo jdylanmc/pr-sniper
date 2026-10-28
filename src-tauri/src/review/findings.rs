@@ -493,7 +493,7 @@ pub fn assessment_schema() -> Value {
             "rationale":{"type":"string","maxLength":4096},
             "evidence":{"type":"array","maxItems":10,"items":super::duck::reference_schema()},
             "duck_call":{"type":"integer","minimum":1},
-            "author_comment_id":{"type":"string","maxLength":64,"description":"author_wont_fix only: the PR author's latest reply in that thread."}},
+            "author_comment_id":{"type":"string","maxLength":256,"description":"author_wont_fix only: the PR author's latest reply in that thread."}},
         "description":"no_longer_applies: only when the head changed since the thread was posted, with current-head evidence.",
         "required":["thread_id","disposition","head_sha","base_sha","rationale","evidence"]}})
 }
