@@ -4,7 +4,11 @@ import { queueFixture } from "./queue-fixture.mjs";
 test.use({ viewport: { width: 408, height: 744 } });
 
 // One packet-mode PR whose only pass completed with a machine sign-off.
-async function reviewedFixture(store, operationState = "completed") {
+async function reviewedFixture(
+  store,
+  operationState = "completed",
+  removed = null,
+) {
   const fixture = await queueFixture(store);
   const run = fixture.review(9);
   run.job.work = {
@@ -52,9 +56,29 @@ async function reviewedFixture(store, operationState = "completed") {
       "pull_request_id",
     ].map((key) => [key, run.job[key]]),
   );
+  const jobs = [structuredClone(run.job)];
+  const reviews = [run];
+  if (removed) {
+    // A teammate whose assignment was removed while its run was unfinished.
+    const teammate = structuredClone(run);
+    teammate.assignment_id = "00000000-0000-4000-8000-0000000000ee";
+    teammate.job.assignment_id = teammate.assignment_id;
+    teammate.job.waiting = "assignment_removed";
+    teammate.job.work.id = "work-9-removed";
+    teammate.job.work.enqueue_order = 2;
+    teammate.key = teammate.job.work.id;
+    teammate.operation = {
+      ...teammate.operation,
+      id: "review-9-removed",
+      state: removed,
+    };
+    teammate.result = null;
+    jobs.push(structuredClone(teammate.job));
+    reviews.push(teammate);
+  }
   await store("seed_queue_state", {
-    jobs: [structuredClone(run.job)],
-    reviews: [run],
+    jobs,
+    reviews,
     publications: [],
     follow_ups: [],
     pr_states: {
@@ -139,4 +163,20 @@ test("Review again is absent for a legacy run without packet work", async ({
   await expect(
     page.getByRole("button", { name: "Review again", exact: true }),
   ).toHaveCount(0);
+});
+
+test("a removed teammate's unfinished run does not hide Review again", async ({
+  page,
+  store,
+}) => {
+  for (const removed of ["queued", "failed"]) {
+    const item = await reviewedFixture(store, "completed", removed);
+    expect(item.review_keys).toContain("work-9-removed");
+    await page.goto("/");
+    await expect(
+      page
+        .locator("[data-queue-status]")
+        .getByRole("button", { name: "Review again", exact: true }),
+    ).toBeVisible();
+  }
 });

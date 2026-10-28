@@ -122,8 +122,12 @@ const reviewAgainStates: QueueItem["state"][] = [
 
 export function reviewableAgain(item: QueueItem, snapshot: MonitoringSnapshot) {
   if (!item.job.work || !reviewAgainStates.includes(item.state)) return false;
-  const runs = (snapshot.reviews ?? []).filter((candidate) =>
-    item.review_keys.includes(candidate.key),
+  // A removed assignment's leftover run neither sets the item state nor
+  // takes part in the new pass (the host skips retired jobs).
+  const runs = (snapshot.reviews ?? []).filter(
+    (candidate) =>
+      item.review_keys.includes(candidate.key) &&
+      candidate.job.waiting !== "assignment_removed",
   );
   return (
     runs.length > 0 &&
