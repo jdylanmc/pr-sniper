@@ -104,8 +104,10 @@ pub(crate) fn recovery(item: &Item, snapshot: &Snapshot, paused: bool) -> Recove
             .iter()
             .filter(|candidate| ids.contains(&candidate.review_operation_id))
             .filter(|candidate| {
+                // A withdrawn batch never re-arms: manual retry would un-cancel it.
                 candidate.publication.as_ref().is_some_and(|p| {
-                    !matches!(p.phase, Phase::Discarded | Phase::Stale)
+                    !p.cancelled
+                        && !matches!(p.phase, Phase::Discarded | Phase::Stale)
                         && p.receipts
                             .last()
                             .is_none_or(|r| r.state != RemoteState::Deleted)

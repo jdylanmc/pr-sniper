@@ -634,9 +634,7 @@ export function renderQueue(
       all.onclick = async () => {
         if (retryingAll || !retryCount) return;
         retryingAll = true;
-        rearmed = new Set(
-          items.filter((item) => item.retry_all).map((item) => item.id),
-        );
+        for (const item of items) if (item.retry_all) rearmed.add(item.id);
         draw(false);
         try {
           await invoke("retry_all_parked");

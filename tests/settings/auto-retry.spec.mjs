@@ -256,3 +256,90 @@ test("Retry all is single-flight: unavailable while running, then the list updat
   await expect(all).toHaveCount(0);
   expect(await page.evaluate(() => window.__retryAll)).toBe(1);
 });
+
+test("Retry all never re-arms a withdrawn publication", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const withdrawn = fixture.state.publications.find(
+    (entry) => entry.review.job.number === 3,
+  );
+  Object.assign(withdrawn, { cancelled: true, confirmed: false });
+  withdrawn.operation.failure = "network";
+  const review = fixture.state.reviews.find((entry) => entry.job.number === 2);
+  Object.assign(review.operation, {
+    state: "manual_retry",
+    failure: "network",
+    next_attempt_at: null,
+  });
+  review.result = null;
+  fixture.state.publications = fixture.state.publications.filter(
+    (entry) => entry.review.job.number !== 2,
+  );
+  await store("seed_queue_state", fixture.state);
+  await store("set_automation_paused", { paused: false });
+  const flags = Object.fromEntries(
+    (await store("monitoring_snapshot")).items.map((item) => [
+      item.job.number,
+      [item.state, item.retry_all],
+    ]),
+  );
+  expect(flags[3]).toEqual(["failed", false]);
+  expect(flags[2]).toEqual(["failed", true]);
+  await page.goto("/");
+  await showQueueGroup(page, "attention");
+  const all = page.getByRole("button", { name: "Retry all failed" });
+  await expect(all).toHaveText("1");
+  await all.click();
+  await expect(row(page, 2)).toHaveCount(0);
+  await expect(row(page, 3)).toHaveCount(1);
+  const publication = (await store("monitoring_snapshot")).publications.find(
+    (entry) => entry.publication?.review.job.number === 3,
+  ).publication;
+  expect(publication).toMatchObject({ cancelled: true, confirmed: false });
+});
+
+test("a second Retry all in one pause adds to the queued count", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const park = (number, state, failure) => {
+    const review = fixture.state.reviews.find(
+      (entry) => entry.job.number === number,
+    );
+    Object.assign(review.operation, {
+      state,
+      failure,
+      next_attempt_at: null,
+    });
+    review.result = null;
+    fixture.state.publications = fixture.state.publications.filter(
+      (entry) => entry.review.job.number !== number,
+    );
+  };
+  park(3, "manual_retry", "credentials");
+  park(2, "manual_retry", "network");
+  await store("seed_queue_state", fixture.state);
+  await store("set_automation_paused", { paused: true });
+  await page.goto("/");
+  await showQueueGroup(page, "attention");
+  const all = page.locator("[data-retry-all]");
+  await expect(all).toHaveText("2");
+  await all.click();
+  await expect(all).toHaveAccessibleName("Queued until resume");
+  await expect(all).toHaveText("2");
+  // The earlier re-arms stay queued; another row fails during the pause.
+  park(3, "queued", null);
+  park(2, "queued", null);
+  park(1, "manual_retry", "network");
+  await store("seed_queue_state", fixture.state);
+  await expect(all).toHaveAccessibleName("Retry all failed", {
+    timeout: 10_000,
+  });
+  await expect(all).toHaveText("1");
+  await all.click();
+  await expect(all).toHaveAccessibleName("Queued until resume");
+  await expect(all).toHaveText("3");
+});
