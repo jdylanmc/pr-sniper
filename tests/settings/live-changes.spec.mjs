@@ -212,3 +212,40 @@ test("an embedded Agent editor closed on a stale list shows the commit", async (
     "external-model",
   );
 });
+
+test("a commit keeps an unsaved Azure DevOps Organization draft", async ({
+  page,
+  store,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    const view = {
+      cli: { state: "ready", version: "2.90.0" },
+      minimum: "2.54.0",
+      installer: "homebrew",
+      organization: { state: "unset" },
+      account: { state: "signed_out" },
+      checking: false,
+    };
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command.startsWith("azure_devops_")
+        ? window.__settingsTrack(Promise.resolve(structuredClone(view)))
+        : original(command, args);
+  });
+  await ready(page, store, true);
+  await section(page, "Git Repository");
+  await page
+    .locator(".settings-overview")
+    .getByRole("button", { name: "Azure DevOps", exact: true })
+    .click();
+  const organization = page.getByLabel("Organization", { exact: true });
+  await organization.fill("typed-organization");
+  await saveElsewhere(store, { model: "external-model" });
+  await committed(page, 2);
+  await expect(organization).toHaveValue("typed-organization");
+  await expect(organization).toBeFocused();
+  await section(page, "Agents");
+  await expect(card(page).locator(".resource-meta")).toContainText(
+    "external-model",
+  );
+});

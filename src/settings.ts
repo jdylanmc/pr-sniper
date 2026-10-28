@@ -5276,6 +5276,12 @@ export async function mountSettings(
       window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
       return;
     }
+    // Azure DevOps renders nothing from saved Settings and keeps its own
+    // unsaved Organization draft; a remount would drop it.
+    if (section === "azure-devops") {
+      changed();
+      return;
+    }
     render();
   }
   // A commit from another origin (control, another window) refreshes a clean
