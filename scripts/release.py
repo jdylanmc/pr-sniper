@@ -302,6 +302,57 @@ def windows_metadata(directory=WINDOWS_ASSETS):
     return manifest
 
 
+def stage_windows_release(candidate_dir=None, destination=WINDOWS_ASSETS, root=Path(".")):
+    candidate = Path(candidate_dir) if candidate_dir is not None else (Path(root) / "src-tauri" / "target" / "windows-installer-artifact")
+    destination = Path(destination)
+    require(not destination.exists() and not destination.is_symlink(),
+            "Windows release assets directory already exists; do not overwrite earlier staged assets.")
+    tag = os.environ.get("GITHUB_REF_NAME", "")
+    expected_version = version(tag)
+    require(config_version(root) == expected_version, "Tag does not match checked-in versions.")
+    source_sha = os.environ.get("SOURCE_SHA", "")
+    require(SHA.fullmatch(source_sha), "Invalid gated release commit.")
+    installer_meta_path = candidate / "installer.json"
+    require(installer_meta_path.is_file() and not installer_meta_path.is_symlink(),
+            "Verified Windows installer provenance metadata is unavailable.")
+    installer_meta = json.loads(installer_meta_path.read_text(encoding="utf-8-sig"))
+    expected_name = windows_filename(expected_version)
+    require(isinstance(installer_meta, dict)
+            and installer_meta.get("schema") == 1
+            and installer_meta.get("version") == expected_version
+            and installer_meta.get("commit") == source_sha
+            and installer_meta.get("target") == "x86_64-pc-windows-msvc"
+            and installer_meta.get("filename") == expected_name
+            and installer_meta.get("bundle_id") == BUNDLE_ID
+            and installer_meta.get("distribution") == "unsigned-ci-candidate-not-a-public-release"
+            and installer_meta.get("signed") is False
+            and isinstance(installer_meta.get("sha256"), str)
+            and HASH.fullmatch(installer_meta["sha256"]),
+            "Verified Windows installer candidate metadata does not match this release.")
+    installer_path = candidate / expected_name
+    require(installer_path.is_file() and not installer_path.is_symlink(),
+            "Verified Windows installer executable is unavailable.")
+    installer_bytes = installer_path.read_bytes()
+    checksum = hashlib.sha256(installer_bytes).hexdigest()
+    require(checksum == installer_meta["sha256"],
+            "Verified Windows installer bytes do not match candidate metadata.")
+    manifest = {
+        "version": expected_version,
+        "tag": tag,
+        "source_sha": source_sha,
+        "filename": expected_name,
+        "sha256": checksum,
+        "architecture": "x86_64",
+        "bundle_id": BUNDLE_ID,
+        "trust_mode": "unsigned",
+    }
+    destination.mkdir(parents=True)
+    (destination / expected_name).write_bytes(installer_bytes)
+    (destination / "windows-manifest.json").write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    (destination / "WINDOWS-SHA256SUMS").write_bytes(f"{checksum}  {expected_name}\n".encode("ascii"))
+    return windows_metadata(destination)
+
+
 def newer_release_guard(api, release_version):
     latest = api.request(f"/repos/{REPOSITORY}/releases/latest", missing=True)
     if latest is not None:
@@ -931,6 +982,9 @@ def main():
             and os.environ.get("GITHUB_REF_TYPE") == "tag", "Release effects require this repository's tag workflow.")
     tag = os.environ.get("GITHUB_REF_NAME", "")
     version(tag)
+    if action == "stage-windows-release":
+        print(json.dumps(stage_windows_release()))
+        return
     api = Github(os.environ.get("GITHUB_TOKEN"))
     if action == "gate":
         result = gate(api, tag)
@@ -949,7 +1003,7 @@ def main():
     elif action == "choco-publish":
         print(json.dumps(choco_publish(api)))
     else:
-        raise ReleaseError("Expected check, gate, check-windows-release, tap-ready, publish, publish-windows, tap or choco-publish.")
+        raise ReleaseError("Expected check, gate, check-windows-release, stage-windows-release, tap-ready, publish, publish-windows, tap or choco-publish.")
 
 
 if __name__ == "__main__":

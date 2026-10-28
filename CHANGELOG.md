@@ -14,7 +14,8 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Add tag-gated Windows release asset publication (`publish-windows`) that
   preserves macOS release assets and idempotent Chocolatey submission
   (`choco-publish`) that records `submitted`, `awaiting_moderation`, `rejected`
-  and `publicly_approved` states separately (#62, #64).
+  and `publicly_approved` states separately, wired into `.github/workflows/release.yml`
+  (`windows-build` -> `windows-publish` -> `chocolatey`) (#62, #64).
 
 ## 0.5.1 - 2026-10-26
 

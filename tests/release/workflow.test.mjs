@@ -155,6 +155,7 @@ test("only explicit stable tag release events can enter the secret-bearing pipel
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.equal(workflow.jobs.sign.environment, "pr-sniper-release");
   assert.equal(workflow.jobs.tap.environment, "pr-sniper-tap");
+  assert.equal(workflow.jobs.chocolatey.environment, "pr-sniper-chocolatey");
   assert.deepEqual(workflow.jobs.sign.needs, ["gate", "tap-ready"]);
   assert.equal(workflow.jobs["tap-ready"].needs, "gate");
   assert.equal(workflow.jobs["tap-ready"].environment, "pr-sniper-tap");
@@ -162,13 +163,21 @@ test("only explicit stable tag release events can enter the secret-bearing pipel
   assert.ok(!JSON.stringify(workflow.jobs.tap).includes("brew "));
   assert.deepEqual(workflow.jobs.publish.needs, ["gate", "sign"]);
   assert.deepEqual(workflow.jobs.tap.needs, ["gate", "publish"]);
+  assert.equal(workflow.jobs["windows-build"].needs, "gate");
+  assert.deepEqual(workflow.jobs["windows-publish"].needs, [
+    "gate",
+    "publish",
+    "tap",
+    "windows-build",
+  ]);
+  assert.deepEqual(workflow.jobs.chocolatey.needs, ["gate", "windows-publish"]);
 });
 
 test("all release actions have immutable refs and source checkout credentials are not retained", () => {
   for (const [name, job] of Object.entries(workflow.jobs)) {
     for (const step of job.steps) {
       if (step.uses)
-        assert.match(step.uses, /^[a-z0-9-]+\/[a-z0-9-]+@[a-f0-9]{40}$/);
+        assert.match(step.uses, /^[A-Za-z0-9-]+\/[a-z0-9-]+@[a-f0-9]{40}$/);
       if (step.uses?.startsWith("actions/checkout@")) {
         assert.equal(step.with["persist-credentials"], false);
         if (name !== "gate")
@@ -204,6 +213,47 @@ test("signing secrets are absent from install/build/upload and tap credential is
   assert.equal(tapSecrets[0].run, "python3 -B scripts/release.py tap");
   assert.ok(!JSON.stringify(workflow.jobs.publish).includes("APPLE_"));
   assert.ok(!JSON.stringify(ci).includes("secrets."));
+  const windowsBuild = workflow.jobs["windows-build"];
+  const windowsPublish = workflow.jobs["windows-publish"];
+  const chocolatey = workflow.jobs.chocolatey;
+  assert.deepEqual(windowsBuild.permissions, {
+    contents: "read",
+    actions: "read",
+  });
+  assert.deepEqual(windowsPublish.permissions, {
+    contents: "write",
+    actions: "read",
+  });
+  assert.deepEqual(chocolatey.permissions, {
+    contents: "write",
+    actions: "read",
+  });
+  assert.equal(windowsBuild.environment, undefined);
+  assert.equal(windowsPublish.environment, undefined);
+  assert.equal(chocolatey.environment, "pr-sniper-chocolatey");
+  assert.ok(!JSON.stringify(windowsBuild).includes("secrets."));
+  assert.ok(!JSON.stringify(windowsPublish).includes("secrets."));
+  const chocoSecrets = chocolatey.steps.filter((step) =>
+    JSON.stringify(step).includes("secrets."),
+  );
+  assert.equal(chocoSecrets.length, 1);
+  assert.equal(
+    chocoSecrets[0].run,
+    "python -B scripts/release.py choco-publish",
+  );
+  assert.deepEqual(chocoSecrets[0].env, {
+    GITHUB_TOKEN: "${{ github.token }}",
+    CHOCOLATEY_API_KEY: "${{ secrets.CHOCOLATEY_API_KEY }}",
+  });
+  assert.ok(
+    !chocolatey.steps.some((step) => step.run?.includes("choco pack")),
+    "chocolatey job reuses the pre-packed nupkg artifact across retries",
+  );
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name !== "chocolatey") {
+      assert.ok(!JSON.stringify(job).includes("CHOCOLATEY_API_KEY"), name);
+    }
+  }
 });
 
 test("publication consumes only this run's verified artifact and contract tests run in normal CI", () => {
@@ -227,6 +277,67 @@ test("publication consumes only this run's verified artifact and contract tests 
       "${{ needs.gate.outputs.sha }}",
     );
   }
+  const winUpload = workflow.jobs["windows-build"].steps.find((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(winUpload.if, undefined);
+  assert.equal(winUpload.with.name, "windows-release-assets");
+  assert.equal(
+    winUpload.with.path,
+    "${{ runner.temp }}/pr-sniper-windows-release-assets/",
+  );
+  assert.equal(winUpload.with["if-no-files-found"], "error");
+  assert.equal(winUpload.with["retention-days"], 14);
+  assert.equal(winUpload.with["compression-level"], 0);
+  assert.equal(
+    workflow.jobs["windows-build"].env.SOURCE_SHA,
+    "${{ needs.gate.outputs.sha }}",
+  );
+  for (const name of ["windows-publish", "chocolatey"]) {
+    const download = workflow.jobs[name].steps.find((s) =>
+      s.uses?.startsWith("actions/download-artifact@"),
+    );
+    assert.equal(download.with.name, winUpload.with.name);
+    assert.equal(
+      download.with.path,
+      "${{ runner.temp }}/pr-sniper-windows-release-assets",
+    );
+    assert.equal(download.with["run-id"], undefined);
+    assert.equal(
+      workflow.jobs[name].env.SOURCE_SHA,
+      "${{ needs.gate.outputs.sha }}",
+    );
+  }
+  const chocoUpload = workflow.jobs["windows-publish"].steps.find((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  assert.equal(chocoUpload.if, undefined);
+  assert.equal(chocoUpload.with.name, "chocolatey-release-package");
+  assert.equal(
+    chocoUpload.with.path,
+    "${{ runner.temp }}/pr-sniper-windows-release-assets/pr-sniper.*.nupkg",
+  );
+  assert.equal(chocoUpload.with["if-no-files-found"], "error");
+  assert.equal(chocoUpload.with["retention-days"], 14);
+  assert.equal(chocoUpload.with["compression-level"], 0);
+  const chocoDownloads = workflow.jobs.chocolatey.steps.filter((s) =>
+    s.uses?.startsWith("actions/download-artifact@"),
+  );
+  assert.deepEqual(
+    chocoDownloads.map((s) => [s.with.name, s.with.path, s.with["run-id"]]),
+    [
+      [
+        "windows-release-assets",
+        "${{ runner.temp }}/pr-sniper-windows-release-assets",
+        undefined,
+      ],
+      [
+        "chocolatey-release-package",
+        "${{ runner.temp }}/pr-sniper-windows-release-assets",
+        undefined,
+      ],
+    ],
+  );
   assert.ok(
     ci.jobs["macos-native"].steps.some((s) => s.run === "npm run test:release"),
   );
@@ -740,7 +851,58 @@ test("unsigned installers and disposable upgrade fixtures cannot become public r
     "src-tauri/target/windows-upgrade-fixture/upgrade-test-only.exe\nsrc-tauri/target/windows-upgrade-fixture/fixture.json\n",
   );
   assert.equal(fixture[0].with["if-no-files-found"], "error");
-  assert.doesNotMatch(JSON.stringify(workflow), /windows|chocolatey/i);
+  assert.doesNotMatch(
+    JSON.stringify(workflow),
+    /pr-sniper-windows-unsigned-installer|pr-sniper-windows-upgrade-test-only|upgrade-test-only\.exe|pr-sniper-localtest/,
+  );
+  const winBuild = workflow.jobs["windows-build"];
+  assert.equal(winBuild["runs-on"], "windows-2022");
+  assert.deepEqual(winBuild.defaults, { run: { shell: "pwsh" } });
+  const winBuildRuns = runs(winBuild);
+  assert.deepEqual(winBuildRuns, [
+    "npm ci",
+    "rustup show active-toolchain",
+    "python -B scripts/release.py check-windows-release",
+    "npm run build:windows",
+    "npm run bundle:windows",
+    ".\\scripts\\windows-artifact.ps1",
+    ".\\scripts\\windows-installer-artifact.ps1",
+    "python -B scripts/release.py stage-windows-release",
+  ]);
+  const winCache = winBuild.steps.find((s) =>
+    s.uses?.startsWith("Swatinem/rust-cache@"),
+  );
+  assert.deepEqual(winCache.with, {
+    workspaces: "src-tauri -> target",
+    "shared-key": "windows-2022-release",
+    "cache-bin": "false",
+    "cache-targets": "false",
+    "cache-directories":
+      "src-tauri\\target\\release\\.fingerprint\nsrc-tauri\\target\\release\\build\nsrc-tauri\\target\\release\\deps\n",
+    "cache-workspace-crates": "false",
+    "cache-on-failure": "false",
+    "save-if": "false",
+  });
+  const winPublish = workflow.jobs["windows-publish"];
+  assert.equal(winPublish["runs-on"], "windows-2022");
+  assert.deepEqual(winPublish.defaults, { run: { shell: "pwsh" } });
+  const winPublishRuns = runs(winPublish);
+  assert.equal(winPublishRuns.length, 2);
+  assert.equal(
+    winPublishRuns[0],
+    "python -B scripts/release.py publish-windows",
+  );
+  assert.match(
+    winPublishRuns[1],
+    /\.\\scripts\\windows-chocolatey\.ps1 -Mode PublicUnsigned/,
+  );
+  assert.match(winPublishRuns[1], /choco pack/);
+  assert.doesNotMatch(winPublishRuns[1], /CHOCOLATEY_API_KEY|choco push/);
+  const chocoJob = workflow.jobs.chocolatey;
+  assert.equal(chocoJob["runs-on"], "windows-2022");
+  assert.deepEqual(chocoJob.defaults, { run: { shell: "pwsh" } });
+  const chocoRuns = runs(chocoJob);
+  assert.deepEqual(chocoRuns, ["python -B scripts/release.py choco-publish"]);
 });
 
 test("base and upgrade metadata hash the extracted payload, not Tauri's restored standalone executable", () => {
