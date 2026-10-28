@@ -1305,7 +1305,7 @@ pub(crate) fn retry_all_parked(
             )
     }) {
         match crate::exits::consume::retry_parked(store, &item.id, now) {
-            Ok(_) => retried += 1,
+            Ok(count) => retried += count,
             Err(_) => skipped += 1,
         }
     }

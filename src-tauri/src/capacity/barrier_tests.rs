@@ -324,45 +324,50 @@ fn a_finished_report_clears_the_blocked_chip_and_feeds_the_primary_packet() {
 }
 
 #[test]
-fn retry_all_rearms_a_tossed_and_a_provider_teammate_on_the_same_item() {
-    let (_root, store) = team(2, true);
-    let coordinator = Coordinator::default();
-    let started = dispatched(&coordinator, &store, 100);
-    assert_eq!(started.len(), 2, "both teammates run before the primary");
-    for work in started {
-        finish(
-            &coordinator,
-            &store,
-            work,
-            Err(Failure::provider("refused")),
-            101,
-        );
-    }
-    let mut reviews = store.load_reviews().unwrap();
-    for (run, failure) in reviews
-        .iter_mut()
-        .zip([OperationFailure::Tossed, OperationFailure::Provider])
-    {
-        run.operation.state = crate::monitoring::OperationState::ManualRetry;
-        run.operation.failure = Some(failure);
-        run.operation.next_attempt_at = None;
-    }
-    let parked: Vec<_> = reviews.iter().map(|r| r.operation.id.clone()).collect();
-    store.save_reviews(&reviews).unwrap();
-    let item = crate::queue::snapshot(&store, vec![])
-        .unwrap()
-        .items
-        .remove(0);
-    assert_eq!(item.failure_cause, Some(crate::queue::CAUSE_TOSSED));
+fn retry_all_rearms_every_parked_teammate_on_a_tossed_item_and_counts_reviews() {
+    for second in [OperationFailure::Provider, OperationFailure::Tossed] {
+        let (_root, store) = team(2, true);
+        let coordinator = Coordinator::default();
+        let started = dispatched(&coordinator, &store, 100);
+        assert_eq!(started.len(), 2, "both teammates run before the primary");
+        for work in started {
+            finish(
+                &coordinator,
+                &store,
+                work,
+                Err(Failure::provider("refused")),
+                101,
+            );
+        }
+        let mut reviews = store.load_reviews().unwrap();
+        for (run, failure) in reviews
+            .iter_mut()
+            .zip([OperationFailure::Tossed, second.clone()])
+        {
+            run.operation.state = crate::monitoring::OperationState::ManualRetry;
+            run.operation.failure = Some(failure);
+            run.operation.next_attempt_at = None;
+        }
+        let parked: Vec<_> = reviews.iter().map(|r| r.operation.id.clone()).collect();
+        store.save_reviews(&reviews).unwrap();
+        let item = crate::queue::snapshot(&store, vec![])
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(item.failure_cause, Some(crate::queue::CAUSE_TOSSED));
 
-    let (retried, skipped) = crate::review::host::retry_all_parked(&store, 102).unwrap();
-    assert_eq!((retried, skipped), (2, 0));
-    let live: Vec<_> = store
-        .load_reviews()
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.operation.state == crate::monitoring::OperationState::Queued)
-        .collect();
-    assert_eq!(live.len(), 2, "both teammates get new operations");
-    assert!(live.iter().all(|r| !parked.contains(&r.operation.id)));
+        assert_eq!(
+            crate::review::host::retry_all_parked(&store, 102).unwrap(),
+            (2, 0),
+            "{second:?}"
+        );
+        let live: Vec<_> = store
+            .load_reviews()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.operation.state == crate::monitoring::OperationState::Queued)
+            .collect();
+        assert_eq!(live.len(), 2, "both teammates get new operations");
+        assert!(live.iter().all(|r| !parked.contains(&r.operation.id)));
+    }
 }
