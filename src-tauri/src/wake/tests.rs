@@ -599,6 +599,37 @@ fn credentials_park_with_connected_accounts_resumes_after_cooldown() {
 }
 
 #[test]
+fn credentials_failures_record_which_account_failed() {
+    use crate::backpressure::Origin;
+    for (failure, origin) in [
+        (
+            crate::review::Failure::from(crate::provider::ConnectionError::SignedOut),
+            Origin::Github,
+        ),
+        (
+            crate::review::Failure::operation(
+                "This Copilot account needs to be reconnected.".into(),
+            ),
+            Origin::Copilot,
+        ),
+    ] {
+        let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+        let store = std::sync::Mutex::new(store);
+        let mut sim = Sim::new(&store, Mode::Gated);
+        ticks_until_dispatch(&mut sim, TICK * 2);
+        finish(&mut sim, failure);
+        let operation = store.lock().unwrap().load_reviews().unwrap()[0]
+            .operation
+            .clone();
+        assert_eq!(
+            operation.failure,
+            Some(crate::monitoring::OperationFailure::Credentials)
+        );
+        assert_eq!(operation.credentials_origin, Some(origin));
+    }
+}
+
+#[test]
 fn spent_retry_budget_parks_without_a_host_error() {
     let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
     let store = std::sync::Mutex::new(store);

@@ -46,32 +46,41 @@ test("a publication's credentials park routes Fix to its GitHub account and offe
   ).toBeVisible();
 });
 
-test("a review's credentials park routes Fix to its Copilot account", async ({
-  page,
-  store,
-}) => {
-  const fixture = await queueFixture(store);
-  const review = fixture.state.reviews.find((entry) => entry.job.number === 3);
-  review.operation.state = "failed";
-  review.operation.failure = "credentials";
-  review.result = null;
-  fixture.state.publications = fixture.state.publications.filter(
-    (entry) => entry.review.job.number !== 3,
-  );
-  await store("seed_queue_state", fixture.state);
-  await page.goto("/");
-  await showQueueGroup(page, "attention");
-  const failed = page.getByRole("article", {
-    name: "example/repo #3",
-    exact: true,
+for (const [origin, heading] of [
+  ["copilot", "GitHub Copilot"],
+  ["github", "GitHub"],
+  [undefined, "Accounts"],
+]) {
+  test(`a review's ${origin ?? "legacy"} credentials park routes Fix to ${heading}`, async ({
+    page,
+    store,
+  }) => {
+    const fixture = await queueFixture(store);
+    const review = fixture.state.reviews.find(
+      (entry) => entry.job.number === 3,
+    );
+    review.operation.state = "failed";
+    review.operation.failure = "credentials";
+    if (origin) review.operation.credentials_origin = origin;
+    review.result = null;
+    fixture.state.publications = fixture.state.publications.filter(
+      (entry) => entry.review.job.number !== 3,
+    );
+    await store("seed_queue_state", fixture.state);
+    await page.goto("/");
+    await showQueueGroup(page, "attention");
+    const failed = page.getByRole("article", {
+      name: "example/repo #3",
+      exact: true,
+    });
+    await expect(failed).toContainText("Credentials");
+    await expect(failed.getByRole("button", { name: "Retry" })).toHaveCount(1);
+    await failed.locator("[data-fix-account]").click();
+    await expect(
+      page.getByRole("heading", { name: heading, exact: true }),
+    ).toBeVisible();
   });
-  await expect(failed).toContainText("Credentials");
-  await expect(failed.getByRole("button", { name: "Retry" })).toHaveCount(1);
-  await failed.locator("[data-fix-account]").click();
-  await expect(
-    page.getByRole("heading", { name: "GitHub Copilot", exact: true }),
-  ).toBeVisible();
-});
+}
 
 test("every parked failure is one Needs attention row with a cause chip, Retry and never a Running row", async ({
   page,
