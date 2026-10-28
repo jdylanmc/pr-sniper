@@ -48,6 +48,8 @@ pub struct ProviderCapabilities {
     pub approve: Capability,
     /// Approve and merge (complete) on an exact head.
     pub approve_and_merge: Capability,
+    /// Why the acting account never approves its own pull request.
+    pub self_approval_denial: &'static str,
 }
 
 impl ProviderCapabilities {
@@ -62,6 +64,9 @@ impl ProviderCapabilities {
                 readiness: Available,
                 approve: Available,
                 approve_and_merge: Available,
+                // "Can not approve your own pull request".
+                self_approval_denial:
+                    "Acting account authored this PR. GitHub refuses self-approval.",
             },
             ProviderId::AzureDevops => Self {
                 discovery: Available,
@@ -69,8 +74,12 @@ impl ProviderCapabilities {
                 threads: Available,
                 publish: Available,
                 readiness: Available,
-                approve: No(Unavailable::NotImplemented),
+                // A reviewer vote of Approve (10). Completion is never offered.
+                approve: Available,
                 approve_and_merge: No(Unavailable::NotSupported),
+                // Branch policies may refuse or discount an author's own vote.
+                self_approval_denial:
+                    "Acting account authored this PR. PR Sniper never votes on its own Azure DevOps PR.",
             },
         }
     }

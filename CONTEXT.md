@@ -43,7 +43,7 @@ Provider-neutral threads, publication, outcomes and readiness: review threads re
 _Avoid_: GitHub client (for writes)
 
 **Provider Capability**:
-What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Discovery (repositories, people) gates adding a repository; read gates monitoring (polling, admission); review (read, threads, publish, readiness) gates running a review, so admitted work waits until it is available. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves. Azure DevOps offers review (threads, publication, readiness: policy evaluations and PR statuses); approve not yet, approve-and-merge never.
+What PR Sniper offers for one provider, per operation: available, or unavailable with a cause (not implemented yet, or not supported). Replaces provider-ID gates. Discovery (repositories, people) gates adding a repository; read gates monitoring (polling, admission); review (read, threads, publish, readiness) gates running a review, so admitted work waits until it is available. Approve-and-merge is a capability a provider can lack: its exit is then denied and a sign-off only approves. Azure DevOps offers review (threads, publication, readiness: policy evaluations and PR statuses) and approve (reviewer vote 10); approve-and-merge never: not offered in Settings, refused by MCP save/validate (`unsupported_provider_action`), its exit denied.
 _Avoid_: GitHub-only check
 
 **Accessible Repository**:
