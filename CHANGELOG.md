@@ -5,6 +5,10 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.2 - 2026-10-27
+
+Windows release asset publication and unsigned-public Chocolatey distribution.
+
 ### Added
 
 - Add an explicit unsigned-public Chocolatey distribution mode (`PublicUnsigned`)
