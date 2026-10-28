@@ -911,6 +911,56 @@ fn parked_lgtm_is_revoked_by_a_new_head_comment_or_red_ci() {
 }
 
 #[test]
+fn parked_lgtm_is_revoked_by_a_human_comment_seen_before_the_next_poll() {
+    let (root, item, _) = parked_lgtm(true);
+    let store = Store::new(root.path().into());
+    let env = env(&store);
+    let binding = Binding::job(&store.load_queue().unwrap()[0]);
+    let parked_seq = store.load_pr_states().unwrap().state_seq(&binding);
+    {
+        let mut server = env.wire.0.lock().unwrap();
+        server.observation.author_id = server.observation.account_id.clone();
+        // The owner, from the acting account itself, before CI turns green.
+        let account = server.observation.account_id.clone();
+        server
+            .observation
+            .comments
+            .push(crate::provider::TopComment {
+                id: "IC_hold".into(),
+                body: "Please hold, I have a concern.".into(),
+                author_id: Some(account),
+                author_login: Some("actor".into()),
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-01T00:00:00Z".into(),
+            });
+        server.observation.checks = Some("SUCCESS".into());
+    }
+    // No poll: only the action heartbeat observes the PR.
+    let observation = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &item, Ok(observation.clone()), NOW + 20).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(host::prepare_next_effect(&store, &item, NOW + 20)
+        .unwrap()
+        .is_none());
+    let ledger = store.load_actions().unwrap();
+    let parked = ledger.finals.iter().find(|f| f.packet.is_some()).unwrap();
+    assert_eq!(
+        ready(&store, parked, &observation, Action::Merge),
+        Err(packet::LGTM_REVOKED.into())
+    );
+    packet::settle(&store, &item, &observation, NOW + 21).unwrap();
+    assert!(
+        store.load_actions().unwrap().finals[0]
+            .packet
+            .as_ref()
+            .unwrap()
+            .settled
+    );
+    assert!(store.load_pr_states().unwrap().state_seq(&binding) > parked_seq);
+    assert!(env.wire.0.lock().unwrap().writes.is_empty());
+}
+
+#[test]
 fn parked_lgtm_in_flight_waits_out_red_ci_without_revocation_then_merges_once_green() {
     let (root, item, mut state) = parked_lgtm(false);
     let store = Store::new(root.path().into());

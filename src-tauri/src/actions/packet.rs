@@ -101,6 +101,76 @@ fn sign_off_written(store: &Store, run: &FinalReview) -> Result<Option<String>, 
     })
 }
 
+/// The human review context of `observation`: top-level comments, threads (resolved
+/// state and comments) and others' reviews, without PR Sniper's own marked comments,
+/// the acting account's reviews (approval effects, reply carriers) or the sign-off's
+/// own thread resolutions. The heartbeat sees a change here before the next poll.
+fn discussion(observation: &Observation, own_resolved: &[String]) -> serde_json::Value {
+    use serde_json::json;
+    let account = observation.account_id.as_str();
+    let own = |author: Option<&str>, body: &str| {
+        crate::review::findings::own_marked(
+            &crate::review::findings::Seen {
+                id: "",
+                author_id: author,
+                body,
+            },
+            account,
+        )
+    };
+    let comments: Vec<_> = observation
+        .comments
+        .iter()
+        .filter(|c| !own(c.author_id.as_deref(), &c.body))
+        .map(|c| json!([c.id, c.body]))
+        .collect();
+    let threads: Vec<_> = observation
+        .threads
+        .iter()
+        .map(|t| {
+            let comments: Vec<_> = t
+                .comments
+                .iter()
+                .filter(|c| {
+                    let author = match &c["author"]["databaseId"] {
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                    !own(author.as_deref(), c["body"].as_str().unwrap_or_default())
+                })
+                .map(|c| json!([c["fullDatabaseId"], c["body"]]))
+                .collect();
+            json!([t.id, t.resolved || own_resolved.contains(&t.id), comments])
+        })
+        .collect();
+    let reviews: Vec<_> = observation
+        .reviews
+        .iter()
+        .filter(|r| r.actor_id != account)
+        .map(|r| json!([r.id, r.state, r.body]))
+        .collect();
+    json!({"comments": comments, "threads": threads, "reviews": reviews})
+}
+
+/// A human comment, reply, thread or review appeared or changed since the sign-off
+/// was adopted, even before a poll moved its state.
+fn discussion_moved(run: &FinalReview, current: &Observation) -> bool {
+    let own: &[String] = match run
+        .execution
+        .result
+        .as_ref()
+        .and_then(|r| r.output.exit.as_ref())
+    {
+        Some(ExitOutcome::Lgtm {
+            resolve_own_threads,
+            ..
+        }) => resolve_own_threads,
+        _ => &[],
+    };
+    discussion(&run.observation, own) != discussion(current, own)
+}
+
 fn signed_off(run: &FinalReview) -> bool {
     matches!(
         run.execution
@@ -416,7 +486,10 @@ pub fn ready(
     // (comment, thread, review, base) revokes it before its first effect.
     let untouched = !ledger.effects.iter().any(|e| e.final_id == run.id);
     if let Some(packet) = run.packet.as_ref().filter(|_| signed_off(run)) {
-        if untouched && store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq {
+        if untouched
+            && (store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq
+                || discussion_moved(run, observation))
+        {
             return Err(LGTM_REVOKED.into());
         }
     }
@@ -572,9 +645,11 @@ pub fn settle(
         }
         // Red CI revokes a sign-off before its first effect (as `ready` does): failed
         // CI needs a fresh review. Once an effect exists the action gates refuse instead.
+        // A human discussion change before the next poll revokes it the same way.
         let final_id = run.id.clone();
         if signed_off(run)
-            && Facts::from_observation(observation).ci == gates::Ci::Red
+            && (Facts::from_observation(observation).ci == gates::Ci::Red
+                || discussion_moved(run, observation))
             && !ledger.effects.iter().any(|e| e.final_id == final_id)
         {
             let seq = approval.state_seq;

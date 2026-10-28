@@ -103,7 +103,7 @@ Primary only. After a clear review, `clean_review_exit` selects the first offere
 
 Schema 11: `author_wont_fix`, `carried_forward=true` thread marker, verdict-only duck rules, inline original thread for `verify_fixed`.
 
-Schema 10: primary external wait and clean-review wait preference. Wait is in role defaults and selectable; existing explicit tool lists are never expanded. Approval-only assignments do not wait for CI or other reviews; comment-only assignments never wait for merge. Known defects, failed CI, tool failures, unsettled Rubber Duck calls, uncertainty and permission failures cannot become external waits. A failed or unverifiable duck call is settled by a later confirmed, revise or rejected verdict on the same target (kind, thread or path/lines, mode); wording and evidence may differ. CI failure wakes fresh analysis, not approval.
+Schema 10: primary external wait and clean-review wait preference. Wait is in role defaults and selectable; existing explicit tool lists are never expanded. Approval-only assignments do not wait for CI or other reviews; comment-only assignments never wait for merge. Known defects, failed CI, tool failures, unsettled Rubber Duck calls, uncertainty and permission failures cannot become external waits. A failed or unverifiable duck call is settled by a later confirmed, revise or rejected verdict on the same target (kind, thread or path/lines, side, mode; omitted side is `head`, omitted `end_line` is the line); wording and evidence may differ. CI failure wakes fresh analysis, not approval.
 
 Agents may resolve their own threads. They cannot close others'. They may reply to disagree.
 

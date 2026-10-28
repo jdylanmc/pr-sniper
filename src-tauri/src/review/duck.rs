@@ -359,13 +359,14 @@ impl DuckInput {
         Option<&str>,
         Option<&str>,
     ) {
+        // Defaults spelled out: no side is head, no end_line is the single line.
         (
             self.verify_fixed,
             self.kind,
             self.path.as_deref(),
             self.line,
-            self.end_line,
-            self.side.as_deref(),
+            self.end_line.or(self.line),
+            Some(self.side.as_deref().unwrap_or("head")),
             self.thread_id.as_deref(),
         )
     }

@@ -219,6 +219,40 @@ fn a_later_definitive_duck_verdict_settles_an_earlier_failed_call() {
             .unwrap_err()
             .contains("Unsettled Rubber Duck evidence"));
     }
+    // Default spellings name the same target: omitted side is head, omitted end_line
+    // is the single line.
+    let mut omitted = failed_line(&a);
+    omitted.input.side = None;
+    omitted.input.end_line = None;
+    let mut explicit = duck(&a);
+    explicit.ordinal = 2;
+    explicit.input.kind = TargetKind::Line;
+    explicit.input.thread_id = None;
+    explicit.input.path = Some("src/lib.rs".into());
+    explicit.input.line = Some(1);
+    explicit.input.end_line = Some(1);
+    explicit.input.side = Some("head".into());
+    assert_eq!(
+        c.validate(
+            &wait,
+            &[assessment(Disposition::Withdrawn)],
+            &[omitted, explicit],
+            |_| Ok(())
+        ),
+        Ok(())
+    );
+}
+
+fn failed_line(a: &Assessment) -> DuckCall {
+    let mut d = duck(a);
+    d.input.kind = TargetKind::Line;
+    d.input.thread_id = None;
+    d.input.path = Some("src/lib.rs".into());
+    d.input.line = Some(1);
+    d.outcome = DuckOutcome::Failure {
+        failure: super::super::duck::DuckFailure::Failed,
+    };
+    d
 }
 
 #[test]
