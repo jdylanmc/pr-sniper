@@ -115,6 +115,7 @@ struct RawComment {
     author: Option<RawAuthor>,
     content: Option<String>,
     published_date: Option<String>,
+    last_updated_date: Option<String>,
     #[serde(default)]
     comment_type: Value,
     #[serde(default)]
@@ -144,6 +145,8 @@ pub(super) struct AdoComment {
     pub author_login: Option<String>,
     pub content: String,
     pub published: String,
+    /// Last edit, else publication.
+    pub updated: String,
 }
 
 /// One review thread with at least one live, non-system comment.
@@ -198,6 +201,10 @@ impl RawThread {
                         .map(|id| id.as_str().to_owned()),
                     author_login: super::bounded(author.display_name),
                     content: c.content.unwrap_or_default(),
+                    updated: c
+                        .last_updated_date
+                        .or(c.published_date.clone())
+                        .unwrap_or_default(),
                     published: c.published_date.unwrap_or_default(),
                 }
             })

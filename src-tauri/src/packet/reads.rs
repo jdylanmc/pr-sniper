@@ -27,8 +27,10 @@ pub fn conversation(observation: &Observation) -> Conversation {
                             other => str_of(other),
                         },
                         author: str_of(&c["author"]["login"]),
+                        // GitHub: numeric database ID; Azure DevOps: identity GUID.
                         author_id: match &c["author"]["databaseId"] {
                             Value::Number(n) => Some(n.to_string()),
+                            Value::String(id) if !id.is_empty() => Some(id.clone()),
                             _ => None,
                         },
                         body: str_of(&c["body"]),

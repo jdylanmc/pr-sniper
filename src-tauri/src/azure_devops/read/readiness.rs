@@ -289,7 +289,8 @@ impl Client {
         }
         // The newest status per context on the latest iteration; one a status
         // policy already evaluates is that policy's check.
-        let mut statuses: BTreeMap<String, (u64, CheckState)> = BTreeMap::new();
+        // Context -> newest status ID and its state (`None`: not a CI signal).
+        let mut statuses: BTreeMap<String, (u64, Option<CheckState>)> = BTreeMap::new();
         for status in self.statuses(key, number).await? {
             if status.iteration_id.is_some_and(|i| Some(i) != latest) {
                 continue;
@@ -302,18 +303,14 @@ impl Client {
             else {
                 continue;
             };
-            let newest = statuses.get(&name).is_none_or(|(id, _)| status.id > *id);
-            match CheckState::status(&status.state) {
-                Some(state) if newest => {
-                    statuses.insert(name, (status.id, state));
-                }
-                None if newest => {
-                    statuses.remove(&name);
-                }
-                _ => {}
+            if statuses.get(&name).is_none_or(|(id, _)| status.id > *id) {
+                statuses.insert(name, (status.id, CheckState::status(&status.state)));
             }
         }
         for (name, (_, state)) in statuses {
+            let Some(state) = state else {
+                continue;
+            };
             if !checks.iter().any(|c| c.name == name) {
                 checks.push(Check {
                     name,
@@ -400,6 +397,35 @@ impl Readiness {
             .filter_map(|(id, vote)| Some((id, vote_state(*vote)?)))
     }
 
+    /// A thread in the shape the packet reads: global comment IDs, author
+    /// identity, the root's place and commit, and edit times.
+    fn human_thread(&self, thread: &AdoThread) -> HumanThread {
+        let commit = thread.iteration.and_then(|i| self.commits.get(&i));
+        let (path, line) = (thread.path.as_deref(), thread.line.map(|(_, line)| line));
+        HumanThread {
+            id: thread.reference.id(),
+            resolved: thread.resolved,
+            outdated: false,
+            resolved_by: None,
+            comments: thread
+                .comments
+                .iter()
+                .map(|c| {
+                    json!({
+                        "fullDatabaseId": thread.reference.comment_id(c.id),
+                        "author": {"login": c.author_login, "databaseId": c.author_id},
+                        "body": c.content,
+                        "path": path,
+                        "line": line,
+                        "originalCommit": {"oid": commit},
+                        "createdAt": c.published,
+                        "updatedAt": c.updated,
+                    })
+                })
+                .collect(),
+        }
+    }
+
     /// Everything a sign-off is gated on. Approve and complete are not
     /// offered for Azure DevOps here, so no write authority is claimed.
     pub fn observation(&self, account_id: &str) -> Observation {
@@ -444,31 +470,7 @@ impl Readiness {
             in_merge_queue: false,
             method: None,
             protection: json!({}),
-            threads: self
-                .threads
-                .iter()
-                .map(|t| {
-                    let thread = t.to_thread(&self.commits);
-                    HumanThread {
-                        id: thread.id,
-                        resolved: thread.resolved,
-                        outdated: false,
-                        resolved_by: None,
-                        comments: thread
-                            .comments
-                            .iter()
-                            .map(|c| {
-                                json!({
-                                    "id": c.id,
-                                    "author": {"id": c.author_id, "login": c.author_login},
-                                    "body": c.body,
-                                    "createdAt": c.created_at,
-                                })
-                            })
-                            .collect(),
-                    }
-                })
-                .collect(),
+            threads: self.threads.iter().map(|t| self.human_thread(t)).collect(),
             reviews: self
                 .reviews()
                 .map(|(id, state)| ProviderReview {

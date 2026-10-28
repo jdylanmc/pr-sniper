@@ -393,7 +393,38 @@ fn owned_threads_are_marked_replies_answer_and_resolution_is_silent() {
     assert_eq!(root.original_commit.as_deref(), Some(sha(2).as_str()));
     assert_eq!(root.author_id.as_deref(), Some(AVERY));
 
-    // A push since the accepted head: threads are never read as if at it.
+    // The packet reads the same threads: own roots are this assignment's.
+    let mut human = threads.clone();
+    human["value"][0]["comments"].as_array_mut().unwrap().push(
+        json!({"id": 2, "parentCommentId": 1, "author": author(BLAKE),
+            "content": "Won't fix.", "publishedDate": "2026-10-27T11:00:00Z",
+            "lastUpdatedDate": "2026-10-27T12:00:00Z", "commentType": "text"}),
+    );
+    readiness_threads(&wire, human);
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+    let observation = session.action_observation(&repository, 7).unwrap();
+    let mut conversation = crate::packet::reads::conversation(&observation);
+    crate::review::findings::stamp_ownership(
+        &mut conversation.threads,
+        &[crate::provider::Provenance::ownership(&run).unwrap()],
+        &run.review.assignment_id,
+        AVERY,
+    );
+    let mine: Vec<_> = conversation.threads.iter().map(|t| t.mine).collect();
+    assert_eq!(mine, [true, true, false]);
+    let first = &conversation.threads[0];
+    assert_eq!(first.path.as_deref(), Some("src/main.rs"));
+    assert_eq!(first.line, Some(2));
+    assert_eq!(first.comments[0].id, root.id);
+    assert_eq!(first.comments[0].author_id.as_deref(), Some(AVERY));
+    assert_eq!(first.comments[1].author_id.as_deref(), Some(BLAKE));
+    let raw = &observation.threads[0].comments[1];
+    assert_eq!(raw["updatedAt"], "2026-10-27T12:00:00Z");
+    assert_eq!(raw["originalCommit"]["oid"], sha(2));
+
     wire.json(
         &git("pullRequests/7/iterations?"),
         json!({"value": [{"id": 3, "sourceRefCommit": {"commitId": sha(3)}}]}),
@@ -471,6 +502,14 @@ fn global_thread_and_comment_ids_round_trip() {
 }
 
 fn readiness_wire(wire: &FakeWire, evaluations: Value, statuses: Value) {
+    readiness_full(wire, evaluations, statuses, json!({"value": []}));
+}
+
+fn readiness_threads(wire: &FakeWire, threads: Value) {
+    readiness_full(wire, json!({"value": []}), json!({"value": []}), threads);
+}
+
+fn readiness_full(wire: &FakeWire, evaluations: Value, statuses: Value, threads: Value) {
     let mut pull = json!({
         "pullRequestId": 7, "status": "active", "title": "Change 7",
         "description": "Body", "createdBy": author(BLAKE),
@@ -490,7 +529,7 @@ fn readiness_wire(wire: &FakeWire, evaluations: Value, statuses: Value) {
         evaluations,
     )
     .json(&git("pullRequests/7/statuses?"), statuses)
-    .json(&threads_url(), json!({"value": []}));
+    .json(&threads_url(), threads);
 }
 
 fn policy(kind: &str, status: &str, blocking: bool, settings: Value) -> Value {
@@ -593,6 +632,20 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
         sign_off_denial(&observation).as_deref(),
         Some("CI not verified green. Do not sign off.")
     );
+
+    // The newest status of a context decides, in any order: one that is not
+    // a CI signal never lets an older red result back.
+    readiness_wire(
+        &wire,
+        json!({"value": [build("approved")]}),
+        json!({"value": [
+            {"id": 9, "state": "notApplicable", "context": {"genre": "lint", "name": "style"}, "iterationId": 2},
+            {"id": 4, "state": "failed", "context": {"genre": "lint", "name": "style"}, "iterationId": 2},
+        ]}),
+    );
+    let observation = session.action_observation(&repository, 7).unwrap();
+    assert_eq!(observation.check_contexts.len(), 1);
+    assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
 
     // Approved build and status policy: the sign-off (and its ready
     // notification) is offered; approve stays a later delivery.
