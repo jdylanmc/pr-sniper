@@ -9,7 +9,7 @@ import {
 } from "./queue";
 import { progressPresentation } from "./exits";
 
-export type FixTarget = "ai" | "repository-account";
+export type FixTarget = "ai" | "repository-account" | { agent: string };
 
 export interface QueueDetailContext {
   snapshot: MonitoringSnapshot;
@@ -68,11 +68,17 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   panic: ["Panic", "retry"],
   tossed: ["Tossed", "retry"],
   exit_failed: ["Write failed", "retry"],
+  // An Agent's model refused service: Change model, routed by `failed_model`.
+  model_rejected: ["Model rejected", "retry"],
+  model_unavailable: ["Model unavailable", "retry"],
+  model_retired: ["Model retired", "retry"],
 };
+const modelCauses = ["model_rejected", "model_unavailable", "model_retired"];
 
 const classLabels = {
   credentials: "Credentials",
   permission: "Permission",
+  model: "Model",
   network: "Network",
   other: "Failed",
 };
@@ -134,6 +140,8 @@ export function failedPublications(
   });
 }
 
+const accountCauses = ["account_disconnected", "account_binding_required"];
+
 export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   for (const warning of item.warnings) {
     const match = /^Monitoring failure: ([a-z0-9_]+)\./.exec(warning);
@@ -141,11 +149,16 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   }
   if (item.job.waiting === "account_disconnected")
     return "account_disconnected";
+  // As in the queue projection: a check still backing off retries on its own
+  // and is not this item's cause; account losses always are.
   const health = (snapshot.health ?? []).find(
     (entry) =>
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id &&
-      entry.last_failure,
+      entry.last_failure &&
+      (accountCauses.includes(entry.last_failure) ||
+        !entry.operation ||
+        ["failed", "manual_retry"].includes(entry.operation.state)),
   );
   if (health?.last_failure) return health.last_failure;
   if (
@@ -156,6 +169,7 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
     return item.failure_class === "credentials"
       ? "signed_out"
       : item.failure_cause;
+  if (item.failed_model) return `model_${item.failed_model.refusal}`;
   if (failedReviews(item, snapshot).length) return "review_failed";
   return "";
 }
@@ -176,7 +190,7 @@ function fixTarget(cause: string): FixTarget | undefined {
 // The account a credentials failure needs, from the failing run's recorded
 // origin. Repository checks and publications use the git account; a review
 // record without an origin falls back to Accounts.
-export function credentialsFixTarget(
+function credentialsFixTarget(
   item: QueueItem,
   snapshot: MonitoringSnapshot,
 ): FixTarget | "accounts" {
@@ -190,6 +204,16 @@ export function credentialsFixTarget(
     : origin === "github"
       ? "repository-account"
       : "accounts";
+}
+
+// A row's Fix: the refusing Agent's model, else the credentials account.
+export function itemFixTarget(
+  item: QueueItem,
+  snapshot: MonitoringSnapshot,
+): FixTarget | "accounts" {
+  if (item.failure_class !== "credentials" && item.failed_model)
+    return { agent: item.failed_model.agent_id };
+  return credentialsFixTarget(item, snapshot);
 }
 
 export type RecoveryCommand = [string, Record<string, unknown>];
@@ -229,6 +253,7 @@ export function retryCommands(
     "publication_failed",
     "publication_unresolved",
     ...exitCauses,
+    ...modelCauses,
     "",
   ].includes(cause);
   if (monitoring && operation)
@@ -342,7 +367,12 @@ export function renderQueueStatus(
   const actions = document.createElement("div");
   actions.className = "queue-status-actions";
   if (failed) {
-    const target = context.fix ? fixTarget(cause) : undefined;
+    const target: FixTarget | undefined = !context.fix
+      ? undefined
+      : item.failed_model && modelCauses.includes(cause)
+        ? { agent: item.failed_model.agent_id }
+        : fixTarget(cause);
+    const fixLabel = typeof target === "object" ? "Change model" : "Fix";
     const retry = async (control: HTMLButtonElement) => {
       control.disabled = true;
       try {
@@ -356,9 +386,15 @@ export function renderQueueStatus(
     };
     const retryButton = button("Retry", paths.retry, "Retry");
     retryButton.onclick = () => void retry(retryButton);
-    const primary = target ? button("Fix", paths.fix, "Fix") : retryButton;
+    const primary = target
+      ? button(fixLabel, paths.fix, fixLabel)
+      : retryButton;
     primary.classList.add("queue-primary");
-    primary.dataset.queuePrimary = target ? "fix" : "retry";
+    primary.dataset.queuePrimary = !target
+      ? "retry"
+      : typeof target === "object"
+        ? "change-model"
+        : "fix";
     if (target) {
       primary.onclick = () => context.fix?.(target);
       retryButton.classList.add("queue-secondary");
@@ -429,7 +465,11 @@ function renderFailureFacts(
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id,
   );
-  const code = item.failed_teammate?.cause ?? operation?.failure ?? cause;
+  const code =
+    item.failed_model?.refusal ??
+    item.failed_teammate?.cause ??
+    operation?.failure ??
+    cause;
   const klass = classLabels[item.failure_class ?? "other"];
   const rows: [string, string | HTMLElement][] = [
     ["Cause", code ? `${klass} / ${code}` : klass],
@@ -464,6 +504,11 @@ function renderFailureFacts(
   if (item.failed_teammate)
     rows.push(["Teammate", item.failed_teammate.agent_name]);
   else if (review) rows.push(["Agent", review.run?.selection.agent.name ?? ""]);
+  if (item.failed_model) {
+    rows.push(["Model", item.failed_model.model]);
+    if (item.failed_model.status)
+      rows.push(["HTTP", String(item.failed_model.status)]);
+  }
   if (item.failed_duck) rows.push(["Rubber duck", item.failed_duck]);
   rows.push(["Revision", item.job.head_sha.slice(0, 7)]);
   rows.push(["Account", item.job.account_login]);

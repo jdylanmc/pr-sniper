@@ -444,6 +444,9 @@ pub struct ReviewRun {
     /// The Rubber Duck Agent whose setup failed this run's last attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_duck: Option<String>,
+    /// The Agent model that refused this run's last attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_model: Option<FailedModel>,
     /// Duck calls of the last attempt that ended without a result (bounded by the
     /// call limit); a completed attempt keeps its calls on `result.ducks` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -864,6 +867,74 @@ pub struct Failure {
     /// When a `Superseded` attempt may run again; `None` retries shortly (a local
     /// race such as a teammate report landing). Boxed to keep `Failure` small.
     pub resume: Option<Box<Resume>>,
+    /// The session's model refused the call: typed from the provider's status
+    /// and error code, never from text. Set only with `OperationFailure::Model`.
+    pub model: Option<ModelFault>,
+}
+
+/// How a model refused a call while its account stayed verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRefusal {
+    /// 401/403: this account may not call this model.
+    Rejected,
+    /// 404 or a not-supported code: the model is not offered to this account.
+    Unavailable,
+    /// 410: the model was retired.
+    Retired,
+}
+
+/// The provider's typed reason a model refused a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelFault {
+    pub refusal: ModelRefusal,
+    pub status: Option<u16>,
+}
+
+impl ModelFault {
+    /// Model-scoped `session.error` payloads. The account was verified before
+    /// the session started, so an auth refusal mid-session belongs to the model.
+    fn of(data: &Value) -> Option<Self> {
+        let status = data["statusCode"]
+            .as_u64()
+            .and_then(|code| u16::try_from(code).ok());
+        let refusal = match (status, data["errorCode"].as_str()) {
+            (
+                _,
+                Some("model_not_supported" | "model_not_available" | "unsupported_api_for_model"),
+            ) => ModelRefusal::Unavailable,
+            (Some(401 | 403), _) => ModelRefusal::Rejected,
+            (Some(404), _) => ModelRefusal::Unavailable,
+            (Some(410), _) => ModelRefusal::Retired,
+            _ => return None,
+        };
+        Some(Self { refusal, status })
+    }
+}
+
+/// The Agent and model a run's last attempt was refused by. Typed provenance
+/// for the Queue's Change model action; never provider text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailedModel {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub model: String,
+    pub refusal: ModelRefusal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+}
+
+impl FailedModel {
+    pub fn new(agent: &crate::storage::Agent, fault: ModelFault) -> Self {
+        Self {
+            agent_id: agent.id.clone(),
+            agent_name: agent.name.clone(),
+            model: agent.model.clone(),
+            refusal: fault.refusal,
+            status: fault.status,
+        }
+    }
 }
 
 /// When a superseded attempt may run again.
@@ -895,6 +966,7 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
             duck_setup: false,
+            model: None,
             resume: None,
         }
     }
@@ -913,6 +985,7 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            model: None,
             resume: None,
         }
     }
@@ -1025,6 +1098,7 @@ impl Failure {
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
                 duck_setup: false,
+                model: None,
                 resume: Default::default(),
             }
         }
@@ -1041,17 +1115,16 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, resume: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, model: None, resume: None }
     }
     fn event(data: &Value) -> Self {
+        let model = ModelFault::of(data);
         let kind = match data["statusCode"].as_u64() {
+            // Runtime 401/403 land here: verification already proved the
+            // account, so they are the model's, never revoked credentials.
+            _ if model.is_some() => OperationFailure::Model,
             Some(408) => OperationFailure::Timeout,
             Some(429) => OperationFailure::RateLimited,
-            // The account was verified before the session started; a runtime
-            // 401 (e.g. one model refusing service) is not revoked credentials.
-            // Revoked credentials fail that verification and mark the account.
-            Some(401) => OperationFailure::Provider,
-            Some(403) => OperationFailure::Permission,
             Some(500..=599) => OperationFailure::Provider,
             Some(_) => OperationFailure::Provider,
             None => match data["errorType"].as_str() {
@@ -1068,6 +1141,7 @@ impl Failure {
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            model,
             resume: None,
         }
     }
@@ -1103,6 +1177,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
                 duck_setup: false,
+                model: None,
                 resume: None,
             },
             MonitoringError::Backpressure {
@@ -1116,6 +1191,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin,
                 duck_setup: false,
+                model: None,
                 resume: None,
             },
             MonitoringError::Storage(message) => Self::permanent(message),
@@ -1211,6 +1287,76 @@ impl Events {
 #[cfg(test)]
 mod failure_tests {
     use super::*;
+    use serde_json::json;
+
+    fn session_error(data: Value) -> Failure {
+        Events::default().push("session.error", &data).unwrap_err()
+    }
+
+    #[test]
+    fn runtime_unauthorized_is_retryable_not_credentials() {
+        let failure = session_error(json!({"statusCode": 401, "errorType": "authorization"}));
+        assert_eq!(failure.kind, OperationFailure::Model);
+        assert!(failure.kind.transient());
+        assert_ne!(failure.kind.class(), monitoring::FailureClass::Credentials);
+    }
+
+    #[test]
+    fn model_refusals_are_typed_from_status_and_code() {
+        for (data, refusal, status) in [
+            (
+                json!({"statusCode": 401, "errorType": "authentication"}),
+                ModelRefusal::Rejected,
+                Some(401),
+            ),
+            (
+                json!({"statusCode": 403, "errorType": "authorization"}),
+                ModelRefusal::Rejected,
+                Some(403),
+            ),
+            (
+                json!({"statusCode": 400, "errorType": "query", "errorCode": "model_not_supported"}),
+                ModelRefusal::Unavailable,
+                Some(400),
+            ),
+            (
+                json!({"errorType": "query", "errorCode": "model_not_available"}),
+                ModelRefusal::Unavailable,
+                None,
+            ),
+            (
+                json!({"statusCode": 404}),
+                ModelRefusal::Unavailable,
+                Some(404),
+            ),
+            (json!({"statusCode": 410}), ModelRefusal::Retired, Some(410)),
+        ] {
+            let failure = session_error(data);
+            assert_eq!(failure.kind, OperationFailure::Model);
+            assert_eq!(failure.kind.class(), monitoring::FailureClass::Model);
+            let fault = failure.model.unwrap();
+            assert_eq!((fault.refusal, fault.status), (refusal, status));
+        }
+    }
+
+    #[test]
+    fn account_network_and_server_failures_are_not_model_refusals() {
+        for (data, kind) in [
+            (json!({"errorType": "network"}), OperationFailure::Network),
+            (json!({"statusCode": 502}), OperationFailure::Provider),
+            (json!({"statusCode": 408}), OperationFailure::Timeout),
+            (
+                json!({"statusCode": 429, "errorCode": "user_model_rate_limited"}),
+                OperationFailure::RateLimited,
+            ),
+        ] {
+            let failure = session_error(data);
+            assert_eq!(failure.kind, kind);
+            assert!(failure.model.is_none());
+        }
+        let account = Failure::operation("This Copilot account needs to be reconnected.".into());
+        assert!(account.model.is_none());
+    }
 
     #[test]
     fn failed_identity_verification_stays_credentials() {

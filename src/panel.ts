@@ -9,11 +9,7 @@ import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
 import { humanQueue, teammateChip } from "./queue";
-import {
-  credentialsFixTarget,
-  retryCommands,
-  runRecoveries,
-} from "./queue-detail";
+import { itemFixTarget, retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
   purposes,
@@ -506,7 +502,7 @@ export async function mountPanel(app: HTMLElement) {
     const id = (event as CustomEvent<{ id?: string } | null>).detail?.id;
     const item = snapshot?.items?.find((entry) => entry.id === id);
     const target =
-      item && snapshot ? credentialsFixTarget(item, snapshot) : "accounts";
+      item && snapshot ? itemFixTarget(item, snapshot) : "accounts";
     const task = navigate({ tab: "settings" });
     const expected = intent;
     void task.then(async () => {

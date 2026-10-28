@@ -136,6 +136,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
                 mode: Default::default(),
                 packet: None,
                 failed_duck: None,
+                failed_model: None,
                 attempt_ducks: Vec::new(),
                 feedback_context: None,
                 key: crate::review::key(job, assignment),
@@ -195,6 +196,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         mode,
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: crate::review::key(&job, &assignment),
@@ -1608,6 +1610,7 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     };
     let policy = crate::retry::TRANSIENT;
@@ -1640,6 +1643,7 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         retry_after_seconds: Some(60),
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     };
     let network = Failure {

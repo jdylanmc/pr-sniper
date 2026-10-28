@@ -40,6 +40,7 @@ fn fixture() -> (tempfile::TempDir, Store, ReviewRun) {
         mode: Default::default(),
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: key(&job, &assignment_id),
@@ -648,6 +649,39 @@ fn a_duck_setup_failure_parks_through_the_normal_path_with_typed_provenance() {
     )
     .unwrap();
     assert_eq!(store.load_reviews().unwrap().remove(0).failed_duck, None);
+}
+
+#[test]
+fn a_model_refusal_records_the_agent_and_model_and_a_success_clears_it() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    let refused = crate::review::Events::default()
+        .push("session.error", &json!({"statusCode": 401}))
+        .unwrap_err();
+    complete(&store, &run.operation.id, Err(refused), 101).unwrap();
+    let saved = store.load_reviews().unwrap().remove(0);
+    assert_eq!(
+        saved.operation.failure,
+        Some(monitoring::OperationFailure::Model)
+    );
+    let failed = saved.failed_model.unwrap();
+    assert_eq!(
+        (failed.agent_id, failed.agent_name, failed.model),
+        (
+            run.selection.agent.id.clone(),
+            run.selection.agent.name.clone(),
+            run.selection.agent.model.clone()
+        )
+    );
+    assert_eq!(
+        (failed.refusal, failed.status),
+        (crate::review::ModelRefusal::Rejected, Some(401))
+    );
+    // Any other failure carries no model provenance.
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::provider("x")), 101).unwrap();
+    assert_eq!(store.load_reviews().unwrap().remove(0).failed_model, None);
 }
 
 #[test]

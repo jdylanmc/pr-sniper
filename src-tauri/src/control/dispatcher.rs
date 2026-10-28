@@ -401,6 +401,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 "id":item.id,"configuration_id":item.job.configuration_id,"number":item.job.number,
                 "title":item.job.title.chars().take(256).collect::<String>(), "state":item.state,
                 "failure_class":item.failure_class,"failure_cause":item.failure_cause,
+                "failed_model":item.failed_model,
                 "dismiss_token":item.dismiss_token,
                 "resume_at":item.resume_at,
                 "exit":item.exit,"progress":item.progress,

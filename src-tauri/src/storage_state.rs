@@ -474,6 +474,7 @@ fn review_transitions(reviews: &[crate::review::ReviewRun]) -> u64 {
                 &run.mode,
                 run.packet.is_some(),
                 &run.failed_duck,
+                &run.failed_model,
             ),
         );
     }
