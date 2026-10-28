@@ -571,14 +571,16 @@ export async function mountSettings(
     content,
     () => {
       revision++;
-      // Embedded resource sections hide the savebar and its Reload. Once the
-      // last editor closes on a clean draft there, re-read instead.
+      // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
+      // no other Reload (Repositories has its own). Once the last editor
+      // closes on a clean draft there, re-read instead.
       if (conflict)
         queueMicrotask(() => {
           if (
             conflict &&
             !dialogs.hasOpen() &&
             !dirty() &&
+            section !== "repositories" &&
             !!reload.closest("[hidden]")
           )
             void external();
