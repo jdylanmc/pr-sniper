@@ -1291,6 +1291,12 @@ html[data-thematic="off"] body {
   border-top-left-radius: 0;
 }
 
+[data-thematic="off"] .hero-install .os-note {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
 [data-thematic="off"] .os-tabs {
   display: inline-flex;
   gap: 0.25rem;
