@@ -186,6 +186,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(&job, "assignment"),
@@ -230,6 +231,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         retry_after_seconds: Some(900),
         origin: pr_sniper_lib::backpressure::Origin::Copilot,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     };
     // Beyond the retry window a rate limit still only waits: no park, no budget.
@@ -253,9 +255,9 @@ fn runtime_errors_preserve_retry_classification_without_provider_messages() {
         (408, OperationFailure::Timeout),
         (429, OperationFailure::RateLimited),
         (503, OperationFailure::Provider),
-        // The account was verified before the session: a runtime 401 is a service refusal.
-        (401, OperationFailure::Provider),
-        (403, OperationFailure::Permission),
+        // A verified session's 401/403 is the model refusing, not the account.
+        (401, OperationFailure::Model),
+        (403, OperationFailure::Model),
         // Unclassified provider statuses retry: an execution failure is not proof of a permanent fault.
         (400, OperationFailure::Provider),
     ] {

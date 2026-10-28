@@ -114,6 +114,8 @@ pub struct Item {
     pub failed_teammate: Option<review::teammates::FailedTeammate>,
     // The primary's Rubber Duck could not be set up: the duck Agent's name.
     pub failed_duck: Option<String>,
+    // A parked run's Agent model refused service: Agent, model and typed refusal.
+    pub failed_model: Option<review::FailedModel>,
     // The primary is waiting on this teammate's report for the current state.
     pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
@@ -954,6 +956,20 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .filter_map(|r| r.run.as_ref())
             .filter(|run| failed(&run.operation))
             .find_map(|run| run.failed_duck.clone());
+        // A parked teammate's model leads: it is the one holding the primary back.
+        let failed_model = reviews
+            .iter()
+            .filter(|r| {
+                failed_teammate
+                    .as_ref()
+                    .is_none_or(|teammate| teammate.assignment_id == r.assignment_id)
+            })
+            .filter_map(|r| r.run.as_ref())
+            .filter(|run| {
+                failed(&run.operation)
+                    && run.operation.failure == Some(monitoring::OperationFailure::Model)
+            })
+            .find_map(|run| run.failed_model.clone());
         let blocked_by = (state != State::Failed || failed_teammate.is_some())
             .then(|| {
                 let primary = reviews
@@ -1052,6 +1068,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             }),
             failed_teammate,
             failed_duck,
+            failed_model: (state == State::Failed).then_some(failed_model).flatten(),
             blocked_by,
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),

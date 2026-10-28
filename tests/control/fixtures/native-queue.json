@@ -6,6 +6,7 @@
       "configuration_id": "bbbbbbbb-bbbb-4bbb-8bbb-000000000001",
       "dismiss_token": null,
       "exit": null,
+      "failed_model": null,
       "failure_cause": null,
       "failure_class": null,
       "id": "item-1",

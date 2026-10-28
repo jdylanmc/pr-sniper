@@ -41,6 +41,7 @@ fn review(number: u64) -> ReviewRun {
     operation.state = OperationState::Completed;
     ReviewRun {
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,

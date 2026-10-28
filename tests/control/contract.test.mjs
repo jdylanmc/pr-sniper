@@ -17,6 +17,30 @@ test("schema enums are exactly the native ids", () => {
   assert.deepEqual(s.progress.options, enums.progress);
   assert.deepEqual(s.mergeBlock.options, enums.merge_block);
   assert.deepEqual(s.disposition.options, enums.disposition);
+  assert.deepEqual(s.modelRefusal.options, enums.model_refusal);
+  assert.deepEqual(s.failureClass.options, enums.failure_class);
+});
+
+test("a parked model refusal parses with its Agent, model and status", () => {
+  const [item] = queue.values;
+  const parked = {
+    ...item,
+    state: "failed",
+    failure_class: "model",
+    failed_model: {
+      agent_id: "agent-1",
+      agent_name: "Reviewer",
+      model: "example-model-fast",
+      refusal: "rejected",
+      status: 401,
+    },
+  };
+  assert.deepEqual(s.queueItem.parse(parked), parked);
+  for (const bad of [
+    { ...parked, failed_model: { ...parked.failed_model, refusal: "denied" } },
+    { ...parked, failed_model: { ...parked.failed_model, token: "x" } },
+  ])
+    assert.equal(s.queueItem.safeParse(bad).success, false);
 });
 
 test("native queue output parses as the MCP queue page", () => {

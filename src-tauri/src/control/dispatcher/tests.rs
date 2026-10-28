@@ -933,6 +933,54 @@ fn large_profile_has_bounded_inspection_accounts_resources_details_and_native_ed
 }
 
 #[test]
+fn queue_and_detail_name_the_agent_model_a_parked_run_was_refused_by() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    let now = crate::now_seconds().unwrap();
+    let agent_id = {
+        let store = fixture.store.lock().unwrap();
+        let job = store.load_queue().unwrap().remove(0);
+        let mut run =
+            crate::review::host::request(&store, &job.work.unwrap().id, true, now).unwrap();
+        run.selection.agent.model = "example-model-fast".into();
+        let failure = crate::review::Failure {
+            kind: crate::monitoring::OperationFailure::Model,
+            model: Some(crate::review::ModelFault {
+                refusal: crate::review::ModelRefusal::Rejected,
+                status: Some(401),
+            }),
+            ..crate::review::Failure::permanent("refused")
+        };
+        run.failed_model = failure
+            .model
+            .map(|fault| crate::review::FailedModel::new(&run.selection.agent, fault));
+        // The budget is spent: the run parks with its typed cause.
+        run.operation.attempt_count = 3;
+        run.operation.fail(&failure.monitoring(), now);
+        assert_eq!(
+            run.operation.state,
+            crate::monitoring::OperationState::ManualRetry
+        );
+        let agent_id = run.selection.agent.id.clone();
+        store.save_reviews(&[run]).unwrap();
+        agent_id
+    };
+    let queue = fixture.call(json!({"operation":"queue"}));
+    let item = &queue["result"]["values"][0];
+    assert_eq!(item["state"], "failed");
+    assert_eq!(item["failure_class"], "model");
+    assert_eq!(
+        item["failed_model"],
+        json!({"agent_id":agent_id,"agent_name":item["failed_model"]["agent_name"],
+            "model":"example-model-fast","refusal":"rejected","status":401})
+    );
+    assert!(item["failed_model"]["agent_name"].is_string());
+    let detail = fixture.call(json!({"operation":"detail","item_id":item["id"]}));
+    let detail: Value = serde_json::from_str(detail["result"]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(detail["item"]["failed_model"], item["failed_model"]);
+}
+
+#[test]
 fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries() {
     let fixture = Fixture::new();
     assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
@@ -1112,6 +1160,33 @@ fn native_enum_ids_match_the_mcp_contract() {
             MergeBlock::BehindBase | MergeBlock::Conflicts => {}
         }
     }
+    use crate::{monitoring::FailureClass, review::ModelRefusal};
+    let refusals = [
+        ModelRefusal::Rejected,
+        ModelRefusal::Unavailable,
+        ModelRefusal::Retired,
+    ];
+    for r in refusals {
+        match r {
+            ModelRefusal::Rejected | ModelRefusal::Unavailable | ModelRefusal::Retired => {}
+        }
+    }
+    let classes = [
+        FailureClass::Credentials,
+        FailureClass::Permission,
+        FailureClass::Model,
+        FailureClass::Network,
+        FailureClass::Other,
+    ];
+    for c in classes {
+        match c {
+            FailureClass::Credentials
+            | FailureClass::Permission
+            | FailureClass::Model
+            | FailureClass::Network
+            | FailureClass::Other => {}
+        }
+    }
     let exits: Vec<_> = crate::exits::Exit::ALL.iter().map(|e| e.id()).collect();
     for exit in crate::exits::Exit::ALL {
         assert_eq!(serde_json::to_value(exit).unwrap(), exit.id());
@@ -1125,6 +1200,8 @@ fn native_enum_ids_match_the_mcp_contract() {
             "disposition": dispositions.iter().map(|d| d.id()).chain(["carried_forward"])
                 .collect::<Vec<_>>(),
             "merge_pending": MergePending { reason: MergeBlock::Conflicts, ci_not_run: true },
+            "model_refusal": refusals,
+            "failure_class": classes,
         }),
     );
 }

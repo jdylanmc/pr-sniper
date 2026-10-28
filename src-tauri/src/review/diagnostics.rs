@@ -317,6 +317,7 @@ fn operation_failure(failure: &OperationFailure) -> FailureKind {
         OperationFailure::Permanent => FailureKind::Permanent,
         OperationFailure::Credentials => FailureKind::Credentials,
         OperationFailure::Permission => FailureKind::Permission,
+        OperationFailure::Model => FailureKind::Model,
     }
 }
 

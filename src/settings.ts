@@ -136,7 +136,9 @@ export type SetupTarget =
   | "agents"
   | "doctrines"
   | "repositories"
-  | "preferences";
+  | "preferences"
+  // One Agent's editor with its model picker focused.
+  | { agent: string };
 export interface GuidedReturn {
   back: () => void;
 }
@@ -1749,6 +1751,7 @@ export async function mountSettings(
     opener: HTMLElement,
     existing?: Agent,
     onSaved?: (agent?: Agent) => void,
+    focusModel = false,
   ) {
     const assigned = existing ? agentRepositories(existing) : [];
     const expected = clone(
@@ -2162,6 +2165,13 @@ export async function mountSettings(
         modelSelect.disabled = !models.some(modelSelectable);
         syncSignature();
         describeModel();
+        // Change model waits on the refresh control until the picker opens.
+        if (
+          focusModel &&
+          !modelSelect.disabled &&
+          document.activeElement === retryModels
+        )
+          modelSelect.focus();
       } catch (cause) {
         if (modal.isConnected && current === request)
           modelStatus.textContent = reason(cause);
@@ -2274,6 +2284,10 @@ export async function mountSettings(
       refreshAccounts();
     }
     void loadModels();
+    if (focusModel) {
+      modelSelect.closest("label")?.scrollIntoView({ block: "nearest" });
+      retryModels.focus();
+    }
     if (onSaved) releaseDiscardGuard = warnBeforeDiscard(modal, "Agent");
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
@@ -5257,6 +5271,25 @@ export async function mountSettings(
       }
       guidance = origin;
       returnGenie.hidden = false;
+      if (typeof target === "object") {
+        if (options.embedded) homeOpener = "agents";
+        if (section !== "agents") navigate("agents");
+        settingsBack.hidden = true;
+        const agent = agents().find((entry) => entry.id === target.agent);
+        const edit = content.querySelector<HTMLButtonElement>(
+          `[data-agent-id="${CSS.escape(target.agent)}"] [data-edit]`,
+        );
+        if (!agent || !edit) {
+          (
+            content.querySelector<HTMLElement>(".resource-toolbar button") ??
+            returnGenie
+          ).focus({ preventScroll: true });
+          return true;
+        }
+        edit.scrollIntoView({ block: "nearest" });
+        editAgent(edit, agent, undefined, true);
+        return true;
+      }
       const next: Section =
         target === "ai" || target === "repository-account"
           ? target === "ai"

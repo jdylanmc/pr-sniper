@@ -20,6 +20,13 @@
     "submit_verdict",
     "lgtm"
   ],
+  "failure_class": [
+    "credentials",
+    "permission",
+    "model",
+    "network",
+    "other"
+  ],
   "merge_block": [
     "behind_base",
     "conflicts"
@@ -28,6 +35,11 @@
     "ci_not_run": true,
     "reason": "conflicts"
   },
+  "model_refusal": [
+    "rejected",
+    "unavailable",
+    "retired"
+  ],
   "progress": [
     "approving",
     "merging",

@@ -728,7 +728,9 @@ fn classify(failure: &Failure) -> DuckFailure {
     match failure.kind {
         OperationFailure::RateLimited => DuckFailure::RateLimited,
         OperationFailure::Timeout => DuckFailure::TimedOut,
-        OperationFailure::Credentials | OperationFailure::Permission => DuckFailure::Unavailable,
+        OperationFailure::Credentials | OperationFailure::Permission | OperationFailure::Model => {
+            DuckFailure::Unavailable
+        }
         _ => DuckFailure::Failed,
     }
 }
