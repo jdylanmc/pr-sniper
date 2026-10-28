@@ -208,6 +208,28 @@ pub fn request_again(
     Ok(true)
 }
 
+/// Human "review again" for one queue item: the same gates as an explicit
+/// `watch_pull_request` `review_again`, then the new pass goes first.
+/// `false`: the PR still has pending work, so nothing changed.
+pub fn review_item_again(store: &Store, item_id: &str, now: i64) -> Result<bool, String> {
+    let (repository_id, number) = store
+        .load_queue_state()?
+        .jobs
+        .iter()
+        .find(|job| {
+            job.work.is_some()
+                && !crate::monitoring::retired(job)
+                && crate::queue::item_id(job) == item_id
+        })
+        .map(|job| (job.configuration_id.clone(), job.number))
+        .ok_or("This pull request is no longer available.")?;
+    let again = request_again(store, &repository_id, number, now)?;
+    if again {
+        prioritize(store, &repository_id, number, now)?;
+    }
+    Ok(again)
+}
+
 pub(crate) fn apply_overrides(
     store: &Store,
     repository_id: &str,

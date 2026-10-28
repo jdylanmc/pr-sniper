@@ -1299,6 +1299,27 @@
         review.published = true;
         review.state = "author";
         break;
+      case "review-again": {
+        requireValue(
+          ["human", "question", "author", "approved"].includes(review.state) &&
+            !review.nextId,
+          "Only a completed review can be reviewed again.",
+        );
+        // Same head, new pass: the completed evidence stays as history.
+        const next = copy(review);
+        next.id = uid("review");
+        next.attempt = 0;
+        next.decision = "";
+        next.published = false;
+        next.findings = [];
+        next.conversation = [];
+        next.humanNote = "";
+        delete next.nextId;
+        requeue(next);
+        review.nextId = next.id;
+        state.reviews.push(next);
+        break;
+      }
       case "dismiss-stale":
         requireValue(
           review.state === "stale",

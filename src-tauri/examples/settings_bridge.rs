@@ -510,6 +510,13 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             )?;
             Ok(Value::Null)
         }
+        "review_again" => Ok(json!(pr_sniper_lib::control::review_item_again(
+            store,
+            request.args["itemId"]
+                .as_str()
+                .ok_or("Item identity required.")?,
+            1_800_000_110,
+        )?)),
         "clean_reviewed" => {
             let item = request.args["itemId"].as_str();
             pr_sniper_lib::retention::recover(store)?;

@@ -50,7 +50,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Every run is packet mode ([review-packet.md](review-packet.md)). Discarded batch: no automatic re-review (once-per-lens removed).
 - Legacy runs (JSON decision) load as history. Unfinished ones are cancelled on startup (`Legacy review retired.`); **Retry review** starts a packet run.
 - Requests persist before capacity wait. Unexecuted initial requests may wait over 15 min and still get a first budget.
-- **Cancel review** stops inference; **Retry review** is explicit. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
+- **Cancel review** stops inference; **Retry review** is explicit. ↻ **Review again** (`review_again`) starts a new pass of a completed PR, first in line; unsettled provider writes reject; completed evidence and receipts stay. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
 - Pause: the panel header **Monitoring** switch (Pause/Resume automation) halts polling, AI and writes. No Settings pause card. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).

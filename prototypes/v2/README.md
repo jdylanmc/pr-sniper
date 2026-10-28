@@ -219,6 +219,7 @@ controls remain mock application controls, not human PR-review authoring.
 - Watched-author filters apply before detection. Empty means all authors after
   activation, without granting trust.
 - Stale retry creates a new sample head while retaining earlier evidence.
+- ↻ Review again queues a new pass of the same head; earlier evidence stays.
   Invalid output never becomes a published result.
 
 ### Accounts and persistence

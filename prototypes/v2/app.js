@@ -732,6 +732,8 @@ function reviewActions(review) {
     return `<button class="primary-action wide" data-action="review" data-review-id="${esc(review.nextId)}">View the newer revision</button>`;
   if (["failed", "stale"].includes(review.state))
     return `<button class="primary-action wide" data-action="retry" data-id="${review.id}">Queue a fresh review</button>`;
+  if (["human", "question", "author", "approved"].includes(review.state))
+    return `<button class="icon-button review-again" data-action="review-again" data-id="${review.id}" aria-label="Review again" title="Review again">${icon("refresh")}</button>`;
   if (review.state === "queued")
     return `<section class="detail-section"><h3>Ready to start?</h3>${!review.trusted ? `<p>Confirm this exact revision for a read-only review. Monitoring scope is not trust.</p><button class="secondary-action wide" data-action="trust" data-id="${review.id}">Confirm trust for this revision</button>` : ""}
     <button class="primary-action wide" data-action="start" data-id="${review.id}" ${disabled(!state.monitoring || !review.trusted)}>Request a review slot</button><p class="section-note">Uses the next available slot. Never exceeds your concurrency limit.</p></section>`;
@@ -2648,6 +2650,7 @@ popover.addEventListener("click", (event) => {
     interrupt:
       "Review stopped. Partial work discarded; explicit retry required.",
     retry: "Queued for a fresh review; saved earlier evidence is retained.",
+    "review-again": "Queued for a new pass; earlier evidence is retained.",
     start: "Review requested. Capacity and eligibility gates still apply.",
     trust: "Trust confirmed for this sample revision.",
     stale:

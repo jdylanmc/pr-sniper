@@ -109,6 +109,28 @@ export function failedReviews(item: QueueItem, snapshot: MonitoringSnapshot) {
   );
 }
 
+// A settled, open PR whose every review for this pass completed may start a
+// new pass; the host still rejects unsettled provider writes.
+const reviewAgainStates: QueueItem["state"][] = [
+  "machine_signed_off",
+  "waiting_for_human",
+  "waiting_for_author",
+  "approved",
+  "stale",
+  "stale_after_publication",
+];
+
+export function reviewableAgain(item: QueueItem, snapshot: MonitoringSnapshot) {
+  if (!item.job.work || !reviewAgainStates.includes(item.state)) return false;
+  const runs = (snapshot.reviews ?? []).filter((candidate) =>
+    item.review_keys.includes(candidate.key),
+  );
+  return (
+    runs.length > 0 &&
+    runs.every((candidate) => candidate.run?.operation.state === "completed")
+  );
+}
+
 // Parked publications this item can retry. Terminal ones (stale, discarded,
 // a deleted remote batch) never take another batch.
 export function failedPublications(
@@ -353,6 +375,44 @@ export function renderQueueStatus(
     open.dataset.queuePrimary = "open";
     open.innerHTML = `${icon(paths.github)}<span>Open</span>`;
     actions.append(open);
+    if (reviewableAgain(item, context.snapshot)) {
+      const again = document.createElement("button");
+      again.type = "button";
+      again.className = "queue-review-again";
+      again.dataset.reviewAgain = item.id;
+      again.setAttribute("aria-label", "Review again");
+      again.title = "Review again";
+      again.innerHTML = icon(paths.retry);
+      again.onclick = async () => {
+        const hadFocus = document.activeElement === again;
+        again.disabled = true;
+        try {
+          await invoke("review_again", { itemId: item.id });
+        } catch (error) {
+          context.showError(typeof error === "string" ? error : "Failed");
+        } finally {
+          again.disabled = false;
+          await context.refresh();
+          // A started pass removes the control: keep the reader on the page
+          // heading; an unchanged item keeps its redrawn control.
+          if (
+            hadFocus &&
+            !again.isConnected &&
+            document.activeElement === document.body
+          ) {
+            const target =
+              document.querySelector<HTMLElement>(
+                `[data-review-again="${CSS.escape(item.id)}"]`,
+              ) ?? document.querySelector<HTMLElement>("[data-panel-heading]");
+            if (target) {
+              if (!target.matches("button")) target.tabIndex = -1;
+              target.focus({ preventScroll: true });
+            }
+          }
+        }
+      };
+      actions.append(again);
+    }
   }
   block.append(title, label);
   if (failed) renderFailureFacts(block, item, cause, context);

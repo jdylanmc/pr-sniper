@@ -545,6 +545,58 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
     assert_eq!(record.get(&binding).unwrap().review_again_seq, Some(2));
 }
 
+#[test]
+fn review_item_again_starts_a_prioritized_pass_for_the_queue_item_only() {
+    let (_root, store) = capacity::tests::fixture(2, 1, true);
+    let job = store.load_queue().unwrap().remove(0);
+    let item = crate::queue::item_id(&job);
+    let binding = crate::retention::Binding::job(&job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "iteration-1",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 100,
+        },
+    );
+    states.consume(&binding, 1, "unchanged");
+    store.save_pr_states(&states).unwrap();
+    let mut run = crate::review::host::request(&store, "normal-1", true, 100).unwrap();
+    run.operation.state = OperationState::Completed;
+    store.save_reviews(&[run.clone()]).unwrap();
+    assert!(work::review_item_again(&store, "missing-item", 200).is_err());
+    assert!(work::review_item_again(&store, &item, 200).unwrap());
+    // The new pass is pending, so a second press changes nothing.
+    let pending = store.load_queue_state().unwrap();
+    assert!(!work::review_item_again(&store, &item, 201).unwrap());
+    assert_eq!(store.load_queue_state().unwrap(), pending);
+    assert_eq!(store.load_reviews().unwrap(), vec![run]);
+    let jobs = pending.jobs;
+    assert_eq!(jobs.len(), 3);
+    let again = jobs.last().unwrap();
+    assert_eq!(again.configuration_id, job.configuration_id);
+    assert_eq!(crate::queue::item_id(again), item);
+    assert_eq!(again.work.as_ref().unwrap().pass_ordinal, 2);
+    assert_eq!(again.work.as_ref().unwrap().enqueue_order, 0);
+    let other = jobs
+        .iter()
+        .find(|j| j.configuration_id != job.configuration_id)
+        .unwrap();
+    assert!(other.work.as_ref().unwrap().enqueue_order > 0);
+    assert_eq!(
+        store
+            .load_pr_states()
+            .unwrap()
+            .get(&binding)
+            .unwrap()
+            .review_again_seq,
+        Some(2)
+    );
+}
+
 fn fixture_endpoint(port: u16) -> Endpoint {
     Endpoint {
         protocol: PROTOCOL,
