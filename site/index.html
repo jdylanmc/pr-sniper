@@ -116,7 +116,14 @@
               </div>
               <div>
                 <dt>HOST</dt>
-                <dd>macOS 13.5+ · Apple Silicon</dd>
+                <dd
+                  id="info-host"
+                  data-os-text
+                  data-macos="macOS 13.5+ · Apple Silicon"
+                  data-windows="Windows 10/11 · x64"
+                >
+                  macOS 13.5+ · Apple Silicon
+                </dd>
               </div>
               <div>
                 <dt>LICENSE</dt>
@@ -124,8 +131,32 @@
               </div>
             </dl>
             <p class="label">INSTALL</p>
+            <div class="os-tabs" role="group" aria-label="Platform">
+              <button
+                type="button"
+                class="os-tab"
+                data-os="macos"
+                aria-pressed="true"
+              >
+                <span class="t-on">[MACOS]</span
+                ><span class="t-off">macOS</span>
+              </button>
+              <button
+                type="button"
+                class="os-tab"
+                data-os="windows"
+                aria-pressed="false"
+              >
+                <span class="t-on">[WINDOWS]</span
+                ><span class="t-off">Windows</span>
+              </button>
+            </div>
             <div class="cmd">
-              <code>brew install --cask jdylanmc/pr-sniper/pr-sniper</code>
+              <code
+                data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                data-windows="choco install pr-sniper"
+                >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+              >
               <button type="button" class="copy" data-copy="brew-info">
                 <span class="t-on">[COPY]</span><span class="t-off">COPY</span>
               </button>
@@ -214,14 +245,38 @@
                     Desktop utility. Catch pull requests. Audit with AI. Hand
                     over to human queue.
                   </p>
-                  <div class="cmd hero-cmd">
-                    <code
-                      >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
-                    >
-                    <button type="button" class="copy" data-copy="hero">
-                      <span class="t-on">[COPY]</span
-                      ><span class="t-off">COPY</span>
-                    </button>
+                  <div class="hero-install">
+                    <div class="os-tabs" role="group" aria-label="Platform">
+                      <button
+                        type="button"
+                        class="os-tab"
+                        data-os="macos"
+                        aria-pressed="true"
+                      >
+                        <span class="t-on">[MACOS]</span
+                        ><span class="t-off">macOS</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="os-tab"
+                        data-os="windows"
+                        aria-pressed="false"
+                      >
+                        <span class="t-on">[WINDOWS]</span
+                        ><span class="t-off">Windows</span>
+                      </button>
+                    </div>
+                    <div class="cmd hero-cmd">
+                      <code
+                        data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                        data-windows="choco install pr-sniper"
+                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                      >
+                      <button type="button" class="copy" data-copy="hero">
+                        <span class="t-on">[COPY]</span
+                        ><span class="t-off">COPY</span>
+                      </button>
+                    </div>
                   </div>
                   <p class="hero-actions">
                     <a class="btn" href="#install">Install</a>
@@ -234,7 +289,7 @@
                   <!-- Keep in step with package.json; tests/site checks it. -->
                   <p class="hero-facts">
                     <span id="hero-version">v0.5.2</span> · macOS 13.5+ · Apple
-                    Silicon · MIT
+                    Silicon · MIT · Windows 10/11 x64
                   </p>
                 </div>
                 <div class="hero-demo">
@@ -704,10 +759,30 @@
                     >get started</span
                   >INSTALL
                 </h2>
+                <div class="os-tabs" role="group" aria-label="Platform">
+                  <button
+                    type="button"
+                    class="os-tab"
+                    data-os="macos"
+                    aria-pressed="true"
+                  >
+                    <span class="t-on">[MACOS]</span
+                    ><span class="t-off">macOS</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="os-tab"
+                    data-os="windows"
+                    aria-pressed="false"
+                  >
+                    <span class="t-on">[WINDOWS]</span
+                    ><span class="t-off">Windows</span>
+                  </button>
+                </div>
                 <ol class="steps install">
                   <li>
                     <h3>Need</h3>
-                    <ul class="bullets">
+                    <ul class="bullets" data-os-pane="macos">
                       <li>Apple Silicon Mac.</li>
                       <li>macOS 13.5 or later.</li>
                       <li>
@@ -715,12 +790,32 @@
                         <a href="https://brew.sh">brew.sh</a>.
                       </li>
                     </ul>
+                    <ul class="bullets" data-os-pane="windows" hidden>
+                      <li>Windows 10 or 11 (x64).</li>
+                      <li>
+                        Microsoft Edge WebView2 Evergreen Runtime (provisioned
+                        automatically by Chocolatey).
+                      </li>
+                      <li>
+                        Chocolatey. No Chocolatey? Get at
+                        <a href="https://chocolatey.org/install"
+                          >chocolatey.org/install</a
+                        >.
+                      </li>
+                    </ul>
                   </li>
                   <li>
                     <h3>Install</h3>
-                    <p>One command. Tap repository, install app.</p>
+                    <p data-os-pane="macos">
+                      One command. Tap repository, install app.
+                    </p>
+                    <p data-os-pane="windows" hidden>
+                      One command. Install package and WebView2 runtime.
+                    </p>
                     <div class="cmd">
                       <code
+                        data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                        data-windows="choco install pr-sniper"
                         >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
                       >
                       <button type="button" class="copy" data-copy="install">
@@ -731,9 +826,18 @@
                   </li>
                   <li>
                     <h3>Launch</h3>
-                    <p>App live in menu bar. No Dock icon.</p>
+                    <p data-os-pane="macos">
+                      App live in menu bar. No Dock icon.
+                    </p>
+                    <p data-os-pane="windows" hidden>
+                      App live in Windows system tray.
+                    </p>
                     <div class="cmd">
-                      <code>open -a "PR Sniper"</code>
+                      <code
+                        data-macos='open -a "PR Sniper"'
+                        data-windows='Start-Process "$env:LOCALAPPDATA\PR Sniper\pr-sniper.exe"'
+                        >open -a "PR Sniper"</code
+                      >
                       <button type="button" class="copy" data-copy="launch">
                         <span class="t-on">[COPY]</span
                         ><span class="t-off">COPY</span>
@@ -762,12 +866,21 @@
                   </li>
                   <li>
                     <h3>Update</h3>
-                    <p>
+                    <p data-os-pane="macos">
                       Quit PR Sniper first. Homebrew own updates. No in-app
                       updater. Settings and credentials stay.
                     </p>
+                    <p data-os-pane="windows" hidden>
+                      Quit PR Sniper first. Chocolatey own updates. No in-app
+                      updater. Settings and Windows Credential Manager entries
+                      stay.
+                    </p>
                     <div class="cmd">
-                      <code>brew upgrade --cask pr-sniper</code>
+                      <code
+                        data-macos="brew upgrade --cask pr-sniper"
+                        data-windows="choco upgrade pr-sniper"
+                        >brew upgrade --cask pr-sniper</code
+                      >
                       <button type="button" class="copy" data-copy="upgrade">
                         <span class="t-on">[COPY]</span
                         ><span class="t-off">COPY</span>
@@ -776,7 +889,7 @@
                   </li>
                   <li>
                     <h3>Uninstall</h3>
-                    <p>
+                    <p data-os-pane="macos">
                       Remove app only. Settings and state stay in
                       <code
                         >~/Library/Application
@@ -787,8 +900,21 @@
                         >local data</a
                       >.
                     </p>
+                    <p data-os-pane="windows" hidden>
+                      Remove app only. Settings and state stay in
+                      <code>%LOCALAPPDATA%\com.jdylanmc.pr-sniper\</code>.
+                      Credentials stay in Windows Credential Manager. See
+                      <a
+                        href="https://github.com/jdylanmc/pr-sniper/blob/main/docs/local-data.md"
+                        >local data</a
+                      >.
+                    </p>
                     <div class="cmd">
-                      <code>brew uninstall --cask pr-sniper</code>
+                      <code
+                        data-macos="brew uninstall --cask pr-sniper"
+                        data-windows="choco uninstall pr-sniper"
+                        >brew uninstall --cask pr-sniper</code
+                      >
                       <button type="button" class="copy" data-copy="uninstall">
                         <span class="t-on">[COPY]</span
                         ><span class="t-off">COPY</span>
@@ -796,15 +922,27 @@
                     </div>
                   </li>
                 </ol>
-                <h3>
+                <h3 data-os-pane="macos">
                   <span class="prompt" aria-hidden="true">&gt; </span>NO
                   HOMEBREW
                 </h3>
-                <p>
+                <p data-os-pane="macos">
                   Get signed, notarized ZIP from
                   <a href="https://github.com/jdylanmc/pr-sniper/releases"
                     >GitHub Releases</a
                   >. Unzip. Move PR Sniper to Applications. Update by hand.
+                </p>
+                <h3 data-os-pane="windows" hidden>
+                  <span class="prompt" aria-hidden="true">&gt; </span>NO
+                  CHOCOLATEY
+                </h3>
+                <p data-os-pane="windows" hidden>
+                  Download <code>pr-sniper-VERSION-x64-setup.exe</code> from
+                  <a href="https://github.com/jdylanmc/pr-sniper/releases"
+                    >GitHub Releases</a
+                  >
+                  and verify its <code>WINDOWS-SHA256SUMS</code> digest before
+                  running. Update by hand.
                 </p>
               </section>
               <section

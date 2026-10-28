@@ -349,6 +349,44 @@ for (const button of document.querySelectorAll(".copy")) {
   });
 }
 
+// Platform switcher (macOS / Windows) for install commands and steps.
+const osButtons = [...document.querySelectorAll(".os-tab[data-os]")];
+const osPanes = [...document.querySelectorAll("[data-os-pane]")];
+const osTexts = [
+  ...document.querySelectorAll(
+    "code[data-macos][data-windows], [data-os-text][data-macos][data-windows]",
+  ),
+];
+
+function setOs(os, announceChange = false) {
+  const next = os === "windows" ? "windows" : "macos";
+  root.dataset.os = next;
+  for (const button of osButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.os === next));
+  }
+  for (const pane of osPanes) {
+    pane.hidden = pane.dataset.osPane !== next;
+  }
+  for (const node of osTexts) {
+    node.textContent = node.dataset[next];
+  }
+  for (const button of document.querySelectorAll(".copy")) {
+    window.clearTimeout(button.resetTimer);
+    setLabel(button, "COPY");
+  }
+  if (announceChange) {
+    announce(next === "windows" ? "Windows install" : "macOS install");
+  }
+}
+
+for (const button of osButtons) {
+  button.addEventListener("click", () => {
+    setOs(button.dataset.os, true);
+    sound.click();
+  });
+}
+setOs("macos", false);
+
 // Changelog: a small Markdown subset rendered with text nodes only.
 let changelogLoaded = false;
 

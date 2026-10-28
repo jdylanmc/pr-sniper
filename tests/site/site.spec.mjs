@@ -731,6 +731,79 @@ for (const thematic of [false, true]) {
       { timeout: 4000 },
     );
   });
+
+  test(`platform switcher toggles between macOS and Windows install commands, thematic ${thematic ? "on" : "off"}`, async ({
+    page,
+    context,
+    browserName,
+  }) => {
+    if (browserName === "chromium") {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, { thematic });
+    const install = page.locator("#install");
+    const winTab = thematic
+      ? page.locator('.info .os-tab[data-os="windows"]')
+      : page.locator('.hero .os-tab[data-os="windows"]');
+    const macTab = install.locator('.os-tab[data-os="macos"]');
+    await expect(winTab).toHaveAttribute("aria-pressed", "false");
+    await expect(macTab).toHaveAttribute("aria-pressed", "true");
+
+    await winTab.click();
+    await expect(page.locator("html")).toHaveAttribute("data-os", "windows");
+    for (const btn of await page.locator('.os-tab[data-os="windows"]').all()) {
+      await expect(btn).toHaveAttribute("aria-pressed", "true");
+    }
+    for (const btn of await page.locator('.os-tab[data-os="macos"]').all()) {
+      await expect(btn).toHaveAttribute("aria-pressed", "false");
+    }
+    await expect(page.locator(".hero-cmd code")).toHaveText(
+      "choco install pr-sniper",
+    );
+    await expect(page.locator(".info .cmd code")).toHaveText(
+      "choco install pr-sniper",
+    );
+    await expect(page.locator("#info-host")).toHaveText("Windows 10/11 · x64");
+    await expect(install).toContainText("Windows 10 or 11 (x64)");
+    await expect(install).toContainText("NO CHOCOLATEY");
+
+    const buttons = install.locator(".copy");
+    await expect(buttons).toHaveCount(4);
+    const expectedWindows = [
+      "choco install pr-sniper",
+      'Start-Process "$env:LOCALAPPDATA\\PR Sniper\\pr-sniper.exe"',
+      "choco upgrade pr-sniper",
+      "choco uninstall pr-sniper",
+    ];
+    for (const [index, command] of expectedWindows.entries()) {
+      const button = buttons.nth(index);
+      await expect(button.locator("xpath=..").locator("code")).toHaveText(
+        command,
+      );
+      await button.click();
+      await expect(label(button, thematic)).toHaveText(
+        thematic ? "[Copied]" : "Copied",
+      );
+      if (browserName === "chromium") {
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+          command,
+        );
+      }
+    }
+
+    await macTab.click();
+    await expect(page.locator("html")).toHaveAttribute("data-os", "macos");
+    await expect(page.locator(".hero-cmd code")).toHaveText(
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
+    );
+    await expect(page.locator(".info .cmd code")).toHaveText(
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
+    );
+    await expect(page.locator("#info-host")).toHaveText(
+      "macOS 13.5+ · Apple Silicon",
+    );
+  });
 }
 
 test("shown version matches package.json", async ({ page }) => {
