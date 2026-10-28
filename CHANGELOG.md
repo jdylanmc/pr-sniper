@@ -5,11 +5,21 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.3 - 2026-10-28
+
+Website Windows installation switcher and NuGet dependency range verification for Chocolatey packages.
+
 ### Added
 
 - Add a `macOS` / `Windows` install platform switcher on the project site for
   switching between Homebrew (`brew install --cask jdylanmc/pr-sniper/pr-sniper`)
-  and Chocolatey (`choco install pr-sniper`) commands and setup steps.
+  and Chocolatey (`choco install pr-sniper`) commands and setup steps (#269).
+
+### Fixed
+
+- Accept NuGet's normalized minimum-inclusive `webview2-runtime` dependency
+  version in `verify_choco_nupkg` and validate packed `.nupkg` archives during
+  `windows-publish` (#268).
 
 ## 0.5.2 - 2026-10-27
 
