@@ -240,6 +240,7 @@ jobs:
           .\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned -Installer $installer -Version $manifest.version -Sha256 $manifest.sha256 -Commit $manifest.source_sha -Destination $chocoDir -Url $url -LicenseUrl $license
           choco pack (Join-Path $chocoDir 'pr-sniper.nuspec') --output-directory=$assets
           if ($LASTEXITCODE -ne 0) { throw 'choco pack failed.' }
+          python -B scripts/release.py verify-choco-nupkg
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: chocolatey-release-package
