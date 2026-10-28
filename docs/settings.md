@@ -53,7 +53,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 ## Assignments
 
-- Assignment editor drill-ins: **Agent**, **Rubber duck** (primary only: None + Agents, radio; may be the same Agent), **Permissions**, **Tools**. Primary switch. Choosing a duck turns on the `rubber_duck` tool, also in an explicit Tools list; None disables it. Stored as `rubber_duck` (Agent id). [ADR 0023](adr/0023-rubber-duck-verification.md). **Approval** pill: `off | Approve | & Merge` (primary only).
+- Assignment editor drill-ins: **Agent**, **Rubber duck** (primary only: None + Agents, radio; may be the same Agent), **Permissions**, **Tools**. Primary switch. Choosing a duck turns on the `rubber_duck` tool, also in an explicit Tools list; None disables it. Stored as `rubber_duck` (Agent id). [ADR 0023](adr/0023-rubber-duck-verification.md). **Approval** pill: `off | Approve | & Merge` (primary only; Azure DevOps: `off | Approve`, no Merge tool).
 - Permissions: Publish Comment (automatic initial publication), Reply Comment (primary), Approve, Merge. New assignments start with an explicit Agent choice and every grant off. Existing grants unchanged.
 - From an assignment: **Edit Agent** opens the shared Agent; **Create new Agent** works with an empty library. Save/Cancel returns to the same assignment draft. New Agent starts without permissions. Unavailable Agent refs stay explicit until replaced.
 - Grants are repository-assignment controls, never global Agent permissions. Mechanics: [provider-writes.md](provider-writes.md).
