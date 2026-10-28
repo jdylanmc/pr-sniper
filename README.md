@@ -49,7 +49,7 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 choco install pr-sniper
 ```
 
-Or download `pr-sniper-VERSION-x64-setup.exe` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `WINDOWS-SHA256SUMS` digest. Quit the app before `choco upgrade pr-sniper`. Chocolatey owns updates; no in-app updater. Details: [docs/releases.md](docs/releases.md).
+While the initial Chocolatey Community Repository submission is pending moderation, or to install without Chocolatey, install the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), download `pr-sniper-VERSION-x64-setup.exe` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `WINDOWS-SHA256SUMS` digest before running. Quit the app before `choco upgrade pr-sniper`. Chocolatey owns updates once approved; no in-app updater. Details: [docs/releases.md](docs/releases.md), [docs/windows-packaging.md](docs/windows-packaging.md).
 
 ## Quick start
 

@@ -2,13 +2,17 @@
 
 The unsigned installer and private Chocolatey package were delivered in
 [#87](https://github.com/jdylanmc/pr-sniper/pull/87), completing the local package
-scope of [#63](https://github.com/jdylanmc/pr-sniper/issues/63). This is **not a
-public Windows release**. Future signed Windows releases
-([#62](https://github.com/jdylanmc/pr-sniper/issues/62)) and public Chocolatey
-publication ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
+scope of [#63](https://github.com/jdylanmc/pr-sniper/issues/63). The unsigned
+public Windows installer (`pr-sniper-0.5.2-x64-setup.exe`,
+`windows-manifest.json` and `WINDOWS-SHA256SUMS`) is published on
+[v0.5.2](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.5.2). Future
+signed Windows releases ([#62](https://github.com/jdylanmc/pr-sniper/issues/62))
+and public Chocolatey moderation approval
+([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
 The owner resumed public-distribution preparation on 2026-10-08 and explicitly
-approved unsigned initial public releases, deferring paid signing. No public
-Windows release or publicly approved Chocolatey package is established.
+approved unsigned initial public releases, deferring paid signing. No publicly
+approved Chocolatey package (`choco-publicly-approved.json`) is established yet;
+until Chocolatey moderation approves the package, install from GitHub Releases.
 
 ## Delivery status
 
