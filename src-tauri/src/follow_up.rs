@@ -1092,11 +1092,26 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 1,
             )
         });
+        // A body frozen before the signature changed keeps its exact bytes: it is
+        // what reconciliation matches against the provider.
+        let signed = |text: &str| {
+            let resigned = text
+                .strip_suffix(crate::exit_writes::SIGNATURE)
+                .map(|head| format!("{head}{}", crate::exit_writes::LEGACY_SIGNATURE));
+            [Some(text.to_string()), resigned]
+        };
+        let frozen = |candidates: [Option<String>; 2]| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.is_some() && run.body == *candidate)
+        };
         // Already-attempted legacy bodies are immutable recovery evidence, not
         // permission to create a fresh unsigned/impersonated response.
-        let legacy_recovery =
-            (run.uncertain || run.receipt.is_some()) && run.body.as_ref() == legacy.as_ref();
-        if run.body.as_deref() == Some(&body) || legacy_recovery {
+        let legacy_recovery = (run.uncertain || run.receipt.is_some())
+            && legacy
+                .as_deref()
+                .is_some_and(|legacy| frozen(signed(legacy)));
+        if frozen(signed(&body)) || legacy_recovery {
             Ok(())
         } else {
             Err(Failure::permanent(
