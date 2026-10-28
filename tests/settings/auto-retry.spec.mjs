@@ -83,7 +83,7 @@ for (const [origin, heading] of [
 }
 
 // A teammate's model refused service while its account stayed connected.
-async function parkModel(page, store) {
+async function parkModel(page, store, extra = () => {}) {
   const fixture = await queueFixture(store);
   const review = fixture.state.reviews.find((entry) => entry.job.number === 3);
   review.operation.state = "manual_retry";
@@ -99,6 +99,7 @@ async function parkModel(page, store) {
   fixture.state.publications = fixture.state.publications.filter(
     (entry) => entry.review.job.number !== 3,
   );
+  extra(fixture.state, review);
   await store("seed_queue_state", fixture.state);
   await page.addInitScript(() => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
@@ -190,6 +191,71 @@ test("a model refusal's detail shows Agent, model and status with Change model f
   await expect(primary).toHaveAttribute("data-queue-primary", "change-model");
   await expect(primary).toHaveText("Change model");
   await expect(status.getByRole("button", { name: "Retry" })).toHaveCount(1);
+  await primary.click();
+  await expectModelPicker(page);
+});
+
+test("a repository check still retrying never hides a parked model refusal in the detail", async ({
+  page,
+  store,
+}) => {
+  const now = Math.floor(Date.now() / 1000);
+  const item = await parkModel(page, store, (state, review) => {
+    state.monitoring = {
+      health: {
+        [review.job.configuration_id]: {
+          repository_id: review.job.configuration_id,
+          name: "example/repo",
+          schedule_key: "fixture",
+          provider_account_id: "22",
+          account_login: "local-operator",
+          provider_repository_id: "100",
+          enabled: true,
+          last_attempt: now - 60,
+          last_success: null,
+          next_run: 0,
+          schedule_available: true,
+          last_failure: "network",
+          last_error: "Network error.",
+          in_flight: false,
+          operation: {
+            id: "health-op",
+            provider: "github",
+            account_id: "22",
+            configuration_id: review.job.configuration_id,
+            repository_id: "100",
+            pull_request_id: null,
+            head_sha: null,
+            trigger_policy: "fixture",
+            operation_type: "repository_poll",
+            state: "queued",
+            attempt_count: 1,
+            initial_attempt_at: now - 60,
+            retry_deadline: now + 600,
+            next_attempt_at: now + 60,
+            failure: "network",
+            attempted_mutation: null,
+            pending_review_id: null,
+            owned_thread_id: null,
+            triggering_external_comment_id: null,
+            confirmed_receipt: null,
+          },
+        },
+      },
+    };
+  });
+  expect(item.failure_class).toBe("model");
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  const status = page.locator("[data-queue-status]");
+  await expect(status.locator("[data-failure-cause]")).toHaveAttribute(
+    "data-failure-cause",
+    "model_rejected",
+  );
+  const primary = status.locator("[data-queue-primary]");
+  await expect(primary).toHaveAttribute("data-queue-primary", "change-model");
   await primary.click();
   await expectModelPicker(page);
 });

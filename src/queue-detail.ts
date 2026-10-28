@@ -140,6 +140,8 @@ export function failedPublications(
   });
 }
 
+const accountCauses = ["account_disconnected", "account_binding_required"];
+
 export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   for (const warning of item.warnings) {
     const match = /^Monitoring failure: ([a-z0-9_]+)\./.exec(warning);
@@ -147,11 +149,16 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   }
   if (item.job.waiting === "account_disconnected")
     return "account_disconnected";
+  // As in the queue projection: a check still backing off retries on its own
+  // and is not this item's cause; account losses always are.
   const health = (snapshot.health ?? []).find(
     (entry) =>
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id &&
-      entry.last_failure,
+      entry.last_failure &&
+      (accountCauses.includes(entry.last_failure) ||
+        !entry.operation ||
+        ["failed", "manual_retry"].includes(entry.operation.state)),
   );
   if (health?.last_failure) return health.last_failure;
   if (
