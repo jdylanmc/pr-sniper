@@ -35,13 +35,21 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 
 ## Install
 
-Apple Silicon, macOS 13.5+.
+**macOS** (Apple Silicon, macOS 13.5+):
 
 ```sh
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
 
-Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanmc/pr-sniper/releases). Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater. Details: [docs/releases.md](docs/releases.md).
+Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanmc/pr-sniper/releases). Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater.
+
+**Windows** (Windows 10/11 x64):
+
+```powershell
+choco install pr-sniper
+```
+
+While the initial Chocolatey Community Repository submission is pending moderation, or to install without Chocolatey, install the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), download `pr-sniper-VERSION-x64-setup.exe` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `WINDOWS-SHA256SUMS` digest before running. Quit the app before `choco upgrade pr-sniper`. Chocolatey owns updates once approved; no in-app updater. Details: [docs/releases.md](docs/releases.md), [docs/windows-packaging.md](docs/windows-packaging.md).
 
 ## Quick start
 

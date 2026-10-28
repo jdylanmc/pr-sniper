@@ -424,8 +424,26 @@ html:not([data-thematic="off"]) .t-off {
 }
 
 .info > .label + .cmd,
+.info > .label + .os-tabs,
 .info > .label + .links {
   margin-top: 0;
+}
+
+.os-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 calc(var(--cw) * 2);
+}
+
+.os-tab {
+  white-space: nowrap;
+  color: var(--dim);
+}
+
+.os-tab[aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+  text-shadow: none;
 }
 
 .links {
@@ -1258,9 +1276,58 @@ html[data-thematic="off"] body {
   color: var(--fg-muted);
 }
 
+[data-thematic="off"] .hero-install {
+  max-width: 40rem;
+  margin-top: 2rem;
+}
+
 [data-thematic="off"] .hero-cmd {
   max-width: 40rem;
   margin-top: 2rem;
+}
+
+[data-thematic="off"] .hero-install .hero-cmd {
+  margin-top: 0;
+  border-top-left-radius: 0;
+}
+
+[data-thematic="off"] .hero-install .os-note {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+}
+
+[data-thematic="off"] .os-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-thematic="off"] .hero-install .os-tabs {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+[data-thematic="off"] .os-tab {
+  padding: 0.2rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  border-radius: calc(var(--radius) - 1px);
+}
+
+[data-thematic="off"] .os-tab:hover {
+  color: var(--fg);
+}
+
+[data-thematic="off"] .os-tab[aria-pressed="true"] {
+  color: var(--accent-contrast);
+  background: var(--accent);
 }
 
 [data-thematic="off"] .hero-actions {

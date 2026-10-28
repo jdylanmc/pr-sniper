@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Added
+
+- Add a `macOS` / `Windows` install platform switcher on the project site for
+  switching between Homebrew (`brew install --cask jdylanmc/pr-sniper/pr-sniper`)
+  and Chocolatey (`choco install pr-sniper`) commands and setup steps.
+
 ## 0.5.2 - 2026-10-27
 
 Windows release asset publication and unsigned-public Chocolatey distribution.
