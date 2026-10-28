@@ -198,59 +198,15 @@ pub(super) fn handles(command: &Command) -> bool {
     ) || matches!(command, Command::Save { edit, .. } if !matches!(edit, crate::storage::ResourceEdit::Agent {..}))
 }
 
-/// Re-arms every parked review a human would not have to judge, through the
-/// same native paths as per-item Retry: parked packet states restart their
-/// toss budget, other failed runs start a fresh operation. Permanent failures
-/// (including user cancellation) and panic exits stay parked for a human.
-/// Dispatch keeps pause, capacity and backpressure gates.
 fn retry_all(runtime: &impl Runtime) -> Result<Value, Error> {
-    use crate::monitoring::{OperationFailure, OperationState};
     if runtime.quitting() {
         return Err(Error::new("quitting", ()));
     }
     let (retried, skipped, batch) = {
         let store = runtime.store().lock().map_err(|_| storage(()))?;
         let now = crate::now_seconds().map_err(storage)?;
-        let snapshot = crate::queue::snapshot(&store, vec![]).map_err(storage)?;
-        let (mut retried, mut skipped) = (0usize, 0usize);
-        let mut handled = std::collections::BTreeSet::new();
-        for item in snapshot.items.iter().filter(|item| {
-            item.state == crate::queue::State::Failed
-                && matches!(
-                    item.failure_cause,
-                    Some(crate::queue::CAUSE_TOSSED | crate::queue::CAUSE_EXIT_FAILED)
-                )
-        }) {
-            handled.extend(item.review_keys.iter().cloned());
-            match crate::exits::consume::retry_parked(&store, &item.id, now) {
-                Ok(_) => retried += 1,
-                Err(_) => skipped += 1,
-            }
-        }
-        for candidate in crate::review::host::candidates(&store).map_err(storage)? {
-            let Some(run) = candidate.run.as_ref() else {
-                continue;
-            };
-            if handled.contains(&candidate.key)
-                || !matches!(
-                    run.operation.state,
-                    OperationState::Failed | OperationState::ManualRetry
-                )
-            {
-                continue;
-            }
-            if matches!(
-                run.operation.failure,
-                Some(OperationFailure::Permanent | OperationFailure::Panic)
-            ) {
-                skipped += 1;
-                continue;
-            }
-            match crate::review::host::request(&store, &candidate.key, true, now) {
-                Ok(_) => retried += 1,
-                Err(_) => skipped += 1,
-            }
-        }
+        let (retried, skipped) =
+            crate::review::host::retry_all_parked(&store, now).map_err(storage)?;
         let batch = runtime.ai().dispatch(&store, now).map_err(operation)?;
         (retried, skipped, batch)
     };

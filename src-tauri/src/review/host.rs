@@ -1285,6 +1285,56 @@ pub(crate) fn request_batch(
     ai.dispatch(store, now)
 }
 
+/// Re-arms every parked review a human would not have to judge, through the
+/// same paths as per-item Retry: parked packet states restart their toss
+/// budget, then every other failed run starts a fresh operation. Permanent
+/// failures (including user cancellation) and panic exits stay parked.
+/// Returns (retried, skipped); the caller dispatches.
+pub(crate) fn retry_all_parked(
+    store: &crate::storage::Store,
+    now: i64,
+) -> Result<(usize, usize), String> {
+    use crate::monitoring::OperationFailure;
+    let (mut retried, mut skipped) = (0usize, 0usize);
+    let snapshot = crate::queue::snapshot(store, vec![])?;
+    for item in snapshot.items.iter().filter(|item| {
+        item.state == crate::queue::State::Failed
+            && matches!(
+                item.failure_cause,
+                Some(crate::queue::CAUSE_TOSSED | crate::queue::CAUSE_EXIT_FAILED)
+            )
+    }) {
+        match crate::exits::consume::retry_parked(store, &item.id, now) {
+            Ok(_) => retried += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    // Runs `retry_parked` restarted are no longer parked and fall out here.
+    for candidate in candidates(store)? {
+        let Some(run) = candidate.run.as_ref() else {
+            continue;
+        };
+        if !matches!(
+            run.operation.state,
+            OperationState::Failed | OperationState::ManualRetry
+        ) {
+            continue;
+        }
+        if matches!(
+            run.operation.failure,
+            Some(OperationFailure::Permanent | OperationFailure::Panic)
+        ) {
+            skipped += 1;
+            continue;
+        }
+        match request(store, &candidate.key, true, now) {
+            Ok(_) => retried += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok((retried, skipped))
+}
+
 #[tauri::command]
 pub(crate) async fn retry_packet_state(
     app: tauri::AppHandle,
