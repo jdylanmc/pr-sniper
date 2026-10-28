@@ -5,6 +5,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- Query the Chocolatey community feed with an Atom/XML-only `Accept` header;
+  the feed rejects any request that allows JSON with HTTP 406, which blocked
+  `choco-publish` before push.
+
 ## 0.5.3 - 2026-10-28
 
 Website Windows installation switcher and NuGet dependency range verification for Chocolatey packages.

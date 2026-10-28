@@ -710,16 +710,21 @@ class ReleaseTests(unittest.TestCase):
                 self.code = code
 
             def open(self, request, timeout=90):
+                self.accept = request.get_header("Accept")
                 if self.code != 200:
                     raise release.urllib.error.HTTPError(request.full_url, self.code, "error", {}, None)
                 response = unittest.mock.MagicMock()
                 response.__enter__.return_value.read.return_value = self.body.encode("utf-8")
                 return response
 
+        missing = FeedOpener(code=404)
         self.assertEqual(
-            release.choco_moderation_status("pr-sniper", "0.1.0", opener=FeedOpener(code=404)),
+            release.choco_moderation_status("pr-sniper", "0.1.0", opener=missing),
             "not_found",
         )
+        # community.chocolatey.org returns HTTP 406 when JSON is acceptable.
+        self.assertEqual(missing.accept, "application/atom+xml, application/xml")
+        self.assertNotIn("json", missing.accept)
         self.assertEqual(
             release.choco_moderation_status(
                 "pr-sniper",
