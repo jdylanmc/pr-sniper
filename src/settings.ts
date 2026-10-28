@@ -569,7 +569,21 @@ export async function mountSettings(
   };
   const dialogs = createDialogs(
     content,
-    () => revision++,
+    () => {
+      revision++;
+      // Embedded resource sections hide the savebar and its Reload. Once the
+      // last editor closes on a clean draft there, re-read instead.
+      if (conflict)
+        queueMicrotask(() => {
+          if (
+            conflict &&
+            !dialogs.hasOpen() &&
+            !dirty() &&
+            !!reload.closest("[hidden]")
+          )
+            void external();
+        });
+    },
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
@@ -5223,28 +5237,7 @@ export async function mountSettings(
         dialogs.hasOpen()
       )
         return;
-      snapshot = state;
-      if (!state.settings) {
-        showError(state.error ?? "Unavailable");
-        return;
-      }
-      const retainAccounts =
-        (section === "accounts" ||
-          section === "copilot" ||
-          section === "github") &&
-        content.querySelector(".account-connection") !== null &&
-        sameResource(saved, state.settings);
-      saved = clone(state.settings);
-      draft = clone(saved);
-      if (!themePending) applyTheme(saved.theme);
-      conflict = false;
-      if (state.error) showError(state.error);
-      if (retainAccounts) {
-        changed();
-        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
-        return;
-      }
-      render();
+      applySnapshot(state);
     } catch {
       if (
         requestRevision !== revision ||
@@ -5258,10 +5251,35 @@ export async function mountSettings(
       showError("Unavailable");
     }
   }
+  // Callers have checked that no draft, editor or save would be overwritten.
+  function applySnapshot(state: Snapshot) {
+    snapshot = state;
+    if (!state.settings) {
+      showError(state.error ?? "Unavailable");
+      return;
+    }
+    const retainAccounts =
+      (section === "accounts" ||
+        section === "copilot" ||
+        section === "github") &&
+      content.querySelector(".account-connection") !== null &&
+      sameResource(saved, state.settings);
+    saved = clone(state.settings);
+    draft = clone(saved);
+    if (!themePending) applyTheme(saved.theme);
+    conflict = false;
+    if (state.error) showError(state.error);
+    if (retainAccounts) {
+      changed();
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+      return;
+    }
+    render();
+  }
   // A commit from another origin (control, another window) refreshes a clean
   // view; an unsaved draft or open editor keeps its edits and is marked stale.
   async function external() {
-    if (busy || startupPending) {
+    if (busy || startupPending || !saved) {
       externalPending = true;
       return;
     }
@@ -5279,7 +5297,7 @@ export async function mountSettings(
     }
     if (sameResource(state.settings, saved)) return;
     if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
-      await load();
+      applySnapshot(state);
       return;
     }
     conflict = true;
@@ -5291,8 +5309,9 @@ export async function mountSettings(
     refreshAgentAccounts?.();
     if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
+  // Listen before the first read so no commit lands between them unseen.
+  await onCommitted(app, [SETTINGS_CHANGED], () => void external());
   await load();
-  onCommitted(app, [SETTINGS_CHANGED], () => void external());
   return {
     leaveGuidance,
     open(target: SetupTarget, origin: GuidedReturn) {

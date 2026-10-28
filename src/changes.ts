@@ -5,7 +5,10 @@ import { listen } from "@tauri-apps/api/event";
 export const SETTINGS_CHANGED = "pr-sniper:settings-changed";
 export const STATE_CHANGED = "pr-sniper:state-changed";
 
-/** Runs `refresh` once per burst of `events` while `root` stays connected. */
+/**
+ * Runs `refresh` once per burst of `events` while `root` stays connected.
+ * Resolves once every listener is registered (or failed to register).
+ */
 export function onCommitted(
   root: Element,
   events: readonly string[],
@@ -28,10 +31,12 @@ export function onCommitted(
       else stop();
     }, delay);
   };
-  for (const event of events)
-    void listen(event, schedule).then(
-      (unlisten) => (stopped ? unlisten() : stops.push(unlisten)),
-      () => {},
-    );
-  return stop;
+  return Promise.all(
+    events.map((event) =>
+      listen(event, schedule).then(
+        (unlisten) => void (stopped ? unlisten() : stops.push(unlisten)),
+        () => {},
+      ),
+    ),
+  ).then(() => stop);
 }

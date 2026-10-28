@@ -1,5 +1,13 @@
 import { test, expect } from "./fixtures.mjs";
-import { editAgent, fixtureAgent, section, seedAgent } from "./navigation.mjs";
+import {
+  closeDialog,
+  editAgent,
+  fixtureAgent,
+  section,
+  seedAgent,
+} from "./navigation.mjs";
+
+test.use({ viewport: { width: 408, height: 744 } });
 
 // The native Store broadcasts this after every committed settings write,
 // whichever origin (local control, another window) made it.
@@ -24,10 +32,18 @@ async function saveElsewhere(store, change) {
   });
 }
 
-async function ready(page, store) {
+async function ready(page, store, panel = false) {
   await seedAgent(store);
-  await page.goto("/?view=settings");
+  await store("panel_snapshot");
+  await page.goto(panel ? "/" : "/?view=settings");
   await page.evaluate(() => window.__settingsIdle());
+  if (panel) {
+    await page
+      .getByRole("navigation", { name: "Application destinations" })
+      .getByRole("button", { name: "Settings", exact: true })
+      .click();
+    await page.evaluate(() => window.__settingsIdle());
+  }
   await expect(page.locator("#save-status")).toHaveText("All changes saved");
   await section(page, "Agents");
   await page.evaluate(() => window.__settingsIdle());
@@ -113,4 +129,86 @@ test("an out-of-band commit keeps a dirty Preferences draft until reload", async
   await page.evaluate(() => window.__settingsIdle());
   await expect(minutes).toHaveValue("11");
   await expect(page.locator("#reload-settings")).toBeHidden();
+});
+
+test("a commit landing while Settings opens is not missed", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  await seedAgent(store);
+  // Hold the first read's reply; the commit lands after that read.
+  const initial = ipc.holdNext("snapshot");
+  await page.goto("/?view=settings");
+  await initial.arrived;
+  await saveElsewhere(store, { model: "external-model" });
+  await page.evaluate(() =>
+    window.__appEvent("pr-sniper:settings-changed", { revision: 2 }),
+  );
+  initial.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await section(page, "Agents");
+  await expect(card(page).locator(".resource-meta")).toContainText(
+    "external-model",
+  );
+});
+
+test("a commit is applied from the read that observed it", async ({
+  page,
+  store,
+}) => {
+  // Types into Preferences while any further snapshot read is outstanding,
+  // so a second read after the commit cannot silently drop the result.
+  await page.addInitScript(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__reads = undefined;
+    window.__TAURI_INTERNALS__.invoke = (command, args) => {
+      if (command === "snapshot" && window.__reads !== undefined) {
+        if (++window.__reads === 2) {
+          const input = document.querySelector("#review-inactivity");
+          input.value = "9";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      return original(command, args);
+    };
+  });
+  await ready(page, store);
+  await section(page, "Preferences");
+  const minutes = page.getByLabel("Review inactivity (min)", { exact: true });
+  const { settings } = await store("snapshot");
+  settings.review_inactivity_minutes = 11;
+  await store("seed_settings", settings);
+  await page.evaluate(() => (window.__reads = 0));
+  await committed(page, 2);
+  // The read that observed the commit is applied; a second read, during
+  // which the user starts a draft, would drop it without a stale marker.
+  await expect(minutes).toHaveValue("11");
+  await expect(page.locator("#save-status")).toHaveText("All changes saved");
+  expect(await page.evaluate(() => window.__reads)).toBe(1);
+});
+
+test("an embedded Agent editor closed on a stale list shows the commit", async ({
+  page,
+  store,
+}) => {
+  await ready(page, store, true);
+  await section(page, "Agents");
+  await card(page)
+    .locator("[data-edit]")
+    .evaluate((button) => button.click());
+  const modal = page.getByRole("dialog", {
+    name: `Editing ${fixtureAgent.name}`,
+    exact: true,
+  });
+  await saveElsewhere(store, { model: "external-model" });
+  await committed(page, 2);
+  await expect(modal).toBeVisible();
+  await closeDialog(page);
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(modal).toHaveCount(0);
+  await expect(card(page).locator(".resource-meta")).toContainText(
+    "external-model",
+  );
 });
