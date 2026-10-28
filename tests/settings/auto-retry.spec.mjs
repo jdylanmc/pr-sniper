@@ -24,7 +24,7 @@ async function park(store, failure, second) {
   await store("seed_queue_state", fixture.state);
 }
 
-test("credential failures are the only Needs attention failures and route Fix to Accounts", async ({
+test("a publication's credentials park routes Fix to its GitHub account and offers Retry", async ({
   page,
   store,
 }) => {
@@ -37,11 +37,39 @@ test("credential failures are the only Needs attention failures and route Fix to
   });
   await expect(failed).toHaveAttribute("data-state", "failed");
   await expect(failed).toContainText("Credentials");
+  await expect(failed.getByRole("button", { name: "Retry" })).toHaveCount(1);
   await expect(failed.locator("[data-fix-account]")).toHaveText("Fix");
   await expect(page.locator("[data-queue-attention]")).toHaveText("2");
   await failed.locator("[data-fix-account]").click();
   await expect(
-    page.getByRole("heading", { name: "Accounts", exact: true }),
+    page.getByRole("heading", { name: "GitHub", exact: true }),
+  ).toBeVisible();
+});
+
+test("a review's credentials park routes Fix to its Copilot account", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const review = fixture.state.reviews.find((entry) => entry.job.number === 3);
+  review.operation.state = "failed";
+  review.operation.failure = "credentials";
+  review.result = null;
+  fixture.state.publications = fixture.state.publications.filter(
+    (entry) => entry.review.job.number !== 3,
+  );
+  await store("seed_queue_state", fixture.state);
+  await page.goto("/");
+  await showQueueGroup(page, "attention");
+  const failed = page.getByRole("article", {
+    name: "example/repo #3",
+    exact: true,
+  });
+  await expect(failed).toContainText("Credentials");
+  await expect(failed.getByRole("button", { name: "Retry" })).toHaveCount(1);
+  await failed.locator("[data-fix-account]").click();
+  await expect(
+    page.getByRole("heading", { name: "GitHub Copilot", exact: true }),
   ).toBeVisible();
 });
 
@@ -78,7 +106,7 @@ test("every parked failure is one Needs attention row with a cause chip, Retry a
   }
 });
 
-test("Retry all heads Needs attention, counts retryable rows and skips credentials", async ({
+test("Retry all heads Needs attention and counts every parked row, credentials included", async ({
   page,
   store,
 }) => {
@@ -97,7 +125,7 @@ test("Retry all heads Needs attention, counts retryable rows and skips credentia
   await park(store, "credentials", "permission");
   await page.goto("/");
   await showQueueGroup(page, "attention");
-  await expect(all).toHaveCount(0);
+  await expect(all).toHaveText("2");
   await expect(
     page.getByRole("article", { name: "example/repo #3", exact: true }),
   ).toContainText("Credentials");

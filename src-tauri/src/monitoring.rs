@@ -512,6 +512,21 @@ fn run_reconnected(run: &crate::review::ReviewRun, reconnected: &BTreeSet<String
             .is_some_and(|ai| reconnected.contains(&ai.account_id))
 }
 
+/// Whether every account a run uses currently reads connected.
+fn run_accounts_connected(run: &crate::review::ReviewRun, connected: &BTreeSet<String>) -> bool {
+    let ai = |account: Option<&crate::storage::AiAccount>| {
+        account.is_none_or(|ai| connected.contains(&ai.account_id))
+    };
+    connected.contains(&run.job.account_id)
+        && ai(run.selection.agent.ai_account.as_ref())
+        && ai(run
+            .selection
+            .configuration
+            .as_ref()
+            .and_then(|c| c.rubber_duck.as_ref())
+            .and_then(|duck| duck.agent.ai_account.as_ref()))
+}
+
 /// Drops retired history entries nothing can read again. Kept: every live or
 /// legacy entry, any entry a saved review, publication or follow-up matches
 /// (evidence would restore it anyway), the newest entry per PR assignment
@@ -3687,6 +3702,23 @@ impl JobOperation {
             .map(|cooldown| now.saturating_add(*cooldown));
     }
 
+    /// A credentials park whose accounts all read connected is stale evidence:
+    /// it earns the regular cooldown instead of waiting for a reconnect that
+    /// never comes. Returns whether a resume was scheduled.
+    pub fn rearm_stale_credentials(&mut self, now: i64) -> bool {
+        if self.offline_since.is_some()
+            || !self.parked()
+            || self.resume_at.is_some()
+            || self.failure != Some(OperationFailure::Credentials)
+        {
+            return false;
+        }
+        self.resume_at = RESUME_COOLDOWNS_SECONDS
+            .get(usize::from(self.resume_cycle))
+            .map(|cooldown| now.saturating_add(*cooldown));
+        self.resume_at.is_some()
+    }
+
     /// Starts the next automatic attempt window for a parked failure: after its
     /// cooldown (spending a cycle) or, for credentials, once the account is
     /// connected again. Returns whether the operation was requeued.
@@ -4432,7 +4464,11 @@ impl Monitor {
                 continue;
             }
             let account = run_reconnected(&run, &reconnected);
-            if run.operation.clone().auto_resume(account, now) {
+            let mut operation = run.operation.clone();
+            if run_accounts_connected(&run, &connected) && operation.rearm_stale_credentials(now) {
+                return Ok(true);
+            }
+            if operation.auto_resume(account, now) {
                 return Ok(true);
             }
         }
@@ -4464,7 +4500,7 @@ impl Monitor {
         now: i64,
     ) -> Result<usize, String> {
         let (connected, reconnected) = self.reconnections(accounts);
-        self.connected_seen = Some(connected);
+        self.connected_seen = Some(connected.clone());
         let mut resumed = 0;
         let mut reviews = store.load_reviews()?;
         let mut changed = false;
@@ -4491,6 +4527,10 @@ impl Monitor {
                 continue;
             }
             let account = run_reconnected(run, &reconnected);
+            if run_accounts_connected(run, &connected) && run.operation.rearm_stale_credentials(now)
+            {
+                changed = true;
+            }
             if run.operation.auto_resume(account, now) {
                 run.error = None;
                 run.phase = "Waiting for shared AI capacity".into();

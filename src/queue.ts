@@ -221,8 +221,8 @@ export function compactDuration(seconds: number) {
 const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
 const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4";
 const retryIcon = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
-const retryable = (item: QueueItem) =>
-  item.state === "failed" && !credentials(item);
+// Credentials parks retry too: each attempt re-verifies the account first.
+const retryable = (item: QueueItem) => item.state === "failed";
 
 export function humanQueue(items: QueueItem[]): QueueItem[] {
   const current = new Map<string, QueueItem>();
@@ -503,7 +503,10 @@ export function renderQueue(
         fix.textContent = "Fix";
         fix.onclick = () =>
           fix.dispatchEvent(
-            new CustomEvent("pr-sniper:fix-account", { bubbles: true }),
+            new CustomEvent("pr-sniper:fix-account", {
+              bubbles: true,
+              detail: { id: item.id },
+            }),
           );
         actions.append(fix);
       }

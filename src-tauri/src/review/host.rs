@@ -204,11 +204,13 @@ pub(crate) fn request(
     Ok(run)
 }
 
+/// `None` when the attempt was refused and recorded on the run itself (a
+/// spent budget parks it); that is item state, not a host failure.
 pub(crate) fn prepare_dispatch(
     store: &crate::storage::Store,
     key: &str,
     now: i64,
-) -> Result<ReviewRun, String> {
+) -> Result<Option<ReviewRun>, String> {
     let mut run = request(store, key, false, now)?;
     run.feedback_context = Some(
         crate::feedback::contexts(store, &run.job, &run.selection.agent.id)
@@ -217,10 +219,10 @@ pub(crate) fn prepare_dispatch(
     );
     let mut reviews = store.load_reviews()?;
     if let Err(error) = run.operation.begin_ai_attempt(now) {
-        run.error = Some(error.clone());
+        run.error = Some(error);
         replace_run(&mut reviews, &run);
         store.save_reviews(&reviews)?;
-        return Err(error);
+        return Ok(None);
     }
     if run
         .selection
@@ -243,7 +245,7 @@ pub(crate) fn prepare_dispatch(
     run.error = None;
     replace_run(&mut reviews, &run);
     store.save_reviews(&reviews)?;
-    Ok(run)
+    Ok(Some(run))
 }
 
 pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: Arc<AtomicBool>) {

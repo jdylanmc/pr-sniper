@@ -285,7 +285,7 @@ impl Live {
     fn dispatch(&self, key: &str) -> ReviewRun {
         let store = self.store();
         host::request(&store, key, true, now()).unwrap();
-        let run = host::prepare_dispatch(&store, key, now()).unwrap();
+        let run = host::prepare_dispatch(&store, key, now()).unwrap().unwrap();
         assert_eq!(run.mode, review::RunMode::Packet);
         run
     }
