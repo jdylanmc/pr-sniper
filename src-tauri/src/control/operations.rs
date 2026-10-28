@@ -428,6 +428,29 @@ fn request_hash(mut input: Value) -> String {
     revision(&input)
 }
 
+/// A repository edit granting an outcome its provider never offers
+/// (Approve & Merge on Azure DevOps) is refused before validation.
+pub(crate) fn supported_actions(edit: &ResourceEdit) -> Result<(), Error> {
+    if let ResourceEdit::Repository {
+        value: Some(repository),
+        ..
+    } = edit
+    {
+        if !repository.capabilities().approve_and_merge.is_available()
+            && repository
+                .assignments
+                .iter()
+                .any(crate::storage::Assignment::grants_approve_and_merge)
+        {
+            return Err(Error::new(
+                "unsupported_provider_action",
+                json!({"provider": repository.provider, "action": "approve_and_merge"}),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn save_checked(
     store: &Store,
     expected: &str,
@@ -654,6 +677,7 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
             .map_err(operation)?,
         ),
         Command::Validate { edit } => {
+            supported_actions(&edit)?;
             value(crate::validate_resource(app.state::<Host>(), edit).map_err(operation)?)
         }
         Command::Save {

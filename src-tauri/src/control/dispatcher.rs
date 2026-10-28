@@ -497,6 +497,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             account_generation,
             allow_grants,
         } => {
+            super::operations::supported_actions(&edit)?;
             let settings = {
                 let generations = runtime.generations().lock().map_err(|_| storage(()))?;
                 let auth = runtime.auth().lock().map_err(|_| storage(()))?;

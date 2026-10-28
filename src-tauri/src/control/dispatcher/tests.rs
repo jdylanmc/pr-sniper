@@ -374,6 +374,61 @@ fn azure_devops_repositories_save_only_as_the_bound_identity() {
 }
 
 #[test]
+fn azure_devops_repositories_refuse_approve_and_merge_with_a_typed_error() {
+    let mut fixture = Fixture::new();
+    fixture.azure = Some(azure_report(true));
+    let id = uuid::Uuid::new_v4().to_string();
+    let assignment = |actions: Value, tools: Value| {
+        json!({"id":"00000000-0000-4000-8000-0000000000a1",
+            "agent_id":"00000000-0000-4000-8000-0000000000a2","comment":false,
+            "actions":actions,"tools":tools})
+    };
+    let repository = |assignment: Value| {
+        json!({"id":id,"provider":"azure_devops",
+            "name":"contoso/Web/app","enabled":false,"provider_account_id":AVERY,
+            "provider_repository_id":format!("contoso/{}/{}",
+                "00000000-0000-0000-0000-0000000000b1","00000000-0000-0000-0000-0000000000c1"),
+            "assignments":[assignment]})
+    };
+    for value in [
+        repository(assignment(
+            json!({"reply":false,"approve":true,"merge":true}),
+            Value::Null,
+        )),
+        repository(assignment(
+            json!({"reply":false,"approve":true,"merge":false}),
+            json!(["approve_and_merge"]),
+        )),
+    ] {
+        let edit = json!({"kind":"repository","id":id,"expected":null,"value":value});
+        let detail = json!({"provider":"azure_devops","action":"approve_and_merge"});
+        // `validate` runs the same check before native validation.
+        let refused = super::super::operations::supported_actions(
+            &serde_json::from_value(edit.clone()).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, "unsupported_provider_action");
+        assert_eq!(refused.detail, detail);
+        let revision = fixture.call(json!({"operation":"inspect"}))["result"]["revision"].clone();
+        let refused = fixture
+            .call(json!({"operation":"save","revision":revision,"edit":edit,"allow_grants":true}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(
+            refused["error"]["code"], "unsupported_provider_action",
+            "{refused}"
+        );
+        assert_eq!(refused["error"]["detail"], detail);
+    }
+    let repositories =
+        fixture.call(json!({"operation":"resources","kind":"repositories","limit":100}));
+    assert!(repositories["result"]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["id"] != json!(id)));
+}
+
+#[test]
 fn unit_commands_reject_unknown_fields_before_dispatch() {
     let fixture = Fixture::new();
     let response = fixture.call(json!({"operation":"inspect","unexpected":true}));
