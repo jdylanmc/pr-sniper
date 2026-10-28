@@ -371,3 +371,39 @@ fn retry_all_rearms_every_parked_teammate_on_a_tossed_item_and_counts_reviews() 
         assert!(live.iter().all(|r| !parked.contains(&r.operation.id)));
     }
 }
+
+#[test]
+fn retry_all_counts_a_partly_applied_item_retry_per_review() {
+    let (_root, store) = team(2, true);
+    let coordinator = Coordinator::default();
+    for work in dispatched(&coordinator, &store, 100) {
+        finish(
+            &coordinator,
+            &store,
+            work,
+            Err(Failure::provider("refused")),
+            101,
+        );
+    }
+    let mut reviews = store.load_reviews().unwrap();
+    for run in &mut reviews {
+        run.operation.state = crate::monitoring::OperationState::ManualRetry;
+        run.operation.failure = Some(OperationFailure::Tossed);
+        run.operation.next_attempt_at = None;
+    }
+    store.save_reviews(&reviews).unwrap();
+    // The second teammate's Agent lost its AI account: its retry is refused.
+    let mut settings = store.load_settings().unwrap();
+    settings
+        .agents
+        .iter_mut()
+        .find(|agent| agent.name == "Teammate 1")
+        .unwrap()
+        .ai_account = None;
+    store.save_settings(&settings).unwrap();
+
+    assert_eq!(
+        crate::review::host::retry_all_parked(&store, 102).unwrap(),
+        (1, 1)
+    );
+}

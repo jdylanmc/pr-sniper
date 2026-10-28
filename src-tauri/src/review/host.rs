@@ -1289,13 +1289,28 @@ pub(crate) fn request_batch(
 /// same paths as per-item Retry: parked packet states restart their toss
 /// budget, then every other failed run starts a fresh operation. Permanent
 /// failures (including user cancellation) and panic exits stay parked.
-/// Returns (retried, skipped); the caller dispatches.
+/// Returns reviews (re-armed, still parked) from the before/after state, so a
+/// partly applied item retry counts each review once. The caller dispatches.
 pub(crate) fn retry_all_parked(
     store: &crate::storage::Store,
     now: i64,
 ) -> Result<(usize, usize), String> {
     use crate::monitoring::OperationFailure;
-    let (mut retried, mut skipped) = (0usize, 0usize);
+    let parked = |store: &crate::storage::Store| -> Result<Vec<Candidate>, String> {
+        Ok(candidates(store)?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.run.as_ref().is_some_and(|run| {
+                    matches!(
+                        run.operation.state,
+                        OperationState::Failed | OperationState::ManualRetry
+                    )
+                })
+            })
+            .collect())
+    };
+    let before: std::collections::BTreeSet<String> =
+        parked(store)?.into_iter().map(|c| c.key).collect();
     let snapshot = crate::queue::snapshot(store, vec![])?;
     for item in snapshot.items.iter().filter(|item| {
         item.state == crate::queue::State::Failed
@@ -1304,35 +1319,24 @@ pub(crate) fn retry_all_parked(
                 Some(crate::queue::CAUSE_TOSSED | crate::queue::CAUSE_EXIT_FAILED)
             )
     }) {
-        match crate::exits::consume::retry_parked(store, &item.id, now) {
-            Ok(count) => retried += count,
-            Err(_) => skipped += 1,
+        // A partial failure leaves its reviews parked; the tally below counts them.
+        let _ = crate::exits::consume::retry_parked(store, &item.id, now);
+    }
+    for candidate in parked(store)? {
+        let human = candidate.run.as_ref().is_some_and(|run| {
+            matches!(
+                run.operation.failure,
+                Some(OperationFailure::Permanent | OperationFailure::Panic)
+            )
+        });
+        if !human {
+            let _ = request(store, &candidate.key, true, now);
         }
     }
-    // Runs `retry_parked` restarted are no longer parked and fall out here.
-    for candidate in candidates(store)? {
-        let Some(run) = candidate.run.as_ref() else {
-            continue;
-        };
-        if !matches!(
-            run.operation.state,
-            OperationState::Failed | OperationState::ManualRetry
-        ) {
-            continue;
-        }
-        if matches!(
-            run.operation.failure,
-            Some(OperationFailure::Permanent | OperationFailure::Panic)
-        ) {
-            skipped += 1;
-            continue;
-        }
-        match request(store, &candidate.key, true, now) {
-            Ok(_) => retried += 1,
-            Err(_) => skipped += 1,
-        }
-    }
-    Ok((retried, skipped))
+    let after: std::collections::BTreeSet<String> =
+        parked(store)?.into_iter().map(|c| c.key).collect();
+    let skipped = before.intersection(&after).count();
+    Ok((before.len() - skipped, skipped))
 }
 
 #[tauri::command]
