@@ -120,14 +120,31 @@ const reviewAgainStates: QueueItem["state"][] = [
   "stale_after_publication",
 ];
 
+// Jobs the host retires (`monitoring::retired`): never part of a new pass.
+const retiredWaitings = [
+  "superseded",
+  "closed",
+  "merged",
+  "ineligible",
+  "no_longer_current",
+  "scope_excluded",
+  "assignment_removed",
+  "repository_removed",
+];
+
 export function reviewableAgain(item: QueueItem, snapshot: MonitoringSnapshot) {
-  if (!item.job.work || !reviewAgainStates.includes(item.state)) return false;
-  // A removed assignment's leftover run neither sets the item state nor
-  // takes part in the new pass (the host skips retired jobs).
+  if (
+    !item.job.work ||
+    !reviewAgainStates.includes(item.state) ||
+    retiredWaitings.includes(item.job.waiting ?? "")
+  )
+    return false;
+  // A superseded iteration or a removed assignment neither sets the item
+  // state nor takes part in the new pass, so only live runs count.
   const runs = (snapshot.reviews ?? []).filter(
     (candidate) =>
       item.review_keys.includes(candidate.key) &&
-      candidate.job.waiting !== "assignment_removed",
+      !retiredWaitings.includes(candidate.job.waiting ?? ""),
   );
   return (
     runs.length > 0 &&

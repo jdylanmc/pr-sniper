@@ -8,6 +8,7 @@ async function reviewedFixture(
   store,
   operationState = "completed",
   removed = null,
+  jobPatch = {},
 ) {
   const fixture = await queueFixture(store);
   const run = fixture.review(9);
@@ -27,6 +28,7 @@ async function reviewedFixture(
     },
     state_seq: 1,
   };
+  Object.assign(run.job, jobPatch);
   run.key = run.job.work.id;
   run.mode = "packet";
   run.packet = {
@@ -94,7 +96,7 @@ async function reviewedFixture(
     },
   });
   const item = (await store("monitoring_snapshot")).items[0];
-  if (operationState === "completed")
+  if (operationState === "completed" && !Object.keys(jobPatch).length)
     expect(item.state).toBe("machine_signed_off");
   await store("panel_navigate", {
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
@@ -179,4 +181,29 @@ test("a removed teammate's unfinished run does not hide Review again", async ({
         .getByRole("button", { name: "Review again", exact: true }),
     ).toBeVisible();
   }
+});
+
+test("Review again follows the host: hidden on a superseded iteration, shown on a moved base", async ({
+  page,
+  store,
+}) => {
+  const superseded = await reviewedFixture(store, "completed", null, {
+    waiting: "superseded",
+  });
+  expect(superseded.state).toMatch(/^stale/);
+  await page.goto("/");
+  await expect(page.locator("[data-queue-status]")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Review again", exact: true }),
+  ).toHaveCount(0);
+  const moved = await reviewedFixture(store, "completed", null, {
+    observed_base_sha: "c".repeat(40),
+  });
+  expect(moved.state).toMatch(/^stale/);
+  await page.goto("/");
+  await expect(
+    page
+      .locator("[data-queue-status]")
+      .getByRole("button", { name: "Review again", exact: true }),
+  ).toBeVisible();
 });
