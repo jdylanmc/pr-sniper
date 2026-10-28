@@ -1260,7 +1260,9 @@ fn prepare_owned(
         .find(|w| w.key.id == candidate.key)
         .expect("heartbeat must dispatch a new review, not reuse the old exit");
     assert!(work.reason.is_none(), "{:?}", work.reason);
-    let mut run = review_host::prepare_dispatch(store, &candidate.key, now).unwrap();
+    let mut run = review_host::prepare_dispatch(store, &candidate.key, now)
+        .unwrap()
+        .unwrap();
     let mut context = context(state);
     if env.wire.0.lock().unwrap().observation.author_id == run.job.account_id {
         context.pull.author = Some(Identity {

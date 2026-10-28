@@ -347,7 +347,7 @@ impl Coordinator {
         &self,
         store: &Store,
         work: &Work,
-        prepare: impl FnOnce(Arc<AtomicBool>) -> Result<(String, T), String>,
+        prepare: impl FnOnce(Arc<AtomicBool>) -> Result<Option<(String, T)>, String>,
     ) -> Result<Option<T>, String> {
         if store.load_automation()?.paused
             || work.offline.is_some()
@@ -362,7 +362,9 @@ impl Coordinator {
             return Ok(None);
         }
         let cancelled = Arc::new(AtomicBool::new(false));
-        let (operation_id, prepared) = prepare(cancelled.clone())?;
+        let Some((operation_id, prepared)) = prepare(cancelled.clone())? else {
+            return Ok(None);
+        };
         active.insert(
             work.key.clone(),
             Reservation {
@@ -513,7 +515,11 @@ impl Coordinator {
             let prepared = self.reserve(store, &candidate, |cancelled| {
                 let (dispatch, operation_id) = match candidate.key.kind {
                     Kind::Normal => {
-                        let run = review::host::prepare_dispatch(store, &candidate.key.id, now)?;
+                        let Some(run) =
+                            review::host::prepare_dispatch(store, &candidate.key.id, now)?
+                        else {
+                            return Ok(None);
+                        };
                         let id = run.operation.id.clone();
                         (Dispatch::Review(Box::new(run), cancelled.clone()), id)
                     }
@@ -521,7 +527,7 @@ impl Coordinator {
                         return Err("Historical work kind cannot run.".into())
                     }
                 };
-                Ok((operation_id, dispatch))
+                Ok(Some((operation_id, dispatch)))
             });
             let dispatch = match prepared {
                 Ok(Some(value)) => value,

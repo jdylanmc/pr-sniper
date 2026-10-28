@@ -51,7 +51,7 @@ A repository returned for a connected Provider Account through its granted autho
 _Avoid_: Installed repository
 
 **Needs Attention**:
-Two linked meanings, one name. (1) Queue group listing every **Parked failure**, each with a cause chip (Credentials, Permission, Network, Failed) and one row action: **Fix** for credentials, **Retry** otherwise; **Retry all** retries the group. (2) Account-level cause behind a credentials failure: a repository binding or provider account that cannot authorize reads and needs explicit reconnect or rebind. Fix opens Accounts. No Blocked state exists.
+Two linked meanings, one name. (1) Queue group listing every **Parked failure**, each with a cause chip (Credentials, Permission, Network, Failed) and row actions: **Fix** plus **Retry** for credentials, **Retry** otherwise; **Retry all** retries the group. (2) Account-level cause behind a credentials failure: a repository binding or provider account that cannot authorize reads and needs explicit reconnect or rebind. Fix opens the failing account: Copilot for a review run, GitHub for a check or publication. A runtime 401 from an already-verified Copilot session is a provider failure, not credentials. No Blocked state exists.
 _Avoid_: Blocked, Disconnected repository, Failures
 
 **OAuth Device Authorization Attempt**:
@@ -267,11 +267,11 @@ Persisted per operation: attempt count, retry deadline, state. Survives restart 
 _Avoid_: Retry count, unlimited retry
 
 **Failure class**:
-Cause label on a failed item: Credentials, Permission, Network, Failed. Decides the row action: Credentials gets **Fix**, others **Retry**.
+Cause label on a failed item: Credentials, Permission, Network, Failed. Decides the row action: Credentials gets **Fix** and **Retry**, others **Retry**.
 _Avoid_: Error type
 
 **Parked failure**:
-Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again. Permanent failures wait for the user.
+Operation that exhausted its **Retry budget** or failed non-transiently. Listed in Queue under **Needs Attention**, never in Running. Auto-resumes: network, provider, timeout and permission failures after a cooldown (five cycles, then a human); credentials when the account connects again, or after a cooldown when every account the run uses already reads connected. Permanent failures wait for the user.
 _Avoid_: Blocked, dead job
 
 **Stopping slot**:
