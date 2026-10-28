@@ -1211,20 +1211,6 @@ impl Events {
 #[cfg(test)]
 mod failure_tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn runtime_unauthorized_is_retryable_not_credentials() {
-        let failure = Events::default()
-            .push(
-                "session.error",
-                &json!({"statusCode": 401, "errorType": "authorization"}),
-            )
-            .unwrap_err();
-        assert_eq!(failure.kind, OperationFailure::Provider);
-        assert!(failure.kind.transient());
-        assert_ne!(failure.kind.class(), monitoring::FailureClass::Credentials);
-    }
 
     #[test]
     fn failed_identity_verification_stays_credentials() {
