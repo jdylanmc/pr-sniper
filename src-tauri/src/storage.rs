@@ -421,6 +421,22 @@ pub struct Assignment {
     pub rubber_duck: Option<String>,
 }
 
+impl Assignment {
+    /// The Approve & Merge grant or its packet tool.
+    pub fn grants_approve_and_merge(&self) -> bool {
+        self.actions.as_ref().is_some_and(|a| a.merge)
+            || self
+                .tools
+                .iter()
+                .flatten()
+                .any(|tool| tool == "approve_and_merge")
+    }
+}
+
+/// Approve & Merge on a repository whose provider never completes a pull request.
+pub const APPROVE_AND_MERGE_UNAVAILABLE: &str =
+    "Approve & Merge is unavailable for Azure DevOps repositories.";
+
 /// Role default tool set: investigation tools, the granted exits, then `panic_exit`.
 /// Primary: `ready_for_human` and `wait`, `leave_comments`/`approve_*` per grant.
 /// Non-primary: `submit_report`. Mirrored by `defaultTools` in `src/settings.ts`.
@@ -1084,6 +1100,11 @@ impl Settings {
                             .into(),
                     );
                 }
+                if !repository.capabilities().approve_and_merge.is_available()
+                    && assignment.grants_approve_and_merge()
+                {
+                    return Err(APPROVE_AND_MERGE_UNAVAILABLE.into());
+                }
             }
             if repository
                 .primary_assignment_id
@@ -1295,7 +1316,10 @@ impl Repository {
                     .actions
                     .as_ref()
                     .is_some_and(|a| a.approve || a.merge),
-            merge: assigned && primary && assignment.actions.as_ref().is_some_and(|a| a.merge),
+            merge: assigned
+                && primary
+                && assignment.actions.as_ref().is_some_and(|a| a.merge)
+                && self.capabilities().approve_and_merge.is_available(),
         }
     }
 
@@ -2473,7 +2497,20 @@ impl Store {
         let mut reconciled_permissions = false;
         for repository in &mut settings.repositories {
             let primary = repository.primary_assignment_id().map(str::to_owned);
+            let merges = repository.capabilities().approve_and_merge.is_available();
             for assignment in &mut repository.assignments {
+                // Approve & Merge narrows to Approve where the provider never merges.
+                if !merges && assignment.grants_approve_and_merge() {
+                    if let Some(actions) = &mut assignment.actions {
+                        actions.approve |= actions.merge;
+                        actions.merge = false;
+                        actions.include_self = false;
+                    }
+                    if let Some(tools) = &mut assignment.tools {
+                        tools.retain(|tool| tool != "approve_and_merge");
+                    }
+                    reconciled_permissions = true;
+                }
                 if let Some(actions) = &mut assignment.actions {
                     if primary.as_deref() != Some(&assignment.id) {
                         if actions.reply || actions.approve || actions.merge {

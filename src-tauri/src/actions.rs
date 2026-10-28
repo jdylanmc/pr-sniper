@@ -390,7 +390,7 @@ pub fn prepare_effect(
     .into();
     let effect=Effect{cancelled:false,reconcile_attempts:0,reconcile_requested:false,id:id.clone(),final_id:run.id.clone(),item_id:run.basis.item_id.clone(),action,operation,
         observation:current.clone(),body:match &run.packet {
-            Some(_) => packet::approval_body(&id),
+            Some(_) => packet::approval_body(&id, &run.basis.repository.provider),
             None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
         },
         state:EffectState::Prepared,error:None,receipt:None};
@@ -494,7 +494,8 @@ pub fn reconcile(effect: &mut Effect, observation: &Observation) -> Result<(), S
                         && r.head == effect.observation.head
                         && r.body == effect.body
                         && r.state == "APPROVED"
-                        && r.submitted_at.is_some()
+                        // A vote with no text (Azure DevOps) is never pending.
+                        && (r.submitted_at.is_some() || effect.body.is_empty())
                 })
                 .collect();
             if matches.len() > 1 {

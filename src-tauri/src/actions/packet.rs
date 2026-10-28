@@ -599,8 +599,14 @@ pub fn ready(
 
 /// Review body for the approval: the intent marker that lets a lost response be
 /// reconciled, and the signature. The agent's comment stays local (no status chatter).
-pub fn approval_body(effect_id: &str) -> String {
-    format!("<!-- pr-sniper:action:{effect_id} -->\n\nPR Sniper")
+/// An Azure DevOps vote has no text: one vote per reviewer is its identity.
+pub fn approval_body(effect_id: &str, provider: &crate::storage::ProviderId) -> String {
+    match provider {
+        crate::storage::ProviderId::Github => {
+            format!("<!-- pr-sniper:action:{effect_id} -->\n\nPR Sniper")
+        }
+        crate::storage::ProviderId::AzureDevops => String::new(),
+    }
 }
 
 /// The packet finals of `item_id` whose wanted writes are all confirmed (or whose
