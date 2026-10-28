@@ -40,7 +40,9 @@ CHOCO_STATE_ASSETS = {
 }
 CHOCO_ASSET_STATES = {name: state for state, name in CHOCO_STATE_ASSETS.items()}
 CHOCO_RECEIPT_STATES = tuple(CHOCO_STATE_ASSETS)
-CHOCO_WEBVIEW2_VERSION_RANGE = "[154.0.4258.62,)"
+CHOCO_WEBVIEW2_MIN_VERSION = "154.0.4258.62"
+CHOCO_WEBVIEW2_VERSION_RANGE = f"[{CHOCO_WEBVIEW2_MIN_VERSION},)"
+CHOCO_WEBVIEW2_ALLOWED_VERSIONS = (CHOCO_WEBVIEW2_VERSION_RANGE, CHOCO_WEBVIEW2_MIN_VERSION)
 
 
 class ReleaseError(Exception):
@@ -736,7 +738,8 @@ def verify_choco_nupkg(package_file, manifest, root=Path(".")):
                 for elem in deps_elem.iter()
                 if elem.tag.rsplit("}", 1)[-1] == "dependency"
             ]
-            require(deps == [("webview2-runtime", CHOCO_WEBVIEW2_VERSION_RANGE)],
+            require(len(deps) == 1 and deps[0][0] == "webview2-runtime"
+                    and deps[0][1] in CHOCO_WEBVIEW2_ALLOWED_VERSIONS,
                     "Chocolatey nuspec is missing required webview2-runtime dependency.")
             description = meta_text.get("description", "")
             require(bool(description) and "NEVER PUBLISH" not in description,
@@ -985,6 +988,14 @@ def main():
     if action == "stage-windows-release":
         print(json.dumps(stage_windows_release()))
         return
+    if action == "verify-choco-nupkg":
+        manifest = windows_metadata(WINDOWS_ASSETS)
+        package_file = WINDOWS_ASSETS / f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
+        print(json.dumps({
+            "version": manifest["version"],
+            "nupkg_sha256": verify_choco_nupkg(package_file, manifest),
+        }))
+        return
     api = Github(os.environ.get("GITHUB_TOKEN"))
     if action == "gate":
         result = gate(api, tag)
@@ -1003,7 +1014,7 @@ def main():
     elif action == "choco-publish":
         print(json.dumps(choco_publish(api)))
     else:
-        raise ReleaseError("Expected check, gate, check-windows-release, stage-windows-release, tap-ready, publish, publish-windows, tap or choco-publish.")
+        raise ReleaseError("Expected check, gate, check-windows-release, stage-windows-release, verify-choco-nupkg, tap-ready, publish, publish-windows, tap or choco-publish.")
 
 
 if __name__ == "__main__":

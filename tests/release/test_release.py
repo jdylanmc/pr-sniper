@@ -629,6 +629,15 @@ class ReleaseTests(unittest.TestCase):
                 release.verify_choco_nupkg(nupkg, signed_manifest, root=ROOT),
                 hashlib.sha256(nupkg.read_bytes()).hexdigest(),
             )
+            self.build_nupkg(
+                nupkg,
+                unsigned_manifest,
+                nuspec_overrides={"dependency_version": release.CHOCO_WEBVIEW2_MIN_VERSION},
+            )
+            self.assertEqual(
+                release.verify_choco_nupkg(nupkg, unsigned_manifest, root=ROOT),
+                hashlib.sha256(nupkg.read_bytes()).hexdigest(),
+            )
 
             symlink_info = zipfile.ZipInfo("tools/symlink.ps1")
             symlink_info.external_attr = 0o120777 << 16
