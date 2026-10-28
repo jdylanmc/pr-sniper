@@ -173,6 +173,15 @@ export const failureClass = z.enum([
   "other",
 ]);
 export const modelRefusal = z.enum(["rejected", "unavailable", "retired"]);
+export const failedOperation = z.enum([
+  "repository_check",
+  "review",
+  "publication",
+  "exit_write",
+  "follow_up",
+  "provider_action",
+]);
+export const remedy = z.enum(["sign_in", "change_model", "reconcile", "retry"]);
 export const notificationCategory = z.enum([
   "confirmation",
   "human_input",
@@ -330,6 +339,9 @@ export const queueItem = z
         status: z.number().int().optional(),
       })
       .nullable(),
+    // What failed and its likeliest fix; null unless the item failed.
+    failed_operation: failedOperation.nullable(),
+    remedy: remedy.nullable(),
     dismiss_token: z.string().nullable(),
     resume_at: z.number().nullable(),
     exit: exitName.nullable(),

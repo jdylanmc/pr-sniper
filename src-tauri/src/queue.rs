@@ -84,6 +84,31 @@ pub enum Progress {
     Publishing,
 }
 
+/// The operation that failed on a parked item. Typed; the UI labels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedOperation {
+    RepositoryCheck,
+    Review,
+    Publication,
+    ExitWrite,
+    FollowUp,
+    ProviderAction,
+}
+
+/// The likeliest fix for a parked item; the UI and MCP offer it as the action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Remedy {
+    /// Reconnect the failing account.
+    SignIn,
+    /// Pick another model for the refusing Agent.
+    ChangeModel,
+    /// Reconcile an unconfirmed provider write; never repost.
+    Reconcile,
+    Retry,
+}
+
 /// Typed causes of a failed packet exit (beside `publication_*`).
 pub const CAUSE_PANIC: &str = "panic";
 pub const CAUSE_TOSSED: &str = "tossed";
@@ -116,6 +141,9 @@ pub struct Item {
     pub failed_duck: Option<String>,
     // A parked run's Agent model refused service: Agent, model and typed refusal.
     pub failed_model: Option<review::FailedModel>,
+    // What failed (operation) and its likeliest fix; set only for failed items.
+    pub failed_operation: Option<FailedOperation>,
+    pub remedy: Option<Remedy>,
     // The primary is waiting on this teammate's report for the current state.
     pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
@@ -698,6 +726,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             })
             .collect();
         let mut warnings = BTreeSet::new();
+        let mut check_failed = false;
         let mut failures: Vec<monitoring::FailureClass> = Vec::new();
         failures.extend(
             reviews
@@ -911,6 +940,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         continue;
                     }
                     states.push(State::Failed);
+                    check_failed = true;
                     failures.push(if credentials {
                         monitoring::FailureClass::Credentials
                     } else {
@@ -1013,6 +1043,43 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         } else {
             None
         };
+        let failure_class = (state == State::Failed).then(|| {
+            failed_teammate
+                .as_ref()
+                .map(|teammate| teammate.cause.class())
+                .or_else(|| failures.into_iter().min())
+                .unwrap_or(monitoring::FailureClass::Other)
+        });
+        let failed_model = (state == State::Failed).then_some(failed_model).flatten();
+        let failed_operation = (state == State::Failed)
+            .then(|| {
+                if check_failed {
+                    Some(FailedOperation::RepositoryCheck)
+                } else if matches!(
+                    failure_cause,
+                    Some("publication_failed" | "publication_unresolved")
+                ) {
+                    Some(FailedOperation::Publication)
+                } else if failure_cause == Some(CAUSE_EXIT_FAILED) {
+                    Some(FailedOperation::ExitWrite)
+                } else if reviews
+                    .iter()
+                    .any(|r| r.run.as_ref().is_some_and(|run| failed(&run.operation)))
+                {
+                    Some(FailedOperation::Review)
+                } else if !follow_ups.is_empty() {
+                    Some(FailedOperation::FollowUp)
+                } else {
+                    None
+                }
+            })
+            .flatten();
+        let remedy = failure_class.map(|class| match class {
+            monitoring::FailureClass::Credentials => Remedy::SignIn,
+            _ if failed_model.is_some() => Remedy::ChangeModel,
+            _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
+            _ => Remedy::Retry,
+        });
         // The primary's exit leads; a teammate's report is never the item's exit.
         let exit_run = reviews
             .iter()
@@ -1059,16 +1126,12 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 None
             },
             failure_cause,
-            failure_class: (state == State::Failed).then(|| {
-                failed_teammate
-                    .as_ref()
-                    .map(|teammate| teammate.cause.class())
-                    .or_else(|| failures.into_iter().min())
-                    .unwrap_or(monitoring::FailureClass::Other)
-            }),
+            failure_class,
             failed_teammate,
             failed_duck,
-            failed_model: (state == State::Failed).then_some(failed_model).flatten(),
+            failed_model,
+            failed_operation,
+            remedy,
             blocked_by,
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),

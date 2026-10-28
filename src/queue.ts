@@ -89,6 +89,9 @@ export interface QueueItem {
   failed_duck?: string | null;
   // A parked run's Agent model refused service.
   failed_model?: FailedModel | null;
+  // What failed and its likeliest fix (typed; failed items only).
+  failed_operation?: FailedOperation | null;
+  remedy?: "sign_in" | "change_model" | "reconcile" | "retry" | null;
   // The primary waits for this teammate's report.
   blocked_by?: {
     teammate: { assignment_id: string; agent_name: string };
@@ -129,6 +132,13 @@ const labels: Record<QueueItem["state"], string> = {
   merged: "Merged on GitHub",
 };
 
+export type FailedOperation =
+  | "repository_check"
+  | "review"
+  | "publication"
+  | "exit_write"
+  | "follow_up"
+  | "provider_action";
 export type ModelRefusal = "rejected" | "unavailable" | "retired";
 export interface FailedModel {
   agent_id: string;

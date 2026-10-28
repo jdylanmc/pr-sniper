@@ -888,6 +888,8 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.state = State::Failed;
                 item.failure_class = Some(monitoring::FailureClass::Other);
                 item.failure_cause = Some(queue::CAUSE_TOSSED);
+                item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+                item.remedy = Some(queue::Remedy::Retry);
                 item.summary = State::Failed.summary();
             } else if item.progress.is_some() {
                 item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {

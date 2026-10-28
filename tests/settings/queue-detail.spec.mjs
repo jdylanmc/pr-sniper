@@ -91,6 +91,7 @@ test("failed detail lists terse facts, the raw error and the retry hint", async 
   await expect(facts).toBeVisible();
   const row = (label) => facts.locator(`dt:text-is("${label}") + dd`);
   await expect(row("Cause")).toHaveText("Failed / provider");
+  await expect(row("Operation")).toHaveText("Review");
   await expect(row("Attempts")).toHaveText("3 of 3 \u00b7 cycle 2 of 5");
   await expect(row("Last attempt")).toHaveText(/^1[12]m ago$/);
   await expect(row("Next retry")).toHaveText(/^2[45]m$/);
@@ -208,6 +209,10 @@ test("monitoring failures show the stored error line and a readable cause", asyn
     (entry) => entry.job.number === 1,
   );
   expect(item.state).toBe("failed");
+  expect([item.failed_operation, item.remedy]).toEqual([
+    "repository_check",
+    "retry",
+  ]);
   await store("panel_navigate", {
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
   });
@@ -215,6 +220,9 @@ test("monitoring failures show the stored error line and a readable cause", asyn
   await expect(page.locator(".queue-status-label strong")).toHaveText(
     "Reply admission failed",
   );
+  await expect(
+    page.locator('.queue-facts dt:text-is("Operation") + dd'),
+  ).toHaveText("Repository check");
   await expect(page.locator("[data-queue-error]")).toHaveText(
     "Could not write conversation state; retry the check.",
   );

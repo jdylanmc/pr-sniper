@@ -5,6 +5,7 @@ import {
   compactDuration,
   failureChip,
   openDestination,
+  type FailedOperation,
   type QueueItem,
 } from "./queue";
 import { progressPresentation } from "./exits";
@@ -74,6 +75,15 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   model_retired: ["Model retired", "retry"],
 };
 const modelCauses = ["model_rejected", "model_unavailable", "model_retired"];
+
+const operationLabels: Record<FailedOperation, string> = {
+  repository_check: "Repository check",
+  review: "Review",
+  publication: "Publish",
+  exit_write: "Write",
+  follow_up: "Follow-up",
+  provider_action: "Approve / merge",
+};
 
 const classLabels = {
   credentials: "Credentials",
@@ -474,6 +484,8 @@ function renderFailureFacts(
   const rows: [string, string | HTMLElement][] = [
     ["Cause", code ? `${klass} / ${code}` : klass],
   ];
+  if (item.failed_operation)
+    rows.push(["Operation", operationLabels[item.failed_operation]]);
   if (operation) {
     const cycle = operation.resume_cycle ?? 0;
     rows.push([
