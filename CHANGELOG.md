@@ -5,6 +5,15 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+### Fixed
+
+- A clean review whose only gate is pending CI no longer hands off to a human:
+  `lgtm` is accepted and parked on the revision (**Parked LGTM**), then
+  approves or merges once CI is green without another AI run. A new head, base,
+  comment, thread or red CI revokes it. A failed Rubber Duck call settled by a
+  later verdict on the same target no longer blocks `wait`, and
+  `ready_for_human` is refused once when `lgtm` is due (#265).
+
 ## 0.5.3 - 2026-10-28
 
 Website Windows installation switcher and NuGet dependency range verification for Chocolatey packages.

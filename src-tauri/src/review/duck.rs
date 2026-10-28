@@ -344,6 +344,50 @@ impl DuckCall {
     }
 }
 
+impl DuckInput {
+    /// What the call examines: target and mode, never its wording or evidence, so a
+    /// retry with a refined claim or fresh reads is the same subject.
+    #[allow(clippy::type_complexity)]
+    fn subject(
+        &self,
+    ) -> (
+        bool,
+        TargetKind,
+        Option<&str>,
+        Option<u64>,
+        Option<u64>,
+        Option<&str>,
+        Option<&str>,
+    ) {
+        (
+            self.verify_fixed,
+            self.kind,
+            self.path.as_deref(),
+            self.line,
+            self.end_line,
+            self.side.as_deref(),
+            self.thread_id.as_deref(),
+        )
+    }
+}
+
+/// Failed or unverifiable calls in `log` order that no later definitive verdict
+/// (confirmed, revise, rejected) on the same subject superseded.
+pub(crate) fn unsettled(log: &[DuckCall]) -> impl Iterator<Item = &DuckCall> {
+    log.iter().enumerate().filter_map(move |(index, call)| {
+        let open = match &call.outcome {
+            DuckOutcome::Failure { .. } => true,
+            DuckOutcome::Verdict { verdict } => verdict.verdict == VerdictKind::Unverifiable,
+        };
+        let superseded = log[index + 1..].iter().any(|later| {
+            later.input.subject() == call.input.subject()
+                && matches!(&later.outcome, DuckOutcome::Verdict { verdict }
+                    if verdict.verdict != VerdictKind::Unverifiable)
+        });
+        (open && !superseded).then_some(call)
+    })
+}
+
 /// Append one call to an attempt's log, keeping it bounded: a refused call keeps only
 /// its target and claim, repeats of the last refusal fold into it, and at most
 /// [`MAX_REFUSAL_ENTRIES`] refusals are kept. Started calls are bounded by `max_calls`.

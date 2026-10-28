@@ -302,6 +302,10 @@ _Avoid_: Approved, mergeable
 **External wait**:
 Primary `wait` exit for pending CI, draft status or required reviews blocking an enabled action. Persistent host-owned state; no AI slot or human handoff. Running shows **Waiting on CI**, **Waiting on draft** or **Waiting on reviews**. Existing Repository Schedule observes it. Pending CI progress alone does not review again; completion (including failure), new head/base or other meaningful state queues fresh review once. A wake by CI alone reuses the teammate reports of that revision. Waiting never grants clearance. Known defects, uncertain evidence, failed tools and permission failures keep their existing routes. Wait is selectable and in primary defaults; explicit tool lists stay unchanged. A CI wait is offered to every primary when pending CI alone blocks its sign-off, whatever its authority or tool list.
 
+**Parked LGTM**:
+A primary `lgtm` accepted while pending CI alone blocks its approve or merge: the sign-off decision recorded for that revision (head SHA and state sequence). No AI slot, no wait record, no provider write. The action pipeline acts on it once CI is green on the same revision, with no further AI run. A new head, base change, new human comment or reply, new or reopened thread, any other review-revision change, or red CI revokes it before its first effect; a normal review of the new state follows. Queue: Ready, **Approving**/**Merging**, blocker `LGTM pending on revision <sha>`. A local Ready sign-off (no approve or merge authority) never parks; it uses a CI wait.
+_Avoid_: Ready for human, external wait
+
 **Waiting for PR author**:
 Queue state. Findings or questions were successfully published, now or on an earlier pass with an own finding that still applies; author must respond or update. Sign-off summary alone never creates it.
 

@@ -102,6 +102,8 @@ pub struct FindingFacts {
     /// This assignment already published findings on this exact head and the human
     /// did not ask to review again: no new findings until a new head.
     pub revision_reviewed: bool,
+    /// `lgtm` was offered at packet build (parked or not).
+    pub lgtm_offered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

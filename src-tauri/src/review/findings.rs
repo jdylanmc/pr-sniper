@@ -557,7 +557,12 @@ pub(crate) struct Contract {
     pub duck_required: bool,
     pub corrections: Vec<Correction>,
     pub identities: crate::packet::FindingFacts,
+    /// `ready_for_human` was already refused once in this run as an `lgtm` that is due.
+    pub handoff_nudged: std::sync::atomic::AtomicBool,
 }
+
+/// Refusal of `ready_for_human` when the review is clear and `lgtm` is offered.
+pub const LGTM_DUE: &str = "Nothing here needs a human: the review is clear and lgtm is offered. Call lgtm; the host acts on your authority, and pending CI only parks it until green. A defect goes in leave_comments. Only a concern you cannot post on the diff needs ready_for_human: name it in the summary and call ready_for_human again.";
 
 /// A comment PR Sniper wrote: a saved receipt, or the acting account's comment with
 /// a host marker or signature. The acting account may also be the PR author: its
@@ -783,6 +788,30 @@ impl Contract {
         Ok(())
     }
 
+    /// Deterministically clear: `lgtm` was offered, no teammate finding, unsettled
+    /// duck call or unconfirmed correction, nothing still applies or is unverifiable,
+    /// and every own open thread has a sign-off disposition.
+    fn lgtm_due(&self, assessments: &[Assessment], ducks: &[DuckCall]) -> bool {
+        self.identities.lgtm_offered
+            && self.identities.teammate_findings.is_empty()
+            && super::duck::unsettled(ducks).next().is_none()
+            && self.corrections.iter().all(|c| {
+                self.threads
+                    .iter()
+                    .any(|t| t.id == c.thread_id && c.confirmed_in(t))
+            })
+            && action_clearance(assessments).is_ok()
+            && self
+                .threads
+                .iter()
+                .filter(|t| t.mine && !t.resolved && !t.carried)
+                .all(|t| {
+                    assessments
+                        .iter()
+                        .any(|a| a.thread_id == t.id && a.disposition.signs_off())
+                })
+    }
+
     pub fn validate(
         &self,
         call: &ExitCall,
@@ -790,12 +819,15 @@ impl Contract {
         ducks: &[DuckCall],
         served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
-        if call.exit() == Exit::Wait
-            && ducks.iter().any(|d| match &d.outcome {
-                DuckOutcome::Failure { .. } => true,
-                DuckOutcome::Verdict { verdict } => verdict.verdict == VerdictKind::Unverifiable,
-            })
+        if call.exit() == Exit::ReadyForHuman
+            && self.lgtm_due(assessments, ducks)
+            && !self
+                .handoff_nudged
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
+            return Err(LGTM_DUE.into());
+        }
+        if call.exit() == Exit::Wait && super::duck::unsettled(ducks).next().is_some() {
             return Err("Unsettled Rubber Duck evidence cannot become an external wait.".into());
         }
         if matches!(

@@ -275,6 +275,8 @@ pub fn offered(input: &GateInput) -> Vec<(Exit, Offer)> {
                     }
                     match lgtm_denial(&after) {
                         None => Offer::Offered,
+                        // Parked LGTM: the host acts once CI is green on this revision.
+                        Some(_) if lgtm_parks(input) => Offer::Offered,
                         // Still callable: its exit-time gate re-reads CI.
                         Some(_) if ci_blocks_only_sign_off(input) => {
                             Offer::Denied(CI_PENDING_SIGN_OFF.into())
@@ -315,6 +317,14 @@ pub fn ci_blocks_only_sign_off(input: &GateInput) -> bool {
     green.facts.merge_blocker = green.facts.wait_merge_blocker.clone();
     green.facts.merge_blocker_if_mergeable = green.facts.wait_merge_blocker.clone();
     lgtm_denial(&green).is_none()
+}
+
+/// A sign-off that pending CI alone blocks, with an approve or merge to defer: the
+/// host records it as a **Parked LGTM** for this revision and acts once CI is green
+/// (`actions::packet`), with no further AI run. A local Ready sign-off has nothing to
+/// defer and still waits for CI.
+pub fn lgtm_parks(input: &GateInput) -> bool {
+    ci_blocks_only_sign_off(input) && lgtm_action(input) != LgtmAction::Ready
 }
 
 /// `lgtm`'s denial while pending CI alone blocks it. The exit stays callable so a

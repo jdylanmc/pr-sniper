@@ -121,7 +121,8 @@ fn waiting_ci() -> (tempfile::TempDir, Store, String, ReviewRun, PrSnapshot) {
     env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
     let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
     assert!(prepared.setup.offered.contains(&Exit::Wait));
-    assert!(prepared.packet.text.contains("clean_review_exit: wait"));
+    // Pending CI alone parks a sign-off: lgtm is the clean exit, wait stays callable.
+    assert!(prepared.packet.text.contains("clean_review_exit: lgtm"));
     complete(
         &store,
         &run,
@@ -541,15 +542,23 @@ fn approve_only_and_no_permission_primaries_wait_for_ci_then_sign_off() {
         let mut env = env(&store);
         env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
         let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
-        // Denied in the packet; callable only so CI settling mid-run can sign off.
-        assert!(prepared
-            .packet
-            .record
-            .exits_denied
-            .iter()
-            .any(|denial| denial.exit == Exit::Lgtm));
+        // A local Ready sign-off is denied in the packet, callable only so CI settling
+        // mid-run can sign off; an approval parks instead.
+        assert_eq!(
+            prepared
+                .packet
+                .record
+                .exits_denied
+                .iter()
+                .any(|denial| denial.exit == Exit::Lgtm),
+            !approve
+        );
         assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
-        assert!(prepared.packet.text.contains("clean_review_exit: wait"));
+        assert!(prepared.packet.text.contains(if approve {
+            "clean_review_exit: lgtm"
+        } else {
+            "clean_review_exit: wait"
+        }));
         complete(
             &store,
             &run,
@@ -652,14 +661,22 @@ fn ci_turning_green_mid_run_leaves_the_primary_its_sign_off() {
         assert!(prepared.setup.offered.contains(&Exit::Wait), "{action:?}");
         assert!(prepared.setup.offered.contains(&Exit::Lgtm), "{action:?}");
         assert!(prepared.setup.tool_set.iter().any(|t| t == "lgtm"));
-        assert!(prepared
-            .packet
-            .text
-            .contains(crate::exits::gates::CI_PENDING_SIGN_OFF));
-        assert!(matches!(
-            (prepared.setup.gate)(&sign_off(action)),
-            Err(Refusal::Denied(reason)) if reason == crate::exits::gates::CI_PENDING_SIGN_OFF
-        ));
+        // An approval parks while CI is pending; a local Ready sign-off waits for it.
+        assert_eq!(
+            prepared
+                .packet
+                .text
+                .contains(crate::exits::gates::CI_PENDING_SIGN_OFF),
+            !approve
+        );
+        if approve {
+            assert_eq!((prepared.setup.gate)(&sign_off(action)), Ok(()));
+        } else {
+            assert!(matches!(
+                (prepared.setup.gate)(&sign_off(action)),
+                Err(Refusal::Denied(reason)) if reason == crate::exits::gates::CI_PENDING_SIGN_OFF
+            ));
+        }
         env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
         assert_eq!(
             (prepared.setup.gate)(&sign_off(action)),
@@ -667,6 +684,229 @@ fn ci_turning_green_mid_run_leaves_the_primary_its_sign_off() {
             "{action:?}"
         );
         assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    }
+}
+
+/// A clean primary with merge authority signs off while CI is still running: the
+/// sign-off is accepted and parked on this revision, with nothing written.
+fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
+    let (root, store, item) = fixture(1, true, true);
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0]
+        .actions
+        .as_mut()
+        .unwrap()
+        .include_self = true;
+    store.save_settings(&settings).unwrap();
+    store.save_reviews(&[]).unwrap();
+    let state = snapshot(false, "");
+    poll(&store, &state, NOW + 10);
+    let env = env(&store);
+    {
+        let mut server = env.wire.0.lock().unwrap();
+        server.observation.checks = Some("PENDING".into());
+        server.observation.review_decision = None;
+        if self_authored {
+            server.observation.author_id = server.observation.account_id.clone();
+        }
+    }
+    let (run, prepared) = prepare(&store, &env, &state, true, NOW + 12);
+    assert!(prepared.setup.offered.contains(&Exit::Lgtm));
+    assert!(prepared.packet.text.contains("clean_review_exit: lgtm"));
+    assert!(!prepared
+        .packet
+        .record
+        .exits_denied
+        .iter()
+        .any(|denial| denial.exit == Exit::Lgtm));
+    complete(
+        &store,
+        &run,
+        &prepared,
+        sign_off(crate::exits::LgtmAction::Merge),
+        NOW + 13,
+    );
+    let observation = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &item, Ok(observation.clone()), NOW + 14).unwrap();
+    packet::adopt(&store, &item).unwrap();
+    assert!(host::prepare_next_effect(&store, &item, NOW + 14)
+        .unwrap()
+        .is_none());
+    let ledger = store.load_actions().unwrap();
+    let parked = ledger.finals.iter().find(|f| f.packet.is_some()).unwrap();
+    // Self-authored: GitHub refuses the vote, so only the merge is wanted.
+    let wanted: &[Action] = if self_authored {
+        &[Action::Merge]
+    } else {
+        &[Action::Approve, Action::Merge]
+    };
+    for &action in wanted {
+        let reason = ready(&store, parked, &observation, action).unwrap_err();
+        assert!(
+            reason.contains("LGTM pending on revision aaaaaaaaaaaa"),
+            "{reason}"
+        );
+    }
+    assert!(env.wire.0.lock().unwrap().writes.is_empty());
+    let projected = crate::queue::snapshot(&store, vec![]).unwrap();
+    let row = projected.items.iter().find(|i| i.id == item).unwrap();
+    // Signed off, not handed to a human: the queue shows the LGTM and its parked action.
+    assert_eq!(row.state, crate::queue::State::MachineSignedOff);
+    assert_eq!(row.exit, Some(Exit::Lgtm));
+    assert_eq!(
+        row.progress,
+        Some(if self_authored {
+            crate::queue::Progress::Merging
+        } else {
+            crate::queue::Progress::Approving
+        })
+    );
+    assert!(row
+        .action_status
+        .as_ref()
+        .unwrap()
+        .blockers
+        .iter()
+        .any(|b| b.starts_with("LGTM pending on revision")));
+    (root, item, state)
+}
+
+#[test]
+fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review() {
+    for self_authored in [true, false] {
+        let (root, item, state) = parked_lgtm(self_authored);
+        // Persisted: a fresh Store over the same data dir holds the parked decision.
+        let store = Store::new(root.path().into());
+        let mut env = env(&store);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            server.observation.checks = Some("PENDING".into());
+            server.observation.review_decision = None;
+            if self_authored {
+                server.observation.author_id = server.observation.account_id.clone();
+            }
+        }
+        poll(&store, &state, NOW + 15);
+        let mut green = state.clone();
+        green.checks[0].status = "COMPLETED".into();
+        green.checks[0].conclusion = "SUCCESS".into();
+        poll(&store, &green, NOW + 20);
+        assert!(crate::capacity::candidates(&store, NOW + 21)
+            .unwrap()
+            .is_empty());
+        env.wire.0.lock().unwrap().observation.checks = Some("SUCCESS".into());
+        let mut writes = 0;
+        for (step, expected) in [(0, Action::Approve), (1, Action::Merge)] {
+            if self_authored && expected == Action::Approve {
+                continue;
+            }
+            let now = NOW + 22 + step * 2;
+            synchronize(
+                &store,
+                &item,
+                Ok(env.wire.0.lock().unwrap().observation.clone()),
+                now,
+            )
+            .unwrap();
+            packet::adopt(&store, &item).unwrap();
+            let effect = host::prepare_next_effect(&store, &item, now)
+                .unwrap()
+                .unwrap();
+            assert_eq!(effect.action, expected, "self_authored={self_authored}");
+            env.now = now;
+            host::execute_action(&mut env, &effect).unwrap();
+            writes += 1;
+        }
+        let server = env.wire.0.lock().unwrap();
+        assert_eq!(server.observation.state, "MERGED");
+        assert_eq!(server.writes.len(), writes);
+        assert_eq!(
+            store.load_reviews().unwrap().len(),
+            1,
+            "no further AI run: the recorded LGTM acted"
+        );
+    }
+}
+
+#[test]
+fn parked_lgtm_is_revoked_by_a_new_head_comment_or_red_ci() {
+    use crate::github::state::SnapshotComment;
+    for change in ["head", "comment", "red"] {
+        let (root, item, mut state) = parked_lgtm(true);
+        let store = Store::new(root.path().into());
+        let env = env(&store);
+        let binding = Binding::job(&store.load_queue().unwrap()[0]);
+        let parked_seq = store.load_pr_states().unwrap().state_seq(&binding);
+        let rollup = match change {
+            "head" => {
+                state.head = "c".repeat(40);
+                env.wire.0.lock().unwrap().observation.head = "c".repeat(40);
+                "SUCCESS"
+            }
+            "comment" => {
+                state.comments.push(SnapshotComment {
+                    id: "human".into(),
+                    body: "Hold on, one more case.".into(),
+                    commit: None,
+                });
+                state.comment_total = 1;
+                "SUCCESS"
+            }
+            _ => {
+                state.checks[0].status = "COMPLETED".into();
+                state.checks[0].conclusion = "FAILURE".into();
+                "FAILURE"
+            }
+        };
+        poll(&store, &state, NOW + 20);
+        {
+            let mut server = env.wire.0.lock().unwrap();
+            server.observation.author_id = server.observation.account_id.clone();
+            server.observation.checks = Some(rollup.into());
+        }
+        let observation = env.wire.0.lock().unwrap().observation.clone();
+        synchronize(&store, &item, Ok(observation.clone()), NOW + 22).unwrap();
+        packet::adopt(&store, &item).unwrap();
+        assert!(
+            host::prepare_next_effect(&store, &item, NOW + 22)
+                .unwrap()
+                .is_none(),
+            "{change}"
+        );
+        let ledger = store.load_actions().unwrap();
+        let parked = ledger.finals.iter().find(|f| f.packet.is_some()).unwrap();
+        let reason = ready(&store, parked, &observation, Action::Merge).unwrap_err();
+        let expected = match change {
+            "head" => "moved",
+            "comment" => packet::LGTM_REVOKED,
+            _ => packet::LGTM_REVOKED_RED,
+        };
+        assert!(reason.contains(expected), "{change}: {reason}");
+        assert!(env.wire.0.lock().unwrap().writes.is_empty(), "{change}");
+        if change != "head" {
+            let settles = packet::settle(&store, &item, &observation, NOW + 23).unwrap();
+            assert!(settles.is_empty(), "{change}");
+            assert!(
+                store.load_actions().unwrap().finals[0]
+                    .packet
+                    .as_ref()
+                    .unwrap()
+                    .settled,
+                "{change}"
+            );
+        }
+        // The revoked decision sends the PR back through a normal review.
+        assert!(
+            store.load_pr_states().unwrap().state_seq(&binding) > parked_seq,
+            "{change}"
+        );
+        if change != "head" {
+            // The next scan queues it; CI alone never would.
+            poll(&store, &state, NOW + 24);
+            let work = crate::capacity::candidates(&store, NOW + 26).unwrap();
+            assert_eq!(work.len(), 1, "{change}");
+            assert!(work[0].reason.is_none(), "{change}: {:?}", work[0].reason);
+        }
     }
 }
 

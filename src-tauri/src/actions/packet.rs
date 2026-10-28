@@ -101,6 +101,36 @@ fn sign_off_written(store: &Store, run: &FinalReview) -> Result<Option<String>, 
     })
 }
 
+fn signed_off(run: &FinalReview) -> bool {
+    matches!(
+        run.execution
+            .result
+            .as_ref()
+            .and_then(|r| r.output.exit.as_ref()),
+        Some(ExitOutcome::Lgtm { .. })
+    )
+}
+
+/// A sign-off acts on green CI only. Accepted while pending CI alone blocked it, it
+/// is a **Parked LGTM**: recorded for this revision, acted on once CI is green.
+/// Conflicts may leave CI unrun: the approval proceeds, the merge waits.
+fn parked_ci(facts: &Facts, head: &str) -> Result<(), String> {
+    match facts.ci {
+        gates::Ci::Green => Ok(()),
+        gates::Ci::Unknown if facts.conflicts => Ok(()),
+        gates::Ci::Red => Err(LGTM_REVOKED_RED.into()),
+        gates::Ci::Pending | gates::Ci::Unknown => Err(format!(
+            "LGTM pending on revision {}: waiting for CI.",
+            head.chars().take(12).collect::<String>()
+        )),
+    }
+}
+
+pub const LGTM_REVOKED: &str =
+    "The review context changed. The parked LGTM is revoked; a fresh review follows.";
+
+pub const LGTM_REVOKED_RED: &str = "CI is red. The parked LGTM is revoked; a fresh review follows.";
+
 pub const PENDING_SIGN_OFF: &str = "The sign-off's own thread resolutions are not complete yet.";
 
 /// The exit's state is still the newest and unconsumed, or consumed only by this
@@ -380,6 +410,15 @@ pub fn ready(
         return Err("The PR moved after the exit.".into());
     }
     let ledger = store.load_actions()?;
+    // A Parked LGTM acts only on the review revision it signed off: any new state
+    // (comment, thread, review, base) revokes it before its first effect.
+    if let Some(packet) = run.packet.as_ref().filter(|_| signed_off(run)) {
+        if !ledger.effects.iter().any(|e| e.final_id == run.id)
+            && store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq
+        {
+            return Err(LGTM_REVOKED.into());
+        }
+    }
     if ledger.effects.iter().any(|e| {
         e.final_id == run.id
             && e.action != action
@@ -441,6 +480,10 @@ pub fn ready(
         settled_threads_hold(run, observation)?;
     }
     let facts = Facts::from_observation(observation);
+    let signed_off = signed_off(run);
+    if signed_off {
+        parked_ci(&facts, &job.head_sha)?;
+    }
     let self_authored = facts.author_is_acting;
     let exit = match action {
         Action::Approve => Exit::ApprovePullRequest,
@@ -462,13 +505,6 @@ pub fn ready(
     };
     // A sign-off approves whatever the branch's mergeability: only its merge waits
     // for the author to update the branch.
-    let signed_off = matches!(
-        run.execution
-            .result
-            .as_ref()
-            .and_then(|r| r.output.exit.as_ref()),
-        Some(ExitOutcome::Lgtm { .. })
-    );
     if signed_off && action == Action::Approve {
         input = gates::sign_off_approval(&input);
     }
@@ -508,6 +544,7 @@ pub fn settle(
     let mut ready_to_consume = Vec::new();
     let mut changed = false;
     let mut failed = Vec::new();
+    let mut revoked = Vec::new();
     for index in 0..ledger.finals.len() {
         let run = &ledger.finals[index];
         let Some(approval) = run.packet.as_ref().filter(|p| !p.settled) else {
@@ -530,6 +567,21 @@ pub fn settle(
             // The exit write tosses and re-queues itself; nothing more to watch here.
             ledger.finals[index].packet.as_mut().unwrap().settled = true;
             changed = true;
+            continue;
+        }
+        // Red CI revokes a sign-off not yet in flight: failed CI needs a fresh review.
+        let final_id = run.id.clone();
+        if signed_off(run)
+            && Facts::from_observation(observation).ci == gates::Ci::Red
+            && !ledger.effects.iter().any(|e| {
+                e.final_id == final_id
+                    && matches!(e.state, EffectState::Prepared | EffectState::Uncertain)
+            })
+        {
+            let seq = approval.state_seq;
+            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            changed = true;
+            revoked.push((Binding::job(&job), seq));
             continue;
         }
         let effects: Vec<_> = ledger
@@ -590,6 +642,13 @@ pub fn settle(
     }
     if changed {
         store.save_actions(&ledger)?;
+    }
+    if !revoked.is_empty() {
+        let mut states = store.load_pr_states()?;
+        for (binding, seq) in &revoked {
+            states.revoke(binding, *seq, now);
+        }
+        store.save_pr_states(&states)?;
     }
     Ok(ready_to_consume)
 }
