@@ -1,4 +1,5 @@
 import { restoreShared } from "./interned";
+import { onCommitted, SETTINGS_CHANGED, STATE_CHANGED } from "./changes";
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
 import { actualIntelligence } from "./copilot";
@@ -994,6 +995,7 @@ export function renderMonitoring(
     if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
+  onCommitted(root, [SETTINGS_CHANGED, STATE_CHANGED], () => void refresh());
   return {
     refresh,
     detail: (

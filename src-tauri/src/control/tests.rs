@@ -1401,3 +1401,65 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
     );
     server.join().unwrap();
 }
+
+#[test]
+fn control_saves_notify_open_windows_like_ui_saves() {
+    use crate::storage::Change;
+    let (root, _) = capacity::tests::fixture(1, 1, true);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    let store = Store::new(root.path().into()).with_observer(std::sync::Arc::new(
+        move |change, revision| recorder.lock().unwrap().push((change, revision)),
+    ));
+    let take = || std::mem::take(&mut *seen.lock().unwrap());
+    let agent_edit = |settings: &crate::storage::Settings, model: &str| {
+        let agent = settings.agents[0].clone();
+        let mut value = agent.clone();
+        value.model = model.into();
+        value.signature = format!("{model} signature");
+        ResourceEdit::Agent {
+            id: agent.id.clone(),
+            expected: Some(agent),
+            value: Some(value),
+        }
+    };
+
+    let before = store.load_settings().unwrap();
+    operations::save_checked(
+        &store,
+        &revision(&before),
+        agent_edit(&before, "control-model"),
+        false,
+    )
+    .unwrap();
+    let control = take();
+    assert_eq!(control.len(), 1);
+    assert_eq!(control[0].0, Change::Settings);
+
+    // The UI command commits through the same Store method.
+    let current = store.load_settings().unwrap();
+    store
+        .save_resource(agent_edit(&current, "ui-model"))
+        .unwrap();
+    let ui = take();
+    assert_eq!(ui, vec![(Change::Settings, control[0].1 + 1)]);
+    assert_eq!(crate::changes::event(ui[0].0), crate::changes::SETTINGS);
+
+    let current = store.load_settings().unwrap();
+    preset::apply(&store, &revision(&current), "201", "fixture-model").unwrap();
+    store.save_theme(crate::storage::Theme::Dark).unwrap();
+    assert_eq!(
+        take()
+            .into_iter()
+            .map(|(change, _)| change)
+            .collect::<Vec<_>>(),
+        vec![Change::Settings, Change::Settings]
+    );
+
+    store
+        .save_automation(&capacity::Automation { paused: true })
+        .unwrap();
+    let state = take();
+    assert_eq!(state.len(), 1);
+    assert_eq!(crate::changes::event(state[0].0), crate::changes::STATE);
+}

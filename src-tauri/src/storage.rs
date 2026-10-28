@@ -1451,8 +1451,23 @@ pub(crate) struct Counter {
     fingerprint: Option<u64>,
 }
 
+/// What a committed write changed, for windows that show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change {
+    /// `settings.json`: configuration, whichever path committed it.
+    Settings,
+    /// A state transition (queue, reviews, automation, notifications).
+    State,
+}
+
+/// Told of every committed change with the file's write count.
+pub(crate) type Observer = std::sync::Arc<dyn Fn(Change, u64) + Send + Sync>;
+
 pub struct Store {
     root: PathBuf,
+    /// Every writer shares this Store, so UI, control and scheduler commits
+    /// all notify here. Frozen copies never write and have none.
+    observer: Option<Observer>,
     initial_time_zone: String,
     /// Per saved file: every write, and the writes that can give a
     /// coordinator work (transitions, not progress or bookkeeping).
@@ -1483,6 +1498,7 @@ impl Store {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            observer: None,
             initial_time_zone: "UTC".into(),
             counters: Default::default(),
             frozen: None,
@@ -1501,6 +1517,11 @@ impl Store {
             #[cfg(test)]
             state_reads: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn with_observer(mut self, observer: Observer) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Schedule zone written only when this store creates a brand-new profile;
@@ -1779,8 +1800,17 @@ impl Store {
     }
 
     fn record_write(&self, name: &str, fingerprint: Option<u64>) {
-        let Ok(mut counters) = self.counters.lock() else {
+        let Some((change, writes)) = self.count_write(name, fingerprint) else {
             return;
+        };
+        if let Some(observer) = &self.observer {
+            observer(change, writes);
+        }
+    }
+
+    fn count_write(&self, name: &str, fingerprint: Option<u64>) -> Option<(Change, u64)> {
+        let Ok(mut counters) = self.counters.lock() else {
+            return None;
         };
         let counter = counters.entry(name.into()).or_default();
         counter.writes += 1;
@@ -1794,10 +1824,17 @@ impl Store {
                 | "queue-selection.json"
                 | "control-receipts.json"
         );
-        if !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint) {
+        let transition =
+            !bookkeeping && (fingerprint.is_none() || counter.fingerprint != fingerprint);
+        if transition {
             counter.transitions += 1;
         }
         counter.fingerprint = fingerprint;
+        if name == "settings.json" {
+            Some((Change::Settings, counter.writes))
+        } else {
+            transition.then_some((Change::State, counter.writes))
+        }
     }
 
     pub(crate) fn is_frozen(&self) -> bool {

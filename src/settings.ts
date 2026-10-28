@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
+import { onCommitted, SETTINGS_CHANGED } from "./changes";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -517,6 +518,8 @@ export async function mountSettings(
   let themeError = "";
   let conflict = false;
   let catalogConflict = false;
+  let externalPending = false;
+  let externalRead = 0;
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -646,6 +649,10 @@ export async function mountSettings(
     reload.disabled = busy;
     catalogNotice.hidden = !catalogConflict;
     reloadCatalog.disabled = busy;
+    if (externalPending && !busy && !startupPending) {
+      externalPending = false;
+      void external();
+    }
   }
 
   async function commitResource(
@@ -5251,12 +5258,41 @@ export async function mountSettings(
       showError("Unavailable");
     }
   }
+  // A commit from another origin (control, another window) refreshes a clean
+  // view; an unsaved draft or open editor keeps its edits and is marked stale.
+  async function external() {
+    if (busy || startupPending) {
+      externalPending = true;
+      return;
+    }
+    const read = ++externalRead;
+    let state: Snapshot;
+    try {
+      state = await invoke<Snapshot>("snapshot");
+    } catch {
+      return;
+    }
+    if (read !== externalRead || !state.settings || !app.isConnected) return;
+    if (busy || startupPending) {
+      externalPending = true;
+      return;
+    }
+    if (sameResource(state.settings, saved)) return;
+    if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
+      await load();
+      return;
+    }
+    conflict = true;
+    showError("Changed elsewhere");
+    changed();
+  }
   window.addEventListener("focus", () => {
     if (app.closest("[hidden]")) return;
     refreshAgentAccounts?.();
     if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
   await load();
+  onCommitted(app, [SETTINGS_CHANGED], () => void external());
   return {
     leaveGuidance,
     open(target: SetupTarget, origin: GuidedReturn) {
