@@ -1009,15 +1009,21 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();
-        let exit_cause = reviews
+        // The exit cause and the stage it came from: one `tossed` cause can
+        // be the review, its publication or its exit write.
+        let exit_failure = reviews
             .iter()
             .filter_map(|r| r.run.as_ref())
             .find_map(|run| {
                 use crate::exit_writes::Phase;
                 if failed(&run.operation) {
                     return match run.operation.failure {
-                        Some(monitoring::OperationFailure::Panic) => Some(CAUSE_PANIC),
-                        Some(monitoring::OperationFailure::Tossed) => Some(CAUSE_TOSSED),
+                        Some(monitoring::OperationFailure::Panic) => {
+                            Some((CAUSE_PANIC, FailedOperation::Review))
+                        }
+                        Some(monitoring::OperationFailure::Tossed) => {
+                            Some((CAUSE_TOSSED, FailedOperation::Review))
+                        }
                         _ => None,
                     };
                 }
@@ -1029,14 +1035,17 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                                 .is_some_and(publication::Publication::tossed)
                     })
                 {
-                    return Some(CAUSE_TOSSED);
+                    return Some((CAUSE_TOSSED, FailedOperation::Publication));
                 }
                 match context.write(run)?.phase {
-                    Phase::Failed => Some(CAUSE_EXIT_FAILED),
-                    Phase::Tossed if context.parked(run) => Some(CAUSE_TOSSED),
+                    Phase::Failed => Some((CAUSE_EXIT_FAILED, FailedOperation::ExitWrite)),
+                    Phase::Tossed if context.parked(run) => {
+                        Some((CAUSE_TOSSED, FailedOperation::ExitWrite))
+                    }
                     _ => None,
                 }
             });
+        let exit_cause = exit_failure.map(|(cause, _)| cause);
         let failure_cause = if state == State::Failed {
             exit_cause
                 .or_else(|| publication_cause(&snapshot.publications, &publication_items, &id))
@@ -1055,19 +1064,21 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .then(|| {
                 if check_failed {
                     Some(FailedOperation::RepositoryCheck)
-                } else if matches!(
-                    failure_cause,
-                    Some("publication_failed" | "publication_unresolved")
-                ) {
+                } else if let Some((_, operation)) = exit_failure {
+                    Some(operation)
+                } else if failure_cause.is_some_and(|cause| cause.starts_with("publication_")) {
                     Some(FailedOperation::Publication)
-                } else if failure_cause == Some(CAUSE_EXIT_FAILED) {
-                    Some(FailedOperation::ExitWrite)
                 } else if reviews
                     .iter()
                     .any(|r| r.run.as_ref().is_some_and(|run| failed(&run.operation)))
                 {
                     Some(FailedOperation::Review)
-                } else if !follow_ups.is_empty() {
+                } else if follow_ups.iter().any(|f| {
+                    [&f.run.analysis, &f.run.publication]
+                        .into_iter()
+                        .flatten()
+                        .any(failed)
+                }) {
                     Some(FailedOperation::FollowUp)
                 } else {
                     None

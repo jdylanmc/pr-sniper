@@ -864,6 +864,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             && item.state != State::Closed
         {
             item.state = State::Failed;
+            // A lost response is reconciled against its original intent, never reposted.
+            item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+            item.remedy = Some(queue::Remedy::Reconcile);
             item.summary="A provider action outcome is unresolved. Reconcile its original intent; no replacement request is authorized.";
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
         }

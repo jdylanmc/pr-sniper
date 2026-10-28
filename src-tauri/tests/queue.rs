@@ -332,6 +332,28 @@ fn a_tossed_exit_write_is_requeued_until_the_budget_parks_it_as_tossed() {
     assert_eq!(parked.items[0].state, State::Failed);
     assert_eq!(parked.items[0].failure_cause, Some(queue::CAUSE_TOSSED));
     assert_eq!(parked.items[0].resume_at, None);
+    // The toss came from the exit write, not the completed review.
+    assert_eq!(
+        parked.items[0].failed_operation,
+        Some(queue::FailedOperation::ExitWrite)
+    );
+    assert_eq!(parked.items[0].remedy, Some(queue::Remedy::Retry));
+    // Unrelated follow-up history never claims the failure.
+    let follow: FollowUp = follow_up::decode_runs(&serde_json::to_vec(&json!([{
+        "id":"follow-1","key":"key","publication_id":"none","review":run,
+        "thread":{"id":"thread-1","resolved":false,"can_reply":true,"comments":[]},
+        "trigger_id":"99","phase":"human_input_required","analysis":null,"publication":null,"history":[],
+        "manual_start":true,"confirmed":false,"automatic_publication":false,"cancelled":false,
+        "error":null,"result":null,"body":null,"uncertain":false,"receipt":null
+    }])).unwrap()).unwrap().remove(0);
+    store.save_follow_ups(&[follow]).unwrap();
+    let with_history = item(&store);
+    assert_eq!(with_history.failure_cause, Some(queue::CAUSE_TOSSED));
+    assert_eq!(
+        with_history.failed_operation,
+        Some(queue::FailedOperation::ExitWrite)
+    );
+    store.save_follow_ups(&[]).unwrap();
     // Under budget but not yet re-queued: shown as queued again.
     tosses(&store, &run, 1);
     assert_eq!(item(&store).state, State::Queued);
@@ -353,6 +375,10 @@ fn an_exit_write_that_failed_after_an_effect_needs_attention_typed() {
     let failed = item(&store);
     assert_eq!(failed.state, State::Failed);
     assert_eq!(failed.failure_cause, Some(queue::CAUSE_EXIT_FAILED));
+    assert_eq!(
+        failed.failed_operation,
+        Some(queue::FailedOperation::ExitWrite)
+    );
     assert_eq!(
         failed.failure_class,
         Some(pr_sniper_lib::monitoring::FailureClass::Other)
@@ -376,6 +402,10 @@ fn a_review_tossed_through_its_budget_parks_typed_tossed() {
     let parked = item(&store);
     assert_eq!(parked.state, State::Failed);
     assert_eq!(parked.failure_cause, Some(queue::CAUSE_TOSSED));
+    assert_eq!(
+        parked.failed_operation,
+        Some(queue::FailedOperation::Review)
+    );
 }
 
 #[test]
@@ -1241,6 +1271,10 @@ fn a_content_tossed_batch_requeues_then_parks_as_tossed() {
     let parked = item(&store);
     assert_eq!(parked.state, State::Failed);
     assert_eq!(parked.failure_cause, Some(queue::CAUSE_TOSSED));
+    assert_eq!(
+        parked.failed_operation,
+        Some(queue::FailedOperation::Publication)
+    );
     // Retry restarts the toss budget and reviews the current state, never the batch.
     assert_eq!(
         pr_sniper_lib::exits::consume::retry_parked(&store, &parked.id, 300).unwrap(),

@@ -1171,6 +1171,29 @@ fn lost_responses_crash_before_receipt_and_external_merge_never_blindly_repeat()
 }
 
 #[test]
+fn a_lost_action_response_parks_as_a_provider_action_to_reconcile() {
+    let (_root, store, item) = fixture(1, true, true);
+    let run = completed_final(&store, &item);
+    let mut env = env(&store);
+    let effect = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    env.wire.0.lock().unwrap().lost = true;
+    host::execute_action(&mut env, &effect).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let parked = &snapshot.items[0];
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(
+        parked.failed_operation,
+        Some(queue::FailedOperation::ProviderAction)
+    );
+    assert_eq!(parked.remedy, Some(queue::Remedy::Reconcile));
+    let wire = serde_json::to_value(parked).unwrap();
+    assert_eq!(
+        (&wire["failed_operation"], &wire["remedy"]),
+        (&json!("provider_action"), &json!("reconcile"))
+    );
+}
+
+#[test]
 fn pause_cancellation_and_permission_rejection_preserve_original_effect_without_writes_or_bypass() {
     for case in ["pause", "cancel", "reject"] {
         let (_root, store, item) = fixture(1, true, false);
