@@ -354,6 +354,12 @@ export function createServer() {
       "Retry a parked packet/exit state through native recovery.",
     ],
     [
+      "retry_all",
+      "retry_all",
+      {},
+      "Retry every parked review through the per-item native paths. Permanent failures and panic exits stay parked; pause, capacity and backpressure still gate starts.",
+    ],
+    [
       "cancel_review",
       "cancel_review",
       { operation_id: s.id },
