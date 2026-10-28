@@ -16,6 +16,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [local-data.md](local-data.md)             | Data root, state files, atomic replace, recovery, retention journal                      |
 | [diagnostics.md](diagnostics.md)           | Retained logs, attempt records, caps, redaction                                          |
 | [copilot-settings.md](copilot-settings.md) | Copilot accounts, returned model catalogs, per-Agent models                              |
+| [mcp-ui-parity.md](mcp-ui-parity.md)       | MCP tool ↔ UI parity matrix and ranked gaps                                              |
 | [site.md](site.md)                         | Project website: preview, tests, font, deploy                                            |
 
 ## Platform and release
