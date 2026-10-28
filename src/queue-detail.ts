@@ -173,17 +173,23 @@ function fixTarget(cause: string): FixTarget | undefined {
   return /copilot|^ai_/.test(cause) ? "ai" : "repository-account";
 }
 
-// The account a credentials failure needs: a review run's comes from its AI
-// account; repository checks and publications use the git account.
+// The account a credentials failure needs, from the failing run's recorded
+// origin. Repository checks and publications use the git account; a review
+// record without an origin falls back to Accounts.
 export function credentialsFixTarget(
   item: QueueItem,
   snapshot: MonitoringSnapshot,
-): FixTarget {
-  return failedReviews(item, snapshot).some(
+): FixTarget | "accounts" {
+  const review = failedReviews(item, snapshot).find(
     (candidate) => candidate.run?.operation.failure === "credentials",
-  )
+  );
+  if (!review) return "repository-account";
+  const origin = review.run?.operation.credentials_origin;
+  return origin === "copilot"
     ? "ai"
-    : "repository-account";
+    : origin === "github"
+      ? "repository-account"
+      : "accounts";
 }
 
 export type RecoveryCommand = [string, Record<string, unknown>];

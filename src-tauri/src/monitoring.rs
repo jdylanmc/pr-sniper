@@ -120,6 +120,9 @@ pub struct JobOperation {
     /// Rate-limit delay: the work waits, it did not fail and spent no attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backpressure_until: Option<i64>,
+    /// Which account a credentials failure came from; absent on older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_origin: Option<crate::backpressure::Origin>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -3514,6 +3517,7 @@ fn start_poll_operation(
         resume_cycle: 0,
         resume_at: None,
         backpressure_until: None,
+        credentials_origin: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: provider_key(&configuration.provider).into(),
         account_id: configuration
@@ -3740,6 +3744,7 @@ impl JobOperation {
         self.retry_deadline = now + RETRY_WINDOW_SECONDS;
         self.next_attempt_at = Some(now);
         self.failure = None;
+        self.credentials_origin = None;
         self.resume_at = None;
         self.backpressure_until = None;
         self.ai_attempt = None;
@@ -3870,6 +3875,7 @@ impl JobOperation {
             resume_cycle: 0,
             resume_at: None,
             backpressure_until: None,
+            credentials_origin: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),

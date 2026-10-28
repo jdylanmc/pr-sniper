@@ -470,6 +470,9 @@ pub(crate) fn complete(
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
                 current.operation.fail(&error.monitoring(), now);
+                current.operation.credentials_origin = (current.operation.failure
+                    == Some(monitoring::OperationFailure::Credentials))
+                .then_some(error.origin);
                 current.phase = "Review stopped".into();
                 current.error = Some(error.message);
             }

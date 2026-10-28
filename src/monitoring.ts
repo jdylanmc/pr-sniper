@@ -62,6 +62,8 @@ interface Health {
     retry_deadline: number;
     next_attempt_at: number | null;
     failure: string | null;
+    // Which account a credentials failure came from; absent on older records.
+    credentials_origin?: "github" | "copilot" | null;
     resume_cycle?: number;
     resume_at?: number | null;
   } | null;
