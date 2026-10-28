@@ -911,6 +911,90 @@ fn parked_lgtm_is_revoked_by_a_new_head_comment_or_red_ci() {
 }
 
 #[test]
+fn parked_lgtm_in_flight_waits_out_red_ci_without_revocation_then_merges_once_green() {
+    let (root, item, mut state) = parked_lgtm(false);
+    let store = Store::new(root.path().into());
+    let mut env = env(&store);
+    env.wire.0.lock().unwrap().observation.review_decision = None;
+    let binding = Binding::job(&store.load_queue().unwrap()[0]);
+    let observe = |env: &Env<'_>, rollup: &str, now: i64| {
+        env.wire.0.lock().unwrap().observation.checks = Some(rollup.into());
+        let observation = env.wire.0.lock().unwrap().observation.clone();
+        synchronize(&store, &item, Ok(observation.clone()), now).unwrap();
+        packet::adopt(&store, &item).unwrap();
+        observation
+    };
+    observe(&env, "SUCCESS", NOW + 20);
+    let approval = host::prepare_next_effect(&store, &item, NOW + 20)
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.action, Action::Approve);
+    env.now = NOW + 20;
+    host::execute_action(&mut env, &approval).unwrap();
+    // Our own approval is a review-revision change: the next scan bumps the state.
+    poll(&store, &state, NOW + 21);
+    let seq = store.load_pr_states().unwrap().state_seq(&binding);
+    // Red after the first effect: no revocation, no extra review; merge refused.
+    state.checks[0].status = "COMPLETED".into();
+    state.checks[0].conclusion = "FAILURE".into();
+    poll(&store, &state, NOW + 22);
+    let red = observe(&env, "FAILURE", NOW + 23);
+    assert!(packet::settle(&store, &item, &red, NOW + 23)
+        .unwrap()
+        .is_empty());
+    assert!(host::prepare_next_effect(&store, &item, NOW + 23)
+        .unwrap()
+        .is_none());
+    assert_eq!(store.load_pr_states().unwrap().state_seq(&binding), seq);
+    observe(&env, "SUCCESS", NOW + 24);
+    let merge = host::prepare_next_effect(&store, &item, NOW + 24)
+        .unwrap()
+        .unwrap();
+    assert_eq!(merge.action, Action::Merge);
+    env.now = NOW + 24;
+    host::execute_action(&mut env, &merge).unwrap();
+    assert_eq!(env.wire.0.lock().unwrap().observation.state, "MERGED");
+}
+
+#[test]
+fn parked_lgtm_revocation_fails_closed_when_only_the_state_bump_was_saved() {
+    let (root, item, _) = parked_lgtm(true);
+    let store = Store::new(root.path().into());
+    let env = env(&store);
+    let binding = Binding::job(&store.load_queue().unwrap()[0]);
+    let mut states = store.load_pr_states().unwrap();
+    let seq = states.state_seq(&binding);
+    // The crash window: the revoke reached pr-state.json, the settled final did not.
+    states.revoke(&binding, seq, NOW + 20);
+    store.save_pr_states(&states).unwrap();
+    {
+        let mut server = env.wire.0.lock().unwrap();
+        server.observation.author_id = server.observation.account_id.clone();
+        server.observation.checks = Some("SUCCESS".into());
+    }
+    let observation = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &item, Ok(observation.clone()), NOW + 21).unwrap();
+    assert!(host::prepare_next_effect(&store, &item, NOW + 21)
+        .unwrap()
+        .is_none());
+    let ledger = store.load_actions().unwrap();
+    let parked = ledger.finals.iter().find(|f| f.packet.is_some()).unwrap();
+    assert_eq!(
+        ready(&store, parked, &observation, Action::Merge),
+        Err(packet::LGTM_REVOKED.into())
+    );
+    packet::settle(&store, &item, &observation, NOW + 22).unwrap();
+    assert!(
+        store.load_actions().unwrap().finals[0]
+            .packet
+            .as_ref()
+            .unwrap()
+            .settled
+    );
+    assert!(env.wire.0.lock().unwrap().writes.is_empty());
+}
+
+#[test]
 fn wait_offered_beside_a_primarys_own_open_thread_is_accepted_at_exit() {
     use crate::github::actions::HumanThread;
     for approve in [true, false] {

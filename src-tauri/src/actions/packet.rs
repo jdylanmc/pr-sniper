@@ -114,11 +114,13 @@ fn signed_off(run: &FinalReview) -> bool {
 /// A sign-off acts on green CI only. Accepted while pending CI alone blocked it, it
 /// is a **Parked LGTM**: recorded for this revision, acted on once CI is green.
 /// Conflicts may leave CI unrun: the approval proceeds, the merge waits.
-fn parked_ci(facts: &Facts, head: &str) -> Result<(), String> {
+/// Red CI revokes it only before its first effect; after that the action gates refuse.
+fn parked_ci(facts: &Facts, head: &str, untouched: bool) -> Result<(), String> {
     match facts.ci {
         gates::Ci::Green => Ok(()),
         gates::Ci::Unknown if facts.conflicts => Ok(()),
-        gates::Ci::Red => Err(LGTM_REVOKED_RED.into()),
+        gates::Ci::Red if untouched => Err(LGTM_REVOKED_RED.into()),
+        gates::Ci::Red => Ok(()),
         gates::Ci::Pending | gates::Ci::Unknown => Err(format!(
             "LGTM pending on revision {}: waiting for CI.",
             head.chars().take(12).collect::<String>()
@@ -412,10 +414,9 @@ pub fn ready(
     let ledger = store.load_actions()?;
     // A Parked LGTM acts only on the review revision it signed off: any new state
     // (comment, thread, review, base) revokes it before its first effect.
+    let untouched = !ledger.effects.iter().any(|e| e.final_id == run.id);
     if let Some(packet) = run.packet.as_ref().filter(|_| signed_off(run)) {
-        if !ledger.effects.iter().any(|e| e.final_id == run.id)
-            && store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq
-        {
+        if untouched && store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq {
             return Err(LGTM_REVOKED.into());
         }
     }
@@ -482,7 +483,7 @@ pub fn ready(
     let facts = Facts::from_observation(observation);
     let signed_off = signed_off(run);
     if signed_off {
-        parked_ci(&facts, &job.head_sha)?;
+        parked_ci(&facts, &job.head_sha, untouched)?;
     }
     let self_authored = facts.author_is_acting;
     let exit = match action {
@@ -569,14 +570,12 @@ pub fn settle(
             changed = true;
             continue;
         }
-        // Red CI revokes a sign-off not yet in flight: failed CI needs a fresh review.
+        // Red CI revokes a sign-off before its first effect (as `ready` does): failed
+        // CI needs a fresh review. Once an effect exists the action gates refuse instead.
         let final_id = run.id.clone();
         if signed_off(run)
             && Facts::from_observation(observation).ci == gates::Ci::Red
-            && !ledger.effects.iter().any(|e| {
-                e.final_id == final_id
-                    && matches!(e.state, EffectState::Prepared | EffectState::Uncertain)
-            })
+            && !ledger.effects.iter().any(|e| e.final_id == final_id)
         {
             let seq = approval.state_seq;
             ledger.finals[index].packet.as_mut().unwrap().settled = true;
@@ -635,6 +634,15 @@ pub fn settle(
         }
         ready_to_consume.extend(settle);
     }
+    // The state bump first: a crash before the final is marked settled leaves a moved
+    // state, which the `moved` path above settles on the next pass (fail closed).
+    if !revoked.is_empty() {
+        let mut states = store.load_pr_states()?;
+        for (binding, seq) in &revoked {
+            states.revoke(binding, *seq, now);
+        }
+        store.save_pr_states(&states)?;
+    }
     for (index, job) in failed {
         ledger.finals[index].packet.as_mut().unwrap().settled = true;
         changed = true;
@@ -642,13 +650,6 @@ pub fn settle(
     }
     if changed {
         store.save_actions(&ledger)?;
-    }
-    if !revoked.is_empty() {
-        let mut states = store.load_pr_states()?;
-        for (binding, seq) in &revoked {
-            states.revoke(binding, *seq, now);
-        }
-        store.save_pr_states(&states)?;
     }
     Ok(ready_to_consume)
 }
