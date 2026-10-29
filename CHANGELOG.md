@@ -10,9 +10,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 - Accept a primary's correction of a mistaken resolution, or its acceptance of
   an author's won't-fix, as any reply on that own thread instead of requiring
   the reply to repeat the disposition rationale verbatim, and let
-  `ready_for_human` hand off an uncorrected mistaken resolution that PR Sniper
-  does not carry, naming the thread in its summary, so a refused reply never
-  leaves `panic_exit` as the only exit (#293).
+  `ready_for_human` hand off an uncorrected mistaken resolution that has no
+  standing PR Sniper resolution, naming the thread in its summary, so a refused
+  reply never leaves `panic_exit` as the only exit (#293).
 
 ## 0.5.3 - 2026-10-28
 

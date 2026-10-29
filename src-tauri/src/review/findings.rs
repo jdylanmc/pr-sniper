@@ -647,11 +647,14 @@ impl Contract {
                 .iter()
                 .filter(|a| {
                     a.disposition == Disposition::StillApplies
-                        && self
-                            .threads
-                            .iter()
-                            .any(|t| t.id == a.thread_id && t.resolved)
-                        && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
+                        && self.threads.iter().any(|t| {
+                            t.id == a.thread_id
+                                && t.resolved
+                                && !self
+                                    .corrections
+                                    .iter()
+                                    .any(|c| c.thread_id == t.id && c.confirmed_in(t))
+                        })
                 })
                 .map(|a| a.thread_id.as_str())
                 .collect();
@@ -937,17 +940,18 @@ impl Contract {
             }
             // A human handoff may name an uncorrected mistaken resolution instead (prepare
             // appends it), so a refused correction reply never leaves panic_exit as the
-            // only exit. A carried PR Sniper resolution still needs the correction reply:
-            // only that ends its episode, or the next packet would carry it again.
+            // only exit. A standing PR Sniper resolution still needs the correction reply:
+            // only that ends its episode, or a later packet could carry it again.
+            let standing = self.identities.standing.contains(&a.thread_id);
             if thread.resolved
                 && a.disposition == Disposition::StillApplies
-                && (thread.carried || call.exit() != Exit::ReadyForHuman)
+                && (standing || call.exit() != Exit::ReadyForHuman)
                 && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
             {
                 let corrected = matches!(call, ExitCall::LeaveComments { reply_comments, .. }
                     if reply_comments.iter().any(|r| r.thread_id == a.thread_id));
                 if !corrected {
-                    let fallback = if thread.carried {
+                    let fallback = if standing {
                         ""
                     } else {
                         " If that reply cannot be posted, use ready_for_human."

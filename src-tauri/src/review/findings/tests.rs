@@ -1507,14 +1507,48 @@ fn a_refused_correction_still_leaves_an_honest_handoff() {
         .unwrap();
     assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
         if summary.starts_with("Nothing new.") && summary.ends_with("uncorrected: existing.")));
-    // A carried PR Sniper resolution ends only with a correction reply; a handoff
-    // would leave it carried into the next packet.
-    let mut c = c;
-    c.threads[0].carried = true;
-    assert!(c
+    // A pending correction does not silence the notice; only a confirmed one does.
+    let mut pending = mistakenly_resolved();
+    let mut write = correction_write();
+    write.steps[0].state = crate::exit_writes::StepState::Attempted;
+    write.steps[0].receipt = None;
+    pending.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    pending
+        .prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.ends_with("uncorrected: existing.")));
+}
+
+#[test]
+fn a_standing_own_resolution_needs_the_correction_even_when_not_carried() {
+    use crate::exit_writes::StepState;
+    // Fixed at blob A, then the file changed: not carried now, but the episode stands
+    // and would carry again if the file reverted. Only a correction reply ends it.
+    let write = resolved_write(Disposition::Fixed, StepState::Done);
+    let mut c = contract(true, false);
+    c.identities.standing = resolutions(std::slice::from_ref(&write), &write.job, "assignment")
+        .into_iter()
+        .map(|r| r.thread_id)
+        .collect();
+    assert!(!c.threads[0].carried);
+    let a = assessment(Disposition::StillApplies);
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Still applies.".into(),
+    };
+    let refused = c
         .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-        .is_err());
+        .unwrap_err();
+    assert!(!refused.contains("ready_for_human"), "{refused}");
     assert!(c
-        .validate(&correction_call("Still broken."), &[a], &[], |_| Ok(()))
+        .validate(
+            &correction_call("Still broken on this head."),
+            &[a],
+            &[],
+            |_| Ok(())
+        )
         .is_ok());
 }
