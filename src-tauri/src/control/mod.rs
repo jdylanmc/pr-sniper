@@ -13,7 +13,7 @@ pub use installer::{
     Installation, Server, SKILL_COMMAND,
 };
 pub use transport::{serve_connection, Endpoint, MAX_FRAME, PROTOCOL};
-pub use work::{prioritize, request_again, RequestOverride, WatchResult};
+pub use work::{prioritize, request_again, review_item_again, RequestOverride, WatchResult};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
