@@ -328,7 +328,8 @@ pub struct DuckCall {
     /// Further refusals with this entry's failure folded into it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeats: u32,
-    /// Refusals of other kinds folded in once the refusal entry cap was reached.
+    /// Refusals of other kinds or targets folded in once the refusal entry cap was
+    /// reached. No verdict settles such an entry ([`unsettled`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub others: BTreeMap<DuckFailure, u32>,
 }
@@ -380,11 +381,12 @@ pub(crate) fn unsettled(log: &[DuckCall]) -> impl Iterator<Item = &DuckCall> {
             DuckOutcome::Failure { .. } => true,
             DuckOutcome::Verdict { verdict } => verdict.verdict == VerdictKind::Unverifiable,
         };
-        let superseded = log[index + 1..].iter().any(|later| {
-            later.input.subject() == call.input.subject()
-                && matches!(&later.outcome, DuckOutcome::Verdict { verdict }
+        let superseded = call.others.is_empty()
+            && log[index + 1..].iter().any(|later| {
+                later.input.subject() == call.input.subject()
+                    && matches!(&later.outcome, DuckOutcome::Verdict { verdict }
                     if verdict.verdict != VerdictKind::Unverifiable)
-        });
+            });
         (open && !superseded).then_some(call)
     })
 }
@@ -397,12 +399,16 @@ pub fn log_call(log: &mut Vec<DuckCall>, mut call: DuckCall) {
         call.input.proposed_body.clear();
         call.input.evidence.clear();
         let refusals = log.iter().filter(|c| c.refused()).count();
+        // A repeat is the same refusal of the same target; `unsettled` reads targets.
+        let repeat = |last: &DuckCall| {
+            last.outcome == call.outcome && last.input.subject() == call.input.subject()
+        };
         let same = log
             .last()
-            .is_some_and(|last| last.refused() && last.outcome == call.outcome);
+            .is_some_and(|last| last.refused() && repeat(last));
         if same || refusals >= MAX_REFUSAL_ENTRIES {
             if let Some(last) = log.iter_mut().rev().find(|c| c.refused()) {
-                if last.outcome == call.outcome {
+                if repeat(last) {
                     last.repeats = last.repeats.saturating_add(1);
                 } else if let DuckOutcome::Failure { failure } = call.outcome {
                     let count = last.others.entry(failure).or_default();
