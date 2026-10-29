@@ -76,7 +76,7 @@ impl Batch {
                 diff_position: Some(position),
             });
         }
-        let body = format!("{}\n\n\u{f05b} PR Sniper", run.marker());
+        let body = format!("{}\n\n{}", run.marker(), crate::exit_writes::SIGNATURE);
         check_body(&body)?;
         Ok(Self {
             commit_id: run.review.job.head_sha.clone(),
