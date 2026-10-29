@@ -132,7 +132,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PR-028 [AC-012]: Provider failures shall preserve pending output and mutation identity, reconcile remote state, and permit idempotent retry without claiming unconfirmed success.
 - PR-029 [AC-013]: PR Sniper shall monitor unresolved threads created by its own reviews and create a follow-up job keyed by owned-thread ID, triggering external-comment ID, and reviewed head revision.
 - PR-030 [AC-013]: Each follow-up key may publish at most one concise signed reply across polling and restart when the agent produces evidence-backed new information; unchanged answers, acknowledgment-only filler, speculation, and duplicates shall not publish, while a later external comment creates a new key and human-judgment questions move the job to waiting for human input.
-- PR-031 [AC-014]: Every machine-authored review summary, reply, and machine sign-off shall end with the exact signature ` PR Sniper`.
+- PR-031 [AC-014]: Every machine-authored review summary, reply, and machine sign-off shall end with the exact signature `🔫 PR Sniper automated review`.
 - PR-032 [AC-015]: The application shall use `` as its canonical crosshair brand mark and render a legible platform-appropriate menu-bar icon.
 - PR-033 [AC-016]: The queue shall distinguish queued, reviewing, waiting for author, waiting for human input, machine-signed-off, stale-after-publication, and failed states; machine-signed-off and human-input-required items shall sort ahead of routine states.
 - PR-034 [AC-016]: Native notifications shall cover confirmation required, human input required, ready for human review, and failure, deduplicate repeated state transitions, and open the exact queue item or GitHub pull request.
@@ -169,7 +169,7 @@ Electron remains a fallback only if later Windows or process-control evidence ex
 - PD-005 [AC-011]: The current-user agent is trusted and not described as sandboxed, while pull-request content remains untrusted input and the product constrains the review workflow.
 - PD-006 [AC-012]: Initial-review publication uses one pending-review `COMMENT` submission after revalidation; the only other GitHub mutation is an idempotent reply to a PR Sniper-owned thread under PR-025 and PR-028–PR-030, and the MVP has no `APPROVE` path.
 - PD-007 [AC-013]: PR Sniper follows only unresolved threads it created and replies only with concise meaningful additions.
-- PD-008 [AC-014]: The canonical machine signature is ` PR Sniper`.
+- PD-008 [AC-014]: The canonical machine signature is `🔫 PR Sniper automated review`.
 - PD-009 [AC-015]: The canonical application mark is ``.
 - PD-010 [AC-017]: Final review remains human-owned; automated provider approval is deferred until a distinct automation identity exists, with future policy modeled as `off`, `manual`, or `automatic`.
 - PD-011 [AC-019]: Each persisted job-operation retry budget starts with the initial attempt, permits three retries within 15 minutes, persists across restart, and resets only after explicit manual retry.

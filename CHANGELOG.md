@@ -13,6 +13,9 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
   comment, thread or red CI revokes it. A failed Rubber Duck call settled by a
   later verdict on the same target no longer blocks `wait`, and
   `ready_for_human` is refused once when `lgtm` is due (#265).
+- Sign review bodies, replies and approvals with `🔫 PR Sniper automated review`
+  instead of a Private Use Area icon glyph that GitHub and Azure DevOps render as
+  an unknown character. Comments signed the old way stay recognized (#289).
 
 ## 0.5.3 - 2026-10-28
 
