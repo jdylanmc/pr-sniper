@@ -38,7 +38,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 - Two toggle cards: **Ready for you**, **Needs attention**. Active card orange.
 - **Ready for you**: machine-signed-off PRs the agent did not approve (no Approve grant); the human decides. Confirmed approval of the current head moves the PR to Reviewed (**Approved**), out of both cards. One current handoff per account/repo PR. Completed reviews stay Ready despite config drift or disabled repo. Stale only on new head/base.
 - **Needs attention**: every parked failure. Cause chip: Credentials, Permission, Network, Failed. Row actions **Fix** (credentials, opens the failing account) and **Retry**. **Retry all** pill: icon + count of rows it re-arms, shown from one; skips permanent, panic, withdrawn-publication and provider-action failures; single-flight. Paused: re-armed rows leave the list and the pill shows clock + count until resume.
-- Queue item detail: status block (PR title, short state label, Fix / Retry / Open) plus collapsed **Details**.
+- Queue item detail: status block (PR title, short state label, Fix / Retry / Open, ↻ **Review again**) plus collapsed **Details**. ↻ shows when every review of the current pass completed (packet work; Ready, Your input, Author, Approved, Stale); same gates as MCP `watch_pull_request` `review_again`.
 - Approved (current head), merged or closed PRs move to Reviewed.
 - States, evidence, links: [review-queue.md](review-queue.md).
 
