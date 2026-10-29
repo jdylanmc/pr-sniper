@@ -838,3 +838,24 @@ fn recovered_publications_resume_original_operations_and_release_the_next_candid
         assert!(next_candidate(&store, 101).unwrap().is_none());
     }
 }
+
+#[test]
+fn retry_all_launch_refuses_a_publication_withdrawn_after_planning() {
+    let (_root, store, review) = fixture();
+    let mut publication = Publication::new(review.clone(), true, false, 100).unwrap();
+    publication.uncertain = true;
+    publication.operation.state = OperationState::ManualRetry;
+    publication.operation.failure = Some(crate::monitoring::OperationFailure::Network);
+    store
+        .save_publications(std::slice::from_ref(&publication))
+        .unwrap();
+    assert!(bulk_guard(&store, &review.operation.id).is_ok());
+    // Withdrawn between planning and the bulk launch.
+    publication.cancelled = true;
+    publication.confirmed = false;
+    store
+        .save_publications(std::slice::from_ref(&publication))
+        .unwrap();
+    assert!(bulk_guard(&store, &review.operation.id).is_err());
+    assert_eq!(store.load_publications().unwrap(), vec![publication]);
+}

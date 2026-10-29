@@ -39,8 +39,9 @@ Reconciled with the shipped panel UI: icon-first, minimal prose.
 - **Queue:** two metric toggle cards, _Ready for you_ and _Needs attention_; the
   active one is solid orange and the default is Ready when any exist. The title
   band and cards stay pinned while one grouped list scrolls. Rows show a state
-  chip, title, `repo #number`, and a chevron. An empty group is a large grey
-  inbox icon. The footer has only the version at right, which opens a
+  chip, title, `repo #number`, and a chevron. Needs attention heads failed
+  rows with a **Retry all** pill (icon + count); while paused, re-armed work
+  shows clock + count. An empty group is a large grey inbox icon. The footer has only the version at right, which opens a
   Changelog page. Preferences has **Copy diagnostics**.
 - **Running and Reviewed:** `.work-list` rows with state icons. Running shows
   active work first, then waiting work.

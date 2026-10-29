@@ -566,6 +566,90 @@ fn superseded_retry_dispatches_on_the_first_tick_after_it_is_due() {
 }
 
 #[test]
+fn credentials_park_with_connected_accounts_resumes_after_cooldown() {
+    let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    sim.accounts.insert(
+        "201".into(),
+        AccountAvailability {
+            login: "copilot".into(),
+            connected: true,
+        },
+    );
+    ticks_until_dispatch(&mut sim, TICK * 2);
+    let mut failure = crate::review::Failure::provider("signed out");
+    failure.kind = crate::monitoring::OperationFailure::Credentials;
+    let failed_at = finish(&mut sim, failure);
+    let parked = store.lock().unwrap().load_reviews().unwrap()[0]
+        .operation
+        .clone();
+    assert!(parked.parked());
+    // Every account still reads connected, so no reconnect will ever come.
+    let cooldown = crate::monitoring::RESUME_COOLDOWNS_SECONDS[0];
+    sim.run(TICK * 2);
+    assert!(sim.dispatched.is_empty());
+    let resume_at = store.lock().unwrap().load_reviews().unwrap()[0]
+        .operation
+        .resume_at
+        .expect("a stale credentials park earns a cooldown");
+    assert!((failed_at..=failed_at + TICK * 3 + cooldown).contains(&resume_at));
+    ticks_until_dispatch(&mut sim, cooldown + HEARTBEAT_SECONDS);
+    assert!(sim.now >= resume_at);
+}
+
+#[test]
+fn credentials_failures_record_which_account_failed() {
+    use crate::backpressure::Origin;
+    for (failure, origin) in [
+        (
+            crate::review::Failure::from(crate::provider::ConnectionError::SignedOut),
+            Origin::Github,
+        ),
+        (
+            crate::review::Failure::operation(
+                "This Copilot account needs to be reconnected.".into(),
+            ),
+            Origin::Copilot,
+        ),
+    ] {
+        let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+        let store = std::sync::Mutex::new(store);
+        let mut sim = Sim::new(&store, Mode::Gated);
+        ticks_until_dispatch(&mut sim, TICK * 2);
+        finish(&mut sim, failure);
+        let operation = store.lock().unwrap().load_reviews().unwrap()[0]
+            .operation
+            .clone();
+        assert_eq!(
+            operation.failure,
+            Some(crate::monitoring::OperationFailure::Credentials)
+        );
+        assert_eq!(operation.credentials_origin, Some(origin));
+    }
+}
+
+#[test]
+fn spent_retry_budget_parks_without_a_host_error() {
+    let (_root, store) = crate::capacity::tests::fixture(1, 1, true);
+    let store = std::sync::Mutex::new(store);
+    let mut sim = Sim::new(&store, Mode::Gated);
+    ticks_until_dispatch(&mut sim, TICK * 2);
+    finish(&mut sim, crate::review::Failure::provider("transient"));
+    // The next dispatch lands past the retry window; the capacity pass asserts
+    // its batch carries no errors while the run parks on its own record.
+    let deadline = store.lock().unwrap().load_reviews().unwrap()[0]
+        .operation
+        .retry_deadline;
+    sim.now = deadline;
+    sim.run(TICK * 4);
+    assert!(sim.dispatched.is_empty());
+    let run = store.lock().unwrap().load_reviews().unwrap()[0].clone();
+    assert_eq!(run.operation.state, OperationState::ManualRetry);
+    assert!(run.error.is_some());
+}
+
+#[test]
 fn running_review_progress_neither_wakes_coordinators_nor_waits_on_scans() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let root = tempfile::tempdir().unwrap();
