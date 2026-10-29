@@ -190,7 +190,7 @@ function fixTarget(cause: string): FixTarget | undefined {
 // The account a credentials failure needs, from the failing run's recorded
 // origin. Repository checks and publications use the git account; a review
 // record without an origin falls back to Accounts.
-function credentialsFixTarget(
+export function credentialsFixTarget(
   item: QueueItem,
   snapshot: MonitoringSnapshot,
 ): FixTarget | "accounts" {

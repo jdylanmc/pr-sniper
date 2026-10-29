@@ -177,7 +177,7 @@ pub fn toss_and_requeue(
 /// Reviews an explicit Retry of a parked packet exit re-arms: on an item parked
 /// `tossed` or `exit_failed`, each run whose effect exit was not consumed, or that
 /// parked as tossed. Empty when the item is not parked that way.
-fn parked_exit_reviews(
+pub(crate) fn parked_exit_reviews(
     snapshot: &crate::queue::Snapshot,
     states: &crate::pr_state::PrStates,
     item: &crate::queue::Item,
