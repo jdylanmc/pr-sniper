@@ -426,8 +426,10 @@ impl Readiness {
         }
     }
 
-    /// Everything a sign-off is gated on. Approve and complete are not
-    /// offered for Azure DevOps here, so no write authority is claimed.
+    /// Everything a sign-off and its Approve vote are gated on. Azure DevOps
+    /// exposes no cheap per-repository vote check: a contributor may vote, and
+    /// a refused vote reports its permission failure. Completion is never
+    /// offered.
     pub fn observation(&self, account_id: &str) -> Observation {
         let (mergeable, merge_state) = self.mergeable();
         Observation {
@@ -450,7 +452,7 @@ impl Readiness {
             merge_rules_error: None,
             state: self.lifecycle().into(),
             draft: self.pull.draft,
-            permission: "READ".into(),
+            permission: "WRITE".into(),
             mergeable: mergeable.into(),
             merge_state: merge_state.into(),
             review_decision: self.review_decision(),

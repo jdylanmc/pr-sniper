@@ -4313,6 +4313,11 @@ export async function mountSettings(
     const sole =
       (repository.assignments?.length ?? 0) + (existing ? 0 : 1) === 1;
     const isPrimary = sole || primaryAssignmentId(repository) === assignmentId;
+    // Azure DevOps approves by reviewer vote only; it never merges.
+    const merges = repository.provider !== "azure_devops";
+    const merge = isPrimary && merges && !!existing?.actions?.merge;
+    const approve =
+      isPrimary && !!(existing?.actions?.approve || existing?.actions?.merge);
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
       `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" /><input type="hidden" name="duck" value="${escape(isPrimary ? (existing?.rubber_duck ?? "") : "")}" />
@@ -4326,9 +4331,17 @@ export async function mountSettings(
         <section class="repository-group" data-assign-permissions hidden>
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
-        <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="Approval and merge" data-value="${isPrimary && existing?.actions?.merge ? "merge" : isPrimary && existing?.actions?.approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${!isPrimary || (!existing?.actions?.approve && !existing?.actions?.merge) ? "checked" : ""} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${isPrimary && existing?.actions?.approve && !existing?.actions?.merge ? "checked" : ""} /><span>Approve</span></label><label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${isPrimary && existing?.actions?.merge ? "checked" : ""} /><span>&amp; Merge</span></label></div></div>
-        <label class="repository-check" data-include-self ${isPrimary && existing?.actions?.merge ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
-        <section class="repository-group" data-assign-tools hidden>${(Object.keys(toolRows) as PacketTool[]).map((id) => `<label class="repository-check tool-row" data-tool-row="${id}"><input type="checkbox" role="switch" name="tool" value="${id}" aria-label="${escape(toolRows[id].name)}" ${existing?.tools?.includes(id) ? "checked" : ""} /><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${toolRows[id].path}</svg><span class="tool-copy"><span class="tool-name">${escape(toolRows[id].name)}</span><small class="tool-detail" data-tool-detail>${escape(toolRows[id].detail)}</small></span></span></label>`).join("")}</section>
+        <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="${merges ? "Approval and merge" : "Approval"}" data-value="${merge ? "merge" : approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${approve ? "" : "checked"} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${approve && !merge ? "checked" : ""} /><span>Approve</span></label>${merges ? `<label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${merge ? "checked" : ""} /><span>&amp; Merge</span></label>` : ""}</div></div>
+        <label class="repository-check" data-include-self ${merge ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
+        <section class="repository-group" data-assign-tools hidden>${(
+          Object.keys(toolRows) as PacketTool[]
+        )
+          .filter((id) => merges || id !== "approve_and_merge")
+          .map(
+            (id) =>
+              `<label class="repository-check tool-row" data-tool-row="${id}"><input type="checkbox" role="switch" name="tool" value="${id}" aria-label="${escape(toolRows[id].name)}" ${existing?.tools?.includes(id) ? "checked" : ""} /><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${toolRows[id].path}</svg><span class="tool-copy"><span class="tool-name">${escape(toolRows[id].name)}</span><small class="tool-detail" data-tool-detail>${escape(toolRows[id].detail)}</small></span></span></label>`,
+          )
+          .join("")}</section>
         <p role="alert" hidden></p><div class="resource-actions" data-assign-actions><button class="primary">${existing ? "Save assignment" : "Assign agent"}</button><button type="button" data-cancel-resource>Cancel</button></div></form>`,
       opener,
     );
