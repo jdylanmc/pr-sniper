@@ -493,7 +493,10 @@ pub fn ready(
 pub fn approval_body(effect_id: &str, provider: &crate::storage::ProviderId) -> String {
     match provider {
         crate::storage::ProviderId::Github => {
-            format!("<!-- pr-sniper:action:{effect_id} -->\n\nPR Sniper")
+            format!(
+                "<!-- pr-sniper:action:{effect_id} -->\n\n{}",
+                crate::exit_writes::SIGNATURE
+            )
         }
         crate::storage::ProviderId::AzureDevops => String::new(),
     }
