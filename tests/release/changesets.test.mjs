@@ -129,11 +129,13 @@ ${HISTORY}`,
 test("consume preserves the real changelog history byte for byte", async () => {
   const real = readFileSync("CHANGELOG.md", "utf8");
   const after = applyChangesets(real, [
-    { type: "changed", issues: [291], prs: [], body: "Adopt changesets." },
+    { type: "changed", issues: [], prs: [], body: "Adopt changesets-test." },
   ]);
   const released = (text) => text.slice(text.search(/^## \d/m));
   assert.equal(released(after), released(real));
-  assert.match(after, /## Unreleased\n\n### Changed\n\n- Adopt changesets/);
+  const unreleased = after.slice(0, after.search(/^## \d/m));
+  assert.match(unreleased, /^- Adopt changesets-test\.$/m);
+  assert.ok(unreleased.indexOf("### Changed") < unreleased.indexOf("- Adopt"));
   await assertPrettierStable(after);
   assert.equal(applyChangesets(real, []), real);
 });
@@ -142,7 +144,7 @@ test("release moves Unreleased and bumps every checked-in version field", async 
   const root = fixture();
   const files = [...new Set(VERSION_FIELDS.map(([file]) => file))];
   try {
-    for (const file of [...files, "CHANGELOG.md"]) {
+    for (const file of files) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));
     }
@@ -151,6 +153,10 @@ test("release moves Unreleased and bumps every checked-in version field", async 
       entry("added", "Ship changesets.", "issue: 291\n"),
     );
     const previous = JSON.parse(readFileSync("package.json", "utf8")).version;
+    writeFileSync(
+      join(root, "CHANGELOG.md"),
+      `${HEAD}${HISTORY.replace("0.1.0", previous)}`,
+    );
     const [major, minor] = previous.split(".").map(Number);
     const version = `${major}.${minor + 1}.0`;
     let built = 0;

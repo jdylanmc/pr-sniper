@@ -44,8 +44,22 @@ jobs:
             exit 0
           fi
           tag="v$version"
+          dispatch() {
+            gh workflow run release.yml --ref "$tag"
+            for _ in $(seq 30); do
+              [ "$(runs)" != 0 ] && return 0
+              sleep 5
+            done
+            echo "::error::release.yml run for $tag not observed."
+            return 1
+          }
+          runs() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?branch=$tag" --jq '.total_count'
+          }
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists."
+            # Never move a tag; recover a lost dispatch for the same commit.
+            test "$(git rev-parse "$tag^{commit}")" = "$SHA"
+            if [ "$(runs)" = 0 ]; then dispatch; else echo "$tag already released or releasing."; fi
             exit 0
           fi
           grep -q "^## $version - " CHANGELOG.md
@@ -60,5 +74,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "PR Sniper $version" "$SHA"
           git push -q origin "refs/tags/$tag"
-          gh workflow run release.yml --ref "$tag"
+          dispatch
         timeout-minutes: 5

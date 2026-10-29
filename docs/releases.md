@@ -148,6 +148,8 @@ Branch protection decisions:
 - A tag pushed with `GITHUB_TOKEN` does not start **Signed macOS release**, so
   **Release tag** dispatches it on the tag ref; the existing gate still requires
   the exact tagged commit's green main-push CI.
+- **Release tag** is rerunnable: an existing tag must peel to the same commit
+  (never moved); if no **Signed macOS release** run exists for it, it dispatches one.
 
 ## Cut a release
 

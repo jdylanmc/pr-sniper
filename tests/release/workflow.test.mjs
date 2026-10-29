@@ -1881,6 +1881,8 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
     /for workflow in macos\.yml windows\.yml/,
     /event=push&branch=main/,
     /gh workflow run release\.yml --ref "\$tag"/,
+    /test "\$\(git rev-parse "\$tag\^\{commit\}"\)" = "\$SHA"/,
+    /if \[ "\$\(runs\)" = 0 \]; then dispatch;/,
   ])
     assert.match(run, pattern);
   assert.ok(run.indexOf("max_by") < run.indexOf("git tag -a"));
