@@ -402,7 +402,9 @@ fn owned_feedback_blocked_migration_keeps_the_operation_until_unblocked() {
 
             jobs[0].waiting = monitoring::WAITING_HUMAN_START.into();
             restarted.save_queue(&jobs).unwrap();
-            let fresh = prepare_dispatch(&restarted, &run.key, next).unwrap();
+            let fresh = prepare_dispatch(&restarted, &run.key, next)
+                .unwrap()
+                .unwrap();
             assert_eq!(fresh.operation.id, run.operation.id);
             assert_eq!(fresh.operation.attempt_count, 2);
             assert_eq!(fresh.operation.retry_deadline, run.operation.retry_deadline);

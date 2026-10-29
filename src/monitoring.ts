@@ -63,6 +63,8 @@ interface Health {
     retry_deadline: number;
     next_attempt_at: number | null;
     failure: string | null;
+    // Which account a credentials failure came from; absent on older records.
+    credentials_origin?: "github" | "copilot" | null;
     resume_cycle?: number;
     resume_at?: number | null;
   } | null;
@@ -345,8 +347,10 @@ export function renderMonitoring(
   const refreshAutomation = mountAutomation(
     automationRoot,
     (value) => {
+      const resumed = automation?.paused !== value?.paused;
       automation = value;
       options.onAutomation?.(value);
+      if (resumed) pushQueue();
       whenReleased(renderEvidence);
     },
     { compact: options.panel, onError: options.panel ? showError : undefined },
@@ -947,6 +951,14 @@ export function renderMonitoring(
     }
   }
 
+  function pushQueue() {
+    if (snapshot?.items)
+      queue(options.panel ? humanQueue(snapshot.items) : snapshot.items, {
+        paused: !!automation?.paused,
+        all: snapshot.items,
+      });
+  }
+
   // Deferred like every background redraw; queued after any earlier redraw,
   // so the failure is what remains once the press ends.
   function showUnavailable() {
@@ -972,8 +984,7 @@ export function renderMonitoring(
       if (requestedDetail === detailRevision) missingDetail = null;
       options.onSnapshot?.(snapshot);
       void refreshAutomation();
-      if (snapshot.items)
-        queue(options.panel ? humanQueue(snapshot.items) : snapshot.items);
+      pushQueue();
       // Evidence controls redraw after a press ends so its click survives.
       whenReleased(renderEvidence);
     } catch {

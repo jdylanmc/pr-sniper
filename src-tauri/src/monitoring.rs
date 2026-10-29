@@ -120,6 +120,9 @@ pub struct JobOperation {
     /// Rate-limit delay: the work waits, it did not fail and spent no attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backpressure_until: Option<i64>,
+    /// Which account a credentials failure came from; absent on older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_origin: Option<crate::backpressure::Origin>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -510,6 +513,21 @@ fn run_reconnected(run: &crate::review::ReviewRun, reconnected: &BTreeSet<String
             .and_then(|c| c.rubber_duck.as_ref())
             .and_then(|duck| duck.agent.ai_account.as_ref())
             .is_some_and(|ai| reconnected.contains(&ai.account_id))
+}
+
+/// Whether every account a run uses currently reads connected.
+fn run_accounts_connected(run: &crate::review::ReviewRun, connected: &BTreeSet<String>) -> bool {
+    let ai = |account: Option<&crate::storage::AiAccount>| {
+        account.is_none_or(|ai| connected.contains(&ai.account_id))
+    };
+    connected.contains(&run.job.account_id)
+        && ai(run.selection.agent.ai_account.as_ref())
+        && ai(run
+            .selection
+            .configuration
+            .as_ref()
+            .and_then(|c| c.rubber_duck.as_ref())
+            .and_then(|duck| duck.agent.ai_account.as_ref()))
 }
 
 /// Drops retired history entries nothing can read again. Kept: every live or
@@ -3499,6 +3517,7 @@ fn start_poll_operation(
         resume_cycle: 0,
         resume_at: None,
         backpressure_until: None,
+        credentials_origin: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: provider_key(&configuration.provider).into(),
         account_id: configuration
@@ -3687,6 +3706,23 @@ impl JobOperation {
             .map(|cooldown| now.saturating_add(*cooldown));
     }
 
+    /// A credentials park whose accounts all read connected is stale evidence:
+    /// it earns the regular cooldown instead of waiting for a reconnect that
+    /// never comes. Returns whether a resume was scheduled.
+    pub fn rearm_stale_credentials(&mut self, now: i64) -> bool {
+        if self.offline_since.is_some()
+            || !self.parked()
+            || self.resume_at.is_some()
+            || self.failure != Some(OperationFailure::Credentials)
+        {
+            return false;
+        }
+        self.resume_at = RESUME_COOLDOWNS_SECONDS
+            .get(usize::from(self.resume_cycle))
+            .map(|cooldown| now.saturating_add(*cooldown));
+        self.resume_at.is_some()
+    }
+
     /// Starts the next automatic attempt window for a parked failure: after its
     /// cooldown (spending a cycle) or, for credentials, once the account is
     /// connected again. Returns whether the operation was requeued.
@@ -3708,6 +3744,7 @@ impl JobOperation {
         self.retry_deadline = now + RETRY_WINDOW_SECONDS;
         self.next_attempt_at = Some(now);
         self.failure = None;
+        self.credentials_origin = None;
         self.resume_at = None;
         self.backpressure_until = None;
         self.ai_attempt = None;
@@ -3838,6 +3875,7 @@ impl JobOperation {
             resume_cycle: 0,
             resume_at: None,
             backpressure_until: None,
+            credentials_origin: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),
@@ -4432,7 +4470,11 @@ impl Monitor {
                 continue;
             }
             let account = run_reconnected(&run, &reconnected);
-            if run.operation.clone().auto_resume(account, now) {
+            let mut operation = run.operation.clone();
+            if run_accounts_connected(&run, &connected) && operation.rearm_stale_credentials(now) {
+                return Ok(true);
+            }
+            if operation.auto_resume(account, now) {
                 return Ok(true);
             }
         }
@@ -4464,7 +4506,7 @@ impl Monitor {
         now: i64,
     ) -> Result<usize, String> {
         let (connected, reconnected) = self.reconnections(accounts);
-        self.connected_seen = Some(connected);
+        self.connected_seen = Some(connected.clone());
         let mut resumed = 0;
         let mut reviews = store.load_reviews()?;
         let mut changed = false;
@@ -4491,6 +4533,10 @@ impl Monitor {
                 continue;
             }
             let account = run_reconnected(run, &reconnected);
+            if run_accounts_connected(run, &connected) && run.operation.rearm_stale_credentials(now)
+            {
+                changed = true;
+            }
             if run.operation.auto_resume(account, now) {
                 run.error = None;
                 run.phase = "Waiting for shared AI capacity".into();
