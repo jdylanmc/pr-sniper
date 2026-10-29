@@ -85,6 +85,31 @@ pub enum Progress {
     Publishing,
 }
 
+/// The operation that failed on a parked item. Typed; the UI labels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedOperation {
+    RepositoryCheck,
+    Review,
+    Publication,
+    ExitWrite,
+    FollowUp,
+    ProviderAction,
+}
+
+/// The likeliest fix for a parked item; the UI and MCP offer it as the action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Remedy {
+    /// Reconnect the failing account.
+    SignIn,
+    /// Pick another model for the refusing Agent.
+    ChangeModel,
+    /// Reconcile an unconfirmed provider write; never repost.
+    Reconcile,
+    Retry,
+}
+
 /// Typed causes of a failed packet exit (beside `publication_*`).
 pub const CAUSE_PANIC: &str = "panic";
 pub const CAUSE_TOSSED: &str = "tossed";
@@ -117,6 +142,9 @@ pub struct Item {
     pub failed_duck: Option<String>,
     // A parked run's Agent model refused service: Agent, model and typed refusal.
     pub failed_model: Option<review::FailedModel>,
+    // What failed (operation) and its likeliest fix; set only for failed items.
+    pub failed_operation: Option<FailedOperation>,
+    pub remedy: Option<Remedy>,
     // The primary is waiting on this teammate's report for the current state.
     pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
@@ -310,12 +338,15 @@ impl ExitContext<'_> {
     }
 }
 
+/// `blocked_publication` is set when the state is Failed because the review's
+/// publication candidate was blocked before any publication was saved.
 fn review_state(
     settings: &Settings,
     candidate: &review::host::Candidate,
     publications: &[publication::host::Candidate],
     feedback: &[crate::feedback::View],
     context: &ExitContext,
+    blocked_publication: &mut bool,
 ) -> State {
     let batch = candidate.run.as_ref().and_then(|run| {
         publications
@@ -487,12 +518,14 @@ fn review_state(
             .and_then(|p| p.blocked.as_deref())
             .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
     {
+        *blocked_publication = true;
         return State::Failed;
     }
     let comments = assignment.is_some_and(|a| a.comment);
     if !discarded && (comments || publication.is_some()) {
         // A recorded publication outlives later configuration edits.
         if publication.is_none() && batch.is_some_and(|p| p.blocked.is_some()) {
+            *blocked_publication = true;
             return State::Failed;
         }
         if let Some(publication) = publication {
@@ -688,6 +721,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             exit_writes: &snapshot.exit_writes,
             pr_states: &snapshot.pr_states,
         };
+        let mut blocked_publication = false;
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
@@ -698,10 +732,15 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     &snapshot.publications,
                     snapshot.feedback.get(&id).map(Vec::as_slice).unwrap_or(&[]),
                     &context,
+                    &mut blocked_publication,
                 )
             })
             .collect();
         let mut warnings = BTreeSet::new();
+        let mut check_failed = false;
+        // A live follow-up that fails the item, and whether its write is unconfirmed.
+        let mut follow_up_failed = false;
+        let mut follow_up_uncertain = false;
         let mut failures: Vec<monitoring::FailureClass> = Vec::new();
         failures.extend(
             reviews
@@ -779,6 +818,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 continue;
             }
             if let Some(state) = follow_up_state(follow_up) {
+                if state == State::Failed {
+                    follow_up_failed = true;
+                    follow_up_uncertain |= follow_up.run.uncertain;
+                }
                 states.push(state);
             }
             if follow_up.run.has_unsettled_analysis_failure() {
@@ -915,6 +958,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         continue;
                     }
                     states.push(State::Failed);
+                    check_failed = true;
                     failures.push(if credentials {
                         monitoring::FailureClass::Credentials
                     } else {
@@ -983,15 +1027,22 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();
-        let exit_cause = reviews
+        // The exit cause, the stage it came from (one `tossed` cause can be
+        // the review, its publication or its exit write) and whether that
+        // stage left an unconfirmed provider write.
+        let exit_failure = reviews
             .iter()
             .filter_map(|r| r.run.as_ref())
             .find_map(|run| {
                 use crate::exit_writes::Phase;
                 if failed(&run.operation) {
                     return match run.operation.failure {
-                        Some(monitoring::OperationFailure::Panic) => Some(CAUSE_PANIC),
-                        Some(monitoring::OperationFailure::Tossed) => Some(CAUSE_TOSSED),
+                        Some(monitoring::OperationFailure::Panic) => {
+                            Some((CAUSE_PANIC, FailedOperation::Review, false))
+                        }
+                        Some(monitoring::OperationFailure::Tossed) => {
+                            Some((CAUSE_TOSSED, FailedOperation::Review, false))
+                        }
                         _ => None,
                     };
                 }
@@ -1003,20 +1054,68 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                                 .is_some_and(publication::Publication::tossed)
                     })
                 {
-                    return Some(CAUSE_TOSSED);
+                    return Some((CAUSE_TOSSED, FailedOperation::Publication, false));
                 }
-                match context.write(run)?.phase {
-                    Phase::Failed => Some(CAUSE_EXIT_FAILED),
-                    Phase::Tossed if context.parked(run) => Some(CAUSE_TOSSED),
+                let write = context.write(run)?;
+                match write.phase {
+                    Phase::Failed => Some((
+                        CAUSE_EXIT_FAILED,
+                        FailedOperation::ExitWrite,
+                        write.uncertain,
+                    )),
+                    Phase::Tossed if context.parked(run) => {
+                        Some((CAUSE_TOSSED, FailedOperation::ExitWrite, write.uncertain))
+                    }
                     _ => None,
                 }
             });
+        let exit_cause = exit_failure.map(|(cause, _, _)| cause);
         let failure_cause = if state == State::Failed {
             exit_cause
                 .or_else(|| publication_cause(&snapshot.publications, &publication_items, &id))
         } else {
             None
         };
+        let failure_class = (state == State::Failed).then(|| {
+            failed_teammate
+                .as_ref()
+                .map(|teammate| teammate.cause.class())
+                .or_else(|| failures.into_iter().min())
+                .unwrap_or(monitoring::FailureClass::Other)
+        });
+        let failed_model = (state == State::Failed).then_some(failed_model).flatten();
+        let failed_operation = (state == State::Failed)
+            .then(|| {
+                if check_failed {
+                    Some(FailedOperation::RepositoryCheck)
+                } else if let Some((_, operation, _)) = exit_failure {
+                    Some(operation)
+                } else if blocked_publication
+                    || failure_cause.is_some_and(|cause| cause.starts_with("publication_"))
+                {
+                    Some(FailedOperation::Publication)
+                } else if reviews
+                    .iter()
+                    .any(|r| r.run.as_ref().is_some_and(|run| failed(&run.operation)))
+                {
+                    Some(FailedOperation::Review)
+                } else if follow_up_failed {
+                    Some(FailedOperation::FollowUp)
+                } else {
+                    None
+                }
+            })
+            .flatten();
+        let remedy = failure_class.map(|class| match class {
+            monitoring::FailureClass::Credentials => Remedy::SignIn,
+            _ if failed_model.is_some() => Remedy::ChangeModel,
+            _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
+            _ if exit_failure.is_some_and(|(_, _, uncertain)| uncertain) => Remedy::Reconcile,
+            _ if failed_operation == Some(FailedOperation::FollowUp) && follow_up_uncertain => {
+                Remedy::Reconcile
+            }
+            _ => Remedy::Retry,
+        });
         // The primary's exit leads; a teammate's report is never the item's exit.
         let exit_run = reviews
             .iter()
@@ -1064,16 +1163,12 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             },
             retry_all: false,
             failure_cause,
-            failure_class: (state == State::Failed).then(|| {
-                failed_teammate
-                    .as_ref()
-                    .map(|teammate| teammate.cause.class())
-                    .or_else(|| failures.into_iter().min())
-                    .unwrap_or(monitoring::FailureClass::Other)
-            }),
+            failure_class,
             failed_teammate,
             failed_duck,
-            failed_model: (state == State::Failed).then_some(failed_model).flatten(),
+            failed_model,
+            failed_operation,
+            remedy,
             blocked_by,
             summary: state.summary(),
             review_keys: reviews.iter().map(|r| r.key.clone()).collect(),

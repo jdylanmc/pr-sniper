@@ -19,6 +19,8 @@ test("schema enums are exactly the native ids", () => {
   assert.deepEqual(s.disposition.options, enums.disposition);
   assert.deepEqual(s.modelRefusal.options, enums.model_refusal);
   assert.deepEqual(s.failureClass.options, enums.failure_class);
+  assert.deepEqual(s.failedOperation.options, enums.failed_operation);
+  assert.deepEqual(s.remedy.options, enums.remedy);
 });
 
 test("a parked model refusal parses with its Agent, model and status", () => {
@@ -34,11 +36,14 @@ test("a parked model refusal parses with its Agent, model and status", () => {
       refusal: "rejected",
       status: 401,
     },
+    failed_operation: "review",
+    remedy: "change_model",
   };
   assert.deepEqual(s.queueItem.parse(parked), parked);
   for (const bad of [
     { ...parked, failed_model: { ...parked.failed_model, refusal: "denied" } },
     { ...parked, failed_model: { ...parked.failed_model, token: "x" } },
+    { ...parked, remedy: "reconnect" },
   ])
     assert.equal(s.queueItem.safeParse(bad).success, false);
 });

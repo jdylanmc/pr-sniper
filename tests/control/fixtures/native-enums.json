@@ -20,6 +20,14 @@
     "submit_verdict",
     "lgtm"
   ],
+  "failed_operation": [
+    "repository_check",
+    "review",
+    "publication",
+    "exit_write",
+    "follow_up",
+    "provider_action"
+  ],
   "failure_class": [
     "credentials",
     "permission",
@@ -46,5 +54,11 @@
     "merge_pending_behind_base",
     "merge_pending_conflicts",
     "publishing"
+  ],
+  "remedy": [
+    "sign_in",
+    "change_model",
+    "reconcile",
+    "retry"
   ]
 }

@@ -67,6 +67,10 @@ for (const [origin, heading] of [
       (entry) => entry.review.job.number !== 3,
     );
     await store("seed_queue_state", fixture.state);
+    const item = (await store("monitoring_snapshot")).items.find(
+      (entry) => entry.job.number === 3,
+    );
+    expect([item.failed_operation, item.remedy]).toEqual(["review", "sign_in"]);
     await page.goto("/");
     await showQueueGroup(page, "attention");
     const failed = page.getByRole("article", {
@@ -144,6 +148,10 @@ test("a model refusal names the Agent and model, and Fix lands on that Agent's m
   const item = await parkModel(page, store);
   expect(item.failure_class).toBe("model");
   expect(item.failed_model.model).toBe("example-model-fast");
+  expect([item.failed_operation, item.remedy]).toEqual([
+    "review",
+    "change_model",
+  ]);
   await page.goto("/");
   await showQueueGroup(page, "attention");
   const failed = page.getByRole("article", {
@@ -180,6 +188,7 @@ test("a model refusal's detail shows Agent, model and status with Change model f
   const facts = status.locator(".queue-facts");
   for (const [term, value] of [
     ["Cause", "Model / rejected"],
+    ["Operation", "Review"],
     ["Agent", "Correctness reviewer"],
     ["Model", "example-model-fast"],
     ["HTTP", "401"],

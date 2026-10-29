@@ -1079,6 +1079,8 @@ fn queue_and_detail_name_the_agent_model_a_parked_run_was_refused_by() {
             "model":"example-model-fast","refusal":"rejected","status":401})
     );
     assert!(item["failed_model"]["agent_name"].is_string());
+    assert_eq!(item["failed_operation"], "review");
+    assert_eq!(item["remedy"], "change_model");
     let detail = fixture.call(json!({"operation":"detail","item_id":item["id"]}));
     let detail: Value = serde_json::from_str(detail["result"]["text"].as_str().unwrap()).unwrap();
     assert_eq!(detail["item"]["failed_model"], item["failed_model"]);
@@ -1275,6 +1277,36 @@ fn native_enum_ids_match_the_mcp_contract() {
             ModelRefusal::Rejected | ModelRefusal::Unavailable | ModelRefusal::Retired => {}
         }
     }
+    use crate::queue::{FailedOperation, Remedy};
+    let operations = [
+        FailedOperation::RepositoryCheck,
+        FailedOperation::Review,
+        FailedOperation::Publication,
+        FailedOperation::ExitWrite,
+        FailedOperation::FollowUp,
+        FailedOperation::ProviderAction,
+    ];
+    for o in operations {
+        match o {
+            FailedOperation::RepositoryCheck
+            | FailedOperation::Review
+            | FailedOperation::Publication
+            | FailedOperation::ExitWrite
+            | FailedOperation::FollowUp
+            | FailedOperation::ProviderAction => {}
+        }
+    }
+    let remedies = [
+        Remedy::SignIn,
+        Remedy::ChangeModel,
+        Remedy::Reconcile,
+        Remedy::Retry,
+    ];
+    for r in remedies {
+        match r {
+            Remedy::SignIn | Remedy::ChangeModel | Remedy::Reconcile | Remedy::Retry => {}
+        }
+    }
     let classes = [
         FailureClass::Credentials,
         FailureClass::Permission,
@@ -1305,6 +1337,8 @@ fn native_enum_ids_match_the_mcp_contract() {
                 .collect::<Vec<_>>(),
             "merge_pending": MergePending { reason: MergeBlock::Conflicts, ci_not_run: true },
             "model_refusal": refusals,
+            "failed_operation": operations,
+            "remedy": remedies,
             "failure_class": classes,
         }),
     );
