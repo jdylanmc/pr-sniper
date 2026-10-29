@@ -1598,6 +1598,26 @@ async fn dismiss_stale_review(
 }
 
 #[tauri::command]
+async fn review_again(app: tauri::AppHandle, item_id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        if host.quitting.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".into());
+        }
+        let (again, batch) = {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let now = now_seconds()?;
+            let again = control::review_item_again(&store, &item_id, now)?;
+            (again, host.ai.dispatch(&store, now)?)
+        };
+        capacity::launch_batch(&app, batch);
+        Ok(again)
+    })
+    .await
+    .map_err(|_| "Review again could not run.".to_string())?
+}
+
+#[tauri::command]
 async fn clean_reviewed(app: tauri::AppHandle, item_id: Option<String>) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let select = |scope: &monitoring::TrackedPullRequest| {
@@ -4843,6 +4863,7 @@ pub fn run() {
             result_detail,
             clean_reviewed,
             dismiss_stale_review,
+            review_again,
             snapshot,
             save_preferences,
             saved_resources,
