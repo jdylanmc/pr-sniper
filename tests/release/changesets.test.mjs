@@ -126,6 +126,32 @@ ${HISTORY}`,
   }
 });
 
+test("consume skips only complete duplicate entries in the same subsection", () => {
+  const existing = [
+    "- Fix queue (#7).",
+    "- Fix queue. Preserve retry state.",
+    "- Keep",
+    "  wrapped.",
+  ];
+  const changelog = `${HEAD}\n### Fixed\n\n${existing.join("\n")}\n${HISTORY}`;
+  const fixed = (body) => ({ type: "fixed", issues: [], prs: [], body });
+  const after = applyChangesets(changelog, [
+    fixed("Fix queue"),
+    fixed("Fix queue."),
+    fixed("Keep\nwrapped."),
+    { ...fixed("Fix queue (#7)."), type: "added" },
+  ]);
+  assert.equal(
+    after,
+    `${HEAD}\n### Added\n\n- Fix queue (#7).\n\n### Fixed\n\n${[
+      ...existing,
+      "- Fix queue",
+      "- Fix queue.",
+    ].join("\n")}\n${HISTORY}`,
+  );
+  assert.equal(applyChangesets(after, [fixed("Fix queue")]), after);
+});
+
 test("consume preserves the real changelog history byte for byte", async () => {
   const real = readFileSync("CHANGELOG.md", "utf8");
   const after = applyChangesets(real, [

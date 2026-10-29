@@ -173,19 +173,27 @@ function replaceUnreleased(text, render) {
   );
 }
 
+// Complete bullet blocks: a "- " line plus its continuation lines.
+function bullets(lines) {
+  const out = [];
+  for (const line of lines) {
+    if (line.startsWith("- ") || out.length === 0) out.push(line);
+    else if (line.trim()) out[out.length - 1] += `\n${line}`;
+  }
+  return out;
+}
+
 // Pure: merge changesets into the changelog text. Already-present entries are skipped.
 export function applyChangesets(changelog, changesets) {
   const source = lf(changelog);
   return replaceUnreleased(source, (content) => {
     const blocks = parseSection(content);
-    const seen = new Set();
     for (const changeset of changesets) {
-      const entry = renderEntry(changeset);
-      if (content.includes(entry) || seen.has(entry)) continue;
-      seen.add(entry);
-      const lines = blocks.sections.get(changeset.type) || [];
-      const trimmed = trimBlank(lines);
-      blocks.sections.set(changeset.type, [...trimmed, ...entry.split("\n")]);
+      const entry = renderEntry(changeset).split("\n");
+      const lines = trimBlank(blocks.sections.get(changeset.type) || []);
+      const present = new Set(bullets(lines));
+      if (bullets(entry).every((bullet) => present.has(bullet))) continue;
+      blocks.sections.set(changeset.type, [...lines, ...entry]);
     }
     return renderSection(blocks);
   });
