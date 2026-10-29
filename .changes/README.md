@@ -2,15 +2,15 @@
 
 One file per PR: `.changes/<name>.md`. PRs never edit `CHANGELOG.md`.
 
-| Rule     | Value                                                                |
-| -------- | -------------------------------------------------------------------- |
-| Name     | Unique, lowercase `[a-z0-9._-]`, e.g. branch name or issue number    |
-| `type`   | `added`, `changed`, `deprecated`, `removed`, `fixed` or `security`   |
-| `issue`  | Optional; `291` or `291, 292`                                        |
-| `pr`     | Optional; PR number                                                  |
-| Body     | Curated user-facing text, [Keep a Changelog 1.1.0][kac]; no headings |
-| Opt out  | Docs-, CI- or test-only PR: label `no-changeset`                     |
-| Reserved | `README.md`                                                          |
+| Rule     | Value                                                                               |
+| -------- | ----------------------------------------------------------------------------------- |
+| Name     | Unique, lowercase `[a-z0-9._-]`, e.g. branch name or issue number                   |
+| `type`   | `added`, `changed`, `deprecated`, `removed`, `fixed` or `security`                  |
+| `issue`  | Optional; `291` or `291, 292`                                                       |
+| `pr`     | Optional; PR number                                                                 |
+| Body     | Curated user-facing text, [Keep a Changelog 1.1.0][kac]; no headings or blank lines |
+| Opt out  | Docs-, CI- or test-only PR: label `no-changeset`                                    |
+| Reserved | `README.md`                                                                         |
 
 ```markdown
 ---

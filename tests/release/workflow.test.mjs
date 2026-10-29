@@ -1856,6 +1856,10 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
     assert.doesNotMatch(run, /HEAD:main|origin main\b/, name);
   }
   assert.equal(changesets.jobs.consume.env.BRANCH, "changesets/consume");
+  assert.match(
+    changesets.jobs.consume.steps.at(-1).run,
+    /\[ "\$consumed" = "\$pending" \] && git merge-base --is-ancestor HEAD FETCH_HEAD/,
+  );
   assert.match(helper, /push -q --force origin "HEAD:refs\/heads\/\$branch"/);
   assert.match(helper, /gh workflow run macos\.yml --ref "\$branch"/);
   assert.match(helper, /gh workflow run windows\.yml --ref "\$branch"/);

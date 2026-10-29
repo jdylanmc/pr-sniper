@@ -74,6 +74,7 @@ test("parses front matter and rejects malformed changesets", () => {
     entry("added", "Add it.", "type: fixed\n"),
     entry("added", "Add it.", "issue: abc\n"),
     entry("added", "### Added\n\n- Add it."),
+    entry("fixed", "Fix queue.\n\nPreserve retries."),
   ])
     assert.throws(() => parseChangeset(bad, "bad.md"), ChangesetError, bad);
 });

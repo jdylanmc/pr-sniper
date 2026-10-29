@@ -69,6 +69,8 @@ export function parseChangeset(text, file = "changeset") {
     throw new ChangesetError(`${file}: type must be one of ${TYPES.join("|")}`);
   const body = match[2].trim();
   if (!body) throw new ChangesetError(`${file}: empty body`);
+  if (/\n[ \t]*\n/.test(body))
+    throw new ChangesetError(`${file}: body must not contain blank lines`);
   if (/^#/m.test(body))
     throw new ChangesetError(`${file}: body must not contain headings`);
   return {
