@@ -86,6 +86,7 @@ jobs:
             consumed="$(git diff --name-only --diff-filter=D HEAD...FETCH_HEAD -- .changes | sed 's|^\.changes/||' | LC_ALL=C sort)"
             if [ "$consumed" = "$pending" ] && git merge-base --is-ancestor HEAD FETCH_HEAD; then
               echo "$BRANCH already consumes: $pending"
+              bash scripts/changesets-pr.sh --ensure "$BRANCH" "chore(changelog): consume changesets" "Consumes into CHANGELOG.md Unreleased: $(echo $pending)"
               exit 0
             fi
           fi

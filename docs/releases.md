@@ -143,7 +143,7 @@ Branch protection decisions:
   pushes the branch and writes a compare link to the job summary; a maintainer
   opens the PR (human-opened PRs run CI normally).
 - `consume` is serialized per ref without cancellation and idempotent: it skips
-  when the bot branch already contains current `main` and consumes exactly the pending set, and never
+  when the bot branch already contains current `main` and consumes exactly the pending set (a rerun then only dispatches CI missing for the bot head), and never
   duplicates an entry already in `Unreleased`.
 - A tag pushed with `GITHUB_TOKEN` does not start **Signed macOS release**, so
   **Release tag** dispatches it on the tag ref; the existing gate still requires

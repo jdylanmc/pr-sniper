@@ -1861,8 +1861,13 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
     /\[ "\$consumed" = "\$pending" \] && git merge-base --is-ancestor HEAD FETCH_HEAD/,
   );
   assert.match(helper, /push -q --force origin "HEAD:refs\/heads\/\$branch"/);
-  assert.match(helper, /gh workflow run macos\.yml --ref "\$branch"/);
-  assert.match(helper, /gh workflow run windows\.yml --ref "\$branch"/);
+  assert.match(helper, /for workflow in macos\.yml windows\.yml; do/);
+  assert.match(helper, /gh workflow run "\$workflow" --ref "\$branch"/);
+  assert.match(helper, /runs\?head_sha=\$sha" --jq '\.total_count'\)" = 0/);
+  assert.match(
+    changesets.jobs.consume.steps.at(-1).run,
+    /already consumes: \$pending"\n\s*bash scripts\/changesets-pr\.sh --ensure "\$BRANCH"/,
+  );
   assert.doesNotMatch(helper, /skip ci/i);
   assert.deepEqual(ci.on.workflow_dispatch, null);
   assert.deepEqual(tagger.on, {
