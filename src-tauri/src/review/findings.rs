@@ -625,10 +625,10 @@ impl Contract {
             .last()
             .is_some_and(|last| !own_comment(&self.identities, last));
         // A correction of a mistaken resolution, or the acceptance of an author's won't-fix.
+        // The reply on that thread is the correction; its wording need not repeat the rationale.
         let required = thread.mine
             && assessments.iter().any(|a| {
                 a.thread_id == thread.id
-                    && reply.body.contains(&a.rationale)
                     && match a.disposition {
                         Disposition::StillApplies => thread.resolved,
                         Disposition::AuthorWontFix => true,
@@ -646,6 +646,29 @@ impl Contract {
         served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
         self.validate(call, assessments, ducks, served)?;
+        if let ExitCall::ReadyForHuman { summary } = call {
+            let uncorrected: Vec<&str> = assessments
+                .iter()
+                .filter(|a| {
+                    a.disposition == Disposition::StillApplies
+                        && self.threads.iter().any(|t| {
+                            t.id == a.thread_id
+                                && t.resolved
+                                && !self
+                                    .corrections
+                                    .iter()
+                                    .any(|c| c.thread_id == t.id && c.confirmed_in(t))
+                        })
+                })
+                .map(|a| a.thread_id.as_str())
+                .collect();
+            if !uncorrected.is_empty() {
+                summary.push_str(&format!(
+                    "\n\nResolved but still applies, uncorrected: {}.",
+                    uncorrected.join(", ")
+                ));
+            }
+        }
         if let ExitCall::LeaveComments { reply_comments, .. } = call {
             for a in assessments.iter().filter(|a| {
                 a.disposition == Disposition::StillApplies
@@ -656,7 +679,7 @@ impl Contract {
             }) {
                 let Some(reply) = reply_comments
                     .iter_mut()
-                    .find(|r| r.thread_id == a.thread_id && r.body.contains(&a.rationale))
+                    .find(|r| r.thread_id == a.thread_id)
                 else {
                     continue;
                 };
@@ -919,14 +942,25 @@ impl Contract {
                     return Err("Fixed needs a confirmed rubber_duck verify_fixed call for this thread, rationale and evidence on this state.".into());
                 }
             }
+            // A human handoff may name an uncorrected mistaken resolution instead (prepare
+            // appends it), so a refused correction reply never leaves panic_exit as the
+            // only exit. A standing PR Sniper resolution still needs the correction reply:
+            // only that ends its episode, or a later packet could carry it again.
+            let standing = self.identities.standing.contains(&a.thread_id);
             if thread.resolved
                 && a.disposition == Disposition::StillApplies
+                && (standing || call.exit() != Exit::ReadyForHuman)
                 && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
             {
                 let corrected = matches!(call, ExitCall::LeaveComments { reply_comments, .. }
-                    if reply_comments.iter().any(|r| r.thread_id == a.thread_id && r.body.contains(&a.rationale)));
+                    if reply_comments.iter().any(|r| r.thread_id == a.thread_id));
                 if !corrected {
-                    return Err("Earlier resolution was mistaken: reply to that existing thread with the correction rationale, never post a new root.".into());
+                    let fallback = if standing {
+                        ""
+                    } else {
+                        " If that reply cannot be posted, use ready_for_human."
+                    };
+                    return Err(format!("Earlier resolution was mistaken: reply to that existing thread with the correction rationale, never post a new root.{fallback}"));
                 }
             }
         }
@@ -950,11 +984,8 @@ impl Contract {
                 match assessments.iter().find(|a| a.thread_id == *id) {
                     Some(a) if a.disposition == Disposition::Fixed => {}
                     Some(a) if a.disposition == Disposition::AuthorWontFix => {
-                        if !reply_comments
-                            .iter()
-                            .any(|r| r.thread_id == *id && r.body.contains(&a.rationale))
-                        {
-                            return Err("Resolving an author won't-fix needs a reply on that thread containing your acceptance rationale.".into());
+                        if !reply_comments.iter().any(|r| r.thread_id == *id) {
+                            return Err("Resolving an author won't-fix needs a reply on that thread with your acceptance rationale.".into());
                         }
                     }
                     _ => return Err("Only own findings classified fixed with current-code evidence, or author_wont_fix, may be resolved.".into()),
