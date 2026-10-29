@@ -36,6 +36,7 @@ mod pulls;
 mod readiness;
 mod session;
 mod threads;
+mod vote;
 pub use pulls::Iteration;
 pub use session::Session;
 
@@ -44,10 +45,11 @@ pub enum Method {
     Get,
     Post,
     Patch,
+    Put,
     Delete,
 }
 
-/// One authenticated request; POST and PATCH carry a JSON body.
+/// One authenticated request; POST, PATCH and PUT carry a JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub method: Method,
@@ -75,6 +77,14 @@ impl Request {
     pub fn patch(url: String, body: Value) -> Self {
         Self {
             method: Method::Patch,
+            url,
+            body: Some(body),
+        }
+    }
+
+    pub fn put(url: String, body: Value) -> Self {
+        Self {
+            method: Method::Put,
             url,
             body: Some(body),
         }
@@ -125,6 +135,7 @@ impl Transport for HttpTransport {
             Method::Get => self.0.get(&request.url),
             Method::Post => self.0.post(&request.url),
             Method::Patch => self.0.patch(&request.url),
+            Method::Put => self.0.put(&request.url),
             Method::Delete => self.0.delete(&request.url),
         };
         let builder = match &request.body {

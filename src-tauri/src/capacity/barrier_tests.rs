@@ -322,3 +322,88 @@ fn a_finished_report_clears_the_blocked_chip_and_feeds_the_primary_packet() {
     store.save_queue(&jobs).unwrap();
     assert!(crate::review::teammates::entries(&store, &run).is_err());
 }
+
+#[test]
+fn retry_all_rearms_every_parked_teammate_on_a_tossed_item_and_counts_reviews() {
+    for second in [OperationFailure::Provider, OperationFailure::Tossed] {
+        let (_root, store) = team(2, true);
+        let coordinator = Coordinator::default();
+        let started = dispatched(&coordinator, &store, 100);
+        assert_eq!(started.len(), 2, "both teammates run before the primary");
+        for work in started {
+            finish(
+                &coordinator,
+                &store,
+                work,
+                Err(Failure::provider("refused")),
+                101,
+            );
+        }
+        let mut reviews = store.load_reviews().unwrap();
+        for (run, failure) in reviews
+            .iter_mut()
+            .zip([OperationFailure::Tossed, second.clone()])
+        {
+            run.operation.state = crate::monitoring::OperationState::ManualRetry;
+            run.operation.failure = Some(failure);
+            run.operation.next_attempt_at = None;
+        }
+        let parked: Vec<_> = reviews.iter().map(|r| r.operation.id.clone()).collect();
+        store.save_reviews(&reviews).unwrap();
+        let item = crate::queue::snapshot(&store, vec![])
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(item.failure_cause, Some(crate::queue::CAUSE_TOSSED));
+
+        assert_eq!(
+            crate::review::host::retry_all_parked(&store, 102).unwrap(),
+            (2, 0),
+            "{second:?}"
+        );
+        let live: Vec<_> = store
+            .load_reviews()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.operation.state == crate::monitoring::OperationState::Queued)
+            .collect();
+        assert_eq!(live.len(), 2, "both teammates get new operations");
+        assert!(live.iter().all(|r| !parked.contains(&r.operation.id)));
+    }
+}
+
+#[test]
+fn retry_all_counts_a_partly_applied_item_retry_per_review() {
+    let (_root, store) = team(2, true);
+    let coordinator = Coordinator::default();
+    for work in dispatched(&coordinator, &store, 100) {
+        finish(
+            &coordinator,
+            &store,
+            work,
+            Err(Failure::provider("refused")),
+            101,
+        );
+    }
+    let mut reviews = store.load_reviews().unwrap();
+    for run in &mut reviews {
+        run.operation.state = crate::monitoring::OperationState::ManualRetry;
+        run.operation.failure = Some(OperationFailure::Tossed);
+        run.operation.next_attempt_at = None;
+    }
+    store.save_reviews(&reviews).unwrap();
+    // The second teammate's Agent lost its AI account: its retry is refused.
+    let mut settings = store.load_settings().unwrap();
+    settings
+        .agents
+        .iter_mut()
+        .find(|agent| agent.name == "Teammate 1")
+        .unwrap()
+        .ai_account = None;
+    store.save_settings(&settings).unwrap();
+
+    assert_eq!(
+        crate::review::host::retry_all_parked(&store, 102).unwrap(),
+        (1, 1)
+    );
+}
