@@ -44,7 +44,7 @@ pub(crate) fn corrections(
     job: &QueueJob,
     assignment: &str,
 ) -> Vec<Correction> {
-    use crate::exit_writes::{StepKind, StepState, SIGNATURE};
+    use crate::exit_writes::{StepKind, StepState, LEGACY_SIGNATURE, SIGNATURE};
     let mut ordered: Vec<_> = writes
         .iter()
         .enumerate()
@@ -87,11 +87,13 @@ pub(crate) fn corrections(
             let Some(revision) = &step.revision else {
                 continue;
             };
-            let suffix = format!(
-                "\n\n{}\n<!-- pr-sniper:revision:{revision} -->\n\n{SIGNATURE}",
-                write.reply_marker(index)
-            );
-            let Some(text) = step.body.strip_suffix(&suffix) else {
+            // Writes saved before the signature changed keep their original suffix.
+            let Some(text) = [SIGNATURE, LEGACY_SIGNATURE].iter().find_map(|signature| {
+                step.body.strip_suffix(&format!(
+                    "\n\n{}\n<!-- pr-sniper:revision:{revision} -->\n\n{signature}",
+                    write.reply_marker(index)
+                ))
+            }) else {
                 continue;
             };
             latest
@@ -566,10 +568,12 @@ fn own_comment(ids: &crate::packet::FindingFacts, comment: &crate::packet::Comme
     ids.own_comments.contains(&comment.id)
         || (comment.author_id.as_deref() == Some(ids.account_id.as_str())
             && (comment.body.contains("<!-- pr-sniper:")
-                || comment
-                    .body
-                    .trim_end()
-                    .ends_with(crate::exit_writes::SIGNATURE)))
+                || [
+                    crate::exit_writes::SIGNATURE,
+                    crate::exit_writes::LEGACY_SIGNATURE,
+                ]
+                .iter()
+                .any(|signature| comment.body.trim_end().ends_with(signature))))
 }
 
 impl Contract {
