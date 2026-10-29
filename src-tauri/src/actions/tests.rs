@@ -1650,6 +1650,21 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
     let observed = store.load_actions().unwrap().observations.remove(0);
     assert_eq!(observed.failures, policy.max_attempts);
     assert_eq!(observed.retry_at, None);
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let parked = &snapshot.items[0];
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(
+        (parked.failed_operation, parked.remedy),
+        (
+            Some(queue::FailedOperation::ProviderAction),
+            Some(queue::Remedy::Retry)
+        )
+    );
+    let wire = serde_json::to_value(parked).unwrap();
+    assert_eq!(
+        (&wire["failed_operation"], &wire["remedy"]),
+        (&json!("provider_action"), &json!("retry"))
+    );
     request_observation_retry(&store, &item, now).unwrap();
 }
 

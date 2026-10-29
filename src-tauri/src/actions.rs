@@ -758,6 +758,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     }))
             {
                 item.state = State::Failed;
+                // Retry refreshes the provider evidence; it never reposts an action.
+                item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+                item.remedy = Some(queue::Remedy::Retry);
                 item.summary="Fresh provider review/policy evidence is unavailable; no action readiness is asserted.";
             }
         }
