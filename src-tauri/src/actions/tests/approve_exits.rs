@@ -561,6 +561,62 @@ fn a_parked_approve_toss_is_one_failed_row_typed_tossed_and_retry_requeues() {
     assert!(consume::retry_parked(&store, &id, NOW + 41).is_err());
 }
 
+/// A completed approve run whose exit parked as tossed, as in the test above.
+fn parked_completed_approve() -> (tempfile::TempDir, crate::storage::Store, String) {
+    let (root, store, id) = setup(true, false, approve_exit(false), false);
+    adopted(&store, &id, observed());
+    let effect = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    env.wire.0.lock().unwrap().reject = true;
+    let _ = host::execute_action(&mut env, &effect);
+    let job = store.load_reviews().unwrap().remove(0).job;
+    let binding = Binding::job(&job);
+    let mut states = store.load_pr_states().unwrap();
+    states.toss(&binding);
+    states.toss(&binding);
+    store.save_pr_states(&states).unwrap();
+    packet::settle(&store, &id, &observed(), NOW + 30).unwrap();
+    let reviews = store.load_reviews().unwrap();
+    assert_eq!(reviews[0].operation.state, OperationState::Completed);
+    assert_eq!(
+        item(&store, &id).failure_cause,
+        Some(crate::queue::CAUSE_TOSSED)
+    );
+    (root, store, id)
+}
+
+#[test]
+fn retry_all_counts_a_completed_run_with_an_unconsumed_exit() {
+    let (_root, store, _id) = parked_completed_approve();
+    let old = store.load_reviews().unwrap()[0].operation.id.clone();
+    assert_eq!(
+        crate::review::host::retry_all_parked(&store, NOW + 40).unwrap(),
+        (1, 0)
+    );
+    let reviews = store.load_reviews().unwrap();
+    assert_eq!(reviews.len(), 2);
+    assert_ne!(reviews[1].operation.id, old);
+    assert_eq!(reviews[1].operation.state, OperationState::Queued);
+}
+
+#[test]
+fn retry_all_counts_a_refused_completed_run_as_skipped() {
+    let (_root, store, _id) = parked_completed_approve();
+    let mut settings = store.load_settings().unwrap();
+    for agent in &mut settings.agents {
+        agent.ai_account = None;
+    }
+    store.save_settings(&settings).unwrap();
+    let before = store.load_reviews().unwrap();
+    assert_eq!(
+        crate::review::host::retry_all_parked(&store, NOW + 40).unwrap(),
+        (0, 1)
+    );
+    assert_eq!(store.load_reviews().unwrap(), before);
+}
+
 #[test]
 fn a_second_approve_exit_on_an_approved_head_settles_without_another_vote() {
     let (_root, store, item) = setup(true, false, approve_exit(false), false);
