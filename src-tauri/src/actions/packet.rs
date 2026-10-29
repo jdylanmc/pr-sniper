@@ -655,11 +655,15 @@ pub fn settle(
         // Red CI revokes a sign-off before its first effect (as `ready` does): failed
         // CI needs a fresh review. Once an effect exists the action gates refuse instead.
         // A human discussion change before the next poll revokes it the same way.
+        // Not while its own thread resolutions are unsettled (running, or done but
+        // not yet consumed): their consume would absorb the bump. A later pass revokes.
         let final_id = run.id.clone();
         if signed_off(run)
             && (Facts::from_observation(observation).ci == gates::Ci::Red
                 || discussion_moved(run, observation))
             && !ledger.effects.iter().any(|e| e.final_id == final_id)
+            && crate::exit_writes::for_review(store, &run.execution.operation.id)?
+                .is_none_or(|w| w.terminal())
         {
             let seq = approval.state_seq;
             ledger.finals[index].packet.as_mut().unwrap().settled = true;

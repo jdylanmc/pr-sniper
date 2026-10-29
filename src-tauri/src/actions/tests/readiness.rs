@@ -961,6 +961,84 @@ fn parked_lgtm_is_revoked_by_a_human_comment_seen_before_the_next_poll() {
 }
 
 #[test]
+fn parked_lgtm_revocation_waits_for_its_own_resolutions_to_be_consumed() {
+    let (root, item, state) = parked_lgtm(true);
+    let store = Store::new(root.path().into());
+    let env = env(&store);
+    let job = store.load_queue().unwrap()[0].clone();
+    let binding = Binding::job(&job);
+    let run = store.load_reviews().unwrap().last().unwrap().clone();
+    // The sign-off's own resolutions are still being written.
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes.push(crate::exit_writes::ExitWrite {
+        id: "sign-off-write".into(),
+        review_operation_id: run.operation.id.clone(),
+        job: run.job.clone(),
+        assignment_id: run.assignment_id.clone(),
+        comments_first: false,
+        published: false,
+        steps: vec![],
+        phase: crate::exit_writes::Phase::Verified,
+        operation: crate::monitoring::JobOperation::review(&run.job, NOW + 15),
+        uncertain: false,
+        error: None,
+        consumed: false,
+        reviewed_base_sha: None,
+        sign_off: Some(crate::exits::LgtmAction::Merge),
+    });
+    store.save_feedback(&ledger).unwrap();
+    {
+        let mut server = env.wire.0.lock().unwrap();
+        server.observation.author_id = server.observation.account_id.clone();
+        server.observation.checks = Some("FAILURE".into());
+    }
+    let red = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &item, Ok(red.clone()), NOW + 20).unwrap();
+    let parked_seq = store.load_pr_states().unwrap().state_seq(&binding);
+    let settled = |store: &Store| {
+        store.load_actions().unwrap().finals[0]
+            .packet
+            .as_ref()
+            .unwrap()
+            .settled
+    };
+    for phase in ["running", "completed, not consumed"] {
+        packet::settle(&store, &item, &red, NOW + 21).unwrap();
+        assert!(!settled(&store), "{phase}");
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            parked_seq,
+            "{phase}"
+        );
+        let mut ledger = store.load_feedback().unwrap();
+        ledger.exit_writes[0].phase = crate::exit_writes::Phase::Completed;
+        store.save_feedback(&ledger).unwrap();
+    }
+    // The resolutions' consume baselines the state; only then does red CI revoke.
+    let hash = store
+        .load_pr_states()
+        .unwrap()
+        .get(&binding)
+        .unwrap()
+        .hash
+        .clone()
+        .unwrap();
+    crate::pr_state::consume(&store, &binding, parked_seq, &hash).unwrap();
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.exit_writes[0].consumed = true;
+    store.save_feedback(&ledger).unwrap();
+    packet::settle(&store, &item, &red, NOW + 22).unwrap();
+    assert!(settled(&store));
+    assert!(store.load_pr_states().unwrap().state_seq(&binding) > parked_seq);
+    // An unchanged snapshot still queues the fresh review.
+    poll(&store, &state, NOW + 24);
+    let work = crate::capacity::candidates(&store, NOW + 26).unwrap();
+    assert_eq!(work.len(), 1);
+    assert!(work[0].reason.is_none(), "{:?}", work[0].reason);
+    assert!(env.wire.0.lock().unwrap().writes.is_empty());
+}
+
+#[test]
 fn parked_lgtm_in_flight_waits_out_red_ci_without_revocation_then_merges_once_green() {
     let (root, item, mut state) = parked_lgtm(false);
     let store = Store::new(root.path().into());
