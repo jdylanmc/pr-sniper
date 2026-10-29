@@ -402,6 +402,40 @@ fn an_exit_write_that_failed_after_an_effect_needs_attention_typed() {
 }
 
 #[test]
+fn a_blocked_publication_with_no_saved_record_fails_as_a_publication() {
+    use pr_sniper_lib::exits::{ExitOutcome, NewComment};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = with_exit(ExitOutcome::Comments {
+        new_comments: vec![NewComment {
+            path: "src/lib.rs".into(),
+            line: 1,
+            side: Some("head".into()),
+            body: "Finding.".into(),
+        }],
+        body: None,
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    });
+    seed(&store, std::slice::from_ref(&run), &[]);
+    // A changed Agent lens blocks the candidate before any publication record.
+    let mut configuration = settings();
+    configuration.agents[0].prompt = "A different lens.".into();
+    store.save_settings(&configuration).unwrap();
+    let failed = item(&store);
+    assert_eq!(failed.state, State::Failed);
+    assert_eq!(
+        failed.failed_operation,
+        Some(queue::FailedOperation::Publication)
+    );
+    let wire = serde_json::to_value(&failed).unwrap();
+    assert_eq!(
+        (&wire["state"], &wire["failed_operation"]),
+        (&json!("failed"), &json!("publication"))
+    );
+}
+
+#[test]
 fn a_review_tossed_through_its_budget_parks_typed_tossed() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());

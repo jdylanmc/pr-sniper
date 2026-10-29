@@ -338,12 +338,15 @@ impl ExitContext<'_> {
     }
 }
 
+/// `blocked_publication` is set when the state is Failed because the review's
+/// publication candidate was blocked before any publication was saved.
 fn review_state(
     settings: &Settings,
     candidate: &review::host::Candidate,
     publications: &[publication::host::Candidate],
     feedback: &[crate::feedback::View],
     context: &ExitContext,
+    blocked_publication: &mut bool,
 ) -> State {
     let batch = candidate.run.as_ref().and_then(|run| {
         publications
@@ -515,12 +518,14 @@ fn review_state(
             .and_then(|p| p.blocked.as_deref())
             .is_some_and(|reason| reason != "Comments are disabled for this Agent assignment.")
     {
+        *blocked_publication = true;
         return State::Failed;
     }
     let comments = assignment.is_some_and(|a| a.comment);
     if !discarded && (comments || publication.is_some()) {
         // A recorded publication outlives later configuration edits.
         if publication.is_none() && batch.is_some_and(|p| p.blocked.is_some()) {
+            *blocked_publication = true;
             return State::Failed;
         }
         if let Some(publication) = publication {
@@ -716,6 +721,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             exit_writes: &snapshot.exit_writes,
             pr_states: &snapshot.pr_states,
         };
+        let mut blocked_publication = false;
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
@@ -726,6 +732,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     &snapshot.publications,
                     snapshot.feedback.get(&id).map(Vec::as_slice).unwrap_or(&[]),
                     &context,
+                    &mut blocked_publication,
                 )
             })
             .collect();
@@ -1083,7 +1090,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     Some(FailedOperation::RepositoryCheck)
                 } else if let Some((_, operation, _)) = exit_failure {
                     Some(operation)
-                } else if failure_cause.is_some_and(|cause| cause.starts_with("publication_")) {
+                } else if blocked_publication
+                    || failure_cause.is_some_and(|cause| cause.starts_with("publication_"))
+                {
                     Some(FailedOperation::Publication)
                 } else if reviews
                     .iter()
