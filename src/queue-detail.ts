@@ -120,8 +120,10 @@ const reviewAgainStates: QueueItem["state"][] = [
   "stale_after_publication",
 ];
 
-// Jobs the host retires (`monitoring::retired`): never part of a new pass.
+// Jobs the host retires (`monitoring::retired`), plus a rebound repository's
+// old jobs (`binding_changed`): never part of a new pass.
 const retiredWaitings = [
+  "binding_changed",
   "superseded",
   "closed",
   "merged",

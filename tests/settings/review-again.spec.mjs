@@ -183,7 +183,7 @@ test("a removed teammate's unfinished run does not hide Review again", async ({
   }
 });
 
-test("Review again follows the host: hidden on a superseded iteration, shown on a moved base", async ({
+test("Review again follows the host: hidden on a superseded or rebound iteration, shown on a moved base", async ({
   page,
   store,
 }) => {
@@ -191,6 +191,15 @@ test("Review again follows the host: hidden on a superseded iteration, shown on 
     waiting: "superseded",
   });
   expect(superseded.state).toMatch(/^stale/);
+  await page.goto("/");
+  await expect(page.locator("[data-queue-status]")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Review again", exact: true }),
+  ).toHaveCount(0);
+  const rebound = await reviewedFixture(store, "completed", null, {
+    waiting: "binding_changed",
+  });
+  expect(rebound.state).toMatch(/^stale/);
   await page.goto("/");
   await expect(page.locator("[data-queue-status]")).toHaveCount(1);
   await expect(

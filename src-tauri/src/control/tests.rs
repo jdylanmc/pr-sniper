@@ -685,6 +685,51 @@ fn review_item_again_puts_every_new_job_first_even_when_not_runnable() {
     assert!(queue.next_enqueue_order >= other.work.as_ref().unwrap().enqueue_order);
 }
 
+#[test]
+fn review_item_again_refuses_a_rebound_configuration() {
+    let (_root, store) = capacity::tests::fixture(1, 1, true);
+    let mut old = store.load_queue().unwrap().remove(0);
+    let binding = crate::retention::Binding::job(&old);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "iteration-1",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 100,
+        },
+    );
+    states.consume(&binding, 1, "unchanged");
+    store.save_pr_states(&states).unwrap();
+    let mut run = crate::review::host::request(&store, "normal-1", true, 100).unwrap();
+    run.operation.state = OperationState::Completed;
+    store.save_reviews(&[run]).unwrap();
+    // Same configuration ID and number, now bound to another repository.
+    old.waiting = crate::monitoring::WAITING_BINDING_CHANGED.into();
+    let mut rebound = old.clone();
+    rebound.waiting = "human_start".into();
+    rebound.account_id = "999".into();
+    rebound.repository_id = "998".into();
+    rebound.pull_request_id = "997".into();
+    let work = rebound.work.as_mut().unwrap();
+    work.id = "rebound-1".into();
+    work.item_id = "rebound-item".into();
+    work.state_seq = 5;
+    store.save_queue(&[old.clone(), rebound.clone()]).unwrap();
+    let queue = store.load_queue_state().unwrap();
+    let states = store.load_pr_states().unwrap();
+    for item in [crate::queue::item_id(&old), crate::queue::item_id(&rebound)] {
+        assert_eq!(
+            work::review_item_again(&store, &item, 200).unwrap_err(),
+            "Repository binding changed."
+        );
+    }
+    assert_eq!(store.load_queue_state().unwrap(), queue);
+    assert_eq!(store.load_pr_states().unwrap(), states);
+}
+
 fn fixture_endpoint(port: u16) -> Endpoint {
     Endpoint {
         protocol: PROTOCOL,

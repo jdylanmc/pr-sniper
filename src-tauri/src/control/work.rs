@@ -212,17 +212,32 @@ pub fn request_again(
 /// `watch_pull_request` `review_again`, then the new pass goes first.
 /// `false`: the PR still has pending work, so nothing changed.
 pub fn review_item_again(store: &Store, item_id: &str, now: i64) -> Result<bool, String> {
-    let (repository_id, number) = store
-        .load_queue_state()?
+    let queue = store.load_queue_state()?;
+    let live = |job: &&QueueJob| job.work.is_some() && !crate::monitoring::retired(job);
+    let item = queue
         .jobs
         .iter()
-        .find(|job| {
-            job.work.is_some()
-                && !crate::monitoring::retired(job)
-                && crate::queue::item_id(job) == item_id
-        })
-        .map(|job| (job.configuration_id.clone(), job.number))
+        .filter(live)
+        .find(|job| crate::queue::item_id(job) == item_id)
         .ok_or("This pull request is no longer available.")?;
+    let (repository_id, number) = (item.configuration_id.clone(), item.number);
+    // `request_again` matches by configuration and number only. After a
+    // rebind, that pair can name another repository's PR or a job the host
+    // will never run: refuse rather than act on the wrong binding.
+    let binding = crate::retention::Binding::job(item);
+    if queue
+        .jobs
+        .iter()
+        .filter(live)
+        .filter(|job| job.configuration_id == repository_id && job.number == number)
+        .any(|job| {
+            job.waiting == crate::monitoring::WAITING_BINDING_CHANGED
+                || crate::retention::Binding::job(job) != binding
+        })
+    {
+        return Err("Repository binding changed.".into());
+    }
+    drop(queue);
     let before: HashSet<String> = work_ids(store)?;
     if !request_again(store, &repository_id, number, now)? {
         return Ok(false);
