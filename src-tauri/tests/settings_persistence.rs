@@ -725,3 +725,61 @@ fn legacy_intervals_and_crons_that_never_run_pause_every_repository_once() {
         assert!(fixture.store().load_settings().unwrap().repositories[0].enabled);
     }
 }
+
+#[test]
+fn azure_devops_approve_and_merge_is_refused_and_narrowed_to_approve_on_load() {
+    let fixture = Fixture::new();
+    let assignment = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let document = |actions: serde_json::Value, tools: serde_json::Value| {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value["agents"] = serde_json::json!([
+            {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "name":"Reviewer", "model":"m",
+             "ai_account":{"provider":"copilot","account_id":"101"},
+             "prompt":"Review carefully.", "signature":"Fixture"}
+        ]);
+        value["repositories"] = serde_json::json!([{
+            "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "provider": "azure_devops",
+            "name": "contoso/Web/app", "enabled": false,
+            "provider_account_id": "00000000-0000-0000-0000-000000000001",
+            "provider_repository_id": "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1",
+            "primary_assignment_id": assignment,
+            "assignments": [{"id": assignment, "agent_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "comment": false, "actions": actions, "tools": tools}]
+        }]);
+        value
+    };
+    let merge =
+        serde_json::json!({"reply": false, "approve": true, "merge": true, "include_self": true});
+    let tools = serde_json::json!(["read_changes", "approve_pull_request", "approve_and_merge"]);
+    for (actions, tools) in [
+        (merge.clone(), serde_json::Value::Null),
+        (
+            serde_json::json!({"reply": false, "approve": true, "merge": false}),
+            tools.clone(),
+        ),
+    ] {
+        let settings: Settings = serde_json::from_value(document(actions, tools)).unwrap();
+        assert_eq!(
+            fixture.store().save_settings(&settings).unwrap_err(),
+            pr_sniper_lib::storage::APPROVE_AND_MERGE_UNAVAILABLE
+        );
+    }
+
+    let config = fixture.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("settings.json"),
+        serde_json::to_vec(&document(merge, tools)).unwrap(),
+    )
+    .unwrap();
+    let loaded = fixture.store().load_settings().unwrap();
+    let assignment = &loaded.repositories[0].assignments[0];
+    let actions = assignment.actions.as_ref().unwrap();
+    assert!(actions.approve && !actions.merge && !actions.include_self);
+    assert_eq!(
+        assignment.tools.as_deref().unwrap(),
+        ["read_changes", "approve_pull_request"]
+    );
+    let authority = loaded.repositories[0].assignment_authority(assignment);
+    assert!(authority.approve && !authority.merge);
+}

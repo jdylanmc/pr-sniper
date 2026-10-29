@@ -3,20 +3,23 @@
 //! pending review to stage: `Create` posts one inline thread per frozen
 //! comment, each carrying its PR Sniper marker; `Submit` only reads them back
 //! and never posts again; `Discard` deletes the exact owned root comments.
-//! Approve (a later delivery) and completion are never performed here.
+//! Approve is the bound identity's reviewer vote of 10 ([`super::vote`]);
+//! completion and auto-complete are never performed.
 
 use super::readiness::Readiness;
 use super::threads::{AdoThread, ThreadRef};
+use super::vote::APPROVE;
 use super::{Reader, RepositoryKey};
+use crate::azure_devops::tenant::TenantId;
 use crate::monitoring::OperationFailure;
 use crate::provider::{
-    AccountReader, ChangedFile, CheckLogReader, CommentCapability, CommentReader, CommentWriter,
-    Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt, Ownership, Person,
-    PrSnapshot, Provenance, ProviderReads, ProviderReview, ProviderSession, PublicationDiagnostics,
-    PublicationReader, PullRequest, PullRequestReader, PullRequestStateReader, ReadGuard,
-    ReadinessReader, RemoteRepository, RepositoryBrowser, RepositoryReader, ResolvedTarget,
-    ReviewContext, ReviewPublisher, ReviewerOutcome, SessionControl, Thread, ThreadReader,
-    ThreadWriter, TopComment, TreeEntry,
+    AccountReader, Action, ChangedFile, CheckLogReader, CommentCapability, CommentReader,
+    CommentWriter, Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt,
+    Ownership, Person, PrSnapshot, Provenance, ProviderReads, ProviderReview, ProviderSession,
+    PublicationDiagnostics, PublicationReader, PullRequest, PullRequestReader,
+    PullRequestStateReader, ReadGuard, ReadinessReader, RemoteRepository, RepositoryBrowser,
+    RepositoryReader, ResolvedTarget, ReviewContext, ReviewPublisher, ReviewerOutcome,
+    SessionControl, Thread, ThreadReader, ThreadWriter, TopComment, TreeEntry,
 };
 use crate::publication::{
     InlineComment, Mutation, Publication, Receipt, RemoteState, WriteFailure,
@@ -564,16 +567,77 @@ impl CommentWriter for Session {
     }
 }
 
+/// The vote stays: PR Sniper never replaces the identity's own rejection or
+/// wait-for-author vote.
+pub const VOTE_STANDS: &str =
+    "The acting identity already voted against this PR; PR Sniper never replaces its vote.";
+
+/// Azure DevOps refused the vote: a branch policy or missing permission.
+pub const VOTE_REFUSED: &str = "Azure DevOps refused the Approve vote.";
+
+fn vote_refused() -> WriteFailure {
+    WriteFailure {
+        failure: Failure {
+            kind: OperationFailure::Permission,
+            ..Failure::permanent(VOTE_REFUSED)
+        },
+        uncertain: false,
+    }
+}
+
 impl ReviewerOutcome for Session {
+    /// Reconciles before it acts: an Approve vote the identity already holds
+    /// is the receipt and nothing is sent. Votes carry no text, so `body` is
+    /// unused. A vote is not pinned to a commit; the head is checked just
+    /// before it, and post-action verification re-reads it.
     fn approve_exact(
         &self,
-        _repository: &RemoteRepository,
-        _number: u64,
-        _account: &str,
-        _head: &str,
+        repository: &RemoteRepository,
+        number: u64,
+        account: &str,
+        head: &str,
         _body: &str,
     ) -> Result<OutcomeReceipt, WriteFailure> {
-        Err(refused(crate::exits::gates::UNSUPPORTED))
+        let read = |error: ConnectionError| WriteFailure {
+            failure: error.into(),
+            uncertain: false,
+        };
+        let reviewer = TenantId::parse(account)
+            .filter(|id| id.as_str() == self.identity().id)
+            .ok_or_else(|| read(ConnectionError::WrongIdentity))?;
+        let key = self.key(&repository.id).map_err(read)?;
+        let receipt = || OutcomeReceipt {
+            id: format!("{number}:{}", reviewer.as_str()),
+            actor_id: reviewer.as_str().to_owned(),
+            head: head.to_owned(),
+            action: Action::Approve,
+            merge_commit: None,
+        };
+        let client = &self.0.client;
+        self.0.runtime.block_on(async {
+            client
+                .latest_iteration(&key, number, head)
+                .await
+                .map_err(read)?;
+            match client
+                .reviewer_vote(&key, number, &reviewer)
+                .await
+                .map_err(read)?
+            {
+                Some(vote) if vote > 0 => return Ok(receipt()),
+                Some(vote) if vote < 0 => return Err(refused(VOTE_STANDS)),
+                _ => {}
+            }
+            match client.set_vote(&key, number, &reviewer, APPROVE).await {
+                Ok(APPROVE) => Ok(receipt()),
+                Ok(_) => Err(write_failure(ConnectionError::InvalidResponse)),
+                Err(
+                    ConnectionError::MissingReadPermission
+                    | ConnectionError::ProviderRejectedStatus(400 | 403 | 409),
+                ) => Err(vote_refused()),
+                Err(error) => Err(write_failure(error)),
+            }
+        })
     }
 
     fn merge_exact(

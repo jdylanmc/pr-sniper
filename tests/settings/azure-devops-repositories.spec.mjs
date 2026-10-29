@@ -3,7 +3,15 @@ import {
   providerFixture,
   repositoryPage,
 } from "./repository-provider-fixture.mjs";
-import { openFilters, openRule, backOne } from "./navigation.mjs";
+import {
+  openFilters,
+  openRule,
+  backOne,
+  seedAgent,
+  fixtureAgent,
+  openPermissions,
+  assignmentBack,
+} from "./navigation.mjs";
 
 const TENANT = "00000000-0000-0000-0000-00000000000a";
 const AVERY = "00000000-0000-0000-0000-000000000001";
@@ -354,4 +362,67 @@ test("teammate results of an earlier query are cleared and never picked", async 
   await expect(
     page.getByRole("button", { name: "Remove Blake Example", exact: true }),
   ).toHaveCount(0);
+});
+
+test("Azure DevOps assignments offer Approve but never Approve & Merge", async ({
+  page,
+  store,
+}) => {
+  await seedAgent(store, "33");
+  await providerFixture(page, store);
+  await azureBackend(page);
+  await repositoryPage(page, store);
+  const dialog = await addByUrl(page, ADO_URL);
+  await dialog.getByRole("button", { name: "Add & configure" }).click();
+  const editor = page.getByRole("dialog", {
+    name: "contoso/Web/app",
+    exact: true,
+  });
+  await editor
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  const assignment = page.getByRole("dialog", {
+    name: "Assign agent",
+    exact: true,
+  });
+  await assignment.getByRole("button", { name: "Choose Agent" }).click();
+  await assignment.getByRole("radio", { name: fixtureAgent.name }).click();
+  await expect(assignment.locator("input[name=agent]")).toHaveValue(
+    fixtureAgent.id,
+  );
+  await openPermissions(assignment);
+  const approval = assignment.getByRole("radiogroup", {
+    name: "Approval",
+    exact: true,
+  });
+  await expect(approval.getByRole("radio")).toHaveCount(2);
+  await expect(
+    assignment.getByRole("radio", { name: "Approve & Merge", exact: true }),
+  ).toHaveCount(0);
+  await expect(assignment.locator("[data-include-self]")).toBeHidden();
+  await approval.getByRole("radio", { name: "Approve", exact: true }).check();
+  await assignmentBack(page, assignment);
+  await assignment.getByRole("button", { name: "Tools", exact: true }).click();
+  await expect(
+    assignment.locator('[data-tool-row="approve_pull_request"] input'),
+  ).toBeChecked();
+  await expect(
+    assignment.locator('[data-tool-row="approve_and_merge"]'),
+  ).toHaveCount(0);
+  await assignmentBack(page, assignment);
+  await assignment
+    .getByRole("button", { name: "Assign agent", exact: true })
+    .click();
+  await expect(assignment).toHaveCount(0);
+  await editor
+    .getByRole("button", { name: "Save repository", exact: true })
+    .click();
+  await expect(editor).toHaveCount(0);
+  const [saved] = (await store("snapshot")).settings.repositories;
+  expect(saved.provider).toBe("azure_devops");
+  expect(saved.assignments[0].actions).toMatchObject({
+    approve: true,
+    merge: false,
+  });
+  expect(saved.assignments[0].tools ?? []).not.toContain("approve_and_merge");
 });

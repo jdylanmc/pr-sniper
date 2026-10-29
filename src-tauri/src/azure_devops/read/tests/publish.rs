@@ -12,25 +12,25 @@ use crate::publication::{self, Batch, Environment, Gate, Phase, Publication, Rem
 use crate::review::{Failure, ReviewRun, Selection};
 use std::collections::BTreeMap;
 
-fn sha(n: u32) -> String {
+pub(super) fn sha(n: u32) -> String {
     format!("{n:040x}")
 }
 
-fn git(path: &str) -> String {
+pub(super) fn git(path: &str) -> String {
     format!("{ORG}/{PROJECT}/_apis/git/repositories/{REPO}/{path}")
 }
 
-fn threads_url() -> String {
+pub(super) fn threads_url() -> String {
     git("pullRequests/7/threads?")
 }
 
-fn runtime() -> tokio::runtime::Runtime {
+pub(super) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
 }
 
-fn session(wire: &Arc<FakeWire>, runtime: &tokio::runtime::Runtime) -> Session {
+pub(super) fn session(wire: &Arc<FakeWire>, runtime: &tokio::runtime::Runtime) -> Session {
     wire.json(
         &format!("{ORG}/_apis/connectionData"),
         identity_body(AVERY, "Avery Example"),
@@ -38,7 +38,7 @@ fn session(wire: &Arc<FakeWire>, runtime: &tokio::runtime::Runtime) -> Session {
     Session::new(reader(wire, runtime).unwrap())
 }
 
-fn iterations(wire: &FakeWire) {
+pub(super) fn iterations(wire: &FakeWire) {
     wire.json(
         &git("pullRequests/7/iterations?"),
         json!({"value": [
@@ -48,7 +48,7 @@ fn iterations(wire: &FakeWire) {
     );
 }
 
-fn review() -> ReviewRun {
+pub(super) fn review() -> ReviewRun {
     let assignment_id = "00000000-0000-0000-0000-0000000000e1";
     let agent_id = "00000000-0000-0000-0000-0000000000e2";
     let settings: crate::storage::Settings = serde_json::from_value(json!({
@@ -144,7 +144,7 @@ fn publication() -> Publication {
     run
 }
 
-fn author(id: &str) -> Value {
+pub(super) fn author(id: &str) -> Value {
     json!({"id": id, "displayName": "Someone"})
 }
 
@@ -509,7 +509,7 @@ fn readiness_threads(wire: &FakeWire, threads: Value) {
     readiness_full(wire, json!({"value": []}), json!({"value": []}), threads);
 }
 
-fn readiness_full(wire: &FakeWire, evaluations: Value, statuses: Value, threads: Value) {
+pub(super) fn readiness_full(wire: &FakeWire, evaluations: Value, statuses: Value, threads: Value) {
     let mut pull = json!({
         "pullRequestId": 7, "status": "active", "title": "Change 7",
         "description": "Body", "createdBy": author(BLAKE),
@@ -648,7 +648,7 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
     assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
 
     // Approved build and status policy: the sign-off (and its ready
-    // notification) is offered; approve stays a later delivery.
+    // notification) is offered.
     let status_policy = policy(
         STATUS,
         "approved",
