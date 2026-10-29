@@ -1398,6 +1398,19 @@ body:has(.panel-shell) {
 .panel-shell .queue-status-actions .job-provider-link::after {
   content: none;
 }
+.panel-shell .queue-status-actions .queue-review-again {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  flex: none;
+  border-radius: 11px;
+  background: var(--panel-paper);
+  border: 1px solid var(--line-slate-d5dde4);
+  color: var(--text-slate-243247);
+}
 .panel-shell .queue-synopsis {
   margin: 8px 0 12px;
   font-size: 12px;
