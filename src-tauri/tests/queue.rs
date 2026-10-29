@@ -379,6 +379,21 @@ fn an_exit_write_that_failed_after_an_effect_needs_attention_typed() {
         failed.failed_operation,
         Some(queue::FailedOperation::ExitWrite)
     );
+    assert_eq!(failed.remedy, Some(queue::Remedy::Retry));
+    // A reply whose response was lost is reconciled, never reposted.
+    with_write(&store, &run, |w| {
+        w.phase = Phase::Failed;
+        w.steps[0].state = exit_writes::StepState::Attempted;
+        w.uncertain = true;
+        w.operation.state = OperationState::ManualRetry;
+        w.operation.failure = Some(OperationFailure::Network);
+    });
+    let unconfirmed = item(&store);
+    assert_eq!(
+        unconfirmed.failed_operation,
+        Some(queue::FailedOperation::ExitWrite)
+    );
+    assert_eq!(unconfirmed.remedy, Some(queue::Remedy::Reconcile));
     assert_eq!(
         failed.failure_class,
         Some(pr_sniper_lib::monitoring::FailureClass::Other)
@@ -665,6 +680,12 @@ fn thread_judgment_and_reply_failures_remain_operator_work_not_author_waits() {
     follow.uncertain = true;
     store.save_follow_ups(&[follow.clone()]).unwrap();
     assert_eq!(state(&store), State::Failed);
+    let unconfirmed = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    assert_eq!(
+        unconfirmed.failed_operation,
+        Some(queue::FailedOperation::FollowUp)
+    );
+    assert_eq!(unconfirmed.remedy, Some(queue::Remedy::Reconcile));
     follow.phase = follow_up::Phase::StaleAfterPublication;
     follow.uncertain = false;
     follow.receipt = Some("reply-1".into());

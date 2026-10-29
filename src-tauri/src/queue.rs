@@ -727,6 +727,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .collect();
         let mut warnings = BTreeSet::new();
         let mut check_failed = false;
+        // A live follow-up that fails the item, and whether its write is unconfirmed.
+        let mut follow_up_failed = false;
+        let mut follow_up_uncertain = false;
         let mut failures: Vec<monitoring::FailureClass> = Vec::new();
         failures.extend(
             reviews
@@ -804,6 +807,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 continue;
             }
             if let Some(state) = follow_up_state(follow_up) {
+                if state == State::Failed {
+                    follow_up_failed = true;
+                    follow_up_uncertain |= follow_up.run.uncertain;
+                }
                 states.push(state);
             }
             if follow_up.run.has_unsettled_analysis_failure() {
@@ -1009,8 +1016,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();
-        // The exit cause and the stage it came from: one `tossed` cause can
-        // be the review, its publication or its exit write.
+        // The exit cause, the stage it came from (one `tossed` cause can be
+        // the review, its publication or its exit write) and whether that
+        // stage left an unconfirmed provider write.
         let exit_failure = reviews
             .iter()
             .filter_map(|r| r.run.as_ref())
@@ -1019,10 +1027,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 if failed(&run.operation) {
                     return match run.operation.failure {
                         Some(monitoring::OperationFailure::Panic) => {
-                            Some((CAUSE_PANIC, FailedOperation::Review))
+                            Some((CAUSE_PANIC, FailedOperation::Review, false))
                         }
                         Some(monitoring::OperationFailure::Tossed) => {
-                            Some((CAUSE_TOSSED, FailedOperation::Review))
+                            Some((CAUSE_TOSSED, FailedOperation::Review, false))
                         }
                         _ => None,
                     };
@@ -1035,17 +1043,22 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                                 .is_some_and(publication::Publication::tossed)
                     })
                 {
-                    return Some((CAUSE_TOSSED, FailedOperation::Publication));
+                    return Some((CAUSE_TOSSED, FailedOperation::Publication, false));
                 }
-                match context.write(run)?.phase {
-                    Phase::Failed => Some((CAUSE_EXIT_FAILED, FailedOperation::ExitWrite)),
+                let write = context.write(run)?;
+                match write.phase {
+                    Phase::Failed => Some((
+                        CAUSE_EXIT_FAILED,
+                        FailedOperation::ExitWrite,
+                        write.uncertain,
+                    )),
                     Phase::Tossed if context.parked(run) => {
-                        Some((CAUSE_TOSSED, FailedOperation::ExitWrite))
+                        Some((CAUSE_TOSSED, FailedOperation::ExitWrite, write.uncertain))
                     }
                     _ => None,
                 }
             });
-        let exit_cause = exit_failure.map(|(cause, _)| cause);
+        let exit_cause = exit_failure.map(|(cause, _, _)| cause);
         let failure_cause = if state == State::Failed {
             exit_cause
                 .or_else(|| publication_cause(&snapshot.publications, &publication_items, &id))
@@ -1064,7 +1077,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .then(|| {
                 if check_failed {
                     Some(FailedOperation::RepositoryCheck)
-                } else if let Some((_, operation)) = exit_failure {
+                } else if let Some((_, operation, _)) = exit_failure {
                     Some(operation)
                 } else if failure_cause.is_some_and(|cause| cause.starts_with("publication_")) {
                     Some(FailedOperation::Publication)
@@ -1073,12 +1086,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .any(|r| r.run.as_ref().is_some_and(|run| failed(&run.operation)))
                 {
                     Some(FailedOperation::Review)
-                } else if follow_ups.iter().any(|f| {
-                    [&f.run.analysis, &f.run.publication]
-                        .into_iter()
-                        .flatten()
-                        .any(failed)
-                }) {
+                } else if follow_up_failed {
                     Some(FailedOperation::FollowUp)
                 } else {
                     None
@@ -1089,6 +1097,10 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             monitoring::FailureClass::Credentials => Remedy::SignIn,
             _ if failed_model.is_some() => Remedy::ChangeModel,
             _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
+            _ if exit_failure.is_some_and(|(_, _, uncertain)| uncertain) => Remedy::Reconcile,
+            _ if failed_operation == Some(FailedOperation::FollowUp) && follow_up_uncertain => {
+                Remedy::Reconcile
+            }
             _ => Remedy::Retry,
         });
         // The primary's exit leads; a teammate's report is never the item's exit.
