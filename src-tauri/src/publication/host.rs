@@ -159,6 +159,19 @@ fn prepare_launch(
     Ok(run)
 }
 
+/// Refuses a Retry all launch unless the publication is still parked for it.
+pub(crate) fn bulk_guard(store: &Store, review_id: &str) -> Result<(), String> {
+    if store
+        .load_publications()?
+        .iter()
+        .any(|p| p.review.operation.id == review_id && crate::queue::retry_all::bulk_retryable(p))
+    {
+        Ok(())
+    } else {
+        Err("This publication is no longer parked for Retry all.".into())
+    }
+}
+
 impl Coordinator {
     pub(crate) fn finished(&self) -> bool {
         self.active.lock().is_ok_and(|active| active.is_none())
@@ -178,7 +191,26 @@ impl Coordinator {
         Ok(())
     }
 
-    fn launch(app: &tauri::AppHandle, review_id: &str, manual: bool) -> Result<(), String> {
+    pub(crate) fn launch(
+        app: &tauri::AppHandle,
+        review_id: &str,
+        manual: bool,
+    ) -> Result<(), String> {
+        Self::launch_with(app, review_id, manual, false)
+    }
+
+    /// Retry all: re-checks eligibility under the lock that saves the retry, so
+    /// a withdrawal made after planning is never undone.
+    pub(crate) fn launch_bulk(app: &tauri::AppHandle, review_id: &str) -> Result<(), String> {
+        Self::launch_with(app, review_id, true, true)
+    }
+
+    fn launch_with(
+        app: &tauri::AppHandle,
+        review_id: &str,
+        manual: bool,
+        bulk: bool,
+    ) -> Result<(), String> {
         let host = app.state::<Host>();
         if host.quitting.load(Ordering::SeqCst) {
             return Err("PR Sniper is quitting.".into());
@@ -208,6 +240,9 @@ impl Coordinator {
                 {
                     return Err("This publication is already running.".into());
                 }
+            }
+            if bulk {
+                bulk_guard(&store, review_id)?;
             }
             prepare_launch(&store, review_id, manual, now_seconds()?)?
         };

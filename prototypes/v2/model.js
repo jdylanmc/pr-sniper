@@ -1204,6 +1204,14 @@
           state.reviews.push(next);
         } else requeue(review);
         break;
+      case "retry-all": {
+        const failed = state.reviews.filter(
+          (item) => item.state === "failed" && !item.nextId,
+        );
+        requireValue(failed.length, "Nothing to retry.");
+        failed.forEach(requeue);
+        break;
+      }
       case "interrupt":
         requireValue(review.state === "running", "This review is not running.");
         review.state = "failed";

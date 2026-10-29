@@ -1543,7 +1543,8 @@ body:has(.panel-shell) {
   width: 16px;
   height: 16px;
 }
-.panel-shell .work-retry-all:disabled {
+.panel-shell .work-retry-all:disabled,
+.panel-shell .work-retry-all[aria-disabled="true"] {
   opacity: 0.5;
 }
 .panel-shell .work-retry-all + .work-list {
@@ -1600,8 +1601,19 @@ body:has(.panel-shell) {
 .queue-group > .queue-item:has(.queue-retry, .queue-dismiss) {
   padding-right: 76px;
 }
+/* Credentials rows carry Fix beside Retry. */
+.panel-shell .queue-item:has(.queue-retry) .queue-fix {
+  right: 70px;
+}
+.queue-group > .queue-item:has(.queue-fix):has(.queue-retry) {
+  padding-right: 136px;
+}
 .queue-group > .work-retry-all {
   margin: 4px 12px 8px auto;
+}
+.queue-group[data-empty="true"] > .work-retry-all {
+  justify-self: end;
+  align-self: start;
 }
 
 .panel-shell .queue-empty > .panel-icon {

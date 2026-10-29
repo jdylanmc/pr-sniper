@@ -216,6 +216,25 @@ function fixTarget(cause: string): FixTarget | undefined {
   return /copilot|^ai_/.test(cause) ? "ai" : "repository-account";
 }
 
+// The account a credentials failure needs, from the failing run's recorded
+// origin. Repository checks and publications use the git account; a review
+// record without an origin falls back to Accounts.
+export function credentialsFixTarget(
+  item: QueueItem,
+  snapshot: MonitoringSnapshot,
+): FixTarget | "accounts" {
+  const review = failedReviews(item, snapshot).find(
+    (candidate) => candidate.run?.operation.failure === "credentials",
+  );
+  if (!review) return "repository-account";
+  const origin = review.run?.operation.credentials_origin;
+  return origin === "copilot"
+    ? "ai"
+    : origin === "github"
+      ? "repository-account"
+      : "accounts";
+}
+
 export type RecoveryCommand = [string, Record<string, unknown>];
 
 // Every recovery this failure needs: a repository poll retry and each of the
@@ -514,7 +533,7 @@ function renderFailureFacts(
   if (last) rows.push(["Last attempt", `${compactDuration(now - last)} ago`]);
   const next = document.createElement("span");
   const resume = item.resume_at ?? operation?.resume_at ?? null;
-  if (resume != null && item.failure_class !== "credentials") {
+  if (resume != null) {
     next.innerHTML = `${icon(clockPath)}`;
     next.className = "queue-fact-time";
     next.append(compactDuration(resume - now));

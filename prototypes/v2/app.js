@@ -88,7 +88,7 @@ const queued = () =>
 const human = () =>
   state.reviews.filter(
     (review) =>
-      ["human", "question"].includes(review.state) ||
+      ["human", "question", "failed"].includes(review.state) ||
       (review.state === "stale" && review.dismissedHead !== review.head) ||
       (review.state === "queued" && !review.trusted),
   );
@@ -600,6 +600,15 @@ function queuePage() {
   const waiting = attention.filter((review) => !ready.includes(review));
   const view = queueFilter ?? (ready.length ? "ready" : "attention");
   const items = view === "ready" ? ready : waiting;
+  // Retry all: icon + count; while paused, re-armed work shows queued.
+  const failed = waiting.filter((review) => review.state === "failed").length;
+  const parked = state.monitoring
+    ? 0
+    : queued().filter((review) => review.restart).length;
+  const retryAll =
+    view === "attention" && (failed || parked)
+      ? `<button type="button" class="work-retry-all" data-action="retry-all" data-retry-all="${failed ? "retry" : "queued"}" aria-label="${failed ? "Retry all failed" : "Queued until resume"}" title="${failed ? "Retry all failed" : "Queued until resume"}"${failed ? "" : ' aria-disabled="true"'}>${icon(failed ? "refresh" : "clock")}<span>${failed || parked}</span></button>`
+      : "";
   return `<div class="queue-metrics" role="group" aria-label="Human handoffs">
     ${[
       ["ready", "Ready for you", ready.length, "need your eyes", "queue"],
@@ -617,7 +626,7 @@ function queuePage() {
       )
       .join("")}
   </div>
-  <div class="page-scroll queue-scroll" data-scroll="queue" id="human-panel">${
+  <div class="page-scroll queue-scroll" data-scroll="queue" id="human-panel">${retryAll}${
     items.length
       ? `<div class="queue-group" data-queue-group="${view}" id="human-list">${items
           .map(
@@ -2396,6 +2405,19 @@ popover.addEventListener("click", (event) => {
   }
   if (action === "review") {
     navigate("review", button.dataset.reviewId);
+    return;
+  }
+  if (action === "retry-all") {
+    if (button.getAttribute("aria-disabled") === "true") return;
+    try {
+      remember();
+      save(Demo.update(state, "retry-all"));
+      syncChrome();
+      render();
+      stage.querySelector('[data-action="retry-all"]')?.focus();
+    } catch (error) {
+      showError(error.message);
+    }
     return;
   }
   if (action === "back") {
