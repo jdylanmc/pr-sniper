@@ -565,12 +565,8 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "retry_all_parked" => {
-            let plan = pr_sniper_lib::queue::retry_all::plan(store, vec![])?;
-            let done = pr_sniper_lib::queue::retry_all::rearm(store, &plan, 1_800_000_110);
-            Ok(json!({
-                "retried": done.len(),
-                "skipped": plan.skipped + plan.items.len() - done.len(),
-            }))
+            let (retried, skipped) = pr_sniper_lib::queue::retry_all::rearm(store, 1_800_000_110)?;
+            Ok(json!({ "retried": retried, "skipped": skipped }))
         }
         "retry_action_observation" => {
             pr_sniper_lib::actions::request_observation_retry(

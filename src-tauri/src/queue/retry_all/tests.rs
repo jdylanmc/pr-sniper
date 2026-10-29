@@ -89,7 +89,7 @@ fn retry_all_rearms_credentials_parks_while_paused_and_leaves_human_decisions() 
     let first = plan(&store, vec![]).unwrap();
     assert_eq!(first.items.len(), 2);
     assert_eq!(first.skipped, 2);
-    assert_eq!(rearm(&store, &first, NOW + 1).len(), 2);
+    assert_eq!(rearm(&store, NOW + 1).unwrap(), (2, 2));
 
     // Each re-armed review starts a fresh operation; the parked one stays as history.
     let mut queued: Vec<_> = store

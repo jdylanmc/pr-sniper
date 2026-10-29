@@ -1,10 +1,10 @@
-//! Bulk Retry for Needs attention: one plan for the Queue pill and control.
-//! It re-arms through the per-item Retry paths and leaves human decisions
-//! (permanent failures, user cancellation, panic exits, provider actions)
-//! parked.
-use super::{Item, Snapshot, State, CAUSE_EXIT_FAILED, CAUSE_PANIC, CAUSE_TOSSED};
+//! Bulk Retry for Needs attention: the Queue pill's count and plan. Packets
+//! and reviews re-arm through `review::host::retry_all_parked`, the path
+//! control `retry_all` uses; human decisions (permanent failures, user
+//! cancellation, panic exits, withdrawn publications) stay parked.
+use super::{Item, Snapshot, State};
 use crate::{
-    monitoring::{FailureClass, OperationFailure, OperationState, ScheduleHealth},
+    monitoring::{OperationFailure, OperationState, ScheduleHealth},
     publication::{Phase, RemoteState},
     storage::Store,
 };
@@ -47,23 +47,28 @@ fn human(failure: &Option<OperationFailure>) -> bool {
     )
 }
 
+/// A parked publication Retry all may reconcile. A withdrawn batch never
+/// re-arms: manual retry would un-cancel it.
+pub(crate) fn bulk_retryable(p: &crate::publication::Publication) -> bool {
+    !p.cancelled
+        && !matches!(p.phase, Phase::Discarded | Phase::Stale)
+        && p.receipts
+            .last()
+            .is_none_or(|r| r.state != RemoteState::Deleted)
+        && p.operation.state != OperationState::Completed
+        && (p.uncertain || PARKED.contains(&p.operation.state))
+        && !human(&p.operation.failure)
+}
+
+/// Mirrors `review::host::retry_all_parked` (shared with control `retry_all`)
+/// for packets and reviews, plus parked polls and publications.
 pub(crate) fn recovery(item: &Item, snapshot: &Snapshot, paused: bool) -> Recovery {
     let mut recovery = Recovery::default();
-    if item.state != State::Failed
-        || item.failure_cause == Some(CAUSE_PANIC)
-        || item
-            .action_status
-            .as_ref()
-            .is_some_and(|status| status.effects.iter().any(|e| e.needs_reconciliation()))
-    {
+    if item.state != State::Failed {
         return recovery;
     }
-    if item.failure_class != Some(FailureClass::Credentials)
-        && matches!(item.failure_cause, Some(CAUSE_TOSSED | CAUSE_EXIT_FAILED))
-    {
-        recovery.packet = true;
-        return recovery;
-    }
+    recovery.packet =
+        !crate::exits::consume::parked_exit_reviews(snapshot, &snapshot.pr_states, item).is_empty();
     // A parked repository poll retries too, so reviews restart on fresh data.
     recovery.polls = snapshot
         .health
@@ -82,20 +87,11 @@ pub(crate) fn recovery(item: &Item, snapshot: &Snapshot, paused: bool) -> Recove
         .filter(|candidate| item.review_keys.contains(&candidate.key))
         .filter_map(|candidate| candidate.run.as_ref().map(|run| (&candidate.key, run)))
         .collect();
-    // A revision is reviewed once: only a run that itself failed, with
-    // nothing published or pending for it, starts again.
-    for (key, run) in &runs {
-        if PARKED.contains(&run.operation.state)
-            && !human(&run.operation.failure)
-            && run.result.is_none()
-            && !snapshot
-                .publications
-                .iter()
-                .any(|p| p.publication.is_some() && p.review_operation_id == run.operation.id)
-        {
-            recovery.reviews.push((*key).clone());
-        }
-    }
+    recovery.reviews = runs
+        .iter()
+        .filter(|(_, run)| PARKED.contains(&run.operation.state) && !human(&run.operation.failure))
+        .map(|(key, _)| (*key).clone())
+        .collect();
     // Publications refuse to start while paused; they wait for a resume.
     if !paused {
         let ids: BTreeSet<_> = runs.iter().map(|(_, run)| &run.operation.id).collect();
@@ -103,19 +99,7 @@ pub(crate) fn recovery(item: &Item, snapshot: &Snapshot, paused: bool) -> Recove
             .publications
             .iter()
             .filter(|candidate| ids.contains(&candidate.review_operation_id))
-            .filter(|candidate| {
-                // A withdrawn batch never re-arms: manual retry would un-cancel it.
-                candidate.publication.as_ref().is_some_and(|p| {
-                    !p.cancelled
-                        && !matches!(p.phase, Phase::Discarded | Phase::Stale)
-                        && p.receipts
-                            .last()
-                            .is_none_or(|r| r.state != RemoteState::Deleted)
-                        && p.operation.state != OperationState::Completed
-                        && (p.uncertain || PARKED.contains(&p.operation.state))
-                        && !human(&p.operation.failure)
-                })
-            })
+            .filter(|candidate| candidate.publication.as_ref().is_some_and(bulk_retryable))
             .map(|candidate| candidate.review_operation_id.clone())
             .collect();
     }
@@ -152,21 +136,11 @@ pub fn plan(store: &Store, health: Vec<ScheduleHealth>) -> Result<Plan, String> 
     Ok(plan)
 }
 
-/// Re-arms the plan's packet states and review runs in `store`; returns the
-/// items with at least one re-armed recovery. Dispatch keeps pause, capacity
-/// and backpressure gates, so paused work waits queued for a resume.
-pub fn rearm(store: &Store, plan: &Plan, now: i64) -> BTreeSet<String> {
-    let mut done = BTreeSet::new();
-    for (id, recovery) in &plan.items {
-        let mut ok = recovery.packet && crate::exits::consume::retry_parked(store, id, now).is_ok();
-        for key in &recovery.reviews {
-            ok |= crate::review::host::request(store, key, true, now).is_ok();
-        }
-        if ok {
-            done.insert(id.clone());
-        }
-    }
-    done
+/// Re-arms every parked packet state and review run through the path control
+/// `retry_all` uses; returns (retried, skipped) review keys. Dispatch keeps
+/// pause, capacity and backpressure gates, so paused work waits queued.
+pub fn rearm(store: &Store, now: i64) -> Result<(usize, usize), String> {
+    crate::review::host::retry_all_parked(store, now)
 }
 
 #[cfg(test)]
