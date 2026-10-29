@@ -82,16 +82,23 @@ async function fixture(mode) {
             ? azureAccounts
             : request.operation === "resolve"
               ? azureResolution
-              : request.operation === "watch"
+              : request.operation === "retry_all"
                 ? {
-                    state: "waiting",
-                    reason: "paused",
-                    paused: true,
-                    prioritized: 0,
-                    item_id: null,
+                    state: "requested",
+                    retried: 2,
+                    skipped: 1,
                     replayed: false,
                   }
-                : null;
+                : request.operation === "watch"
+                  ? {
+                      state: "waiting",
+                      reason: "paused",
+                      paused: true,
+                      prioritized: 0,
+                      item_id: null,
+                      replayed: false,
+                    }
+                  : null;
     return result
       ? { protocol, ok: true, result }
       : {
@@ -240,6 +247,35 @@ test("MCP preserves native conflicts and retry identity without retrying effects
     assert.equal(f.calls[0].request_id, request.request_id);
     assert.equal(f.calls[0].issued_at, request.issued_at);
     assert.equal(f.calls[0].edit.kind, "doctrine");
+  } finally {
+    await f.close();
+  }
+});
+
+test("MCP retry_all is one identified native mutation with counts", async () => {
+  const f = await fixture("modern");
+  try {
+    const { tools } = await f.client.listTools();
+    const tool = tools.find((entry) => entry.name === "retry_all");
+    assert(tool.inputSchema.required.includes("request_id"));
+    assert.equal(tool.annotations.readOnlyHint, false);
+    const missing = await f.client.callTool({
+      name: "retry_all",
+      arguments: {},
+    });
+    assert.equal(missing.isError, true);
+    assert.equal(f.calls.length, 0);
+    const identity = (
+      await f.client.callTool({ name: "prepare_request", arguments: {} })
+    ).structuredContent;
+    const response = await f.client.callTool({
+      name: "retry_all",
+      arguments: identity,
+    });
+    assert.equal(response.isError, false, JSON.stringify(response));
+    assert.equal(response.structuredContent.result.retried, 2);
+    assert.equal(response.structuredContent.result.skipped, 1);
+    assert.deepEqual(f.calls, [{ operation: "retry_all", ...identity }]);
   } finally {
     await f.close();
   }
