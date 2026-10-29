@@ -391,7 +391,7 @@ pub fn prepare_effect(
     let effect=Effect{cancelled:false,reconcile_attempts:0,reconcile_requested:false,id:id.clone(),final_id:run.id.clone(),item_id:run.basis.item_id.clone(),action,operation,
         observation:current.clone(),body:match &run.packet {
             Some(_) => packet::approval_body(&id, &run.basis.repository.provider),
-            None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\nPR Sniper"),
+            None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\n{}", crate::exit_writes::SIGNATURE),
         },
         state:EffectState::Prepared,error:None,receipt:None};
     ledger.effects.push(effect.clone());
