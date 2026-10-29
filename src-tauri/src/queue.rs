@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod dismissal;
+pub mod retry_all;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +149,8 @@ pub struct Item {
     pub blocked_by: Option<review::teammates::BlockedBy>,
     // Earliest automatic resume of a parked failure; absent once it waits for a human.
     pub resume_at: Option<i64>,
+    /// Retry all re-arms this failed item; human decisions stay parked.
+    pub retry_all: bool,
     pub summary: &'static str,
     pub review_keys: Vec<String>,
     pub follow_up_ids: Vec<String>,
@@ -194,6 +197,7 @@ pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, 
     let mut snapshot = normal_snapshot(store, health)?;
     crate::actions::project(store, &mut snapshot)?;
     dismissal::project(store, &mut snapshot)?;
+    retry_all::project(store, &mut snapshot)?;
     Ok(snapshot)
 }
 
@@ -1148,6 +1152,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             } else {
                 None
             },
+            retry_all: false,
             failure_cause,
             failure_class,
             failed_teammate,
