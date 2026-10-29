@@ -1430,3 +1430,34 @@ fn same_head_rerun_publishes_no_new_findings_unless_reviewed_again() {
     c.identities.revision_reviewed = false;
     assert!(c.validate(&fresh, &[still], &[], |_| Ok(())).is_ok());
 }
+
+#[test]
+fn legacy_signed_corrections_and_comments_stay_ours() {
+    let current = correction_write();
+    let mut legacy = current.clone();
+    legacy.steps[0].body = legacy.steps[0].body.replace(
+        crate::exit_writes::SIGNATURE,
+        crate::exit_writes::LEGACY_SIGNATURE,
+    );
+    assert_ne!(legacy.steps[0].body, current.steps[0].body);
+    let found = corrections(std::slice::from_ref(&legacy), &legacy.job, "assignment");
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].text,
+        corrections(std::slice::from_ref(&current), &current.job, "assignment")[0].text
+    );
+    let ids = won_t_fix_contract(None).identities;
+    for signature in [
+        crate::exit_writes::SIGNATURE,
+        crate::exit_writes::LEGACY_SIGNATURE,
+    ] {
+        let signed = |author: &str| CommentFact {
+            id: "signed".into(),
+            author: author.into(),
+            author_id: Some(author.into()),
+            body: format!("Noted.\n\n{signature}"),
+        };
+        assert!(own_comment(&ids, &signed("bot")));
+        assert!(!own_comment(&ids, &signed("reviewer")));
+    }
+}

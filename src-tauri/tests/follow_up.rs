@@ -707,7 +707,11 @@ fn one_signed_reply_has_a_confirmed_receipt_and_cannot_repeat() {
     assert_eq!(fixture.writes(), 1);
     assert_eq!(run.phase, Phase::Published);
     assert_eq!(run.receipt.as_deref(), Some("200"));
-    assert!(run.body.as_ref().unwrap().ends_with("\u{f05b} PR Sniper"));
+    assert!(run
+        .body
+        .as_ref()
+        .unwrap()
+        .ends_with(pr_sniper_lib::exit_writes::SIGNATURE));
     assert!(follow_up::publish(&mut fixture, &mut run).is_err());
     assert_eq!(fixture.writes(), 1);
     let Observation::Owned(current) = fixture.observe(&run).unwrap() else {
@@ -907,4 +911,41 @@ fn graphql_threads_and_comments_are_fully_paginated_and_partial_data_fails_close
     assert!(client.owned_threads(&fixture.origin).is_err());
     fixture.wire.0.lock().unwrap().graphql_error = true;
     assert!(client.owned_thread(&fixture.origin, "thread-node").is_err());
+}
+
+fn legacy_signed(run: &mut FollowUp) {
+    let body = run.body.take().unwrap();
+    let head = body
+        .strip_suffix(pr_sniper_lib::exit_writes::SIGNATURE)
+        .unwrap();
+    run.body = Some(format!(
+        "{head}{}",
+        pr_sniper_lib::exit_writes::LEGACY_SIGNATURE
+    ));
+}
+
+#[test]
+fn a_reply_frozen_with_the_legacy_signature_still_publishes_once() {
+    let mut fixture = Fixture::new();
+    let mut run = prepared(&fixture.origin);
+    legacy_signed(&mut run);
+    let frozen = run.body.clone();
+    follow_up::publish(&mut fixture, &mut run).unwrap();
+    assert_eq!(fixture.writes(), 1);
+    assert_eq!(run.receipt.as_deref(), Some("200"));
+    assert_eq!(run.body, frozen);
+}
+
+#[test]
+fn an_uncertain_legacy_signed_reply_reconciles_without_reposting() {
+    let mut fixture = Fixture::new();
+    let mut run = prepared(&fixture.origin);
+    legacy_signed(&mut run);
+    fixture.wire.0.lock().unwrap().fault = Some(Fault::After);
+    assert!(follow_up::publish(&mut fixture, &mut run).is_err());
+    assert!(run.uncertain);
+    run = fixture.resume();
+    follow_up::publish(&mut fixture, &mut run).unwrap();
+    assert_eq!(fixture.writes(), 1);
+    assert_eq!(run.receipt.as_deref(), Some("200"));
 }
