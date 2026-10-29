@@ -1496,5 +1496,25 @@ fn a_refused_correction_still_leaves_an_honest_handoff() {
     let wait = ExitCall::Wait {
         reason: crate::exits::WaitReason::Ci,
     };
-    assert!(c.validate(&wait, &[a], &[], |_| Ok(())).is_err());
+    assert!(c
+        .validate(&wait, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    // The host names the uncorrected thread even when the summary does not.
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    c.prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.starts_with("Nothing new.") && summary.ends_with("uncorrected: existing.")));
+    // A carried PR Sniper resolution ends only with a correction reply; a handoff
+    // would leave it carried into the next packet.
+    let mut c = c;
+    c.threads[0].carried = true;
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    assert!(c
+        .validate(&correction_call("Still broken."), &[a], &[], |_| Ok(()))
+        .is_ok());
 }

@@ -642,6 +642,26 @@ impl Contract {
         served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
         self.validate(call, assessments, ducks, served)?;
+        if let ExitCall::ReadyForHuman { summary } = call {
+            let uncorrected: Vec<&str> = assessments
+                .iter()
+                .filter(|a| {
+                    a.disposition == Disposition::StillApplies
+                        && self
+                            .threads
+                            .iter()
+                            .any(|t| t.id == a.thread_id && t.resolved)
+                        && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
+                })
+                .map(|a| a.thread_id.as_str())
+                .collect();
+            if !uncorrected.is_empty() {
+                summary.push_str(&format!(
+                    "\n\nResolved but still applies, uncorrected: {}.",
+                    uncorrected.join(", ")
+                ));
+            }
+        }
         if let ExitCall::LeaveComments { reply_comments, .. } = call {
             for a in assessments.iter().filter(|a| {
                 a.disposition == Disposition::StillApplies
@@ -915,17 +935,24 @@ impl Contract {
                     return Err("Fixed needs a confirmed rubber_duck verify_fixed call for this thread, rationale and evidence on this state.".into());
                 }
             }
-            // A human handoff carries an uncorrected mistaken resolution in its summary,
-            // so a refused correction reply never leaves panic_exit as the only exit.
+            // A human handoff may name an uncorrected mistaken resolution instead (prepare
+            // appends it), so a refused correction reply never leaves panic_exit as the
+            // only exit. A carried PR Sniper resolution still needs the correction reply:
+            // only that ends its episode, or the next packet would carry it again.
             if thread.resolved
                 && a.disposition == Disposition::StillApplies
-                && call.exit() != Exit::ReadyForHuman
+                && (thread.carried || call.exit() != Exit::ReadyForHuman)
                 && !self.corrections.iter().any(|c| c.thread_id == a.thread_id)
             {
                 let corrected = matches!(call, ExitCall::LeaveComments { reply_comments, .. }
                     if reply_comments.iter().any(|r| r.thread_id == a.thread_id));
                 if !corrected {
-                    return Err("Earlier resolution was mistaken: reply to that existing thread with the correction rationale, never post a new root. If that reply cannot be posted, use ready_for_human and name the thread.".into());
+                    let fallback = if thread.carried {
+                        ""
+                    } else {
+                        " If that reply cannot be posted, use ready_for_human."
+                    };
+                    return Err(format!("Earlier resolution was mistaken: reply to that existing thread with the correction rationale, never post a new root.{fallback}"));
                 }
             }
         }
