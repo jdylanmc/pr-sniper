@@ -135,7 +135,7 @@ fn dispatch(store: &Store, assignment: &str, now: i64) -> ReviewRun {
         .unwrap();
     let key = key(&job, assignment);
     request(store, &key, true, now).unwrap();
-    let run = prepare_dispatch(store, &key, now).unwrap();
+    let run = prepare_dispatch(store, &key, now).unwrap().unwrap();
     assert_eq!(run.operation.state, OperationState::Running);
     run
 }
@@ -483,7 +483,9 @@ fn a_legacy_parked_revision_change_recovers_at_startup() {
         untouched.operation.failure,
         Some(OperationFailure::Permanent)
     );
-    let next = prepare_dispatch(&store, &run.key, NOW + 10).unwrap();
+    let next = prepare_dispatch(&store, &run.key, NOW + 10)
+        .unwrap()
+        .unwrap();
     assert_eq!(next.operation.id, run.operation.id);
     assert_eq!(next.operation.attempt_count, 1);
 }
@@ -775,7 +777,9 @@ fn a_recovered_legacy_run_gets_a_full_retry_window() {
     assert!(recovered.operation.initial_attempt_at >= before);
     assert!(recovered.operation.retry_deadline > before);
 
-    let attempt = prepare_dispatch(&store, &run.key, NOW + 10).unwrap();
+    let attempt = prepare_dispatch(&store, &run.key, NOW + 10)
+        .unwrap()
+        .unwrap();
     complete(
         &store,
         &attempt.operation.id,

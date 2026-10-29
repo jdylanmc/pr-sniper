@@ -98,6 +98,8 @@ export interface QueueItem {
     | "tossed"
     | "exit_failed"
     | null;
+  // Retry all re-arms it; human decisions stay parked.
+  retry_all?: boolean;
   // The primary's exit and the host effect it still has in flight.
   exit?: ExitName | null;
   progress?: Progress | null;
@@ -221,8 +223,8 @@ export function compactDuration(seconds: number) {
 const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
 const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4";
 const retryIcon = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
-const retryable = (item: QueueItem) =>
-  item.state === "failed" && !credentials(item);
+// Credentials parks retry too: each attempt re-verifies the account first.
+const retryable = (item: QueueItem) => item.state === "failed";
 
 export function humanQueue(items: QueueItem[]): QueueItem[] {
   const current = new Map<string, QueueItem>();
@@ -278,6 +280,12 @@ export async function openDestination(
   }
 }
 
+// Automation pause and the unfiltered items, for what Retry all left queued.
+export interface QueueContext {
+  paused: boolean;
+  all: QueueItem[];
+}
+
 export function renderQueue(
   root: HTMLElement,
   showError: (message: string) => void,
@@ -293,6 +301,16 @@ export function renderQueue(
   const fromUrl = () => new URLSearchParams(location.hash.slice(1)).get("item");
   let selected: string | null | undefined = fromUrl();
   let items: QueueItem[] = [];
+  // Retry all: single-flight, and what it re-armed while automation is paused.
+  let context: QueueContext = { paused: false, all: [] };
+  let retryingAll = false;
+  let rearmed = new Set<string>();
+  const queuedCount = () =>
+    context.paused
+      ? context.all.filter(
+          (item) => rearmed.has(item.id) && item.state === "queued",
+        ).length
+      : 0;
   let signature = "";
   let loaded = false;
   let initialized = false;
@@ -355,7 +373,8 @@ export function renderQueue(
       active?.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
     const focusedLabel =
       active instanceof HTMLButtonElement ? active.textContent : null;
-    signature = JSON.stringify([items, selected]);
+    const allFocused = !!active?.matches("[data-retry-all]");
+    signature = JSON.stringify([items, selected, retryingAll, queuedCount()]);
     const matches = (item: QueueItem) =>
       item.id === selected || !!item.aliases?.includes(selected ?? "");
     root.replaceChildren();
@@ -503,7 +522,10 @@ export function renderQueue(
         fix.textContent = "Fix";
         fix.onclick = () =>
           fix.dispatchEvent(
-            new CustomEvent("pr-sniper:fix-account", { bubbles: true }),
+            new CustomEvent("pr-sniper:fix-account", {
+              bubbles: true,
+              detail: { id: item.id },
+            }),
           );
         actions.append(fix);
       }
@@ -580,25 +602,49 @@ export function renderQueue(
         group.append(row);
       } else root.append(row);
     }
-    const retryIds = items.filter(retryable).map((item) => item.id);
-    const attention = root.querySelector<HTMLElement>(
-      '[data-queue-group="attention"]',
-    );
-    if (options.compact && attention && retryIds.length > 1) {
+    const retryCount = items.filter((item) => item.retry_all).length;
+    const queued = queuedCount();
+    if (!context.paused) rearmed = new Set();
+    if (options.compact && (retryCount || queued || retryingAll)) {
+      let attention = root.querySelector<HTMLElement>(
+        '[data-queue-group="attention"]',
+      );
+      if (!attention) {
+        attention = document.createElement("div");
+        attention.className = "queue-group";
+        attention.dataset.queueGroup = "attention";
+        attention.dataset.empty = "true";
+        attention.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16l2 14H2L4 4Zm-1 9h5l2 3h4l2-3h5M7 8h10"/></svg><span class="sr-only">Nothing here</span>`;
+        root.querySelector(".queue-empty")?.remove();
+        root.append(attention);
+      }
       const all = document.createElement("button");
       all.type = "button";
       all.className = "work-retry-all";
-      all.setAttribute("aria-label", "Retry all failed");
-      all.title = "Retry all failed";
-      all.innerHTML = `${retryIcon}<span>${retryIds.length}</span>`;
-      all.onclick = () => {
-        all.disabled = true;
-        all.dispatchEvent(
-          new CustomEvent("pr-sniper:retry-items", {
-            bubbles: true,
-            detail: { ids: retryIds },
-          }),
-        );
+      all.dataset.retryAll = retryCount ? "retry" : "queued";
+      const label = retryCount ? "Retry all failed" : "Queued until resume";
+      all.setAttribute("aria-label", label);
+      all.title = label;
+      all.innerHTML = retryCount
+        ? `${retryIcon}<span>${retryCount}</span>`
+        : `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${clockPath}"/></svg><span>${queued}</span>`;
+      // Stays focusable while unavailable, so focus survives the redraw.
+      if (retryingAll || !retryCount) all.setAttribute("aria-disabled", "true");
+      if (retryingAll) all.setAttribute("aria-busy", "true");
+      all.onclick = async () => {
+        if (retryingAll || !retryCount) return;
+        retryingAll = true;
+        for (const item of items) if (item.retry_all) rearmed.add(item.id);
+        draw(false);
+        try {
+          await invoke("retry_all_parked");
+        } catch (error) {
+          showError(typeof error === "string" ? error : "Failed");
+        } finally {
+          retryingAll = false;
+          await refresh();
+          draw(false);
+        }
       };
       attention.prepend(all);
     }
@@ -628,6 +674,18 @@ export function renderQueue(
       focus,
       opener,
     );
+    if (allFocused && !root.closest("[hidden]")) {
+      const next = root.querySelector<HTMLElement>("[data-retry-all]");
+      if (next) next.focus({ preventScroll: true });
+      else {
+        const heading =
+          root
+            .closest(".panel-shell")
+            ?.querySelector<HTMLElement>("[data-panel-heading]") ?? root;
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      }
+    }
     if (!focus && focusedItem && focusedLabel && !root.closest("[hidden]")) {
       const row = [
         ...root.querySelectorAll<HTMLElement>("[data-item-id]"),
@@ -643,10 +701,15 @@ export function renderQueue(
   });
   // Background updates redraw after a press ends so its click survives.
   const redraw = () => {
-    if (JSON.stringify([items, selected]) !== signature) draw(false);
+    if (
+      JSON.stringify([items, selected, retryingAll, queuedCount()]) !==
+      signature
+    )
+      draw(false);
   };
-  const update = (next: QueueItem[]) => {
+  const update = (next: QueueItem[], nextContext?: QueueContext) => {
     items = next;
+    if (nextContext) context = nextContext;
     loaded = true;
     whenReleased(redraw);
   };
