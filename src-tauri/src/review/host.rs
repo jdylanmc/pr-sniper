@@ -1295,6 +1295,64 @@ pub(crate) fn request_batch(
     ai.dispatch(store, now)
 }
 
+/// Re-arms every parked review a human would not have to judge, through the
+/// same paths as per-item Retry: parked packet exits (`retry_parked`), then
+/// every other failed run gets a fresh operation. Permanent failures (including
+/// user cancellation) and panic exits stay parked. Each parked review counts
+/// once: a new operation is retried, an unchanged one skipped. The caller
+/// dispatches.
+pub(crate) fn retry_all_parked(
+    store: &crate::storage::Store,
+    now: i64,
+) -> Result<(usize, usize), String> {
+    use crate::monitoring::OperationFailure;
+    use std::collections::{BTreeMap, BTreeSet};
+    let operations = |store: &crate::storage::Store| -> Result<BTreeMap<String, String>, String> {
+        Ok(candidates(store)?
+            .into_iter()
+            .filter_map(|c| Some((c.key, c.run?.operation.id)))
+            .collect())
+    };
+    let exits = crate::exits::consume::parked_exit_keys(store)?;
+    let mut parked: BTreeSet<String> = exits.iter().map(|(_, key)| key.clone()).collect();
+    for candidate in candidates(store)? {
+        if candidate.run.as_ref().is_some_and(|run| {
+            matches!(
+                run.operation.state,
+                OperationState::Failed | OperationState::ManualRetry
+            )
+        }) {
+            parked.insert(candidate.key);
+        }
+    }
+    let before = operations(store)?;
+    let items: BTreeSet<&String> = exits.iter().map(|(item, _)| item).collect();
+    for item in items {
+        // A partly applied retry leaves reviews parked; the tally counts them.
+        let _ = crate::exits::consume::retry_parked(store, item, now);
+    }
+    for candidate in candidates(store)? {
+        let Some(run) = candidate.run.as_ref() else {
+            continue;
+        };
+        if matches!(
+            run.operation.state,
+            OperationState::Failed | OperationState::ManualRetry
+        ) && !matches!(
+            run.operation.failure,
+            Some(OperationFailure::Permanent | OperationFailure::Panic)
+        ) {
+            let _ = request(store, &candidate.key, true, now);
+        }
+    }
+    let after = operations(store)?;
+    let retried = parked
+        .iter()
+        .filter(|key| before.get(*key) != after.get(*key))
+        .count();
+    Ok((retried, parked.len() - retried))
+}
+
 #[tauri::command]
 pub(crate) async fn retry_packet_state(
     app: tauri::AppHandle,

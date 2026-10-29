@@ -674,6 +674,7 @@ fn the_reader_implements_the_provider_read_interfaces() {
     );
 }
 
+mod approve;
 mod polling;
 mod publish;
 mod pulls;

@@ -14,7 +14,7 @@ operations as the desktop UI; annotations never grant app permissions.
 | Target / resolve / models | `inspect_target`, `resolve_repository`, `list_models`                                                   |
 | Validate / save           | `validate_agent`, `save_agent` (likewise doctrine, voice, repository, preferences)                      |
 | Preset / watch            | `apply_review_preset`, `watch_pull_request`                                                             |
-| Pause / check / retry     | `set_pause`, `check_now`, `retry_poll`, `retry_review`, `retry_state`                                   |
+| Pause / check / retry     | `set_pause`, `check_now`, `retry_poll`, `retry_review`, `retry_state`, `retry_all`                      |
 | Review / publication      | `cancel_review`, `publish_review`, `cancel_publication`                                                 |
 | Action / follow-up        | `cancel_action`, `reconcile_action`, `retry_action_observation`, `resume_follow_up`, `cancel_follow_up` |
 | Local cleanup             | `clean_reviewed`, `dismiss_stale`                                                                       |
@@ -62,6 +62,7 @@ Exit 1 means typed application failure; 2 means local CLI/transport failure.
 | `retry`                          | exact polling `operation_id` from `health`; native polling gates apply                                                                                                                                                                                                                                                                                                     |
 | `retry_review`                   | `candidate_key`; only currently failed/cancelled AI work; completed work rejects with `review_again_required`                                                                                                                                                                                                                                                              |
 | `retry_state`                    | `item_id`                                                                                                                                                                                                                                                                                                                                                                  |
+| `retry_all`                      | none; retries parked packet states and failed AI work; skips permanent and panic; returns `retried`, `skipped`                                                                                                                                                                                                                                                             |
 | `cancel_review`                  | `operation_id`                                                                                                                                                                                                                                                                                                                                                             |
 | `publish`                        | `review_operation_id`; existing publication gates and receipts apply                                                                                                                                                                                                                                                                                                       |
 | `cancel_publication`             | `publication_id`                                                                                                                                                                                                                                                                                                                                                           |
@@ -113,7 +114,7 @@ New resources require UUID IDs, `expected:null`. `value:null` deletes.
 New repositories are disabled, bound to a `resolve` result, and have no
 assignments. Azure DevOps repositories: `provider:"azure_devops"`,
 `provider_repository_id` `{organization}/{project ID}/{repository ID}`, people
-by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; approve and approve-and-merge are not offered. Then save explicit assignments and enable the human-requested
+by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote; approve-and-merge is refused (`unsupported_provider_action`). Then save explicit assignments and enable the human-requested
 scope. Repository schedules are five-field cron in the saved IANA time zone.
 No generic settings replacement/import, credentials, authentication or shell
 operations exist. Unknown fields and operation names are rejected.

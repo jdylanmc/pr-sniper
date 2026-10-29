@@ -174,30 +174,27 @@ pub fn toss_and_requeue(
     Ok(true)
 }
 
-/// Explicit Retry of a parked packet exit (`tossed` or `exit_failed`): the PR's toss
-/// budget restarts and each of the item's runs whose effect exit was not consumed, or
-/// that parked as tossed, is reviewed again on the PR's current state.
-pub fn retry_parked(store: &Store, item_id: &str, now: i64) -> Result<usize, String> {
+/// Reviews an explicit Retry of a parked packet exit re-arms: on an item parked
+/// `tossed` or `exit_failed`, each run whose effect exit was not consumed, or that
+/// parked as tossed. Empty when the item is not parked that way.
+fn parked_exit_reviews(
+    snapshot: &crate::queue::Snapshot,
+    states: &crate::pr_state::PrStates,
+    item: &crate::queue::Item,
+) -> Vec<(String, Binding)> {
     use crate::{
         monitoring::{OperationFailure, OperationState},
         queue::{self, State},
     };
-    let snapshot = queue::snapshot(store, vec![])?;
-    let item = snapshot
-        .items
-        .iter()
-        .find(|i| i.id == item_id || i.aliases.iter().any(|a| a == item_id))
-        .ok_or("Current PR iteration unavailable.")?;
     if item.state != State::Failed
         || !matches!(
             item.failure_cause,
             Some(queue::CAUSE_TOSSED | queue::CAUSE_EXIT_FAILED)
         )
     {
-        return Err("Nothing parked to retry.".into());
+        return Vec::new();
     }
-    let mut states = store.load_pr_states()?;
-    let mut keys = Vec::new();
+    let mut reviews = Vec::new();
     for candidate in snapshot
         .reviews
         .iter()
@@ -224,22 +221,54 @@ pub fn retry_parked(store: &Store, item_id: &str, now: i64) -> Result<usize, Str
             .get(&binding)
             .and_then(|r| r.exit.as_ref())
             .is_some_and(|e| e.state_seq == seq);
-        if !(tossed || effect) || consumed {
-            continue;
+        if (tossed || effect) && !consumed {
+            reviews.push((candidate.key.clone(), binding));
         }
-        if let Some(record) = states.records.iter_mut().find(|r| r.binding == binding) {
-            record.error_count = 0;
-        }
-        keys.push(candidate.key.clone());
     }
-    if keys.is_empty() {
+    reviews
+}
+
+/// Every review key an explicit Retry of a parked packet exit would re-arm,
+/// across all items, with the item it belongs to.
+pub fn parked_exit_keys(store: &Store) -> Result<Vec<(String, String)>, String> {
+    let snapshot = crate::queue::snapshot(store, vec![])?;
+    let states = store.load_pr_states()?;
+    Ok(snapshot
+        .items
+        .iter()
+        .flat_map(|item| {
+            parked_exit_reviews(&snapshot, &states, item)
+                .into_iter()
+                .map(|(key, _)| (item.id.clone(), key))
+        })
+        .collect())
+}
+
+/// Explicit Retry of a parked packet exit (`tossed` or `exit_failed`): the PR's toss
+/// budget restarts and each of the item's runs whose effect exit was not consumed, or
+/// that parked as tossed, is reviewed again on the PR's current state.
+pub fn retry_parked(store: &Store, item_id: &str, now: i64) -> Result<usize, String> {
+    let snapshot = crate::queue::snapshot(store, vec![])?;
+    let item = snapshot
+        .items
+        .iter()
+        .find(|i| i.id == item_id || i.aliases.iter().any(|a| a == item_id))
+        .ok_or("Current PR iteration unavailable.")?;
+    let mut states = store.load_pr_states()?;
+    let reviews = parked_exit_reviews(&snapshot, &states, item);
+    if reviews.is_empty() {
         return Err("Nothing parked to retry.".into());
     }
+    for (_, binding) in &reviews {
+        if let Some(record) = states.records.iter_mut().find(|r| &r.binding == binding) {
+            record.error_count = 0;
+        }
+    }
     store.save_pr_states(&states)?;
-    for key in &keys {
+    for (key, _) in &reviews {
         crate::review::host::request(store, key, true, now)?;
     }
-    Ok(keys.len())
+    Ok(reviews.len())
 }
 
 /// PRs with an exit effect still being written (comment batch, replies and

@@ -399,8 +399,7 @@ fn approve_denial(input: &GateInput) -> Option<String> {
     } else if f.ci == Ci::Red {
         "CI is red. Do not approve. Comment the fix if you know it.".into()
     } else if f.author_is_acting {
-        // GitHub refuses self-approval: "Can not approve your own pull request".
-        "Acting account authored this PR. GitHub refuses self-approval.".into()
+        input.capabilities.self_approval_denial.into()
     } else {
         return f.approve_blocker.clone();
     })

@@ -193,8 +193,25 @@ pub(super) fn handles(command: &Command) -> bool {
             | Command::Target { .. }
             | Command::Watch { .. }
             | Command::RetryReview { .. }
+            | Command::RetryAll
             | Command::Retry { .. }
     ) || matches!(command, Command::Save { edit, .. } if !matches!(edit, crate::storage::ResourceEdit::Agent {..}))
+}
+
+fn retry_all(runtime: &impl Runtime) -> Result<Value, Error> {
+    if runtime.quitting() {
+        return Err(Error::new("quitting", ()));
+    }
+    let (retried, skipped, batch) = {
+        let store = runtime.store().lock().map_err(|_| storage(()))?;
+        let now = crate::now_seconds().map_err(storage)?;
+        let (retried, skipped) =
+            crate::review::host::retry_all_parked(&store, now).map_err(storage)?;
+        let batch = runtime.ai().dispatch(&store, now).map_err(operation)?;
+        (retried, skipped, batch)
+    };
+    runtime.launch(batch);
+    Ok(json!({"state":"requested","retried":retried,"skipped":skipped}))
 }
 
 fn page(values: Vec<Value>, offset: usize, limit: Option<usize>) -> Result<Value, Error> {
@@ -276,6 +293,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             runtime.launch(batch);
             Ok(json!({"state":"requested","candidate_key":candidate_key}))
         }
+        Command::RetryAll => retry_all(runtime),
         Command::Retry { operation_id } => {
             {
                 let store = runtime.store().lock().map_err(|_| storage(()))?;
@@ -498,6 +516,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             account_generation,
             allow_grants,
         } => {
+            super::operations::supported_actions(&edit)?;
             let settings = {
                 let generations = runtime.generations().lock().map_err(|_| storage(()))?;
                 let auth = runtime.auth().lock().map_err(|_| storage(()))?;
