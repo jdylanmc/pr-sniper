@@ -128,6 +128,9 @@ async function visualMeasurements(page, image) {
       const list = box("#handoff-queue");
       // Only the selected group is displayed; the other stays in the DOM.
       const visible = (element) => element.getClientRects().length > 0;
+      const pill = [...document.querySelectorAll(".work-retry-all")].find(
+        visible,
+      );
       const card = [...document.querySelectorAll(".queue-item")].find(visible);
       const readyBadge = [
         ...document.querySelectorAll(
@@ -145,6 +148,9 @@ async function visualMeasurements(page, image) {
         attention,
         list,
         header: box(".panel-context"),
+        retryAll: pill
+          ? (({ y, height }) => ({ y, height }))(pill.getBoundingClientRect())
+          : null,
         firstCard: card
           ? (({ x, y, width, height }) => ({ x, y, width, height }))(
               card.getBoundingClientRect(),
@@ -293,7 +299,13 @@ for (const name of ["empty", "populated", "attention"]) {
     expect(Math.abs(measurements.ready.width - 181)).toBeLessThanOrEqual(3);
     expect(Math.abs(measurements.attention.x - 209)).toBeLessThanOrEqual(3);
     expect(Math.abs(measurements.list.width - 372)).toBeLessThanOrEqual(3);
-    expect(Math.abs(measurements.firstCard.y - 190)).toBeLessThanOrEqual(18);
+    // A Retry all pill heads Needs attention, above the first card.
+    const top = measurements.retryAll ?? measurements.firstCard;
+    expect(Math.abs(top.y - 190)).toBeLessThanOrEqual(18);
+    if (measurements.retryAll)
+      expect(measurements.firstCard.y).toBeGreaterThanOrEqual(
+        measurements.retryAll.y + measurements.retryAll.height,
+      );
     if (measurements.cardStyle) {
       expect(Math.abs(measurements.firstCard.width - 370)).toBeLessThanOrEqual(
         3,
@@ -598,6 +610,7 @@ for (const scenario of [
           ".queue-card-footer",
           ".queue-avatar",
           ".queue-trigger",
+          ".work-retry-all",
         ]
           .map((selector) => {
             const element = document.querySelector(selector);

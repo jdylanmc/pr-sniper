@@ -101,7 +101,9 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     settings.agents[0].doctrines = Some(vec!["domain".into(), "code".into()]);
     store.save_settings(&settings).unwrap();
     request(&store, &template.key, true, 100).unwrap();
-    let actual = prepare_dispatch(&store, &template.key, 100).unwrap();
+    let actual = prepare_dispatch(&store, &template.key, 100)
+        .unwrap()
+        .unwrap();
     assert_eq!(actual.operation.state, OperationState::Running);
     let actual_catalog = actual
         .selection
@@ -161,7 +163,7 @@ fn doctrine_reconciliation_captures_real_dispatch_and_preserves_actual_running_e
     let next_key = key(&next_job, &template.assignment_id);
     store.save_queue(std::slice::from_ref(&next_job)).unwrap();
     request(&store, &next_key, true, 200).unwrap();
-    let next = prepare_dispatch(&store, &next_key, 200).unwrap();
+    let next = prepare_dispatch(&store, &next_key, 200).unwrap().unwrap();
     let captured = next.selection.configuration.as_ref().unwrap();
     assert_eq!(captured.doctrine_catalog, Some(resolved.doctrine_catalog()));
     assert_eq!(
@@ -240,7 +242,9 @@ fn packet_result(exit: serde_json::Value) -> crate::review::ReviewResult {
 /// A dispatched Packet-mode run whose packet record carries the state hash it read.
 fn running_packet(store: &Store, template: &ReviewRun, now: i64) -> ReviewRun {
     request(store, &template.key, true, now).unwrap();
-    prepare_dispatch(store, &template.key, now).unwrap();
+    prepare_dispatch(store, &template.key, now)
+        .unwrap()
+        .unwrap();
     let mut reviews = store.load_reviews().unwrap();
     let run = &mut reviews[0];
     run.mode = crate::review::RunMode::Packet;
@@ -605,11 +609,15 @@ fn the_job_snapshot_captures_the_duck_and_a_duck_edit_changes_the_execution() {
 fn a_primary_with_a_duck_gets_the_preference_window_and_others_keep_the_default() {
     let (_root, store, template) = duck_fixture(60);
     request(&store, &template.key, true, 100).unwrap();
-    let run = prepare_dispatch(&store, &template.key, 100).unwrap();
+    let run = prepare_dispatch(&store, &template.key, 100)
+        .unwrap()
+        .unwrap();
     assert_eq!(run.operation.retry_deadline, 100 + 60 * 60);
     let (_root, store, template) = fixture();
     request(&store, &template.key, true, 100).unwrap();
-    let run = prepare_dispatch(&store, &template.key, 100).unwrap();
+    let run = prepare_dispatch(&store, &template.key, 100)
+        .unwrap()
+        .unwrap();
     assert_eq!(run.operation.retry_deadline, 100 + 15 * 60);
 }
 
