@@ -44,6 +44,16 @@ return categorized entry candidates. Maintain established release-note
 automation input, not a conflicting second source. Keep released entries
 unchanged unless a specific correction is authorized.
 
+## Changesets
+
+When the repository has a `.changes/` directory, never edit `CHANGELOG.md` in a
+PR. Write the curated entry as `.changes/<name>.md` per `.changes/README.md`:
+front matter `type` (`added`, `changed`, `deprecated`, `removed`, `fixed`,
+`security`) plus optional `issue`/`pr`, and the user-facing text as the body.
+Use one unique file per PR (one per outcome when needed); revise that file, not
+others'. Automation consumes it into `Unreleased`; releases cut versions. A
+changeset-only edit does not create an entry about itself.
+
 ## Curate and consolidate
 
 Identify the human-visible outcome, affected people, and required action.

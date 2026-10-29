@@ -1,0 +1,131 @@
+name: Changesets
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable release version (X.Y.Z)
+        required: true
+        type: string
+      summary:
+        description: Optional one-line release summary
+        required: false
+        type: string
+
+# One serialized lane per ref: main consumes never cancel or race.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  changeset:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Validate changesets and reject direct CHANGELOG.md edits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: node scripts/changesets.mjs validate --base "$BASE" --head "$HEAD" --labels "$LABELS" --head-ref "$HEAD_REF" --author "$AUTHOR" --same-repo "$SAME_REPO"
+        timeout-minutes: 2
+
+  consume:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      BRANCH: changesets/consume
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Open or refresh the consume PR
+        run: |
+          pending="$(node scripts/changesets.mjs list)"
+          if ! git fetch -q origin "$BRANCH"; then
+            [ -n "$pending" ] || exit 0
+          elif [ -z "$pending" ]; then
+            git push -q origin --delete "$BRANCH"
+            exit 0
+          else
+            consumed="$(git diff --name-only --diff-filter=D HEAD...FETCH_HEAD -- .changes | sed 's|^\.changes/||' | LC_ALL=C sort)"
+            if [ "$consumed" = "$pending" ]; then
+              echo "$BRANCH already consumes: $pending"
+              exit 0
+            fi
+          fi
+          node scripts/changesets.mjs consume
+          bash scripts/changesets-pr.sh "$BRANCH" "chore(changelog): consume changesets" "Consumes into CHANGELOG.md Unreleased: $(echo $pending)"
+        timeout-minutes: 5
+
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      SUMMARY: ${{ inputs.summary }}
+    steps:
+      - name: Require main
+        run: test "$GITHUB_REF" = refs/heads/main
+        timeout-minutes: 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+        timeout-minutes: 3
+      - run: npm ci
+        timeout-minutes: 8
+      - name: Cut CHANGELOG.md section, bump versions and rebuild MCP asset
+        run: |
+          node scripts/changesets.mjs release "$VERSION" --summary "$SUMMARY"
+          npm exec prettier -- --check CHANGELOG.md package.json site src-tauri/tauri.conf.json
+        timeout-minutes: 5
+      - name: Open the release PR
+        run: |
+          bash scripts/changesets-pr.sh "changesets/release-v$VERSION" "chore(release): v$VERSION" "Release v$VERSION. After merge and green main CI, Release tag tags v$VERSION and dispatches Signed macOS release."
+        timeout-minutes: 3

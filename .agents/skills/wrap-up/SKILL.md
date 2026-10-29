@@ -74,7 +74,7 @@ isolation and reported, not hidden.
 
 Make docs describe what the code does now.
 
-- `CHANGELOG.md` under Unreleased (use [changelog](../changelog/SKILL.md)).
+- A `.changes/*.md` entry, or `CHANGELOG.md` Unreleased where no `.changes/` exists (use [changelog](../changelog/SKILL.md)).
 - Every doc, README, ADR or spec note that names a changed screen, control,
   label, flow, command, config key or behavior. Search for old strings.
 - Skills and `AGENTS.md` when workflow policy changed.

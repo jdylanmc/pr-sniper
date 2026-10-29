@@ -22,7 +22,7 @@ separate acceptance; no developer installation was overwritten.
 
 ## What a version tag does
 
-Pushing a stable `vMAJOR.MINOR.PATCH` tag automatically releases and updates
+Pushing a stable `vMAJOR.MINOR.PATCH` tag (or **Release tag** dispatching on one) automatically releases and updates
 `jdylanmc/homebrew-pr-sniper` without an additional human approval prompt.
 Repository writers who can change workflows or create matching release tags
 are trusted release operators. Protect that access; credentials are not safe
@@ -119,22 +119,56 @@ Its `Publish verified cask` workflow uses the standard scoped GitHub token for
 its own cask commit; it receives no Apple secrets. Its publisher workflow must
 be merged on tap `main` before the application's release preflight succeeds.
 
+## Changesets
+
+PRs never edit `CHANGELOG.md`; each adds one [`.changes/<name>.md`](../.changes/README.md)
+entry, so parallel PRs do not conflict on it. `scripts/changesets.mjs` owns the rules.
+
+| Workflow                   | Trigger            | Does                                                                                                                        |
+| -------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **Changesets** `changeset` | PR                 | `validate`: entry format; fails a direct `CHANGELOG.md` edit unless label `no-changeset` or bot branch; warns if no entry   |
+| **Changesets** `consume`   | push to `main`     | `consume` on `changesets/consume`, one bot commit, PR to `main`; deletes the branch when nothing is pending                 |
+| **Changesets** `release`   | dispatch `version` | `release X.Y.Z` on `changesets/release-vX.Y.Z`: consume, cut `## X.Y.Z - date`, bump every version field, rebuild MCP asset |
+| **Release tag**            | main CI completed  | Release commit only: both main-push CI workflows green on that SHA, then annotated `vX.Y.Z` tag + dispatch signed release   |
+
+Branch protection decisions:
+
+- `main` requires strict `macos`, `webkit`, `windows`, `windows-installer-acceptance`
+  checks with admins enforced. The bot never pushes to `main`; consume and
+  release land through bot PRs merged like any other PR.
+- `GITHUB_TOKEN` pushes start no `push`/`pull_request` runs. Bot commits do not use
+  `[skip ci]`; `scripts/changesets-pr.sh` dispatches **macOS foundation** and
+  **Windows native application** on the bot branch so required checks report.
+- If **Allow GitHub Actions to create and approve pull requests** is off, the bot
+  pushes the branch and writes a compare link to the job summary; a maintainer
+  opens the PR (human-opened PRs run CI normally).
+- `consume` is serialized per ref without cancellation and idempotent: it skips
+  when the bot branch already consumes exactly the pending set, and never
+  duplicates an entry already in `Unreleased`.
+- A tag pushed with `GITHUB_TOKEN` does not start **Signed macOS release**, so
+  **Release tag** dispatches it on the tag ref; the existing gate still requires
+  the exact tagged commit's green main-push CI.
+
 ## Cut a release
 
-The human chooses the version and creates the tag. This delivery does not
-authorize an agent to cut the first release merely because checks pass.
+The human chooses the version. This delivery does not authorize an agent to
+cut a release merely because checks pass.
 
-1. Update `package.json`, both root npm lock version fields,
-   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and the PR Sniper entry in
-   `src-tauri/Cargo.lock` to one stable version. Keep both shown versions in
-   `site/index.html` and the boot version in `site/app.js` in step. Run
-   `npm run build:control-mcp` so the bundled
-   `src-tauri/resources/mcp/mcp-server.mjs` carries the new version. Curate
-   `CHANGELOG.md`.
-2. Merge the version/release changes to main. Wait for that merged commit's
-   normal **macOS foundation** workflow to pass, including `npm run test:release`.
-3. Create and push the matching annotated `vMAJOR.MINOR.PATCH` tag at the exact
-   verified commit. Never move or overwrite a published version tag.
+1. Run **Changesets** on `main` with `version` (and optional `summary`). It
+   consumes pending entries, moves `Unreleased` into `## X.Y.Z - YYYY-MM-DD`,
+   updates `package.json`, both root npm lock version fields,
+   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, the PR Sniper entry in
+   `src-tauri/Cargo.lock`, both shown versions in `site/index.html` and the boot
+   version in `site/app.js`, then runs `npm run build:control-mcp` so the
+   bundled `src-tauri/resources/mcp/mcp-server.mjs` carries the new version.
+   Locally: `node scripts/changesets.mjs release X.Y.Z`.
+2. Review and merge the release PR to main. Its merge commit's normal
+   **macOS foundation** and **Windows native application** runs must pass,
+   including `npm run test:release`.
+3. **Release tag** then creates the annotated `vMAJOR.MINOR.PATCH` tag at that
+   exact verified commit and dispatches **Signed macOS release** on it. Only the
+   commit that changed the version is tagged; an existing tag is never moved or
+   overwritten. A manual annotated tag on the verified commit remains valid.
 4. Observe **Signed macOS release**. Missing credentials, Apple denial,
    identity mismatch, invalid notarization and failed byte verification stop
    publication. A tap failure does not roll back an already published valid

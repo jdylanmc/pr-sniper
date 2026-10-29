@@ -1,0 +1,64 @@
+name: Release tag
+
+# Tags a merged release PR only after its exact main commit is green on both
+# required CI workflows, then dispatches the signed release on that tag.
+on:
+  workflow_run:
+    workflows: [macOS foundation, Windows native application]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  tag:
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+        timeout-minutes: 3
+      - name: Tag the release commit once both CI workflows passed
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          previous="$(git show "$SHA^1:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
+          if [ "$version" = "$previous" ]; then
+            echo "Not a release commit."
+            exit 0
+          fi
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists."
+            exit 0
+          fi
+          grep -q "^## $version - " CHANGELOG.md
+          for workflow in macos.yml windows.yml; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&event=push&branch=main" --jq '.workflow_runs | max_by(.id) | .conclusion // ""')"
+            if [ "$conclusion" != success ]; then
+              echo "Waiting for $workflow on $SHA: ${conclusion:-pending}."
+              exit 0
+            fi
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "PR Sniper $version" "$SHA"
+          git push -q origin "refs/tags/$tag"
+          gh workflow run release.yml --ref "$tag"
+        timeout-minutes: 5

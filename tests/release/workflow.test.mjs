@@ -1216,11 +1216,11 @@ test("Windows artifact contains only the standalone app and exact-source provena
 test("both repository release runners execute workflow contracts without weakening macOS coverage", () => {
   assert.equal(
     scripts["test:release"],
-    "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs",
+    "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs",
   );
   assert.equal(
     scripts["test:release:windows"],
-    "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs",
+    "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs",
   );
 });
 
@@ -1228,6 +1228,7 @@ test("macOS browser shards run the full Chromium and WebKit suites read-only wit
   assert.equal(existsSync(".github/workflows/macos-webkit.yml"), false);
   assert.equal(ci.name, "macOS foundation");
   assert.deepEqual(ci.on, {
+    workflow_dispatch: null,
     pull_request: null,
     push: { branches: ["main", "feat/macos-foundation"] },
   });
@@ -1819,4 +1820,68 @@ test("both native lanes run bounded real-app MCP acceptance and retain only safe
       .identifier,
     "com.jdylanmc.pr-sniper.tests.control-ci",
   );
+});
+
+test("changesets validate PRs, consume via a bot PR and tag releases only after exact main CI", () => {
+  const changesets = parse(
+    readFileSync(".github/workflows/changesets.yml", "utf8"),
+  );
+  const tagger = parse(
+    readFileSync(".github/workflows/release-tag.yml", "utf8"),
+  );
+  const helper = readFileSync("scripts/changesets-pr.sh", "utf8");
+  assert.deepEqual(Object.keys(changesets.on), [
+    "pull_request",
+    "push",
+    "workflow_dispatch",
+  ]);
+  assert.deepEqual(changesets.on.push, { branches: ["main"] });
+  assert.deepEqual(changesets.permissions, { contents: "read" });
+  assert.equal(
+    changesets.jobs.changeset.if,
+    "${{ github.event_name == 'pull_request' }}",
+  );
+  assert.equal(changesets.jobs.changeset.permissions, undefined);
+  assert.match(
+    changesets.jobs.changeset.steps.at(-1).run,
+    /^node scripts\/changesets\.mjs validate /,
+  );
+  for (const name of ["consume", "release"]) {
+    const run = changesets.jobs[name].steps.map((s) => s.run || "").join("\n");
+    assert.match(
+      run,
+      /bash scripts\/changesets-pr\.sh "(\$BRANCH|changesets\/)/,
+      name,
+    );
+    assert.doesNotMatch(run, /HEAD:main|origin main\b/, name);
+  }
+  assert.equal(changesets.jobs.consume.env.BRANCH, "changesets/consume");
+  assert.match(helper, /push -q --force origin "HEAD:refs\/heads\/\$branch"/);
+  assert.match(helper, /gh workflow run macos\.yml --ref "\$branch"/);
+  assert.match(helper, /gh workflow run windows\.yml --ref "\$branch"/);
+  assert.doesNotMatch(helper, /skip ci/i);
+  assert.deepEqual(ci.on.workflow_dispatch, null);
+  assert.deepEqual(tagger.on, {
+    workflow_run: {
+      workflows: [ci.name, windows.name],
+      types: ["completed"],
+      branches: ["main"],
+    },
+  });
+  assert.deepEqual(tagger.permissions, {});
+  assert.equal(tagger.concurrency["cancel-in-progress"], false);
+  assert.deepEqual(tagger.jobs.tag.permissions, {
+    contents: "write",
+    actions: "write",
+  });
+  const run = tagger.jobs.tag.steps.at(-1).run;
+  for (const pattern of [
+    /git show "\$SHA\^1:package\.json"/,
+    /refs\/tags\/\$tag/,
+    /for workflow in macos\.yml windows\.yml/,
+    /event=push&branch=main/,
+    /gh workflow run release\.yml --ref "\$tag"/,
+  ])
+    assert.match(run, pattern);
+  assert.ok(run.indexOf("max_by") < run.indexOf("git tag -a"));
 });
