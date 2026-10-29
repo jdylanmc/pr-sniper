@@ -95,6 +95,7 @@ pub(super) enum Command {
     RetryState {
         item_id: String,
     },
+    RetryAll,
     CancelReview {
         operation_id: String,
     },
@@ -640,6 +641,7 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
         | Command::Health { .. }
         | Command::Detail { .. }
         | Command::RetryReview { .. }
+        | Command::RetryAll
         | Command::Retry { .. }
         | Command::Inspect
         | Command::Resources { .. }

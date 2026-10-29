@@ -674,6 +674,55 @@ fn retry_review_routes_native_cancelled_and_failed_recovery_without_active_dupli
 }
 
 #[test]
+fn retry_all_rearms_parked_reviews_and_leaves_human_decisions_parked() {
+    for (failure, retried) in [
+        (crate::review::Failure::provider("Copilot refused"), 1),
+        (
+            crate::review::Failure::permanent("Review cancelled by user."),
+            0,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.call(fixture.watch(false));
+        let old_id = {
+            let store = fixture.store.lock().unwrap();
+            let job = store.load_queue().unwrap().remove(0);
+            let key = job.work.as_ref().unwrap().id.clone();
+            let mut run =
+                crate::review::host::request(&store, &key, true, crate::now_seconds().unwrap())
+                    .unwrap();
+            run.operation.state = OperationState::ManualRetry;
+            run.operation.failure = Some(failure.kind.clone());
+            run.operation.next_attempt_at = None;
+            let old = run.operation.id.clone();
+            store.save_reviews(&[run]).unwrap();
+            store
+                .save_automation(&crate::capacity::Automation { paused: false })
+                .unwrap();
+            old
+        };
+        let request = json!({"operation":"retry_all","request_id":uuid::Uuid::new_v4().to_string(),"issued_at":crate::now_seconds().unwrap()});
+        let reply = fixture.call(request.clone());
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["retried"], retried);
+        assert_eq!(reply["result"]["skipped"], 1 - retried);
+        assert_eq!(fixture.call(request)["result"]["replayed"], true);
+        assert_eq!(fixture.launched.lock().unwrap().len(), retried);
+        let runs = fixture.store.lock().unwrap().load_reviews().unwrap();
+        if retried == 1 {
+            let active = runs
+                .iter()
+                .find(|r| r.operation.state == OperationState::Running)
+                .unwrap();
+            assert_ne!(active.operation.id, old_id);
+        } else {
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].operation.state, OperationState::ManualRetry);
+        }
+    }
+}
+
+#[test]
 fn ordinary_ai_retry_cannot_replace_a_completed_published_pass() {
     let fixture = Fixture::new();
     fixture.call(fixture.watch(false));
