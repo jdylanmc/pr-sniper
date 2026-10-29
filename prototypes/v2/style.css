@@ -2614,6 +2614,26 @@ button:disabled {
   min-height: 0;
   padding-top: 0;
 }
+.work-retry-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 12px 8px auto;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--navy);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.work-retry-all .icon {
+  width: 16px;
+  height: 16px;
+}
+.work-retry-all[aria-disabled="true"] {
+  opacity: 0.5;
+}
 .queue-group {
   overflow: hidden;
   border: 1px solid var(--line-slate-e5e9ee);

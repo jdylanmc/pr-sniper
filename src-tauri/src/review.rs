@@ -1047,7 +1047,10 @@ impl Failure {
         let kind = match data["statusCode"].as_u64() {
             Some(408) => OperationFailure::Timeout,
             Some(429) => OperationFailure::RateLimited,
-            Some(401) => OperationFailure::Credentials,
+            // The account was verified before the session started; a runtime
+            // 401 (e.g. one model refusing service) is not revoked credentials.
+            // Revoked credentials fail that verification and mark the account.
+            Some(401) => OperationFailure::Provider,
             Some(403) => OperationFailure::Permission,
             Some(500..=599) => OperationFailure::Provider,
             Some(_) => OperationFailure::Provider,
@@ -1202,5 +1205,16 @@ impl Events {
             carried_findings: Vec::new(),
             wait_snapshot: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn failed_identity_verification_stays_credentials() {
+        let failure = Failure::operation("This Copilot account needs to be reconnected.".into());
+        assert_eq!(failure.kind, OperationFailure::Credentials);
     }
 }

@@ -736,7 +736,7 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
     };
     let flag = coordinator
         .reserve(&store, &work, |flag| {
-            Ok((review.operation.id.clone(), flag))
+            Ok(Some((review.operation.id.clone(), flag)))
         })
         .unwrap()
         .unwrap();
@@ -915,7 +915,7 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         blocked_by: None,
     };
     coordinator
-        .reserve(&store, &work, |_| Ok((old_operation.clone(), ())))
+        .reserve(&store, &work, |_| Ok(Some((old_operation.clone(), ()))))
         .unwrap()
         .unwrap();
     review.operation.id = "new-local-attempt".into();

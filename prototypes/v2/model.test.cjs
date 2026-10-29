@@ -1288,3 +1288,15 @@ test("rubber duck limits save with capacity and refuse out-of-range values", () 
   ])
     assert.throws(() => M.update(state, "capacity", { limit: 2, duck }));
 });
+
+test("retry all requeues every failed review and refuses when none failed", () => {
+  let state = M.seed();
+  for (const review of state.reviews.filter((r) => r.state === "running"))
+    state = M.update(state, "interrupt", { reviewId: review.id });
+  const failed = count(state, "failed");
+  assert.ok(failed >= 2);
+  state = M.update(state, "retry-all");
+  assert.equal(count(state, "failed"), 0);
+  assert.ok(state.reviews.filter((r) => r.restart).length >= failed);
+  assert.throws(() => M.update(state, "retry-all"), /Nothing to retry/);
+});

@@ -901,7 +901,7 @@ async fn at_ai_capacity_one_the_duck_runs_inside_the_primarys_slot() {
         blocked_by: None,
     };
     let slot = coordinator
-        .reserve(&store, &work("primary"), |_| Ok(("op".into(), ())))
+        .reserve(&store, &work("primary"), |_| Ok(Some(("op".into(), ()))))
         .unwrap();
     assert!(slot.is_some(), "the primary holds the only slot");
     let duck = duck(
@@ -928,7 +928,7 @@ async fn at_ai_capacity_one_the_duck_runs_inside_the_primarys_slot() {
     ));
     assert!(
         coordinator
-            .reserve(&store, &work("other"), |_| Ok(("op2".into(), ())))
+            .reserve(&store, &work("other"), |_| Ok(Some(("op2".into(), ()))))
             .unwrap()
             .is_none(),
         "still one slot, held by the primary alone"

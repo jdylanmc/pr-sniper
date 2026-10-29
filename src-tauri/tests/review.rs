@@ -253,7 +253,8 @@ fn runtime_errors_preserve_retry_classification_without_provider_messages() {
         (408, OperationFailure::Timeout),
         (429, OperationFailure::RateLimited),
         (503, OperationFailure::Provider),
-        (401, OperationFailure::Credentials),
+        // The account was verified before the session: a runtime 401 is a service refusal.
+        (401, OperationFailure::Provider),
         (403, OperationFailure::Permission),
         // Unclassified provider statuses retry: an execution failure is not proof of a permanent fault.
         (400, OperationFailure::Provider),
