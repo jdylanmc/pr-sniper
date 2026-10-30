@@ -1822,7 +1822,7 @@ test("both native lanes run bounded real-app MCP acceptance and retain only safe
   );
 });
 
-test("changesets validate PRs, consume via a bot PR and tag releases only after exact main CI", () => {
+test("changesets validate PRs, fold only at release through a bot PR and tag after exact main CI", () => {
   const changesets = parse(
     readFileSync(".github/workflows/changesets.yml", "utf8"),
   );
@@ -1832,11 +1832,14 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
   const helper = readFileSync("scripts/changesets-pr.sh", "utf8");
   assert.deepEqual(Object.keys(changesets.on), [
     "pull_request",
-    "push",
     "workflow_dispatch",
   ]);
-  assert.deepEqual(changesets.on.push, { branches: ["main"] });
+  assert.deepEqual(Object.keys(changesets.on.workflow_dispatch.inputs), [
+    "version",
+    "summary",
+  ]);
   assert.deepEqual(changesets.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(changesets.jobs), ["changeset", "release"]);
   assert.equal(
     changesets.jobs.changeset.if,
     "${{ github.event_name == 'pull_request' }}",
@@ -1846,28 +1849,23 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
     changesets.jobs.changeset.steps.at(-1).run,
     /^node scripts\/changesets\.mjs validate /,
   );
-  for (const name of ["consume", "release"]) {
-    const run = changesets.jobs[name].steps.map((s) => s.run || "").join("\n");
-    assert.match(
-      run,
-      /bash scripts\/changesets-pr\.sh "(\$BRANCH|changesets\/)/,
-      name,
-    );
-    assert.doesNotMatch(run, /HEAD:main|origin main\b/, name);
-  }
-  assert.equal(changesets.jobs.consume.env.BRANCH, "changesets/consume");
+  const release = changesets.jobs.release.steps
+    .map((s) => s.run || "")
+    .join("\n");
+  assert.match(release, /test "\$GITHUB_REF" = refs\/heads\/main/);
+  assert.match(release, /node scripts\/changesets\.mjs release "\$VERSION"/);
   assert.match(
-    changesets.jobs.consume.steps.at(-1).run,
-    /\[ "\$consumed" = "\$pending" \] && git merge-base --is-ancestor HEAD FETCH_HEAD/,
+    release,
+    /bash scripts\/changesets-pr\.sh "changesets\/release-v\$VERSION"/,
   );
+  assert.doesNotMatch(release, /HEAD:main|origin main\b/);
+  for (const file of readdirSync(".github/workflows")) {
+    const text = readFileSync(join(".github/workflows", file), "utf8");
+    assert.doesNotMatch(text, /changesets\.mjs consume/, file);
+  }
   assert.match(helper, /push -q --force origin "HEAD:refs\/heads\/\$branch"/);
   assert.match(helper, /for workflow in macos\.yml windows\.yml; do/);
   assert.match(helper, /gh workflow run "\$workflow" --ref "\$branch"/);
-  assert.match(helper, /runs\?head_sha=\$sha" --jq '\.total_count'\)" = 0/);
-  assert.match(
-    changesets.jobs.consume.steps.at(-1).run,
-    /already consumes: \$pending"\n\s*bash scripts\/changesets-pr\.sh --ensure "\$BRANCH"/,
-  );
   assert.doesNotMatch(helper, /skip ci/i);
   assert.deepEqual(ci.on.workflow_dispatch, null);
   assert.deepEqual(tagger.on, {
@@ -1890,6 +1888,7 @@ test("changesets validate PRs, consume via a bot PR and tag releases only after 
     /for workflow in macos\.yml windows\.yml/,
     /event=push&branch=main/,
     /gh workflow run release\.yml --ref "\$tag"/,
+    /grep -qF "## \[\$version\] - " CHANGELOG\.md/,
     /test "\$\(git rev-parse "\$tag\^\{commit\}"\)" = "\$SHA"/,
     /if \[ "\$\(runs\)" = 0 \]; then dispatch;/,
   ])

@@ -46,12 +46,14 @@ unchanged unless a specific correction is authorized.
 
 ## Changesets
 
-When the repository has a `.changes/` directory, never edit `CHANGELOG.md` in a
-PR. Write the curated entry as `.changes/<name>.md` per `.changes/README.md`:
-front matter `type` (`added`, `changed`, `deprecated`, `removed`, `fixed`,
-`security`) plus optional `issue`/`pr`, and the user-facing text as the body.
-Use one unique file per PR (one per outcome when needed); revise that file, not
-others'. Automation consumes it into `Unreleased`; releases cut versions. A
+When the repository has a `.changes/` directory, never edit `CHANGELOG.md`;
+only release automation does. Write the curated entry as `.changes/<name>.md`
+per `.changes/README.md`: front matter `type` (`added`, `changed`,
+`deprecated`, `removed`, `fixed`, `security`) plus optional `issue`/`pr`, and
+the user-facing text as a single-paragraph body. Use one unique file per PR
+(one per outcome when needed); revise that file, not others'. Entries stay in
+`.changes/` until a release folds them into the version section. When no entry
+is notable, a docs-, CI- or test-only PR uses label `no-changeset`. A
 changeset-only edit does not create an entry about itself.
 
 ## Curate and consolidate

@@ -44,10 +44,11 @@ does not authorize staging, committing or rewriting history.
 
 ### Changelog
 
-Never edit `CHANGELOG.md` in a PR. Add one `.changes/<name>.md` per PR
-([format](.changes/README.md)) via [`/changelog`](.agents/skills/changelog/SKILL.md);
-a bot PR consumes entries into `Unreleased` after merge. Docs-, CI- or test-only
-PRs may use label `no-changeset` instead.
+Never edit `CHANGELOG.md`; only release automation does. Every PR adds one
+`.changes/<name>.md` ([format](.changes/README.md)) via
+[`/changelog`](.agents/skills/changelog/SKILL.md). Docs-, CI- or test-only PRs
+use label `no-changeset` instead. Entries are folded only when a release is
+sliced.
 
 ### Pull requests
 

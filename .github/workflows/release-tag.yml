@@ -62,7 +62,7 @@ jobs:
             if [ "$(runs)" = 0 ]; then dispatch; else echo "$tag already released or releasing."; fi
             exit 0
           fi
-          grep -q "^## $version - " CHANGELOG.md
+          grep -qF "## [$version] - " CHANGELOG.md
           for workflow in macos.yml windows.yml; do
             conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&event=push&branch=main" --jq '.workflow_runs | max_by(.id) | .conclusion // ""')"
             if [ "$conclusion" != success ]; then

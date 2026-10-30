@@ -121,30 +121,32 @@ be merged on tap `main` before the application's release preflight succeeds.
 
 ## Changesets
 
-PRs never edit `CHANGELOG.md`; each adds one [`.changes/<name>.md`](../.changes/README.md)
-entry, so parallel PRs do not conflict on it. `scripts/changesets.mjs` owns the rules.
+Only release automation edits `CHANGELOG.md`. Each PR adds one
+[`.changes/<name>.md`](../.changes/README.md) entry, so parallel PRs do not
+conflict. Entries accumulate on `main` until a release is sliced; nothing is
+consumed per merge. `scripts/changesets.mjs` owns the rules.
 
-| Workflow                   | Trigger            | Does                                                                                                                        |
-| -------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| **Changesets** `changeset` | PR                 | `validate`: entry format; fails a direct `CHANGELOG.md` edit unless label `no-changeset` or bot branch; warns if no entry   |
-| **Changesets** `consume`   | push to `main`     | `consume` on `changesets/consume`, one bot commit, PR to `main`; deletes the branch when nothing is pending                 |
-| **Changesets** `release`   | dispatch `version` | `release X.Y.Z` on `changesets/release-vX.Y.Z`: consume, cut `## X.Y.Z - date`, bump every version field, rebuild MCP asset |
-| **Release tag**            | main CI completed  | Release commit only: both main-push CI workflows green on that SHA, then annotated `vX.Y.Z` tag + dispatch signed release   |
+| Workflow                   | Trigger            | Does                                                                                                                                         |
+| -------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Changesets** `changeset` | PR                 | `validate`: entry format; fails any `CHANGELOG.md` edit; fails without a `.changes/` entry unless label `no-changeset`; release PR exempt    |
+| **Changesets** `release`   | dispatch `version` | `release X.Y.Z` on `changesets/release-vX.Y.Z`: fold `.changes/*.md` into `## [X.Y.Z] - date`, delete them, bump versions, rebuild MCP asset |
+| **Release tag**            | main CI completed  | Release commit only: both main-push CI workflows green on that SHA, then annotated `vX.Y.Z` tag + dispatch signed release                    |
 
-Branch protection decisions:
+Decisions:
 
+- Migration: history is unchanged. Items already under `## Unreleased` stay
+  there and fold into the next release section with the changesets.
 - `main` requires strict `macos`, `webkit`, `windows`, `windows-installer-acceptance`
-  checks with admins enforced. The bot never pushes to `main`; consume and
-  release land through bot PRs merged like any other PR.
+  checks with admins enforced. The bot never pushes to `main`; the release
+  commit lands through a bot PR, which also keeps the existing main-CI gate.
 - `GITHUB_TOKEN` pushes start no `push`/`pull_request` runs. Bot commits do not use
   `[skip ci]`; `scripts/changesets-pr.sh` dispatches **macOS foundation** and
   **Windows native application** on the bot branch so required checks report.
 - If **Allow GitHub Actions to create and approve pull requests** is off, the bot
   pushes the branch and writes a compare link to the job summary; a maintainer
   opens the PR (human-opened PRs run CI normally).
-- `consume` is serialized per ref without cancellation and idempotent: it skips
-  when the bot branch already contains current `main` and consumes exactly the pending set (a rerun then only dispatches CI missing for the bot head), and never
-  duplicates an entry already in `Unreleased`.
+- Release dispatches on `main` are serialized without cancellation; a rerun
+  regenerates the release branch from current `main`.
 - A tag pushed with `GITHUB_TOKEN` does not start **Signed macOS release**, so
   **Release tag** dispatches it on the tag ref; the existing gate still requires
   the exact tagged commit's green main-push CI.
@@ -157,7 +159,8 @@ The human chooses the version. This delivery does not authorize an agent to
 cut a release merely because checks pass.
 
 1. Run **Changesets** on `main` with `version` (and optional `summary`). It
-   consumes pending entries, moves `Unreleased` into `## X.Y.Z - YYYY-MM-DD`,
+   folds every `.changes/*.md` (plus any legacy `Unreleased` items) into
+   `## [X.Y.Z] - YYYY-MM-DD`, deletes the consumed files,
    updates `package.json`, both root npm lock version fields,
    `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, the PR Sniper entry in
    `src-tauri/Cargo.lock`, both shown versions in `site/index.html` and the boot

@@ -17,7 +17,6 @@ import {
   ChangesetError,
   VERSION_FIELDS,
   applyChangesets,
-  consume,
   moveUnreleased,
   parseChangeset,
   readChangesets,
@@ -79,9 +78,8 @@ test("parses front matter and rejects malformed changesets", () => {
     assert.throws(() => parseChangeset(bad, "bad.md"), ChangesetError, bad);
 });
 
-test("consume appends entries under ordered subsections, deletes files and is idempotent", async () => {
+test("folding orders entries by subsection and file name, appending refs once", async () => {
   const root = fixture({
-    "CHANGELOG.md": `${HEAD}\n### Fixed\n\n- Existing fix.\n${HISTORY}`,
     ".changes/README.md": "# Changes\n",
     ".changes/b-fix.md": entry("fixed", "Fix the queue.", "issue: 7\n"),
     ".changes/a-sec.md": entry("security", "- Redact tokens (#8)."),
@@ -92,8 +90,15 @@ test("consume appends entries under ordered subsections, deletes files and is id
     ),
   });
   try {
-    assert.deepEqual(consume(root), ["a-sec.md", "b-fix.md", "c-add.md"]);
-    const text = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+    const changesets = readChangesets(root);
+    assert.deepEqual(
+      changesets.map(({ name }) => name),
+      ["a-sec.md", "b-fix.md", "c-add.md"],
+    );
+    const text = applyChangesets(
+      `${HEAD}\n### Fixed\n\n- Legacy Unreleased fix.\n${HISTORY}`,
+      changesets,
+    );
     assert.equal(
       text,
       `${HEAD}
@@ -104,7 +109,7 @@ test("consume appends entries under ordered subsections, deletes files and is id
 
 ### Fixed
 
-- Existing fix.
+- Legacy Unreleased fix.
 - Fix the queue (#7).
 
 ### Security
@@ -113,21 +118,13 @@ test("consume appends entries under ordered subsections, deletes files and is id
 ${HISTORY}`,
     );
     await assertPrettierStable(text);
-    assert.deepEqual(readdirSync(join(root, ".changes")), ["README.md"]);
-    assert.deepEqual(consume(root), []);
-    assert.equal(readFileSync(join(root, "CHANGELOG.md"), "utf8"), text);
-    writeFileSync(
-      join(root, ".changes/b-fix.md"),
-      entry("fixed", "Fix the queue.", "issue: 7\n"),
-    );
-    assert.deepEqual(consume(root), ["b-fix.md"]);
-    assert.equal(readFileSync(join(root, "CHANGELOG.md"), "utf8"), text);
+    assert.equal(applyChangesets(text, changesets), text);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("consume skips only complete duplicate entries in the same subsection", () => {
+test("folding skips only complete duplicate entries in the same subsection", () => {
   const existing = [
     "- Fix queue (#7).",
     "- Fix queue. Preserve retry state.",
@@ -153,7 +150,7 @@ test("consume skips only complete duplicate entries in the same subsection", () 
   assert.equal(applyChangesets(after, [fixed("Fix queue")]), after);
 });
 
-test("consume preserves the real changelog history byte for byte", async () => {
+test("folding preserves the real changelog history byte for byte", async () => {
   const real = readFileSync("CHANGELOG.md", "utf8");
   const after = applyChangesets(real, [
     { type: "changed", issues: [], prs: [], body: "Adopt changesets-test." },
@@ -167,7 +164,7 @@ test("consume preserves the real changelog history byte for byte", async () => {
   assert.equal(applyChangesets(real, []), real);
 });
 
-test("release moves Unreleased and bumps every checked-in version field", async () => {
+test("release folds changesets into a version section, deletes them and bumps every version field", async () => {
   const root = fixture();
   const files = [...new Set(VERSION_FIELDS.map(([file]) => file))];
   try {
@@ -179,6 +176,7 @@ test("release moves Unreleased and bumps every checked-in version field", async 
       join(root, ".changes/pr-1.md"),
       entry("added", "Ship changesets.", "issue: 291\n"),
     );
+    writeFileSync(join(root, ".changes/README.md"), "# Changes\n");
     const previous = JSON.parse(readFileSync("package.json", "utf8")).version;
     writeFileSync(
       join(root, "CHANGELOG.md"),
@@ -193,12 +191,13 @@ test("release moves Unreleased and bumps every checked-in version field", async 
       build: () => built++,
     });
     assert.deepEqual(result.consumed, ["pr-1.md"]);
+    assert.deepEqual(readdirSync(join(root, ".changes")), ["README.md"]);
     assert.equal(built, 1);
     const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
     assert.match(
       changelog,
       new RegExp(
-        `## Unreleased\\n\\n## ${version} - 2026-11-01\\n\\nChangesets by file\\.\\n\\n### Added\\n\\n- Ship changesets \\(#291\\)\\.\\n\\n## ${previous} - `,
+        `## Unreleased\\n\\n## \\[${version}\\] - 2026-11-01\\n\\nChangesets by file\\.\\n\\n### Added\\n\\n- Ship changesets \\(#291\\)\\.\\n\\n## ${previous} - `,
       ),
     );
     await assertPrettierStable(changelog);
@@ -247,43 +246,47 @@ test("release refuses an empty Unreleased section or duplicate version", () => {
   assert.throws(() => moveUnreleased(HEAD, "v1.0.0", "2026-11-01"));
 });
 
-test("validate rejects direct changelog edits unless bot or opted out", () => {
+test("validate makes CHANGELOG.md release-only and requires a changeset or opt-out", () => {
   const root = fixture({ ".changes/ok.md": entry("fixed", "Fix it.") });
   try {
-    const edit = [
-      { status: "M", path: "CHANGELOG.md" },
-      { status: "A", path: ".changes/ok.md" },
-    ];
-    assert.equal(validate({ root, changed: edit }).errors.length, 1);
-    assert.deepEqual(
-      validate({ root, changed: edit, labels: ["no-changeset"] }).errors,
-      [],
-    );
-    assert.deepEqual(
-      validate({ root, changed: edit, headRef: "changesets/consume" }).errors,
-      [],
-    );
+    const entryAdded = { status: "A", path: ".changes/ok.md" };
+    const changelog = { status: "M", path: "CHANGELOG.md" };
+    const code = { status: "M", path: "src/main.ts" };
+    const errors = (options) => validate({ root, ...options }).errors.length;
+    assert.equal(errors({ changed: [code, entryAdded] }), 0);
+    assert.equal(errors({ changed: [changelog, entryAdded] }), 1);
     assert.equal(
-      validate({
-        root,
-        changed: edit,
-        headRef: "changesets/consume",
-        sameRepo: false,
-      }).errors.length,
+      errors({ changed: [changelog, entryAdded], labels: ["no-changeset"] }),
       1,
     );
-    assert.deepEqual(
-      validate({ root, changed: edit, author: "github-actions[bot]" }).errors,
-      [],
+    assert.equal(
+      errors({ changed: [changelog], headRef: "changesets/consume" }),
+      2,
     );
-    const plain = validate({
-      root,
-      changed: [{ status: "M", path: "src/main.ts" }],
-    });
-    assert.deepEqual(plain.errors, []);
-    assert.equal(plain.warnings.length, 1);
+    assert.equal(
+      errors({ changed: [changelog], headRef: "changesets/release-v1.2.3" }),
+      0,
+    );
+    assert.equal(
+      errors({
+        changed: [changelog],
+        headRef: "changesets/release-v1.2.3",
+        sameRepo: false,
+      }),
+      2,
+    );
+    assert.equal(
+      errors({ changed: [changelog], author: "github-actions[bot]" }),
+      0,
+    );
+    assert.equal(errors({ changed: [code] }), 1);
+    assert.equal(errors({ changed: [code], labels: ["no-changeset"] }), 0);
+    assert.equal(
+      errors({ changed: [code, { status: "M", path: ".changes/README.md" }] }),
+      1,
+    );
     writeFileSync(join(root, ".changes/Bad Name.md"), entry("fixed", "x"));
-    assert.equal(validate({ root }).errors.length, 1);
+    assert.equal(errors({}), 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

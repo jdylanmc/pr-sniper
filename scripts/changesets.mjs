@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Changesets by file (#291): validate, consume and release `.changes/*.md`.
+// Changesets by file (#291): validate `.changes/*.md` on PRs; only a release folds them into CHANGELOG.md.
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -22,7 +22,7 @@ export const TYPES = [
   "security",
 ];
 export const OPT_OUT_LABEL = "no-changeset";
-export const BOT_BRANCH_PREFIX = "changesets/";
+export const RELEASE_BRANCH_PREFIX = "changesets/release-v";
 export const BOT_AUTHORS = ["github-actions[bot]"];
 const RESERVED = new Set(["README.md"]);
 const NAME = /^[a-z0-9][a-z0-9._-]*\.md$/;
@@ -201,7 +201,8 @@ export function applyChangesets(changelog, changesets) {
   });
 }
 
-export function consume(root = ".") {
+// Release-only: fold pending changesets into Unreleased and delete them.
+function fold(root) {
   const changesets = readChangesets(root);
   if (changesets.length === 0) return [];
   const path = join(root, CHANGELOG);
@@ -229,7 +230,7 @@ export function moveUnreleased(changelog, version, date, summary = "") {
   if (!content) throw new ChangesetError(`${CHANGELOG}: Unreleased is empty`);
   const intro = summary.trim() ? `${summary.trim()}\n\n` : "";
   const unreleased = source.slice(head, start);
-  return `${source.slice(0, head)}${unreleased}\n\n## ${version} - ${date}\n\n${intro}${content}\n\n${source.slice(end)}`.replace(
+  return `${source.slice(0, head)}${unreleased}\n\n## [${version}] - ${date}\n\n${intro}${content}\n\n${source.slice(end)}`.replace(
     /\n{3,}$/,
     "\n",
   );
@@ -295,7 +296,7 @@ export function release(root, version, { date, summary = "", build } = {}) {
   const previous = currentVersion(root);
   if (!newer(version, previous))
     throw new ChangesetError(`${version} must be newer than ${previous}`);
-  const consumed = consume(root);
+  const consumed = fold(root);
   const path = join(root, CHANGELOG);
   const day = date || new Date().toISOString().slice(0, 10);
   writeFileSync(
@@ -316,6 +317,8 @@ function defaultBuild(root) {
 }
 
 // PR policy. `changed` is [{status, path}] from `git diff --name-status base...head`.
+// Only release automation may touch CHANGELOG.md; every other PR adds a
+// changeset unless labelled no-changeset (docs-, CI- or test-only).
 export function validate({
   root = ".",
   changed = [],
@@ -325,32 +328,31 @@ export function validate({
   sameRepo = true,
 } = {}) {
   const errors = [];
-  const warnings = [];
   try {
     readChangesets(root);
   } catch (error) {
     if (!(error instanceof ChangesetError)) throw error;
     errors.push(error.message);
   }
-  const bot =
+  const release =
     BOT_AUTHORS.includes(author) ||
-    (sameRepo && headRef.startsWith(BOT_BRANCH_PREFIX));
-  const optOut = labels.includes(OPT_OUT_LABEL);
-  if (changed.some(({ path }) => path === CHANGELOG) && !bot && !optOut)
+    (sameRepo && headRef.startsWith(RELEASE_BRANCH_PREFIX));
+  if (release) return { errors };
+  if (changed.some(({ path }) => path === CHANGELOG))
     errors.push(
-      `${CHANGELOG} edited directly; add ${CHANGES_DIR}/<name>.md instead (or label ${OPT_OUT_LABEL})`,
+      `${CHANGELOG} is release-only; add ${CHANGES_DIR}/<name>.md instead`,
     );
   const added = changed.some(
     ({ status, path }) =>
-      /^[AMR]/.test(status) &&
+      /^[AM]/.test(status) &&
       path.startsWith(`${CHANGES_DIR}/`) &&
       !RESERVED.has(path.slice(CHANGES_DIR.length + 1)),
   );
-  if (changed.length && !added && !bot && !optOut)
-    warnings.push(
-      `no ${CHANGES_DIR}/*.md entry; add one for notable changes or label ${OPT_OUT_LABEL}`,
+  if (changed.length && !added && !labels.includes(OPT_OUT_LABEL))
+    errors.push(
+      `no ${CHANGES_DIR}/*.md entry; add one, or label ${OPT_OUT_LABEL} for docs-, CI- or test-only changes`,
     );
-  return { errors, warnings };
+  return { errors };
 }
 
 function args(argv) {
@@ -387,7 +389,7 @@ export function main(argv = process.argv.slice(2)) {
     const changed = options.base
       ? diff(root, options.base, options.head || "HEAD")
       : [];
-    const { errors, warnings } = validate({
+    const { errors } = validate({
       root,
       changed,
       labels: (options.labels || "").split(",").map((s) => s.trim()),
@@ -395,7 +397,6 @@ export function main(argv = process.argv.slice(2)) {
       author: options.author || "",
       sameRepo: options["same-repo"] !== "false",
     });
-    for (const warning of warnings) console.log(`::warning::${warning}`);
     for (const error of errors) console.log(`::error::${error}`);
     if (errors.length) return 1;
     console.log(`changesets: ${listChangesets(root).length} valid`);
@@ -404,13 +405,6 @@ export function main(argv = process.argv.slice(2)) {
   if (command === "list") {
     readChangesets(root);
     for (const name of listChangesets(root)) console.log(name);
-    return 0;
-  }
-  if (command === "consume") {
-    const consumed = consume(root);
-    console.log(
-      consumed.length ? `consumed: ${consumed.join(", ")}` : "consumed: none",
-    );
     return 0;
   }
   if (command === "release") {
@@ -423,7 +417,7 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
   console.error(
-    "usage: changesets.mjs validate [--base SHA --head SHA --labels a,b --head-ref REF --author LOGIN --same-repo true|false] | list | consume | release X.Y.Z [--date YYYY-MM-DD] [--summary TEXT] [--skip-build]",
+    "usage: changesets.mjs validate [--base SHA --head SHA --labels a,b --head-ref REF --author LOGIN --same-repo true|false] | list | release X.Y.Z [--date YYYY-MM-DD] [--summary TEXT] [--skip-build]",
   );
   return 2;
 }
