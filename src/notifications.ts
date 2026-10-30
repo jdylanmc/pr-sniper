@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { onCommitted, STATE_CHANGED } from "./changes";
 import { setText } from "./stable-dom";
 
 interface Notice {
@@ -208,4 +209,5 @@ export function mountNotificationSettings(
     if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
+  onCommitted(root, [STATE_CHANGED], () => void refresh());
 }

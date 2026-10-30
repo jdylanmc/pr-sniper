@@ -1,6 +1,7 @@
 import { restoreShared } from "./interned";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { onCommitted, SETTINGS_CHANGED } from "./changes";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
 import { type SetupReview } from "./resources";
@@ -154,6 +155,7 @@ export async function mountPanel(app: HTMLElement) {
       (cause) => showVersion(undefined, cause),
     );
   readVersion();
+  onCommitted(app, [SETTINGS_CHANGED], readVersion);
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;

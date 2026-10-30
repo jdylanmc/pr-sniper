@@ -124,6 +124,12 @@ export const test = base.extend({
             callbacks.get(handler)?.({ event, id, payload });
         }
       };
+      // Delivers a native broadcast (e.g. a Store commit notification).
+      window.__appEvent = (name, payload) => {
+        for (const [id, { event, handler }] of listeners) {
+          if (event === name) callbacks.get(handler)?.({ event, id, payload });
+        }
+      };
       window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
         unregisterListener: (_event, id) => listeners.delete(id),
       };

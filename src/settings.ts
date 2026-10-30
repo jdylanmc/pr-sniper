@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
+import { onCommitted, SETTINGS_CHANGED } from "./changes";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -519,6 +520,8 @@ export async function mountSettings(
   let themeError = "";
   let conflict = false;
   let catalogConflict = false;
+  let externalPending = false;
+  let externalRead = 0;
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -568,7 +571,23 @@ export async function mountSettings(
   };
   const dialogs = createDialogs(
     content,
-    () => revision++,
+    () => {
+      revision++;
+      // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
+      // no other Reload (Repositories has its own). Once the last editor
+      // closes on a clean draft there, re-read instead.
+      if (conflict)
+        queueMicrotask(() => {
+          if (
+            conflict &&
+            !dialogs.hasOpen() &&
+            !dirty() &&
+            section !== "repositories" &&
+            !!reload.closest("[hidden]")
+          )
+            void external();
+        });
+    },
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
@@ -648,6 +667,10 @@ export async function mountSettings(
     reload.disabled = busy;
     catalogNotice.hidden = !catalogConflict;
     reloadCatalog.disabled = busy;
+    if (externalPending && !busy && !startupPending) {
+      externalPending = false;
+      void external();
+    }
   }
 
   async function commitResource(
@@ -5230,28 +5253,7 @@ export async function mountSettings(
         dialogs.hasOpen()
       )
         return;
-      snapshot = state;
-      if (!state.settings) {
-        showError(state.error ?? "Unavailable");
-        return;
-      }
-      const retainAccounts =
-        (section === "accounts" ||
-          section === "copilot" ||
-          section === "github") &&
-        content.querySelector(".account-connection") !== null &&
-        sameResource(saved, state.settings);
-      saved = clone(state.settings);
-      draft = clone(saved);
-      if (!themePending) applyTheme(saved.theme);
-      conflict = false;
-      if (state.error) showError(state.error);
-      if (retainAccounts) {
-        changed();
-        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
-        return;
-      }
-      render();
+      applySnapshot(state);
     } catch {
       if (
         requestRevision !== revision ||
@@ -5265,11 +5267,72 @@ export async function mountSettings(
       showError("Unavailable");
     }
   }
+  // Callers have checked that no draft, editor or save would be overwritten.
+  function applySnapshot(state: Snapshot) {
+    snapshot = state;
+    if (!state.settings) {
+      showError(state.error ?? "Unavailable");
+      return;
+    }
+    const retainAccounts =
+      (section === "accounts" ||
+        section === "copilot" ||
+        section === "github") &&
+      content.querySelector(".account-connection") !== null &&
+      sameResource(saved, state.settings);
+    saved = clone(state.settings);
+    draft = clone(saved);
+    if (!themePending) applyTheme(saved.theme);
+    conflict = false;
+    if (state.error) showError(state.error);
+    if (retainAccounts) {
+      changed();
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+      return;
+    }
+    // Azure DevOps renders nothing from saved Settings and keeps its own
+    // unsaved Organization draft; a remount would drop it.
+    if (section === "azure-devops") {
+      changed();
+      return;
+    }
+    render();
+  }
+  // A commit from another origin (control, another window) refreshes a clean
+  // view; an unsaved draft or open editor keeps its edits and is marked stale.
+  async function external() {
+    if (busy || startupPending || !saved) {
+      externalPending = true;
+      return;
+    }
+    const read = ++externalRead;
+    let state: Snapshot;
+    try {
+      state = await invoke<Snapshot>("snapshot");
+    } catch {
+      return;
+    }
+    if (read !== externalRead || !state.settings || !app.isConnected) return;
+    if (busy || startupPending) {
+      externalPending = true;
+      return;
+    }
+    if (sameResource(state.settings, saved)) return;
+    if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
+      applySnapshot(state);
+      return;
+    }
+    conflict = true;
+    showError("Changed elsewhere");
+    changed();
+  }
   window.addEventListener("focus", () => {
     if (app.closest("[hidden]")) return;
     refreshAgentAccounts?.();
     if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
+  // Listen before the first read so no commit lands between them unseen.
+  await onCommitted(app, [SETTINGS_CHANGED], () => void external());
   await load();
   return {
     leaveGuidance,
