@@ -7,6 +7,12 @@ All other commands use the isolated Store bridge. Assertions drain Store IPC wit
 fixtures do not execute native recovery or provider writes. The adjacent error
 case deliberately rejects recovery and verifies the error toast.
 
+`live-changes.spec.mjs` commits through the real Store, then delivers the
+native `pr-sniper:settings-changed` broadcast with `__appEvent`. A clean view
+refreshes; a dirty draft or open editor keeps its edits and shows Changed
+elsewhere. The native broadcast is covered by
+`control::tests::control_saves_notify_open_windows_like_ui_saves`.
+
 `control-installation*.spec.mjs` run every Install, Update, Repair and Remove
 through `performInstaller`: hold the real native reply, assert the pending
 control, release, then drain IPC with `__settingsIdle()`. Assertions follow

@@ -110,6 +110,9 @@ pub(crate) fn prepare(
     let base = gate_input(run, facts)?;
     let exits = gates::offered(&base);
     let offered = gates::callable(&base, &exits);
+    let lgtm_offered = exits
+        .iter()
+        .any(|(exit, offer)| *exit == crate::exits::Exit::Lgtm && offer.is_offered());
     if offered
         .iter()
         .all(|exit| *exit == crate::exits::Exit::PanicExit)
@@ -284,6 +287,7 @@ pub(crate) fn prepare(
             .collect(),
         teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
         revision_reviewed,
+        lgtm_offered,
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(

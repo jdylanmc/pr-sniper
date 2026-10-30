@@ -328,7 +328,8 @@ pub struct DuckCall {
     /// Further refusals with this entry's failure folded into it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeats: u32,
-    /// Refusals of other kinds folded in once the refusal entry cap was reached.
+    /// Refusals of other kinds or targets folded in once the refusal entry cap was
+    /// reached. No verdict settles such an entry ([`unsettled`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub others: BTreeMap<DuckFailure, u32>,
 }
@@ -344,6 +345,52 @@ impl DuckCall {
     }
 }
 
+impl DuckInput {
+    /// What the call examines: target and mode, never its wording or evidence, so a
+    /// retry with a refined claim or fresh reads is the same subject.
+    #[allow(clippy::type_complexity)]
+    fn subject(
+        &self,
+    ) -> (
+        bool,
+        TargetKind,
+        Option<&str>,
+        Option<u64>,
+        Option<u64>,
+        Option<&str>,
+        Option<&str>,
+    ) {
+        // Defaults spelled out: no side is head, no end_line is the single line.
+        (
+            self.verify_fixed,
+            self.kind,
+            self.path.as_deref(),
+            self.line,
+            self.end_line.or(self.line),
+            Some(self.side.as_deref().unwrap_or("head")),
+            self.thread_id.as_deref(),
+        )
+    }
+}
+
+/// Failed or unverifiable calls in `log` order that no later definitive verdict
+/// (confirmed, revise, rejected) on the same subject superseded.
+pub(crate) fn unsettled(log: &[DuckCall]) -> impl Iterator<Item = &DuckCall> {
+    log.iter().enumerate().filter_map(move |(index, call)| {
+        let open = match &call.outcome {
+            DuckOutcome::Failure { .. } => true,
+            DuckOutcome::Verdict { verdict } => verdict.verdict == VerdictKind::Unverifiable,
+        };
+        let superseded = call.others.is_empty()
+            && log[index + 1..].iter().any(|later| {
+                later.input.subject() == call.input.subject()
+                    && matches!(&later.outcome, DuckOutcome::Verdict { verdict }
+                    if verdict.verdict != VerdictKind::Unverifiable)
+            });
+        (open && !superseded).then_some(call)
+    })
+}
+
 /// Append one call to an attempt's log, keeping it bounded: a refused call keeps only
 /// its target and claim, repeats of the last refusal fold into it, and at most
 /// [`MAX_REFUSAL_ENTRIES`] refusals are kept. Started calls are bounded by `max_calls`.
@@ -352,12 +399,16 @@ pub fn log_call(log: &mut Vec<DuckCall>, mut call: DuckCall) {
         call.input.proposed_body.clear();
         call.input.evidence.clear();
         let refusals = log.iter().filter(|c| c.refused()).count();
+        // A repeat is the same refusal of the same target; `unsettled` reads targets.
+        let repeat = |last: &DuckCall| {
+            last.outcome == call.outcome && last.input.subject() == call.input.subject()
+        };
         let same = log
             .last()
-            .is_some_and(|last| last.refused() && last.outcome == call.outcome);
+            .is_some_and(|last| last.refused() && repeat(last));
         if same || refusals >= MAX_REFUSAL_ENTRIES {
             if let Some(last) = log.iter_mut().rev().find(|c| c.refused()) {
-                if last.outcome == call.outcome {
+                if repeat(last) {
                     last.repeats = last.repeats.saturating_add(1);
                 } else if let DuckOutcome::Failure { failure } = call.outcome {
                     let count = last.others.entry(failure).or_default();
