@@ -335,3 +335,31 @@ fn the_per_attempt_log_has_a_byte_bound() {
         "{total}"
     );
 }
+
+#[test]
+fn folded_refusals_keep_each_target_unsettled_until_its_own_verdict() {
+    let target = |line: u64, failure: Option<DuckFailure>| {
+        let mut call = logged(failure);
+        call.input.line = Some(line);
+        call.input.end_line = None;
+        call
+    };
+    // A refused, then B refused the same way: B is its own entry, not a repeat of A.
+    let mut log = Vec::new();
+    log_call(&mut log, target(1, Some(DuckFailure::RateLimited)));
+    log_call(&mut log, target(2, Some(DuckFailure::RateLimited)));
+    log_call(&mut log, target(1, None));
+    assert_eq!(log.len(), 3);
+    let open: Vec<_> = unsettled(&log).map(|c| c.input.line).collect();
+    assert_eq!(open, [Some(2)], "a verdict on A never settles B");
+    // At the cap another target folds in; no verdict on the entry's own target settles it.
+    let mut capped = Vec::new();
+    let kinds = [DuckFailure::LimitReached, DuckFailure::RateLimited];
+    for i in 0..MAX_REFUSAL_ENTRIES {
+        log_call(&mut capped, target(1, Some(kinds[i % 2])));
+    }
+    assert_eq!(capped.len(), MAX_REFUSAL_ENTRIES);
+    log_call(&mut capped, target(2, Some(DuckFailure::RateLimited)));
+    log_call(&mut capped, target(1, None));
+    assert!(unsettled(&capped).next().is_some());
+}

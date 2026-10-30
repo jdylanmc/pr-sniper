@@ -60,6 +60,7 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 
 - Primary only. **Approval** pill `off | Approve | & Merge` (Azure DevOps: `off | Approve`). State `state/actions.json`.
 - Only a packet approve exit authorizes (Packet exits above). No separate final review run.
+- A sign-off (`lgtm`) acts only on green current-head CI. Accepted while CI was pending, it is a **Parked LGTM**: same final, same gates, re-attempted on each action observation with the shared backoff, one effect in flight, reconcile before acting. Parking writes nothing; only the approve/merge is sent. Before its first effect, a changed state sequence, a new head or red CI revokes it (`The review context changed…`, `CI is red…`); no write is sent and a normal review follows.
 - Legacy `FinalReview` records (no packet approval) load as history, authorize nothing; unfinished ones are cancelled on startup (`Legacy final review retired.`). Their effects still reconcile.
 - Approve: one acting-account vote, pins `commit_id`. No self-approve on GitHub. Never replaces an existing vote. Reconcile needs exact signed body, actor, commit, review receipt.
 - Merge needs: confirmed current-revision approval from an eligible reviewer; green current-head checks; satisfied reviews and rules; `CLEAN`; no unresolved threads (outdated too); no required or active merge queue; provider-selected enabled method. Pins `expectedHeadOid` and explicit method. Admin bypass is never queried or used. Absent, partial, unsupported or inaccessible evidence blocks.

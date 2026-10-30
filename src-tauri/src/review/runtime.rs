@@ -1312,6 +1312,7 @@ async fn execute<K: Task>(
                 duck_required: c.rubber_duck.is_some(),
                 corrections: request.exits.facts.corrections.clone(),
                 identities: request.exits.facts.findings.clone(),
+                handoff_nudged: Default::default(),
             });
         let duck_log = request.duck.as_ref().map(|d| d.log.clone());
         // The duck is part of this run's setup: no duck, no inference.

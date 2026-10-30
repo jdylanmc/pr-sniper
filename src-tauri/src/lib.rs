@@ -3,6 +3,7 @@ pub mod admission;
 pub mod azure_devops;
 pub mod backpressure;
 pub mod capacity;
+mod changes;
 pub mod cli_process;
 pub mod connectivity;
 pub mod control;
@@ -4988,7 +4989,9 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root.clone()).with_initial_time_zone(policy::host_time_zone());
+            let store = Store::new(root.clone())
+                .with_initial_time_zone(policy::host_time_zone())
+                .with_observer(changes::emitter(app.handle().clone()));
             retention::recover(&store).map_err(std::io::Error::other)?;
             // Bounded queue before any worker or snapshot reads it.
             let compaction = monitoring::compact_saved_queue(&store);

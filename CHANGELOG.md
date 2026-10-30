@@ -7,6 +7,12 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ### Fixed
 
+- A clean review whose only gate is pending CI no longer hands off to a human:
+  `lgtm` is accepted and parked on the revision (**Parked LGTM**), then
+  approves or merges once CI is green without another AI run. A new head, base,
+  comment, thread or red CI revokes it. A failed Rubber Duck call settled by a
+  later verdict on the same target no longer blocks `wait`, and
+  `ready_for_human` is refused once when `lgtm` is due (#265).
 - Accept a primary's correction of a mistaken resolution, or its acceptance of
   an author's won't-fix, as any reply on that own thread instead of requiring
   the reply to repeat the disposition rationale verbatim, and let

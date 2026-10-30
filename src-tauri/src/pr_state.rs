@@ -406,6 +406,18 @@ impl PrStates {
         }
     }
 
+    /// Revoke a Parked LGTM still on `state_seq`: a fresh state queues a new review.
+    pub fn revoke(&mut self, binding: &Binding, state_seq: u64, now: i64) {
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|r| &r.binding == binding && r.state_seq == state_seq)
+        {
+            record.baseline_hash = None;
+            Self::bump(record, record.hash.clone(), now);
+        }
+    }
+
     /// The run result is discarded. Returns the new error count; the caller
     /// re-queues through the `JobOperation` budget and parks at
     /// `MAX_FAILED_ATTEMPTS`.
