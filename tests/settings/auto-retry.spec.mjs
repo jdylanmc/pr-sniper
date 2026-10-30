@@ -204,70 +204,80 @@ test("a model refusal's detail shows Agent, model and status with Change model f
   await expectModelPicker(page);
 });
 
-test("a repository check still retrying never hides a parked model refusal in the detail", async ({
-  page,
-  store,
-}) => {
-  const now = Math.floor(Date.now() / 1000);
-  const item = await parkModel(page, store, (state, review) => {
-    state.monitoring = {
-      health: {
-        [review.job.configuration_id]: {
-          repository_id: review.job.configuration_id,
-          name: "example/repo",
-          schedule_key: "fixture",
-          provider_account_id: "22",
-          account_login: "local-operator",
-          provider_repository_id: "100",
-          enabled: true,
-          last_attempt: now - 60,
-          last_success: null,
-          next_run: 0,
-          schedule_available: true,
-          last_failure: "network",
-          last_error: "Network error.",
-          in_flight: false,
-          operation: {
-            id: "health-op",
-            provider: "github",
-            account_id: "22",
-            configuration_id: review.job.configuration_id,
-            repository_id: "100",
-            pull_request_id: null,
-            head_sha: null,
-            trigger_policy: "fixture",
-            operation_type: "repository_poll",
-            state: "queued",
-            attempt_count: 1,
-            initial_attempt_at: now - 60,
-            retry_deadline: now + 600,
-            next_attempt_at: now + 60,
-            failure: "network",
-            attempted_mutation: null,
-            pending_review_id: null,
-            owned_thread_id: null,
-            triggering_external_comment_id: null,
-            confirmed_receipt: null,
+for (const check of ["queued", "manual_retry"]) {
+  test(`a ${check} repository check never outranks a parked model refusal`, async ({
+    page,
+    store,
+  }) => {
+    const now = Math.floor(Date.now() / 1000);
+    const item = await parkModel(page, store, (state, review) => {
+      state.monitoring = {
+        health: {
+          [review.job.configuration_id]: {
+            repository_id: review.job.configuration_id,
+            name: "example/repo",
+            schedule_key: "fixture",
+            provider_account_id: "22",
+            account_login: "local-operator",
+            provider_repository_id: "100",
+            enabled: true,
+            last_attempt: now - 60,
+            last_success: null,
+            next_run: 0,
+            schedule_available: true,
+            last_failure: "network",
+            last_error: "Network error.",
+            in_flight: false,
+            operation: {
+              id: "health-op",
+              provider: "github",
+              account_id: "22",
+              configuration_id: review.job.configuration_id,
+              repository_id: "100",
+              pull_request_id: null,
+              head_sha: null,
+              trigger_policy: "fixture",
+              operation_type: "repository_poll",
+              state: check,
+              attempt_count: 1,
+              initial_attempt_at: now - 60,
+              retry_deadline: now + 600,
+              next_attempt_at: check === "queued" ? now + 60 : null,
+              failure: "network",
+              attempted_mutation: null,
+              pending_review_id: null,
+              owned_thread_id: null,
+              triggering_external_comment_id: null,
+              confirmed_receipt: null,
+            },
           },
         },
-      },
-    };
+      };
+    });
+    expect(item.failure_class).toBe("model");
+    // One leading failure: the operation and remedy follow the model refusal.
+    expect(item.failed_operation).toBe("review");
+    expect(item.remedy).toBe("change_model");
+    await store("panel_navigate", {
+      route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+    });
+    await page.goto("/");
+    const status = page.locator("[data-queue-status]");
+    await expect(status.locator("[data-failure-cause]")).toHaveAttribute(
+      "data-failure-cause",
+      "model_rejected",
+    );
+    await expect(
+      status
+        .locator(".queue-facts dt", { hasText: "Operation" })
+        .locator("+ dd"),
+    ).toHaveText("Review");
+    const primary = status.locator("[data-queue-primary]");
+    await expect(primary).toHaveAttribute("data-queue-primary", "change-model");
+    await primary.click();
+    await expectModelPicker(page);
   });
-  expect(item.failure_class).toBe("model");
-  await store("panel_navigate", {
-    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
-  });
-  await page.goto("/");
-  const status = page.locator("[data-queue-status]");
-  await expect(status.locator("[data-failure-cause]")).toHaveAttribute(
-    "data-failure-cause",
-    "model_rejected",
-  );
-  const primary = status.locator("[data-queue-primary]");
-  await expect(primary).toHaveAttribute("data-queue-primary", "change-model");
-  await primary.click();
-  await expectModelPicker(page);
-});
+}
 
 test("every parked failure is one Needs attention row with a cause chip, Retry and never a Running row", async ({
   page,

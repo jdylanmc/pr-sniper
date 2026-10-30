@@ -198,6 +198,9 @@ export function failedPublications(
 const accountCauses = ["account_disconnected", "account_binding_required"];
 
 export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
+  // The projection's leading class decides; a parked check never outranks it.
+  if (item.failure_class === "model" && item.failed_model)
+    return `model_${item.failed_model.refusal}`;
   for (const warning of item.warnings) {
     const match = /^Monitoring failure: ([a-z0-9_]+)\./.exec(warning);
     if (match) return match[1];

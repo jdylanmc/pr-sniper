@@ -1084,9 +1084,14 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .unwrap_or(monitoring::FailureClass::Other)
         });
         let failed_model = (state == State::Failed).then_some(failed_model).flatten();
+        // The leading class picks one failure; its operation and remedy follow it.
+        let model_leads =
+            failure_class == Some(monitoring::FailureClass::Model) && failed_model.is_some();
         let failed_operation = (state == State::Failed)
             .then(|| {
-                if check_failed {
+                if model_leads {
+                    Some(FailedOperation::Review)
+                } else if check_failed {
                     Some(FailedOperation::RepositoryCheck)
                 } else if let Some((_, operation, _)) = exit_failure {
                     Some(operation)
@@ -1108,7 +1113,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             .flatten();
         let remedy = failure_class.map(|class| match class {
             monitoring::FailureClass::Credentials => Remedy::SignIn,
-            _ if failed_model.is_some() => Remedy::ChangeModel,
+            _ if model_leads => Remedy::ChangeModel,
             _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
             _ if exit_failure.is_some_and(|(_, _, uncertain)| uncertain) => Remedy::Reconcile,
             _ if failed_operation == Some(FailedOperation::FollowUp) && follow_up_uncertain => {
