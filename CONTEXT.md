@@ -51,7 +51,7 @@ A repository returned for a connected Provider Account through its granted autho
 _Avoid_: Installed repository
 
 **Needs Attention**:
-Two linked meanings, one name. (1) Queue group listing every **Parked failure**, each with a cause chip (Credentials, Permission, Network, Failed) and row actions: **Fix** plus **Retry** for credentials, **Retry** otherwise; **Retry all** re-arms every row that needs no human decision. (2) Account-level cause behind a credentials failure: a repository binding or provider account that cannot authorize reads and needs explicit reconnect or rebind. Fix opens the account the failure recorded (Copilot or GitHub); checks and publications open GitHub; older records open Accounts. A runtime 401 from an already-verified Copilot session is a provider failure, not credentials. No Blocked state exists.
+Two linked meanings, one name. (1) Queue group listing every **Parked failure**, each with a cause chip (Credentials, Permission, Network, Failed) and row actions: **Fix** plus **Retry** for credentials, **Retry** otherwise; **Retry all** re-arms every row that needs no human decision. (2) Account-level cause behind a credentials failure: a repository binding or provider account that cannot authorize reads and needs explicit reconnect or rebind. Fix opens the account the failure recorded (Copilot or GitHub); checks and publications open GitHub; older records open Accounts. A runtime 401 or 403 from an already-verified Copilot session is the Agent's model refusing service (Model class), not credentials. No Blocked state exists.
 _Avoid_: Blocked, Disconnected repository, Failures
 
 **OAuth Device Authorization Attempt**:
@@ -267,7 +267,7 @@ Persisted per operation: attempt count, retry deadline, state. Survives restart 
 _Avoid_: Retry count, unlimited retry
 
 **Failure class**:
-Cause label on a failed item: Credentials, Permission, Network, Failed. Decides the row action: Credentials gets **Fix** and **Retry**, others **Retry**.
+Cause label on a failed item: Credentials, Permission, Model, Network, Failed. Decides the row action: Credentials and Model get **Fix** and **Retry**, others **Retry**. Model: an Agent's model refused a verified account's call (runtime 401/403, not offered, retired); the item names Agent, model and HTTP status, and Fix opens that Agent's model picker.
 _Avoid_: Error type
 
 **Parked failure**:

@@ -927,6 +927,7 @@ fn rate_limit(origin: crate::backpressure::Origin, retry_after: Option<i64>) -> 
         retry_after_seconds: retry_after,
         origin,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     }
 }

@@ -46,6 +46,7 @@ fn failure(kind: OperationFailure, retry_after_seconds: Option<i64>) -> Failure 
         retry_after_seconds,
         origin: Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     }
 }
@@ -237,6 +238,7 @@ fn parked_review(failure: OperationFailure, state: OperationState) -> ReviewRun 
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: review::key(&job, ASSIGNMENT),

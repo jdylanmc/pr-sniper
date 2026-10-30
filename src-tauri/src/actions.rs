@@ -758,6 +758,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     }))
             {
                 item.state = State::Failed;
+                // Retry refreshes the provider evidence; it never reposts an action.
+                item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+                item.remedy = Some(queue::Remedy::Retry);
                 item.summary="Fresh provider review/policy evidence is unavailable; no action readiness is asserted.";
             }
         }
@@ -865,6 +868,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             && item.state != State::Closed
         {
             item.state = State::Failed;
+            // A lost response is reconciled against its original intent, never reposted.
+            item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+            item.remedy = Some(queue::Remedy::Reconcile);
             item.summary="A provider action outcome is unresolved. Reconcile its original intent; no replacement request is authorized.";
             blockers.push("An action on this PR has an unresolved provider outcome, possibly from an earlier iteration.".into());
         }
@@ -889,6 +895,8 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.state = State::Failed;
                 item.failure_class = Some(monitoring::FailureClass::Other);
                 item.failure_cause = Some(queue::CAUSE_TOSSED);
+                item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+                item.remedy = Some(queue::Remedy::Retry);
                 item.summary = State::Failed.summary();
             } else if item.progress.is_some() {
                 item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {

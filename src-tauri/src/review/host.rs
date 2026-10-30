@@ -172,6 +172,7 @@ pub(crate) fn request(
             mode: super::RunMode::Packet,
             packet: None,
             failed_duck: None,
+            failed_model: None,
             attempt_ducks: Vec::new(),
             feedback_context: None,
             key: candidate.key,
@@ -433,6 +434,7 @@ pub(crate) fn complete(
                         .map(|account| account.account_id.as_str()),
                 );
                 current.failed_duck = None;
+                current.failed_model = None;
                 current.attempt_ducks.clear();
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
@@ -463,6 +465,9 @@ pub(crate) fn complete(
                             .map(|d| d.agent.name.clone())
                     })
                     .flatten();
+                current.failed_model = error
+                    .model
+                    .map(|fault| super::FailedModel::new(&current.selection.agent, fault));
                 if moved(&error) {
                     current.attempt_ducks.clear();
                 }

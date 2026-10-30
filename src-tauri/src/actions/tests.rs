@@ -136,6 +136,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
                 mode: Default::default(),
                 packet: None,
                 failed_duck: None,
+                failed_model: None,
                 attempt_ducks: Vec::new(),
                 feedback_context: None,
                 key: crate::review::key(job, assignment),
@@ -195,6 +196,7 @@ fn packet_preparation_reads_fresh_state_offers_exits_and_rechecks_them_at_exit_t
         mode,
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         key: crate::review::key(&job, &assignment),
@@ -1169,6 +1171,29 @@ fn lost_responses_crash_before_receipt_and_external_merge_never_blindly_repeat()
 }
 
 #[test]
+fn a_lost_action_response_parks_as_a_provider_action_to_reconcile() {
+    let (_root, store, item) = fixture(1, true, true);
+    let run = completed_final(&store, &item);
+    let mut env = env(&store);
+    let effect = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    env.wire.0.lock().unwrap().lost = true;
+    host::execute_action(&mut env, &effect).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let parked = &snapshot.items[0];
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(
+        parked.failed_operation,
+        Some(queue::FailedOperation::ProviderAction)
+    );
+    assert_eq!(parked.remedy, Some(queue::Remedy::Reconcile));
+    let wire = serde_json::to_value(parked).unwrap();
+    assert_eq!(
+        (&wire["failed_operation"], &wire["remedy"]),
+        (&json!("provider_action"), &json!("reconcile"))
+    );
+}
+
+#[test]
 fn pause_cancellation_and_permission_rejection_preserve_original_effect_without_writes_or_bypass() {
     for case in ["pause", "cancel", "reject"] {
         let (_root, store, item) = fixture(1, true, false);
@@ -1608,6 +1633,7 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     };
     let policy = crate::retry::TRANSIENT;
@@ -1624,6 +1650,21 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
     let observed = store.load_actions().unwrap().observations.remove(0);
     assert_eq!(observed.failures, policy.max_attempts);
     assert_eq!(observed.retry_at, None);
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let parked = &snapshot.items[0];
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(
+        (parked.failed_operation, parked.remedy),
+        (
+            Some(queue::FailedOperation::ProviderAction),
+            Some(queue::Remedy::Retry)
+        )
+    );
+    let wire = serde_json::to_value(parked).unwrap();
+    assert_eq!(
+        (&wire["failed_operation"], &wire["remedy"]),
+        (&json!("provider_action"), &json!("retry"))
+    );
     request_observation_retry(&store, &item, now).unwrap();
 }
 
@@ -1640,6 +1681,7 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         retry_after_seconds: Some(60),
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     };
     let network = Failure {

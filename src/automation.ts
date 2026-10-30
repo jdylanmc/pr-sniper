@@ -25,7 +25,8 @@ export interface AutomationSnapshot {
   }[];
 }
 
-export type FailureClass = "credentials" | "permission" | "network" | "other";
+export type FailureClass =
+  "credentials" | "permission" | "model" | "network" | "other";
 
 export function mountAutomation(
   root: HTMLElement,
