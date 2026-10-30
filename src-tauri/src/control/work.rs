@@ -208,6 +208,67 @@ pub fn request_again(
     Ok(true)
 }
 
+/// Human "review again" for one queue item: the same gates as an explicit
+/// `watch_pull_request` `review_again`, then the new pass goes first.
+/// `false`: the PR still has pending work, so nothing changed.
+pub fn review_item_again(store: &Store, item_id: &str, now: i64) -> Result<bool, String> {
+    let queue = store.load_queue_state()?;
+    let live = |job: &&QueueJob| job.work.is_some() && !crate::monitoring::retired(job);
+    let item = queue
+        .jobs
+        .iter()
+        .filter(live)
+        .find(|job| crate::queue::item_id(job) == item_id)
+        .ok_or("This pull request is no longer available.")?;
+    let (repository_id, number) = (item.configuration_id.clone(), item.number);
+    // `request_again` matches by configuration and number only. After a
+    // rebind, that pair can name another repository's PR or a job the host
+    // will never run: refuse rather than act on the wrong binding.
+    let binding = crate::retention::Binding::job(item);
+    if queue
+        .jobs
+        .iter()
+        .filter(live)
+        .filter(|job| job.configuration_id == repository_id && job.number == number)
+        .any(|job| {
+            job.waiting == crate::monitoring::WAITING_BINDING_CHANGED
+                || crate::retention::Binding::job(job) != binding
+        })
+    {
+        return Err("Repository binding changed.".into());
+    }
+    drop(queue);
+    let before: HashSet<String> = work_ids(store)?;
+    if !request_again(store, &repository_id, number, now)? {
+        return Ok(false);
+    }
+    // Every job of the new pass goes first, whatever its current
+    // eligibility (teammate barrier, offline, delayed): capacity still
+    // decides when each runs. MCP's `prioritize` stays runnable-only.
+    let mut queue = store.load_queue_state()?;
+    for work in queue.jobs.iter_mut().filter_map(|job| job.work.as_mut()) {
+        work.enqueue_order = if before.contains(&work.id) {
+            work.enqueue_order
+                .checked_add(1)
+                .ok_or("Queue ordering exhausted.")?
+        } else {
+            0
+        };
+        queue.next_enqueue_order = queue.next_enqueue_order.max(work.enqueue_order);
+    }
+    store.save_queue_state(&queue)?;
+    Ok(true)
+}
+
+fn work_ids(store: &Store) -> Result<HashSet<String>, String> {
+    Ok(store
+        .load_queue_state()?
+        .jobs
+        .iter()
+        .filter_map(|job| job.work.as_ref().map(|work| work.id.clone()))
+        .collect())
+}
+
 pub(crate) fn apply_overrides(
     store: &Store,
     repository_id: &str,

@@ -476,6 +476,27 @@ test("stale retry creates a new revision and preserves the previous evidence", (
   );
 });
 
+test("review again queues a new pass of the same head and keeps the evidence", () => {
+  let state = M.seed();
+  const original = first(state, "approved");
+  state = M.update(state, "review-again", { reviewId: original.id });
+  const previous = state.reviews.find((review) => review.id === original.id);
+  const next = state.reviews.find((review) => review.id === previous.nextId);
+  assert.equal(previous.state, "approved");
+  assert.equal(previous.published, true);
+  assert.equal(next.head, previous.head);
+  assert.equal(next.published, false);
+  assert.ok(["queued", "running"].includes(next.state));
+  assert.throws(
+    () => M.update(state, "review-again", { reviewId: original.id }),
+    /completed review/,
+  );
+  assert.throws(
+    () => M.update(state, "review-again", { reviewId: next.id }),
+    /completed review/,
+  );
+});
+
 test("failed output never publishes and human review is not performed in the app", () => {
   let state = M.seed();
   const active = first(state);
