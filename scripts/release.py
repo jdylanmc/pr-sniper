@@ -34,6 +34,7 @@ ASSETS = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pr-sniper-release-assets
 WINDOWS_ASSETS = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pr-sniper-windows-release-assets"
 CHOCO_PACKAGE_ID = "pr-sniper"
 CHOCO_FEED = "https://community.chocolatey.org/api/v2"
+CHOCO_FEED_ACCEPT = "application/atom+xml, application/xml"
 CHOCO_PUSH_SOURCE = "https://push.chocolatey.org/"
 CHOCO_STATES = ("publicly_approved", "awaiting_moderation", "rejected", "submitted", "not_found")
 CHOCO_RECEIPT = "choco-submission.json"
@@ -842,7 +843,8 @@ def choco_moderation_status(package_id=CHOCO_PACKAGE_ID, package_version="", *, 
     url = f"{CHOCO_FEED}/Packages(Id='{package_id}',Version='{package_version}')"
     client = opener if opener is not None else urllib.request.build_opener(NoRedirect())
     request = urllib.request.Request(url, headers={
-        "Accept": "application/json, application/atom+xml, application/xml;q=0.9",
+        # The community feed answers HTTP 406 whenever JSON is acceptable; ask for OData Atom/XML only.
+        "Accept": CHOCO_FEED_ACCEPT,
         "User-Agent": "pr-sniper-release",
     })
     try:
