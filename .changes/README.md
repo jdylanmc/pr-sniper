@@ -11,7 +11,7 @@ One file per PR: `.changes/<name>.md`. Only release automation edits
 | `pr`     | Optional; PR number                                                                 |
 | Body     | Curated user-facing text, [Keep a Changelog 1.1.0][kac]; no headings or blank lines |
 | Required | Every PR, except docs-, CI- or test-only PRs labelled `no-changeset`                |
-| Reserved | `README.md`                                                                         |
+| Reserved | `README.md`, `config.json`                                                          |
 
 ```markdown
 ---
@@ -22,6 +22,10 @@ issue: 123
 Keep queued reviews after a failed poll.
 ```
 
+`type` also picks the next version: any `added` (a new feature) bumps Y
+(`X.(Y+1).0`); every other type (fixes and hardening) bumps Z. Major X is
+human-only: `config.json` `major`; no changeset or automation changes it.
+
 Multiple outcomes: one file each. A body that starts with `- ` is used as-is;
 otherwise it becomes one bullet. Missing `#issue`/`#pr` refs are appended.
 
@@ -29,6 +33,7 @@ otherwise it becomes one bullet. Missing `#issue`/`#pr` refs are appended.
 | ------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `node scripts/changesets.mjs validate`      | Check every `.changes/*.md`                                                             |
 | `node scripts/changesets.mjs list`          | List pending entries                                                                    |
+| `node scripts/changesets.mjs next`          | Print the next version derived from pending entries                                     |
 | `node scripts/changesets.mjs release X.Y.Z` | Release automation only: fold into `## [X.Y.Z] - date`, delete, bump, rebuild MCP asset |
 
 Automation and release flow: [`docs/releases.md`](../docs/releases.md#changesets).

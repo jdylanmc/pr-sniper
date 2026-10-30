@@ -16,6 +16,9 @@ import * as prettier from "prettier";
 import {
   ChangesetError,
   VERSION_FIELDS,
+  checkVersion,
+  configuredMajor,
+  nextVersion,
   applyChangesets,
   moveUnreleased,
   parseChangeset,
@@ -177,6 +180,7 @@ test("release folds changesets into a version section, deletes them and bumps ev
       entry("added", "Ship changesets.", "issue: 291\n"),
     );
     writeFileSync(join(root, ".changes/README.md"), "# Changes\n");
+    cpSync(".changes/config.json", join(root, ".changes/config.json"));
     const previous = JSON.parse(readFileSync("package.json", "utf8")).version;
     writeFileSync(
       join(root, "CHANGELOG.md"),
@@ -191,7 +195,10 @@ test("release folds changesets into a version section, deletes them and bumps ev
       build: () => built++,
     });
     assert.deepEqual(result.consumed, ["pr-1.md"]);
-    assert.deepEqual(readdirSync(join(root, ".changes")), ["README.md"]);
+    assert.deepEqual(readdirSync(join(root, ".changes")).sort(), [
+      "README.md",
+      "config.json",
+    ]);
     assert.equal(built, 1);
     const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
     assert.match(
@@ -229,6 +236,35 @@ test("release folds changesets into a version section, deletes them and bumps ev
       () => release(root, version, { build: () => {} }),
       ChangesetError,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("next version: added bumps Y, anything else bumps Z, X stays human-only", () => {
+  const sets = (...types) => types.map((type) => ({ type }));
+  assert.equal(nextVersion("0.5.4", sets("fixed", "added"), 0), "0.6.0");
+  for (const type of ["fixed", "security", "changed", "deprecated", "removed"])
+    assert.equal(nextVersion("0.5.4", sets(type), 0), "0.5.5", type);
+  assert.equal(nextVersion("0.9.3", sets("added"), 1), "1.0.0");
+  assert.throws(() => nextVersion("0.5.4", [], 0), /nothing to release/);
+  assert.throws(() => nextVersion("1.2.3", sets("fixed"), 0), /newer/);
+  assert.equal(checkVersion("0.7.0", "0.5.4", 0), "0.7.0");
+  assert.throws(() => checkVersion("1.0.0", "0.5.4", 0), /human-only/);
+  assert.throws(() => checkVersion("0.5.4", "0.5.4", 0), /newer/);
+  assert.throws(() => checkVersion("v0.6.0", "0.5.4", 0), /invalid/);
+  assert.equal(configuredMajor(), 0);
+  for (const config of ['{"major": -1}', '{"major": "0"}', "{}"]) {
+    const root = fixture({ ".changes/config.json": config });
+    try {
+      assert.throws(() => configuredMajor(root), /whole number/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  const root = fixture({ ".changes/a.md": entry("fixed", "Fix.") });
+  try {
+    assert.throws(() => configuredMajor(root), /missing/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -278,6 +314,13 @@ test("validate makes CHANGELOG.md release-only and requires a changeset or opt-o
     assert.equal(
       errors({ changed: [changelog], author: "github-actions[bot]" }),
       0,
+    );
+    assert.equal(
+      errors({
+        changed: [changelog, { status: "M", path: ".changes/config.json" }],
+        author: "github-actions[bot]",
+      }),
+      1,
     );
     assert.equal(errors({ changed: [code] }), 1);
     assert.equal(errors({ changed: [code], labels: ["no-changeset"] }), 0);

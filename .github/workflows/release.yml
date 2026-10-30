@@ -118,6 +118,8 @@ jobs:
   tap:
     needs: [gate, publish]
     runs-on: ubuntu-latest
+    # Bounded same-version redispatch on tap install-verification failure.
+    timeout-minutes: 240
     environment: pr-sniper-tap
     permissions:
       contents: read

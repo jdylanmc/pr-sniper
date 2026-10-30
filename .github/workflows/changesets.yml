@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable release version (X.Y.Z)
-        required: true
+        description: Optional X.Y.Z; omit to derive Y/Z from pending changesets
+        required: false
         type: string
       summary:
         description: Optional one-line release summary
@@ -52,22 +52,53 @@ jobs:
         run: node scripts/changesets.mjs validate --base "$BASE" --head "$HEAD" --labels "$LABELS" --head-ref "$HEAD_REF" --author "$AUTHOR" --same-repo "$SAME_REPO"
         timeout-minutes: 2
 
-  release:
+  # Autonomous release (#296): each stage skips finished work, so
+  # re-dispatching a version resumes from its first incomplete stage.
+  plan:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ inputs.version }}
-      SUMMARY: ${{ inputs.summary }}
     steps:
       - name: Require main
         run: test "$GITHUB_REF" = refs/heads/main
         timeout-minutes: 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Choose the version or resume an unfinished release
+        id: plan
+        run: node scripts/autorelease.mjs plan
+        timeout-minutes: 5
+
+  land:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    outputs:
+      sha: ${{ steps.land.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SUMMARY: ${{ inputs.summary }}
+    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -77,14 +108,78 @@ jobs:
           node-version-file: .node-version
           cache: npm
         timeout-minutes: 3
-      - run: npm ci
-        timeout-minutes: 8
-      - name: Cut CHANGELOG.md section, bump versions and rebuild MCP asset
-        run: |
-          node scripts/changesets.mjs release "$VERSION" --summary "$SUMMARY"
-          npm exec prettier -- --check CHANGELOG.md package.json site src-tauri/tauri.conf.json
-        timeout-minutes: 5
-      - name: Open the release PR
-        run: |
-          bash scripts/changesets-pr.sh "changesets/release-v$VERSION" "chore(release): v$VERSION" "Release v$VERSION. After merge and green main CI, Release tag tags v$VERSION and dispatches Signed macOS release."
+      - name: Open, update, check and auto-merge the release PR
+        id: land
+        run: node scripts/autorelease.mjs land
+        timeout-minutes: 340
+
+  verify:
+    needs: [plan, land]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.land.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
         timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Require green macOS and Windows CI on the exact merge commit
+        run: node scripts/autorelease.mjs verify
+        timeout-minutes: 340
+
+  tag:
+    needs: [plan, land, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      SHA: ${{ needs.land.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Tag the verified commit and start the signed release
+        run: node scripts/autorelease.mjs tag
+        timeout-minutes: 5
+
+  release:
+    needs: [plan, tag]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Await signed release, Windows assets and Homebrew cask
+        run: node scripts/autorelease.mjs release
+        timeout-minutes: 340
