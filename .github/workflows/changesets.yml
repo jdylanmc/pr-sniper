@@ -71,8 +71,11 @@ jobs:
       - name: Require main
         run: test "$GITHUB_REF" = refs/heads/main
         timeout-minutes: 1
+      # Current main, not the dispatch-time SHA: a queued re-dispatch must see
+      # the versions and changesets an earlier run already released.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: main
           persist-credentials: false
         timeout-minutes: 3
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

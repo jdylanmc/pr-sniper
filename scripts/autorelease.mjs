@@ -296,6 +296,12 @@ async function releaseComplete(ctx, version) {
 // Chooses the version: requested, an open release PR, an unfinished release
 // of main's version, or the next version derived from pending changesets.
 export async function plan(ctx, { requested, mainVersion, changesets, major }) {
+  if ((await versionAt(ctx, "main")) !== mainVersion)
+    throw new StageError(
+      "plan",
+      "The checked-out main is older than current main.",
+      "Re-dispatch Changesets; plan reads current main.",
+    );
   const tags = await tagVersions(ctx);
   const latest = latestOf([...tags, mainVersion]);
   const prs = await openReleasePrs(ctx);

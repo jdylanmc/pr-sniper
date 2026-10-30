@@ -290,6 +290,18 @@ test("plan derives Y/Z from pending changesets and resumes unfinished releases",
     plan(ctx, { ...base, requested: "0.7.0", changesets: [{ type: "added" }] }),
     /another version/,
   );
+  const released = done();
+  released.s.versions.main = "0.6.0";
+  released.s.tags["v0.6.0"] = MERGE;
+  await assert.rejects(
+    plan(context(released).ctx, {
+      ...base,
+      requested: "",
+      changesets: [{ type: "added" }],
+    }),
+    (error) =>
+      error.stage === "plan" && /older than current main/.test(error.message),
+  );
 });
 
 test("land opens the release PR, dispatches required CI on it, auto-merges and resumes merged PRs", async () => {

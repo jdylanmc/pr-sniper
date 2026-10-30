@@ -1862,6 +1862,7 @@ test("changesets validate PRs; one dispatch drives the release through CI-only s
     changesets.jobs.plan.steps[0].run,
     /test "\$GITHUB_REF" = refs\/heads\/main/,
   );
+  assert.equal(changesets.jobs.plan.steps[1].with.ref, "main");
   const stages = {
     plan: [[], { contents: "read", "pull-requests": "read", actions: "read" }],
     land: [
