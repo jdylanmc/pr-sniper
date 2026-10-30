@@ -159,13 +159,13 @@ credential or agent session is involved.
 gh workflow run changesets.yml -R jdylanmc/pr-sniper --ref main [-f version=X.Y.Z] [-f summary="..."]
 ```
 
-| Stage   | Job                   | Does                                                                                                                                                                                                                                      |
-| ------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| plan    | **Changesets** `plan` | Version: input, else the open release PR, else `main`'s unfinished version, else derived (table above)                                                                                                                                    |
-| land    | `land`                | `changesets/release-vX.Y.Z` from current `main` (fold, bump every version field, rebuild MCP asset, prettier); open the PR; dispatch required CI on it; enable auto-merge; regenerate when `main` moves (strict); return the merge commit |
-| verify  | `verify`              | Pin `changesets/ci-vX.Y.Z` at the exact merge commit; dispatch **macOS foundation** and **Windows native application** on it; wait green                                                                                                  |
-| tag     | `tag`                 | Annotated `vX.Y.Z` at that commit, then dispatch **Signed macOS release** on the tag                                                                                                                                                      |
-| release | `release`             | Wait for **Signed macOS release** (signing, notarization, publication, tap with ticket-lag retry, Windows assets, Chocolatey); confirm the cask version                                                                                   |
+| Stage   | Job                   | Does                                                                                                                                                                                                                                       |
+| ------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| plan    | **Changesets** `plan` | Version: input, else the open release PR, else `main`'s unfinished version, else derived (table above)                                                                                                                                     |
+| land    | `land`                | `changesets/release-vX.Y.Z` from current `main` (fold, bump every version field, rebuild MCP asset, prettier); open the PR; approve its pending CI runs; enable auto-merge; regenerate when `main` moves (strict); return the merge commit |
+| verify  | `verify`              | Pin `changesets/ci-vX.Y.Z` at the exact merge commit; dispatch **macOS foundation** and **Windows native application** on it; wait green                                                                                                   |
+| tag     | `tag`                 | Annotated `vX.Y.Z` at that commit, then dispatch **Signed macOS release** on the tag                                                                                                                                                       |
+| release | `release`             | Wait for **Signed macOS release** (signing, notarization, publication, tap with ticket-lag retry, Windows assets, Chocolatey); confirm the cask version                                                                                    |
 
 The run summary links each stage's PR, CI runs, tag and release run. A failure
 names its stage and the safe recovery.
@@ -188,19 +188,19 @@ normal PR and re-dispatch; the release PR is regenerated on the new `main`.
   (repository settings **Allow GitHub Actions to create and approve pull
   requests** and **Allow auto-merge** are on). It merges with a merge
   commit; nothing bypasses protection.
-- `GITHUB_TOKEN` pushes, PRs and auto-merges start no runnable `push`/`pull_request`
-  runs; only `workflow_dispatch` does. So the run dispatches the required CI
-  workflows on the release branch (their check runs attach to the PR head
-  commit) and, after merge, on a pin branch holding exactly the merge commit.
-  Dispatching on `main` could test a later commit.
-- The bot-opened release PR gets `pull_request` runs that wait for approval
-  (`action_required`, no jobs). `land` ignores them and counts only its own
-  `workflow_dispatch` runs on the release branch; they report all four required
-  checks, so the pending runs need no approval.
-- If dispatched check runs ever stop satisfying the required checks, `land`
-  fails after 15 minutes of green CI without a merge. The fix is a GitHub App
-  installation token (contents, pull requests and actions write) used in place
-  of `GITHUB_TOKEN`: its pushes start normal CI.
+- `GITHUB_TOKEN` pushes and auto-merges start no `push` runs. A
+  `GITHUB_TOKEN`-opened PR gets `pull_request` runs that wait for approval
+  (`action_required`, no jobs); while they exist, the PR's check rollup ignores
+  dispatched runs. So `land` approves them (`actions: write`) and waits for
+  them. It dispatches the CI workflows on the release branch only for a
+  workflow with no PR run after 3 minutes. Pending or skipped
+  runs never count as failures. After merge, CI is dispatched on a pin
+  branch holding exactly the merge commit; dispatching on `main` could test a
+  later commit.
+- If the required checks do not complete on the PR, `land` fails after 15
+  minutes of green CI without a merge. Approve pending runs in Actions, or use
+  a GitHub App installation token (contents, pull requests and actions write)
+  in place of `GITHUB_TOKEN`: its pushes start normal CI.
 - A tag created with `GITHUB_TOKEN` does not start **Signed macOS release**, so
   the creator dispatches it. A racing tagger only recovers a lost dispatch 5
   minutes after the tag was created, so one tag never starts two signings.

@@ -33,6 +33,7 @@ export const LIMITS = {
   stageMinutes: 330,
   settleMinutes: 15,
   tagDispatchGraceMinutes: 5,
+  pullRequestRunGraceMinutes: 3,
 };
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FAILED = new Set([
@@ -41,8 +42,8 @@ const FAILED = new Set([
   "timed_out",
   "startup_failure",
 ]);
-// Runs that never executed: bot-opened PRs leave `pull_request` runs awaiting
-// approval with no jobs. They neither pass nor fail CI.
+// Runs that never executed, e.g. `pull_request` runs awaiting approval with no
+// jobs. They neither pass nor fail CI.
 export const UNRAN = new Set([
   "action_required",
   "skipped",
@@ -388,6 +389,32 @@ export async function releaseCommit(ctx, version) {
   );
 }
 
+// GITHUB_TOKEN-opened PRs get `pull_request` runs that wait for approval. The
+// PR's check rollup ignores dispatched runs while those exist, so approve them.
+async function approvePending(ctx, pr, state) {
+  const { workflow_runs: runs } = await ctx.api.get(
+    `${repo(ctx)}/actions/runs?head_sha=${pr.head.sha}&event=pull_request&status=action_required&per_page=100`,
+  );
+  for (const run of runs) {
+    if (
+      run.head_sha !== pr.head.sha ||
+      run.event !== "pull_request" ||
+      run.conclusion !== "action_required" ||
+      state.approved.has(run.id)
+    )
+      continue;
+    state.approved.add(run.id);
+    try {
+      await ctx.api.post(`${repo(ctx)}/actions/runs/${run.id}/approve`);
+      ctx.log(`Approved ${runUrl(run)}.`);
+    } catch (error) {
+      ctx.log(
+        `::warning::Could not approve ${runUrl(run)} (${error.message}); approve it in Actions.`,
+      );
+    }
+  }
+}
+
 async function mergeOrAutoMerge(ctx, pr) {
   if (pr.mergeable_state === "clean") {
     try {
@@ -452,7 +479,7 @@ export async function land(ctx, version, { summary = "" } = {}) {
     });
   }
   ctx.summary("land", `release PR #${pr.number}`, pr.html_url);
-  const state = { dispatched: new Set() };
+  const state = { dispatched: new Set(), approved: new Set(), seen: new Map() };
   let green = null;
   return poll(ctx, "land", async () => {
     pr = await ctx.api.get(`${repo(ctx)}/pulls/${pr.number}`);
@@ -479,13 +506,19 @@ export async function land(ctx, version, { summary = "" } = {}) {
       green = null;
       return undefined;
     }
-    // Only the runs land dispatches on the release branch count; the bot PR's
-    // own `pull_request` runs await approval and never execute.
+    await approvePending(ctx, pr, state);
+    // The PR's own runs report its required checks. Dispatch only when none
+    // appear for a workflow, e.g. when GitHub starts no PR runs at all.
+    if (!state.seen.has(pr.head.sha)) state.seen.set(pr.head.sha, ctx.now());
+    const grace =
+      ctx.now() - state.seen.get(pr.head.sha) >=
+      LIMITS.pullRequestRunGraceMinutes * 60_000;
     const ci = await ciPass(ctx, pr.head.sha, {
       stage: "land",
       accept: (run) =>
-        run.event === "workflow_dispatch" && run.head_branch === branch,
-      ref: branch,
+        run.head_branch === branch &&
+        ["pull_request", "workflow_dispatch"].includes(run.event),
+      ref: grace ? branch : null,
       state,
     });
     await mergeOrAutoMerge(ctx, pr);
@@ -498,7 +531,7 @@ export async function land(ctx, version, { summary = "" } = {}) {
       throw new StageError(
         "land",
         `Required CI passed on ${pr.head.sha} but #${pr.number} did not merge.`,
-        "Check that the dispatched runs' required checks appear on the PR head and that auto-merge is allowed. If they do not attach, configure a GitHub App token (docs/releases.md). Then re-dispatch.",
+        "Check that the required checks appear on the PR (approve any pending runs in Actions) and that auto-merge is allowed. If they do not, configure a GitHub App token (docs/releases.md). Then re-dispatch.",
       );
     return undefined;
   });

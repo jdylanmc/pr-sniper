@@ -81,6 +81,17 @@ function github(state = {}) {
         );
         return { workflow_runs: runs };
       }
+      if (p === `${R}/actions/runs`)
+        return {
+          workflow_runs: Object.values(s.runs)
+            .flat()
+            .filter(
+              (run) =>
+                run.head_sha === q.get("head_sha") &&
+                run.event === q.get("event") &&
+                run.conclusion === q.get("status"),
+            ),
+        };
       m = /\/actions\/runs\/(\d+)\/attempts\/\d+\/jobs$/.exec(p);
       if (m) return { jobs: s.jobs[m[1]] || [] };
       m = /\/commits\/([^/]+)$/.exec(p);
@@ -103,6 +114,17 @@ function github(state = {}) {
           status: "queued",
           html_url: `run/${id}`,
         });
+        return null;
+      }
+      m = /\/actions\/runs\/(\d+)\/approve$/.exec(p);
+      if (m) {
+        if (s.approveStatus)
+          throw Object.assign(new Error("denied"), {
+            status: s.approveStatus,
+          });
+        for (const run of Object.values(s.runs).flat())
+          if (run.id === Number(m[1]))
+            Object.assign(run, { status: "queued", conclusion: null });
         return null;
       }
       m = /\/actions\/runs\/(\d+)\/rerun-failed-jobs$/.exec(p);
@@ -420,53 +442,68 @@ test("land regenerates a behind branch, reruns runner loss and stops on real CI 
   );
 });
 
-test("land ignores the bot PR's unapproved pull_request runs and waits for its dispatched runs", async () => {
+test("land approves the bot PR's pending pull_request runs instead of failing on them", async () => {
   const gh = github();
   const branch = "changesets/release-v0.6.0";
-  const prRun = (id, conclusion) => ({
+  const pending = (id) => ({
     id,
     head_sha: HEAD,
     head_branch: branch,
     event: "pull_request",
     status: "completed",
-    conclusion,
+    conclusion: "action_required",
     html_url: `run/${id}`,
   });
+  const ci = (s) => [...s.runs["macos.yml"], ...s.runs["windows.yml"]];
   let polls = 0;
   const { ctx } = context(gh, {
+    regenerate: () => {
+      gh.s.runs["macos.yml"].push(pending(900));
+      gh.s.runs["windows.yml"].push(pending(901));
+    },
     tick: (s) => {
-      // Approval-pending PR runs appear after the dispatch with higher IDs.
-      if (polls++ === 0) {
-        s.runs["macos.yml"].push(prRun(900, "action_required"));
-        s.runs["windows.yml"].push(prRun(901, "skipped"));
-        s.runs["windows.yml"].push(prRun(902, "cancelled"));
-        return;
-      }
-      if (polls < 4) return;
-      for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
-        if (run.event === "workflow_dispatch") complete(run);
-      const pr = s.pulls[0];
-      if (
-        [...s.runs["macos.yml"], ...s.runs["windows.yml"]].every(
-          (run) =>
-            run.event !== "workflow_dispatch" || run.conclusion === "success",
-        )
-      )
-        Object.assign(pr, {
-          merged_at: "now",
-          merge_commit_sha: MERGE,
-          state: "closed",
-        });
+      // Approved runs stay in progress for a few polls, then pass.
+      if (++polls < 4) return;
+      ci(s).forEach((run) => complete(run));
+      Object.assign(s.pulls[0], {
+        merged_at: "now",
+        merge_commit_sha: MERGE,
+        state: "closed",
+      });
     },
   });
   assert.equal(await land(ctx, "0.6.0"), MERGE);
-  const dispatched = mutations(gh).filter(([, path]) =>
-    path.endsWith("/dispatches"),
+  const posted = mutations(gh).map(([, path]) => path);
+  assert.deepEqual(
+    posted.filter((path) => path.endsWith("/approve")),
+    [`${R}/actions/runs/900/approve`, `${R}/actions/runs/901/approve`],
   );
-  assert.equal(dispatched.length, 2, "each workflow is dispatched once");
+  assert.equal(posted.filter((path) => path.endsWith("/dispatches")).length, 0);
+  assert.ok(ci(gh.s).every((run) => run.event === "pull_request"));
+
+  // Unapproved runs never count as failures; dispatched runs back them up.
+  const denied = github({ approveStatus: 403 });
+  polls = 0;
+  const fallback = context(denied, {
+    regenerate: () => {
+      denied.s.runs["macos.yml"].push(pending(900));
+      denied.s.runs["windows.yml"].push(pending(901));
+    },
+    tick: (s) => {
+      const dispatched = ci(s).filter((run) => run.event !== "pull_request");
+      if (++polls < 6 || dispatched.length < 2) return;
+      dispatched.forEach((run) => complete(run));
+      Object.assign(s.pulls[0], {
+        merged_at: "now",
+        merge_commit_sha: MERGE,
+        state: "closed",
+      });
+    },
+  });
+  assert.equal(await land(fallback.ctx, "0.6.0"), MERGE);
   assert.equal(
-    mutations(gh).filter(([, path]) => path.includes("/rerun")).length,
-    0,
+    mutations(denied).filter(([, path]) => path.endsWith("/dispatches")).length,
+    2,
   );
 });
 
