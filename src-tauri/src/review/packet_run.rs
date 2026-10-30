@@ -162,6 +162,7 @@ pub(crate) fn prepare(
         })
         .map(|r| r.evidence.clone())
         .collect();
+    let standing = resolutions.iter().map(|r| r.thread_id.clone()).collect();
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
@@ -272,6 +273,7 @@ pub(crate) fn prepare(
             .chain(receipts)
             .collect(),
         carried,
+        standing,
         lgtm_action: gates::lgtm_action(&base),
         thread_heads: conversation
             .threads

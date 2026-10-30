@@ -93,6 +93,9 @@ pub struct FindingFacts {
     pub own_comments: std::collections::BTreeSet<String>,
     /// Standing resolution evidence of every carried-forward thread.
     pub carried: Vec<crate::review::findings::Assessment>,
+    /// Own thread ids with a standing PR Sniper resolution, carried or not. Only a
+    /// correction reply ends that episode.
+    pub standing: std::collections::BTreeSet<String>,
     /// What a sign-off does after resolving: the assignment's authority.
     pub lgtm_action: crate::exits::LgtmAction,
     /// Own thread id -> head the finding was published on (ownership proof).
