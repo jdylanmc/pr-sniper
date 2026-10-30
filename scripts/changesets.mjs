@@ -110,6 +110,13 @@ export function listChangesets(root = ".") {
 }
 
 export function readChangesets(root = ".") {
+  const directory = join(root, CHANGES_DIR);
+  if (existsSync(directory))
+    for (const entry of readdirSync(directory, { withFileTypes: true }))
+      if (!entry.isFile() || !entry.name.endsWith(".md"))
+        throw new ChangesetError(
+          `${entry.name}: only top-level .md files belong in ${CHANGES_DIR}/`,
+        );
   return listChangesets(root).map((name) => {
     if (!NAME.test(name))
       throw new ChangesetError(
@@ -342,11 +349,11 @@ export function validate({
     errors.push(
       `${CHANGELOG} is release-only; add ${CHANGES_DIR}/<name>.md instead`,
     );
+  const entries = new Set(
+    listChangesets(root).map((name) => `${CHANGES_DIR}/${name}`),
+  );
   const added = changed.some(
-    ({ status, path }) =>
-      /^[AM]/.test(status) &&
-      path.startsWith(`${CHANGES_DIR}/`) &&
-      !RESERVED.has(path.slice(CHANGES_DIR.length + 1)),
+    ({ status, path }) => /^[AM]/.test(status) && entries.has(path),
   );
   if (changed.length && !added && !labels.includes(OPT_OUT_LABEL))
     errors.push(

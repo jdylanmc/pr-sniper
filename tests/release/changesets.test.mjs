@@ -285,6 +285,13 @@ test("validate makes CHANGELOG.md release-only and requires a changeset or opt-o
       errors({ changed: [code, { status: "M", path: ".changes/README.md" }] }),
       1,
     );
+    for (const path of [".changes/fix.txt", ".changes/sub/fix.md"]) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), entry("fixed", "Stray."));
+      assert.equal(errors({ changed: [code, { status: "A", path }] }), 2, path);
+      rmSync(join(root, ".changes", path.split("/")[1]), { recursive: true });
+    }
+    assert.equal(errors({ changed: [code, entryAdded] }), 0);
     writeFileSync(join(root, ".changes/Bad Name.md"), entry("fixed", "x"));
     assert.equal(errors({}), 1);
   } finally {
