@@ -383,7 +383,12 @@ fn lgtm_needs_verified_green_ci_for_every_action() {
             let reason = lgtm_denial(&input)
                 .unwrap_or_else(|| panic!("{name}: {:?} signed off", lgtm_action(&input)));
             assert!(reason.contains("CI"), "{name}: {reason}");
-            assert!(!is_offered(&input, Exit::Lgtm), "{name}");
+            // Pending CI parks an approve or merge sign-off; it acts only once green.
+            assert_eq!(
+                is_offered(&input, Exit::Lgtm),
+                ci == Ci::Pending && approve,
+                "{name}"
+            );
             // A repository with no CI never holds a wait; green CI wakes it later.
             if ci == Ci::Unknown {
                 assert!(wait_reasons(&input).is_empty(), "{name}");
@@ -416,7 +421,13 @@ fn lgtm_is_primary_only_and_refused_on_every_hard_gate() {
         (|i| i.facts.open = false, "closed"),
         (|i| i.facts.draft = true, "draft"),
         (|i| i.facts.ci = Ci::Red, "CI is red"),
-        (|i| i.facts.ci = Ci::Pending, "CI is pending"),
+        (
+            |i| {
+                i.facts.ci = Ci::Pending;
+                i.facts.draft = true;
+            },
+            "draft",
+        ),
         (|i| i.facts.changes_requested = true, "Changes requested"),
         (|i| i.facts.ci = Ci::Unknown, "CI not verified green"),
         (
@@ -543,7 +554,10 @@ fn merge_primary_behind_base_or_conflicting_waits_for_ci_alone_blocking_its_sign
 fn lgtm_stays_callable_while_pending_ci_alone_blocks_it() {
     let mut pending = base();
     pending.tools = vec!["ready_for_human".into(), "panic_exit".into()];
+    pending.grants.approve = false;
+    pending.grants.merge = false;
     pending.facts.ci = Ci::Pending;
+    assert_eq!(lgtm_action(&pending), LgtmAction::Ready);
     assert_eq!(
         offer(&pending, Exit::Lgtm),
         Some(Offer::Denied(CI_PENDING_SIGN_OFF.into()))
@@ -560,6 +574,42 @@ fn lgtm_stays_callable_while_pending_ci_alone_blocks_it() {
     let mut red = pending.clone();
     red.facts.changes_requested = true;
     assert!(!callable(&red, &offered(&red)).contains(&Exit::Lgtm));
+}
+
+#[test]
+fn pending_ci_alone_parks_an_own_pr_merge_sign_off_with_include_self() {
+    let lgtm = ExitCall::parse("lgtm", &json!({"comment":"ok"})).unwrap();
+    let mut own = base();
+    own.tools = vec!["ready_for_human".into(), "panic_exit".into()];
+    own.facts.author_is_acting = true;
+    own.facts.ci = Ci::Pending;
+    own.grants.include_self = true;
+    assert_eq!(lgtm_action(&own), LgtmAction::Merge);
+    assert!(lgtm_parks(&own));
+    assert_eq!(offer(&own, Exit::Lgtm), Some(Offer::Offered));
+    assert_eq!(check_call(&own, &lgtm), Ok(()));
+    // Self-approval is refused by the provider; that never blocks the merge path.
+    let mut with_approve = own.clone();
+    with_approve.tools.push("approve_pull_request".into());
+    assert!(matches!(
+        offer(&with_approve, Exit::ApprovePullRequest),
+        Some(Offer::Denied(reason)) if reason.contains("self-approval")
+    ));
+    assert!(lgtm_parks(&with_approve));
+    // Anything beyond pending CI still refuses it.
+    type Edit = fn(&mut GateInput);
+    let refused: [Edit; 4] = [
+        |i| i.grants.include_self = false,
+        |i| i.facts.ci = Ci::Red,
+        |i| i.facts.required_reviews_unmet = true,
+        |i| i.facts.changes_requested = true,
+    ];
+    for edit in refused {
+        let mut input = own.clone();
+        edit(&mut input);
+        assert!(!lgtm_parks(&input), "{input:?}");
+        assert!(check_call(&input, &lgtm).is_err(), "{input:?}");
+    }
 }
 
 #[test]

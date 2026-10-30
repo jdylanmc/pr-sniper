@@ -4,6 +4,7 @@ use crate::packet::{CommentFact, ThreadFact};
 fn contract(resolved: bool, duck_required: bool) -> Contract {
     Contract {
         identities: Default::default(),
+        handoff_nudged: Default::default(),
         head: "head".into(),
         base: "base".into(),
         state_id: "state".into(),
@@ -184,6 +185,115 @@ fn wait_cannot_hide_failed_or_unverifiable_duck_evidence() {
                 |_| Ok(())
             )
             .is_ok());
+    }
+}
+
+#[test]
+fn a_later_definitive_duck_verdict_settles_an_earlier_failed_call() {
+    let c = contract(false, true);
+    let mut a = assessment(Disposition::Fixed);
+    a.duck_call = Some(2);
+    let mut failed = duck(&a);
+    failed.outcome = DuckOutcome::Failure {
+        failure: super::super::duck::DuckFailure::Failed,
+    };
+    let mut confirmed = duck(&a);
+    confirmed.ordinal = 2;
+    // The retry may refine its wording; the subject (target and mode) is the same.
+    failed.input.claim = "First wording.".into();
+    let wait = ExitCall::Wait {
+        reason: crate::exits::WaitReason::Ci,
+    };
+    let ducks = [failed.clone(), confirmed.clone()];
+    assert_eq!(
+        c.validate(&wait, std::slice::from_ref(&a), &ducks, |_| Ok(())),
+        Ok(())
+    );
+    // Order matters: a failure after the verdict, or one on another subject, stays open.
+    let mut other = failed.clone();
+    other.input.thread_id = Some("other".into());
+    for ducks in [
+        vec![confirmed.clone(), failed.clone()],
+        vec![other, confirmed.clone()],
+        vec![failed],
+    ] {
+        assert!(c
+            .validate(&wait, std::slice::from_ref(&a), &ducks, |_| Ok(()))
+            .unwrap_err()
+            .contains("Unsettled Rubber Duck evidence"));
+    }
+    // Default spellings name the same target: omitted side is head, omitted end_line
+    // is the single line.
+    let mut omitted = failed_line(&a);
+    omitted.input.side = None;
+    omitted.input.end_line = None;
+    let mut explicit = duck(&a);
+    explicit.ordinal = 2;
+    explicit.input.kind = TargetKind::Line;
+    explicit.input.thread_id = None;
+    explicit.input.path = Some("src/lib.rs".into());
+    explicit.input.line = Some(1);
+    explicit.input.end_line = Some(1);
+    explicit.input.side = Some("head".into());
+    assert_eq!(
+        c.validate(
+            &wait,
+            &[assessment(Disposition::Withdrawn)],
+            &[omitted, explicit],
+            |_| Ok(())
+        ),
+        Ok(())
+    );
+}
+
+fn failed_line(a: &Assessment) -> DuckCall {
+    let mut d = duck(a);
+    d.input.kind = TargetKind::Line;
+    d.input.thread_id = None;
+    d.input.path = Some("src/lib.rs".into());
+    d.input.line = Some(1);
+    d.outcome = DuckOutcome::Failure {
+        failure: super::super::duck::DuckFailure::Failed,
+    };
+    d
+}
+
+#[test]
+fn ready_for_human_is_refused_once_when_lgtm_is_offered_and_nothing_needs_a_human() {
+    let ready = ExitCall::ReadyForHuman {
+        summary: "No defects; CI still running.".into(),
+    };
+    let a = assessment(Disposition::Withdrawn);
+    let clear = || {
+        let mut c = contract(false, false);
+        c.identities.lgtm_offered = true;
+        c
+    };
+    let c = clear();
+    assert_eq!(
+        c.validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(())),
+        Err(LGTM_DUE.into())
+    );
+    // An informed second call is the agent's judgment: a concern it cannot post.
+    assert_eq!(
+        c.validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(())),
+        Ok(())
+    );
+    type Edit = fn(&mut Contract, &mut Vec<Assessment>);
+    let needs_a_human: [Edit; 4] = [
+        |c, _| c.identities.lgtm_offered = false,
+        |c, _| c.identities.teammate_findings = vec!["T1#1".into()],
+        |_, a| a[0].disposition = Disposition::StillApplies,
+        |_, a| a.clear(),
+    ];
+    for edit in needs_a_human {
+        let mut c = clear();
+        let mut assessments = vec![a.clone()];
+        edit(&mut c, &mut assessments);
+        assert!(!matches!(
+            c.validate(&ready, &assessments, &[], |_| Ok(())),
+            Err(reason) if reason == LGTM_DUE
+        ));
     }
 }
 
