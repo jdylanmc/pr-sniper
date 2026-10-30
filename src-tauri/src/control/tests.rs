@@ -545,6 +545,191 @@ fn review_again_keeps_completed_evidence_and_reuses_new_pending_pass() {
     assert_eq!(record.get(&binding).unwrap().review_again_seq, Some(2));
 }
 
+#[test]
+fn review_item_again_starts_a_prioritized_pass_for_the_queue_item_only() {
+    let (_root, store) = capacity::tests::fixture(2, 1, true);
+    let job = store.load_queue().unwrap().remove(0);
+    let item = crate::queue::item_id(&job);
+    let binding = crate::retention::Binding::job(&job);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "iteration-1",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 100,
+        },
+    );
+    states.consume(&binding, 1, "unchanged");
+    store.save_pr_states(&states).unwrap();
+    let mut run = crate::review::host::request(&store, "normal-1", true, 100).unwrap();
+    run.operation.state = OperationState::Completed;
+    store.save_reviews(&[run.clone()]).unwrap();
+    assert!(work::review_item_again(&store, "missing-item", 200).is_err());
+    assert!(work::review_item_again(&store, &item, 200).unwrap());
+    // The new pass is pending, so a second press changes nothing.
+    let pending = store.load_queue_state().unwrap();
+    assert!(!work::review_item_again(&store, &item, 201).unwrap());
+    assert_eq!(store.load_queue_state().unwrap(), pending);
+    assert_eq!(store.load_reviews().unwrap(), vec![run]);
+    let jobs = pending.jobs;
+    assert_eq!(jobs.len(), 3);
+    let again = jobs.last().unwrap();
+    assert_eq!(again.configuration_id, job.configuration_id);
+    assert_eq!(crate::queue::item_id(again), item);
+    assert_eq!(again.work.as_ref().unwrap().pass_ordinal, 2);
+    assert_eq!(again.work.as_ref().unwrap().enqueue_order, 0);
+    let other = jobs
+        .iter()
+        .find(|j| j.configuration_id != job.configuration_id)
+        .unwrap();
+    assert!(other.work.as_ref().unwrap().enqueue_order > 0);
+    assert_eq!(
+        store
+            .load_pr_states()
+            .unwrap()
+            .get(&binding)
+            .unwrap()
+            .review_again_seq,
+        Some(2)
+    );
+}
+
+#[test]
+fn review_item_again_puts_every_new_job_first_even_when_not_runnable() {
+    let (_root, store) = capacity::tests::fixture(2, 2, true);
+    let mut settings = store.load_settings().unwrap();
+    let mut jobs = store.load_queue().unwrap();
+    let primary = jobs[0].clone();
+    // A designated primary plus one teammate on the first PR.
+    settings.repositories[0].primary_assignment_id = primary.assignment_id.clone();
+    let mut agent = serde_json::to_value(&settings.agents[0]).unwrap();
+    agent["id"] = json!("aaaaaaaa-aaaa-4aaa-8aaa-900000000001");
+    agent["name"] = json!("Teammate");
+    settings.agents.push(serde_json::from_value(agent).unwrap());
+    let mut assignment = serde_json::to_value(&settings.repositories[0].assignments[0]).unwrap();
+    assignment["id"] = json!("cccccccc-cccc-4ccc-8ccc-900000000001");
+    assignment["agent_id"] = json!("aaaaaaaa-aaaa-4aaa-8aaa-900000000001");
+    assignment["tools"] = json!(["read_changes", "submit_report"]);
+    settings.repositories[0]
+        .assignments
+        .push(serde_json::from_value(assignment).unwrap());
+    let mut teammate = primary.clone();
+    teammate.assignment_id = Some("cccccccc-cccc-4ccc-8ccc-900000000001".into());
+    let work = teammate.work.as_mut().unwrap();
+    work.id = "teammate-1".into();
+    work.agent_id = "aaaaaaaa-aaaa-4aaa-8aaa-900000000001".into();
+    work.enqueue_order = 3;
+    jobs.push(teammate);
+    store.save_settings(&settings).unwrap();
+    store.save_queue(&jobs).unwrap();
+    let binding = crate::retention::Binding::job(&primary);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "iteration-1",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 100,
+        },
+    );
+    states.consume(&binding, 1, "unchanged");
+    store.save_pr_states(&states).unwrap();
+    let runs: Vec<_> = ["normal-1", "teammate-1"]
+        .into_iter()
+        .map(|key| {
+            let mut run = crate::review::host::request(&store, key, true, 100).unwrap();
+            run.operation.state = OperationState::Completed;
+            run
+        })
+        .collect();
+    store.save_reviews(&runs).unwrap();
+    // The first PR's repository account is offline: nothing of it is runnable.
+    let mut connectivity = store.load_connectivity().unwrap();
+    connectivity.services.push(crate::connectivity::Service {
+        scope: crate::backpressure::Scope::github(&primary.account_id),
+        offline_since: Some(150),
+        last_success: None,
+        next_check_at: 10_000,
+    });
+    store.save_connectivity(&connectivity).unwrap();
+    assert!(work::review_item_again(&store, &crate::queue::item_id(&primary), 200).unwrap());
+    let queue = store.load_queue_state().unwrap();
+    let fresh: Vec<_> = queue
+        .jobs
+        .iter()
+        .filter_map(|job| job.work.as_ref())
+        .filter(|work| work.pass_ordinal == 2)
+        .collect();
+    assert_eq!(fresh.len(), 2);
+    assert!(fresh.iter().all(|work| work.enqueue_order == 0));
+    let waiting: Vec<_> = capacity::candidates(&store, 200)
+        .unwrap()
+        .into_iter()
+        .filter(|w| fresh.iter().any(|f| f.id == w.key.id))
+        .collect();
+    assert_eq!(waiting.len(), 2);
+    assert!(waiting
+        .iter()
+        .all(|w| w.offline.is_some() || w.reason.is_some()));
+    let other = queue
+        .jobs
+        .iter()
+        .find(|job| job.configuration_id != primary.configuration_id)
+        .unwrap();
+    assert!(other.work.as_ref().unwrap().enqueue_order > 0);
+    assert!(queue.next_enqueue_order >= other.work.as_ref().unwrap().enqueue_order);
+}
+
+#[test]
+fn review_item_again_refuses_a_rebound_configuration() {
+    let (_root, store) = capacity::tests::fixture(1, 1, true);
+    let mut old = store.load_queue().unwrap().remove(0);
+    let binding = crate::retention::Binding::job(&old);
+    let mut states = store.load_pr_states().unwrap();
+    states.observe(
+        &binding,
+        crate::pr_state::Observation {
+            iteration_id: "iteration-1",
+            new_iteration: true,
+            snapshot: None,
+            already_reviewed: false,
+            now: 100,
+        },
+    );
+    states.consume(&binding, 1, "unchanged");
+    store.save_pr_states(&states).unwrap();
+    let mut run = crate::review::host::request(&store, "normal-1", true, 100).unwrap();
+    run.operation.state = OperationState::Completed;
+    store.save_reviews(&[run]).unwrap();
+    // Same configuration ID and number, now bound to another repository.
+    old.waiting = crate::monitoring::WAITING_BINDING_CHANGED.into();
+    let mut rebound = old.clone();
+    rebound.waiting = "human_start".into();
+    rebound.account_id = "999".into();
+    rebound.repository_id = "998".into();
+    rebound.pull_request_id = "997".into();
+    let work = rebound.work.as_mut().unwrap();
+    work.id = "rebound-1".into();
+    work.item_id = "rebound-item".into();
+    work.state_seq = 5;
+    store.save_queue(&[old.clone(), rebound.clone()]).unwrap();
+    let queue = store.load_queue_state().unwrap();
+    let states = store.load_pr_states().unwrap();
+    for item in [crate::queue::item_id(&old), crate::queue::item_id(&rebound)] {
+        assert_eq!(
+            work::review_item_again(&store, &item, 200).unwrap_err(),
+            "Repository binding changed."
+        );
+    }
+    assert_eq!(store.load_queue_state().unwrap(), queue);
+    assert_eq!(store.load_pr_states().unwrap(), states);
+}
+
 fn fixture_endpoint(port: u16) -> Endpoint {
     Endpoint {
         protocol: PROTOCOL,
@@ -1400,4 +1585,66 @@ fn accepted_nonblocking_listener_handles_fragmented_request_without_losing_rejec
         "invalid_request"
     );
     server.join().unwrap();
+}
+
+#[test]
+fn control_saves_notify_open_windows_like_ui_saves() {
+    use crate::storage::Change;
+    let (root, _) = capacity::tests::fixture(1, 1, true);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    let store = Store::new(root.path().into()).with_observer(std::sync::Arc::new(
+        move |change, revision| recorder.lock().unwrap().push((change, revision)),
+    ));
+    let take = || std::mem::take(&mut *seen.lock().unwrap());
+    let agent_edit = |settings: &crate::storage::Settings, model: &str| {
+        let agent = settings.agents[0].clone();
+        let mut value = agent.clone();
+        value.model = model.into();
+        value.signature = format!("{model} signature");
+        ResourceEdit::Agent {
+            id: agent.id.clone(),
+            expected: Some(agent),
+            value: Some(value),
+        }
+    };
+
+    let before = store.load_settings().unwrap();
+    operations::save_checked(
+        &store,
+        &revision(&before),
+        agent_edit(&before, "control-model"),
+        false,
+    )
+    .unwrap();
+    let control = take();
+    assert_eq!(control.len(), 1);
+    assert_eq!(control[0].0, Change::Settings);
+
+    // The UI command commits through the same Store method.
+    let current = store.load_settings().unwrap();
+    store
+        .save_resource(agent_edit(&current, "ui-model"))
+        .unwrap();
+    let ui = take();
+    assert_eq!(ui, vec![(Change::Settings, control[0].1 + 1)]);
+    assert_eq!(crate::changes::event(ui[0].0), crate::changes::SETTINGS);
+
+    let current = store.load_settings().unwrap();
+    preset::apply(&store, &revision(&current), "201", "fixture-model").unwrap();
+    store.save_theme(crate::storage::Theme::Dark).unwrap();
+    assert_eq!(
+        take()
+            .into_iter()
+            .map(|(change, _)| change)
+            .collect::<Vec<_>>(),
+        vec![Change::Settings, Change::Settings]
+    );
+
+    store
+        .save_automation(&capacity::Automation { paused: true })
+        .unwrap();
+    let state = take();
+    assert_eq!(state.len(), 1);
+    assert_eq!(crate::changes::event(state[0].0), crate::changes::STATE);
 }

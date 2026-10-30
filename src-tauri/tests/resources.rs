@@ -743,6 +743,7 @@ fn snapshots_and_completed_evidence_do_not_change_after_edits_or_restart() {
     );
     let mut run = ReviewRun {
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,

@@ -4,6 +4,7 @@ use crate::packet::{CommentFact, ThreadFact};
 fn contract(resolved: bool, duck_required: bool) -> Contract {
     Contract {
         identities: Default::default(),
+        handoff_nudged: Default::default(),
         head: "head".into(),
         base: "base".into(),
         state_id: "state".into(),
@@ -112,12 +113,15 @@ fn exact_revision_and_identity_fencing_includes_resolved_findings() {
 fn same_head_mistaken_resolution_updates_original_thread_not_a_new_root() {
     let c = contract(true, false);
     let a = assessment(Disposition::StillApplies);
-    let ready = ExitCall::ReadyForHuman {
-        summary: "No changes.".into(),
-    };
+    let silent = ExitCall::parse(
+        "leave_comments",
+        &json!({"new_comments":[{"path":"src/lib.rs","line":2,"body":"New defect."}]}),
+    )
+    .unwrap();
     assert!(c
-        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-        .is_err());
+        .validate(&silent, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap_err()
+        .starts_with("Earlier resolution was mistaken"));
     let (arguments, _) = extract(&json!({"new_comments":[{
         "finding_id":"existing","path":"src/lib.rs","line":1,
         "body":format!("Correction: earlier fix claim was wrong. {}", a.rationale)
@@ -181,6 +185,115 @@ fn wait_cannot_hide_failed_or_unverifiable_duck_evidence() {
                 |_| Ok(())
             )
             .is_ok());
+    }
+}
+
+#[test]
+fn a_later_definitive_duck_verdict_settles_an_earlier_failed_call() {
+    let c = contract(false, true);
+    let mut a = assessment(Disposition::Fixed);
+    a.duck_call = Some(2);
+    let mut failed = duck(&a);
+    failed.outcome = DuckOutcome::Failure {
+        failure: super::super::duck::DuckFailure::Failed,
+    };
+    let mut confirmed = duck(&a);
+    confirmed.ordinal = 2;
+    // The retry may refine its wording; the subject (target and mode) is the same.
+    failed.input.claim = "First wording.".into();
+    let wait = ExitCall::Wait {
+        reason: crate::exits::WaitReason::Ci,
+    };
+    let ducks = [failed.clone(), confirmed.clone()];
+    assert_eq!(
+        c.validate(&wait, std::slice::from_ref(&a), &ducks, |_| Ok(())),
+        Ok(())
+    );
+    // Order matters: a failure after the verdict, or one on another subject, stays open.
+    let mut other = failed.clone();
+    other.input.thread_id = Some("other".into());
+    for ducks in [
+        vec![confirmed.clone(), failed.clone()],
+        vec![other, confirmed.clone()],
+        vec![failed],
+    ] {
+        assert!(c
+            .validate(&wait, std::slice::from_ref(&a), &ducks, |_| Ok(()))
+            .unwrap_err()
+            .contains("Unsettled Rubber Duck evidence"));
+    }
+    // Default spellings name the same target: omitted side is head, omitted end_line
+    // is the single line.
+    let mut omitted = failed_line(&a);
+    omitted.input.side = None;
+    omitted.input.end_line = None;
+    let mut explicit = duck(&a);
+    explicit.ordinal = 2;
+    explicit.input.kind = TargetKind::Line;
+    explicit.input.thread_id = None;
+    explicit.input.path = Some("src/lib.rs".into());
+    explicit.input.line = Some(1);
+    explicit.input.end_line = Some(1);
+    explicit.input.side = Some("head".into());
+    assert_eq!(
+        c.validate(
+            &wait,
+            &[assessment(Disposition::Withdrawn)],
+            &[omitted, explicit],
+            |_| Ok(())
+        ),
+        Ok(())
+    );
+}
+
+fn failed_line(a: &Assessment) -> DuckCall {
+    let mut d = duck(a);
+    d.input.kind = TargetKind::Line;
+    d.input.thread_id = None;
+    d.input.path = Some("src/lib.rs".into());
+    d.input.line = Some(1);
+    d.outcome = DuckOutcome::Failure {
+        failure: super::super::duck::DuckFailure::Failed,
+    };
+    d
+}
+
+#[test]
+fn ready_for_human_is_refused_once_when_lgtm_is_offered_and_nothing_needs_a_human() {
+    let ready = ExitCall::ReadyForHuman {
+        summary: "No defects; CI still running.".into(),
+    };
+    let a = assessment(Disposition::Withdrawn);
+    let clear = || {
+        let mut c = contract(false, false);
+        c.identities.lgtm_offered = true;
+        c
+    };
+    let c = clear();
+    assert_eq!(
+        c.validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(())),
+        Err(LGTM_DUE.into())
+    );
+    // An informed second call is the agent's judgment: a concern it cannot post.
+    assert_eq!(
+        c.validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(())),
+        Ok(())
+    );
+    type Edit = fn(&mut Contract, &mut Vec<Assessment>);
+    let needs_a_human: [Edit; 4] = [
+        |c, _| c.identities.lgtm_offered = false,
+        |c, _| c.identities.teammate_findings = vec!["T1#1".into()],
+        |_, a| a[0].disposition = Disposition::StillApplies,
+        |_, a| a.clear(),
+    ];
+    for edit in needs_a_human {
+        let mut c = clear();
+        let mut assessments = vec![a.clone()];
+        edit(&mut c, &mut assessments);
+        assert!(!matches!(
+            c.validate(&ready, &assessments, &[], |_| Ok(())),
+            Err(reason) if reason == LGTM_DUE
+        ));
     }
 }
 
@@ -452,14 +565,13 @@ fn later_resolution_starts_a_new_correction_episode_but_uncertain_resolution_blo
         // Sorting follows write attempts rather than the serialized array order.
         c.corrections = corrections(&[later, write.clone()], &write.job, "assignment");
         let a = assessment(Disposition::StillApplies);
+        // A handoff never needs the correction; only a reply depends on its episode.
         let mut ready = ExitCall::ReadyForHuman {
             summary: "Nothing new.".into(),
         };
-        assert_eq!(
-            c.prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-                .is_err(),
-            state == StepState::Done
-        );
+        assert!(c
+            .prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+            .is_ok());
         let mut call = correction_call(&a.rationale);
         assert_eq!(
             c.prepare(&mut call, &[a], &[], |_| Ok(())).is_ok(),
@@ -598,16 +710,11 @@ fn reconciled_resolution_receipt_requires_a_new_correction_after_restart() {
         "assignment",
     );
     let a = assessment(Disposition::StillApplies);
-    let mut ready = ExitCall::ReadyForHuman {
-        summary: "Old correction is not enough.".into(),
-    };
+    let mut correction = correction_call(&a.rationale);
     assert!(
-        c.prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-            .is_err(),
+        c.prepare(&mut correction, &[a], &[], |_| Ok(())).is_ok(),
         "The earlier acknowledgment cannot cover a later landed resolution"
     );
-    let mut correction = correction_call(&a.rationale);
-    assert!(c.prepare(&mut correction, &[a], &[], |_| Ok(())).is_ok());
 }
 
 #[test]
@@ -1429,4 +1536,160 @@ fn same_head_rerun_publishes_no_new_findings_unless_reviewed_again() {
     assert!(refused.starts_with("One review per revision"), "{refused}");
     c.identities.revision_reviewed = false;
     assert!(c.validate(&fresh, &[still], &[], |_| Ok(())).is_ok());
+}
+
+/// PR Sniper's root, then the PR author's (same account, unmarked) "fixed" reply,
+/// then the author resolved it. The primary finds the defect still there.
+fn mistakenly_resolved() -> Contract {
+    let mut c = contract(true, false);
+    c.identities.own_comments.insert("root".into());
+    c.threads[0].comments.push(CommentFact {
+        author_id: Some("11".into()),
+        id: "author-fixed".into(),
+        author: "author".into(),
+        body: "Fixed in abc123.".into(),
+    });
+    c
+}
+
+#[test]
+fn a_correction_worded_apart_from_its_rationale_is_accepted() {
+    let a = assessment(Disposition::StillApplies);
+    let body = "I resolved this too early. The rollback path still skips the provider filter.";
+    assert!(!body.contains(&a.rationale));
+    for mut c in [mistakenly_resolved(), contract(true, false)] {
+        // Also when PR Sniper's own comment is the thread's latest word.
+        c.identities.own_comments.insert("root".into());
+        let mut call = correction_call(body);
+        c.prepare(&mut call, std::slice::from_ref(&a), &[], |_| Ok(()))
+            .unwrap();
+        assert!(
+            matches!(&call, ExitCall::LeaveComments { reply_comments, .. }
+            if reply_comments[0].body.starts_with(CORRECTION) && reply_comments[0].body.ends_with(body))
+        );
+    }
+}
+
+#[test]
+fn a_refused_correction_still_leaves_an_honest_handoff() {
+    let a = assessment(Disposition::StillApplies);
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Thread existing: my earlier resolution was mistaken; the defect still applies."
+            .into(),
+    };
+    // Duplicate of a confirmed correction: the reply is refused, the handoff is not.
+    let mut c = contract(true, false);
+    let write = correction_write();
+    add_correction(&mut c, &write);
+    c.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    let mut duplicate = correction_call(&a.rationale);
+    assert!(c
+        .prepare(&mut duplicate, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_ok());
+    // No correction posted yet (e.g. no reply grant): handing off is still allowed,
+    // while silently leaving comments or waiting is not.
+    let c = mistakenly_resolved();
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_ok());
+    let silent = ExitCall::parse(
+        "leave_comments",
+        &json!({"new_comments":[{"path":"src/lib.rs","line":2,"body":"New defect."}]}),
+    )
+    .unwrap();
+    assert!(c
+        .validate(&silent, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    let wait = ExitCall::Wait {
+        reason: crate::exits::WaitReason::Ci,
+    };
+    assert!(c
+        .validate(&wait, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    // The host names the uncorrected thread even when the summary does not.
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    c.prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.starts_with("Nothing new.") && summary.ends_with("uncorrected: existing.")));
+    // A pending correction does not silence the notice; only a confirmed one does.
+    let mut pending = mistakenly_resolved();
+    let mut write = correction_write();
+    write.steps[0].state = crate::exit_writes::StepState::Attempted;
+    write.steps[0].receipt = None;
+    pending.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    pending
+        .prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.ends_with("uncorrected: existing.")));
+}
+
+#[test]
+fn a_standing_own_resolution_needs_the_correction_even_when_not_carried() {
+    use crate::exit_writes::StepState;
+    // Fixed at blob A, then the file changed: not carried now, but the episode stands
+    // and would carry again if the file reverted. Only a correction reply ends it.
+    let write = resolved_write(Disposition::Fixed, StepState::Done);
+    let mut c = contract(true, false);
+    c.identities.standing = resolutions(std::slice::from_ref(&write), &write.job, "assignment")
+        .into_iter()
+        .map(|r| r.thread_id)
+        .collect();
+    assert!(!c.threads[0].carried);
+    let a = assessment(Disposition::StillApplies);
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Still applies.".into(),
+    };
+    let refused = c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap_err();
+    assert!(!refused.contains("ready_for_human"), "{refused}");
+    assert!(c
+        .validate(
+            &correction_call("Still broken on this head."),
+            &[a],
+            &[],
+            |_| Ok(())
+        )
+        .is_ok());
+}
+
+#[test]
+fn legacy_signed_corrections_and_comments_stay_ours() {
+    let current = correction_write();
+    let mut legacy = current.clone();
+    legacy.steps[0].body = legacy.steps[0].body.replace(
+        crate::exit_writes::SIGNATURE,
+        crate::exit_writes::LEGACY_SIGNATURE,
+    );
+    assert_ne!(legacy.steps[0].body, current.steps[0].body);
+    let found = corrections(std::slice::from_ref(&legacy), &legacy.job, "assignment");
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].text,
+        corrections(std::slice::from_ref(&current), &current.job, "assignment")[0].text
+    );
+    let ids = won_t_fix_contract(None).identities;
+    for signature in [
+        crate::exit_writes::SIGNATURE,
+        crate::exit_writes::LEGACY_SIGNATURE,
+    ] {
+        let signed = |author: &str| CommentFact {
+            id: "signed".into(),
+            author: author.into(),
+            author_id: Some(author.into()),
+            body: format!("Noted.\n\n{signature}"),
+        };
+        assert!(own_comment(&ids, &signed("bot")));
+        assert!(!own_comment(&ids, &signed("reviewer")));
+    }
 }

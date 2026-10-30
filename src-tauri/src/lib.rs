@@ -3,6 +3,7 @@ pub mod admission;
 pub mod azure_devops;
 pub mod backpressure;
 pub mod capacity;
+mod changes;
 pub mod cli_process;
 pub mod connectivity;
 pub mod control;
@@ -1595,6 +1596,26 @@ async fn dismiss_stale_review(
     })
     .await
     .map_err(|_| "Stale review dismissal could not run.".to_string())?
+}
+
+#[tauri::command]
+async fn review_again(app: tauri::AppHandle, item_id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<Host>();
+        if host.quitting.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("PR Sniper is quitting.".into());
+        }
+        let (again, batch) = {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let now = now_seconds()?;
+            let again = control::review_item_again(&store, &item_id, now)?;
+            (again, host.ai.dispatch(&store, now)?)
+        };
+        capacity::launch_batch(&app, batch);
+        Ok(again)
+    })
+    .await
+    .map_err(|_| "Review again could not run.".to_string())?
 }
 
 #[tauri::command]
@@ -4843,6 +4864,7 @@ pub fn run() {
             result_detail,
             clean_reviewed,
             dismiss_stale_review,
+            review_again,
             snapshot,
             save_preferences,
             saved_resources,
@@ -4967,7 +4989,9 @@ pub fn run() {
             let github_auth =
                 GithubAuth::restore(&github_credentials, github_legacy_credentials.as_ref());
             let copilot = copilot::Integration::new(isolated)?;
-            let store = Store::new(root.clone()).with_initial_time_zone(policy::host_time_zone());
+            let store = Store::new(root.clone())
+                .with_initial_time_zone(policy::host_time_zone())
+                .with_observer(changes::emitter(app.handle().clone()));
             retention::recover(&store).map_err(std::io::Error::other)?;
             // Bounded queue before any worker or snapshot reads it.
             let compaction = monitoring::compact_saved_queue(&store);

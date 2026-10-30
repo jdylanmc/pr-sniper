@@ -280,7 +280,7 @@ fn replies_then_resolutions_run_in_order_and_confirm_once() {
     assert!(posted.starts_with("Fixed."));
     assert!(posted.contains(&format!("<!-- pr-sniper:reply:exit-{}-0 -->", w.id)));
     assert!(posted.contains("<!-- pr-sniper:revision:1 -->"));
-    assert!(posted.ends_with("PR Sniper"));
+    assert!(posted.ends_with(exit_writes::SIGNATURE));
     assert!(w.steps.iter().all(|s| s.state == StepState::Done));
 }
 
@@ -1266,4 +1266,19 @@ fn a_sign_off_is_refused_when_its_thread_changed_since_the_review() {
     assert_eq!(w.phase, Phase::Tossed);
     assert!(wire.log().is_empty());
     assert!(!wire.thread("T1").resolved);
+}
+
+#[test]
+fn default_signature_is_the_gun_emoji_and_plain_text() {
+    assert_eq!(exit_writes::SIGNATURE, "🔫 PR Sniper automated review");
+    let points: Vec<u32> = exit_writes::SIGNATURE.chars().map(u32::from).collect();
+    assert_eq!(
+        points[..2],
+        [0x1F52B, 0x20],
+        "emoji-presentation gun, no U+FE0F"
+    );
+    assert!(
+        points[1..].iter().all(|&p| (0x20..0x7F).contains(&p)),
+        "no Private Use Area or other glyphs after the emoji"
+    );
 }

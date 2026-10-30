@@ -42,6 +42,14 @@ Use the terse Conventional Commits policy in `docs/agents/commit-style.md`,
 subject to explicit operator instructions and required trailers. The policy
 does not authorize staging, committing or rewriting history.
 
+### Changelog
+
+Never edit `CHANGELOG.md`; only release automation does. Every PR adds one
+`.changes/<name>.md` ([format](.changes/README.md)) via
+[`/changelog`](.agents/skills/changelog/SKILL.md). Docs-, CI- or test-only PRs
+use label `no-changeset` instead. Entries are folded only when a release is
+sliced.
+
 ### Pull requests
 
 Every agent that creates or updates a PR in this repository invokes
@@ -161,9 +169,12 @@ viewport/dialog fallbacks through minification.
 
 ### Releases
 
-Follow [`docs/releases.md`](docs/releases.md). Merge the version PR, wait for the main-push **macOS
-foundation** run on that exact commit, then push the annotated tag. Never move a
-published tag.
+Follow [`docs/releases.md`](docs/releases.md). Authorized operators (the owner,
+or an agent the owner has directed) may dispatch a release:
+`gh workflow run changesets.yml -R jdylanmc/pr-sniper --ref main [-f version=X.Y.Z]`.
+Everything after dispatch is CI-only. Major `X` is human-only
+(`.changes/config.json`); never change it. `Y`/`Z` derive from pending
+changesets (`added` → `Y`, else `Z`). Never move a published tag.
 
 ### Wrap-up
 

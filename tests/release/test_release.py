@@ -132,6 +132,23 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(release.ReleaseError):
                 release.gate(self.api, "v0.1.0", ROOT)
 
+    def test_gate_accepts_release_dispatched_main_ci_only_on_main_or_its_pin_branch(self):
+        with patch.object(release, "command", return_value=COMMIT), \
+                patch.object(release, "config_version", return_value="0.1.0"):
+            self.api.ci["event"] = "workflow_dispatch"
+            for branch, ok in [("main", True), ("changesets/ci-v0.1.0", True),
+                               ("changesets/ci-v0.2.0", False), ("changesets/release-v0.1.0", False)]:
+                self.api.ci["head_branch"] = branch
+                with self.subTest(branch=branch):
+                    if ok:
+                        self.assertEqual(release.gate(self.api, "v0.1.0", ROOT)["sha"], COMMIT)
+                    else:
+                        with self.assertRaises(release.ReleaseError):
+                            release.gate(self.api, "v0.1.0", ROOT)
+            self.api.ci.update(event="push", head_branch="changesets/ci-v0.1.0")
+            with self.assertRaises(release.ReleaseError):
+                release.gate(self.api, "v0.1.0", ROOT)
+
     def test_gate_checks_main_ancestry_and_latest_successful_attempt(self):
         with patch.object(release, "command", return_value=COMMIT), \
                 patch.object(release, "config_version", return_value="0.1.0"):
@@ -280,11 +297,64 @@ class ReleaseTests(unittest.TestCase):
         release.publish(self.api, self.directory)
         tap = Api()
         tap.confirm_dispatch = False
-        with patch.object(release.time, "monotonic", side_effect=[0, 0, 601]), \
+        with patch.object(release.time, "monotonic", side_effect=[0, 0, release.TAP_ATTEMPT_SECONDS + 1]), \
                 patch.object(release.time, "sleep"), self.assertRaisesRegex(release.ReleaseError, "unconfirmed"):
             release.tap_update(self.api, tap, self.directory)
         self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
         self.assertFalse(any(r[0] == "PUT" for r in tap.requests))
+
+    def tap_with_runs(self, failed_steps):
+        """Tap whose publisher runs fail at `failed_steps[i]` per dispatch; None publishes."""
+        tap = Api()
+        tap.confirm_dispatch = False
+        runs, original_request = [], tap.request
+
+        def request(path, method="GET", value=None, **kwargs):
+            result = original_request(path, method, value, **kwargs)
+            if path.endswith("/dispatches"):
+                step = failed_steps[len(runs)]
+                runs.append({"id": len(runs) + 1, "event": "repository_dispatch", "status": "completed",
+                             "conclusion": "failure" if step else "success", "step": step})
+                if step is None:
+                    payload = value["client_payload"]
+                    text = release.cask(release.version(payload["tag"]), payload["sha256"])
+                    tap.cask = {"type": "file", "encoding": "base64",
+                                "content": base64.b64encode(text.encode()).decode(), "sha": "new"}
+            return result
+
+        def pages(path, field=None):
+            if "/actions/workflows/publish.yml/runs" in path:
+                return runs[-1:]
+            run = runs[int(path.split("/runs/")[1].split("/")[0]) - 1]
+            return [{"name": "publish", "steps": [{"name": "Validate", "conclusion": "success"},
+                                                  {"name": run["step"], "conclusion": "failure"}]}]
+        tap.request, tap.pages = request, pages
+        return tap
+
+    def test_tap_redispatches_same_version_only_after_install_verification_failure(self):
+        self.assets()
+        release.publish(self.api, self.directory)
+        tap = self.tap_with_runs([release.TAP_VERIFY_STEP, release.TAP_VERIFY_STEP, None])
+        with patch.object(release.time, "sleep") as sleep:
+            release.tap_update(self.api, tap, self.directory)
+        dispatches = [r for r in tap.requests if r[0] == "POST"]
+        self.assertEqual(len(dispatches), 3)
+        self.assertEqual(len({json.dumps(r[2], sort_keys=True) for r in dispatches}), 1)
+        sleep.assert_any_call(release.TAP_BACKOFF[0])
+        sleep.assert_any_call(release.TAP_BACKOFF[1])
+        self.assertFalse(any(r[0] == "PUT" for r in tap.requests))
+
+    def test_tap_retry_is_bounded_and_other_failures_never_redispatch(self):
+        self.assets()
+        release.publish(self.api, self.directory)
+        tap = self.tap_with_runs([release.TAP_VERIFY_STEP] * 10)
+        with patch.object(release.time, "sleep"), self.assertRaisesRegex(release.ReleaseError, "4 times"):
+            release.tap_update(self.api, tap, self.directory)
+        self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), len(release.TAP_BACKOFF) + 1)
+        tap = self.tap_with_runs(["Validate immutable public release and prepare cask"])
+        with patch.object(release.time, "sleep"), self.assertRaisesRegex(release.ReleaseError, "outside"):
+            release.tap_update(self.api, tap, self.directory)
+        self.assertEqual(len([r for r in tap.requests if r[0] == "POST"]), 1)
 
     def test_repository_dispatch_accepts_only_its_expected_empty_204_response(self):
         with patch.object(release.urllib.request, "build_opener") as opener, \

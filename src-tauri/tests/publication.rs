@@ -74,6 +74,7 @@ fn review() -> ReviewRun {
     operation.state = OperationState::Completed;
     ReviewRun {
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         mode: pr_sniper_lib::review::RunMode::Packet,
         packet: None,
@@ -645,7 +646,7 @@ fn stages_one_revision_bound_batch_and_submits_comment_with_confirmed_receipts()
         .as_ref()
         .unwrap()
         .body
-        .ends_with("\u{f05b} PR Sniper"));
+        .ends_with(pr_sniper_lib::exit_writes::SIGNATURE));
     assert!(run.retry(false, 200).is_err());
     assert!(fixture.run(&mut run).is_err());
     assert_eq!(fixture.writes(), 2);
@@ -1651,7 +1652,7 @@ fn inline_comments_post_with_a_marker_only_body_and_no_status_chatter() {
     let (review, comments) = posted_review(&fixture);
     assert_eq!(
         review["body"].as_str().unwrap(),
-        format!("{}\n\n\u{f05b} PR Sniper", run.marker()),
+        format!("{}\n\n\u{1F52B} PR Sniper automated review", run.marker()),
         "reconcile finds the review by its marker; nothing else is said"
     );
     assert_eq!(comments.len(), 1);

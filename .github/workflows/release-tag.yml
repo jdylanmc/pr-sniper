@@ -1,0 +1,46 @@
+name: Release tag
+
+# Tags a human-merged release commit only after its exact main commit is green
+# on both required CI workflows, then dispatches the signed release on that tag.
+# Bot-merged releases are tagged by the Changesets run (GITHUB_TOKEN merges
+# start no push CI); both paths share scripts/autorelease.mjs and are race-safe.
+on:
+  workflow_run:
+    workflows: [macOS foundation, Windows native application]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+# Per SHA: a later main commit's pending run must not replace this one.
+concurrency:
+  group: release-tag-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  tag:
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+        timeout-minutes: 3
+      - name: Tag the release commit once both CI workflows passed
+        run: node scripts/autorelease.mjs tag-commit
+        timeout-minutes: 5

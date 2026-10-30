@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { onCommitted, STATE_CHANGED } from "./changes";
 import { setText } from "./stable-dom";
 
 export interface AutomationSnapshot {
@@ -24,7 +25,8 @@ export interface AutomationSnapshot {
   }[];
 }
 
-export type FailureClass = "credentials" | "permission" | "network" | "other";
+export type FailureClass =
+  "credentials" | "permission" | "model" | "network" | "other";
 
 export function mountAutomation(
   root: HTMLElement,
@@ -129,5 +131,6 @@ export function mountAutomation(
     if (!root.isConnected) window.clearInterval(timer);
     else void refresh();
   }, 5000);
+  onCommitted(root, [STATE_CHANGED], () => void refresh());
   return refresh;
 }

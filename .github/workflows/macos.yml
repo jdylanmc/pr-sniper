@@ -1,6 +1,7 @@
 name: macOS foundation
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main, feat/macos-foundation]

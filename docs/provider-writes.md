@@ -13,7 +13,7 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 
 - Grant: **Publish Comment** on the assignment. Off: findings stay local; no wait state, no manual task. Retired global defaults and repository policy dropdowns have no authority.
 - Flow: host freezes validated output → maps findings to verified diff lines → one pending review with explicit commit SHA → submit `COMMENT`.
-- Out-of-diff findings stay local. Review body = publication marker + ` PR Sniper` only: no summary, count, restated finding or CI status (**Status chatter**, [CONTEXT](../CONTEXT.md)). Custom Agent signature is not applied to the review body.
+- Out-of-diff findings stay local. Review body = publication marker + `🔫 PR Sniper automated review` only: no summary, count, restated finding or CI status (**Status chatter**, [CONTEXT](../CONTEXT.md)). Custom Agent signature is not applied to the review body.
 - One review per revision: once an assignment published findings on a head, later passes on that head refuse `new_comments` until a new head or explicit **Review again**. Replies only answer a comment addressed to PR Sniper, accept an author's won't-fix, or correct a mistaken resolution.
 - Before and after mutation recheck: account/repo identity, head, reviewed target base, open and non-draft, eligibility, monitoring scope, publication permission. Disabling Comment or a gate change stops the attempt.
 - **Withdraw publication**: revokes the attempt; removes only the exact owned pending batch when verifiable. Never touches another pending review. A confirmed visible batch is not undone.
@@ -47,7 +47,7 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 - One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`) → replies → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
 - Preflight verifies every item or tosses the whole exit before any effect: head unchanged, thread exists, repliable root, resolutions owned. Nothing partial. Toss = error +1, re-queue (ADR 0007, park at 3).
 - Ownership: root must verify against a saved publication proof (receipt, account, review, original commit, exact root body) of this PR. Others' threads: reply only. Already resolved own thread = done, no write.
-- Intent saved before each effect (`Attempted`). Reply body frozen at preflight: agent text, marker `<!-- pr-sniper:reply:exit-<id>-<n> -->`, revision stamp, ` PR Sniper`. Reconcile reads the thread: marker present = done. Attempted and absent = **never re-POST**; retries read only, then park `Failed`.
+- Intent saved before each effect (`Attempted`). Reply body frozen at preflight: agent text, marker `<!-- pr-sniper:reply:exit-<id>-<n> -->`, revision stamp, `🔫 PR Sniper automated review`. Reconcile reads the thread: marker present = done. Attempted and absent = **never re-POST**; retries read only, then park `Failed`.
 - Resolve: GraphQL `resolveReviewThread` with `clientMutationId`; unconfirmed result re-reads the thread; idempotent retry.
 - Failure after the first effect = `Failed` (needs human), never silent replay. Before it = `Tossed`.
 - Revision stamp per comment: thread root `original_commit_id` mapped to a local iteration, else `unknown`.
@@ -60,6 +60,7 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 
 - Primary only. **Approval** pill `off | Approve | & Merge` (Azure DevOps: `off | Approve`). State `state/actions.json`.
 - Only a packet approve exit authorizes (Packet exits above). No separate final review run.
+- A sign-off (`lgtm`) acts only on green current-head CI. Accepted while CI was pending, it is a **Parked LGTM**: same final, same gates, re-attempted on each action observation with the shared backoff, one effect in flight, reconcile before acting. Parking writes nothing; only the approve/merge is sent. Before its first effect, a changed state sequence, a new head or red CI revokes it (`The review context changed…`, `CI is red…`); no write is sent and a normal review follows.
 - Legacy `FinalReview` records (no packet approval) load as history, authorize nothing; unfinished ones are cancelled on startup (`Legacy final review retired.`). Their effects still reconcile.
 - Approve: one acting-account vote, pins `commit_id`. No self-approve on GitHub. Never replaces an existing vote. Reconcile needs exact signed body, actor, commit, review receipt.
 - Merge needs: confirmed current-revision approval from an eligible reviewer; green current-head checks; satisfied reviews and rules; `CLEAN`; no unresolved threads (outdated too); no required or active merge queue; provider-selected enabled method. Pins `expectedHeadOid` and explicit method. Admin bypass is never queried or used. Absent, partial, unsupported or inaccessible evidence blocks.

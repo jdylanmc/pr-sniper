@@ -87,6 +87,11 @@ export interface QueueItem {
   } | null;
   // The primary's Rubber Duck could not be set up: its Agent name.
   failed_duck?: string | null;
+  // A parked run's Agent model refused service.
+  failed_model?: FailedModel | null;
+  // What failed and its likeliest fix (typed; failed items only).
+  failed_operation?: FailedOperation | null;
+  remedy?: "sign_in" | "change_model" | "reconcile" | "retry" | null;
   // The primary waits for this teammate's report.
   blocked_by?: {
     teammate: { assignment_id: string; agent_name: string };
@@ -129,6 +134,47 @@ const labels: Record<QueueItem["state"], string> = {
   merged: "Merged on GitHub",
 };
 
+export type FailedOperation =
+  | "repository_check"
+  | "review"
+  | "publication"
+  | "exit_write"
+  | "follow_up"
+  | "provider_action";
+export type ModelRefusal = "rejected" | "unavailable" | "retired";
+export interface FailedModel {
+  agent_id: string;
+  agent_name: string;
+  model: string;
+  refusal: ModelRefusal;
+  status?: number | null;
+}
+export const modelRefusals: Record<ModelRefusal, string> = {
+  rejected: "Rejected",
+  unavailable: "Unavailable",
+  retired: "Retired",
+};
+const modelPath =
+  "M8 8h8v8H8zM5 10H3m2 4H3m18-4h-2m2 4h-2M10 5V3m4 2V3m-4 18v-2m4 2v-2M6 6h12v12H6z";
+// Model id plus its typed refusal: the HTTP status when known.
+export function modelChip(failed: FailedModel): HTMLElement {
+  const chip = document.createElement("span");
+  chip.className = "queue-teammate queue-model";
+  chip.dataset.teammateState = "failed";
+  chip.dataset.queueModel = failed.model;
+  chip.dataset.modelRefusal = failed.refusal;
+  chip.title = `${failed.agent_name}: ${failed.model}`;
+  chip.innerHTML = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${modelPath}"/></svg>`;
+  const name = document.createElement("span");
+  name.textContent = failed.model;
+  const code = document.createElement("strong");
+  code.textContent = failed.status
+    ? String(failed.status)
+    : modelRefusals[failed.refusal];
+  chip.append(name, code);
+  return chip;
+}
+
 export type TeammateCause =
   | "timeout"
   | "rate_limited"
@@ -138,6 +184,7 @@ export type TeammateCause =
   | "superseded"
   | "credentials"
   | "permission"
+  | "model"
   | "panic";
 export const teammateCauses: Record<TeammateCause, string> = {
   timeout: "Timeout",
@@ -148,6 +195,7 @@ export const teammateCauses: Record<TeammateCause, string> = {
   superseded: "Superseded",
   credentials: "Credentials",
   permission: "Permission",
+  model: "Model",
   panic: "Panic",
 };
 const teammatePath =
@@ -194,6 +242,7 @@ const credentials = (item: QueueItem) =>
 const failureChips: Record<FailureClass, string> = {
   credentials: "Credentials",
   permission: "Permission",
+  model: "Model",
   network: "Network",
   other: "Failed",
 };
@@ -442,6 +491,7 @@ export function renderQueue(
         row.append(top, heading, reference);
         const teammate = itemTeammateChip(item);
         if (teammate) row.append(teammate);
+        if (item.failed_model) row.append(modelChip(item.failed_model));
         if (item.progress) row.append(progressChip(item.progress));
         const receipts =
           item.action_status?.effects.filter((effect) => effect.receipt) ?? [];
@@ -472,6 +522,7 @@ export function renderQueue(
         row.append(state, heading, context);
         const teammate = itemTeammateChip(item);
         if (teammate) row.append(teammate);
+        if (item.failed_model) row.append(modelChip(item.failed_model));
         if (item.progress) row.append(progressChip(item.progress));
       }
       if (!options.compact) renderItemEvidence(row, item, showError, refresh);
@@ -514,12 +565,17 @@ export function renderQueue(
         github.disabled = false;
       };
       actions.append(evidence);
-      if (credentials(item)) {
+      if (credentials(item) || (item.state === "failed" && item.failed_model)) {
         const fix = document.createElement("button");
         fix.type = "button";
         fix.className = "queue-fix";
         fix.dataset.fixAccount = "";
         fix.textContent = "Fix";
+        if (!credentials(item) && item.failed_model) {
+          fix.dataset.changeModel = item.failed_model.agent_id;
+          fix.setAttribute("aria-label", "Fix: change model");
+          fix.title = "Change model";
+        }
         fix.onclick = () =>
           fix.dispatchEvent(
             new CustomEvent("pr-sniper:fix-account", {

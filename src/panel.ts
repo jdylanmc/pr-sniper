@@ -1,6 +1,7 @@
 import { restoreShared } from "./interned";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { onCommitted, SETTINGS_CHANGED } from "./changes";
 import { mountSettings } from "./settings";
 import { mountGenie } from "./genie";
 import { type SetupReview } from "./resources";
@@ -9,11 +10,7 @@ import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
 import { humanQueue, teammateChip } from "./queue";
-import {
-  credentialsFixTarget,
-  retryCommands,
-  runRecoveries,
-} from "./queue-detail";
+import { itemFixTarget, retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
   purposes,
@@ -158,6 +155,7 @@ export async function mountPanel(app: HTMLElement) {
       (cause) => showVersion(undefined, cause),
     );
   readVersion();
+  onCommitted(app, [SETTINGS_CHANGED], readVersion);
   const error = app.querySelector<HTMLElement>("[data-panel-error]")!;
   const heading = app.querySelector<HTMLElement>("[data-panel-heading]")!;
   const content = app.querySelector<HTMLElement>(".panel-content")!;
@@ -506,7 +504,7 @@ export async function mountPanel(app: HTMLElement) {
     const id = (event as CustomEvent<{ id?: string } | null>).detail?.id;
     const item = snapshot?.items?.find((entry) => entry.id === id);
     const target =
-      item && snapshot ? credentialsFixTarget(item, snapshot) : "accounts";
+      item && snapshot ? itemFixTarget(item, snapshot) : "accounts";
     const task = navigate({ tab: "settings" });
     const expected = intent;
     void task.then(async () => {

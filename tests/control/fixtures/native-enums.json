@@ -20,6 +20,21 @@
     "submit_verdict",
     "lgtm"
   ],
+  "failed_operation": [
+    "repository_check",
+    "review",
+    "publication",
+    "exit_write",
+    "follow_up",
+    "provider_action"
+  ],
+  "failure_class": [
+    "credentials",
+    "permission",
+    "model",
+    "network",
+    "other"
+  ],
   "merge_block": [
     "behind_base",
     "conflicts"
@@ -28,11 +43,22 @@
     "ci_not_run": true,
     "reason": "conflicts"
   },
+  "model_refusal": [
+    "rejected",
+    "unavailable",
+    "retired"
+  ],
   "progress": [
     "approving",
     "merging",
     "merge_pending_behind_base",
     "merge_pending_conflicts",
     "publishing"
+  ],
+  "remedy": [
+    "sign_in",
+    "change_model",
+    "reconcile",
+    "retry"
   ]
 }

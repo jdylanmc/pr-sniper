@@ -5,11 +5,53 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## 0.5.4 - 2026-10-30
+
+Recovery release: parked reviews name what failed and how to fix it, Retry all
+and Review again in the Queue, live window refresh, and fewer forced handoffs.
+
+### Added
+
+- Queue › **Needs attention** shows **Retry all** for every retryable parked
+  row, Credentials included, and a **Retry** on every failed row. While paused,
+  re-armed rows leave the list until resume (#281).
+- New MCP tool `retry_all` re-arms every parked review in one identified
+  mutation and returns what was retried and skipped (#274).
+- **Review again** in a reviewed PR's detail starts a new pass first in line,
+  matching MCP `watch_pull_request` `review_again` (#277).
+- Failed queue items carry a typed failed operation and remedy: the detail shows
+  an **Operation** fact, MCP `list_queue` / `read_evidence` expose
+  `failed_operation` and `remedy`, and failure notifications name the cause
+  (for example `Model rejected`, `Sign in needed`, `No access`) (#285).
+- Azure DevOps assignments with the Approve grant approve by setting the bound
+  identity's reviewer vote. Approve & Merge is never offered for Azure DevOps
+  and is refused by MCP save and validate (#251).
+
 ### Fixed
 
-- Query the Chocolatey community feed with an Atom/XML-only `Accept` header;
-  the feed rejects any request that allows JSON with HTTP 406, which blocked
-  `choco-publish` before push.
+- A Copilot session refusal (runtime 401/403, model not offered or retired)
+  parks as **Model** instead of **Credentials**: the row names the Agent, model
+  and HTTP status, and **Fix** / **Change model** opens that Agent's model
+  picker. **Fix** for a real credentials failure routes to the account it
+  recorded (#272, #282).
+- Every committed change refreshes open Settings, Queue, automation,
+  notification and theme views live, including MCP saves; an edited draft keeps
+  its changes and offers **Reload** (#279).
+- A clean review whose only gate is pending CI no longer hands off to a human:
+  `lgtm` is accepted and parked on the revision (**Parked LGTM**), then
+  approves or merges once CI is green without another AI run. A new head, base,
+  comment, thread or red CI revokes it. A failed Rubber Duck call settled by a
+  later verdict on the same target no longer blocks `wait`, and
+  `ready_for_human` is refused once when `lgtm` is due (#265).
+- Accept a primary's correction of a mistaken resolution, or its acceptance of
+  an author's won't-fix, as any reply on that own thread instead of requiring
+  the reply to repeat the disposition rationale verbatim, and let
+  `ready_for_human` hand off an uncorrected mistaken resolution that has no
+  standing PR Sniper resolution, naming the thread in its summary, so a refused
+  reply never leaves `panic_exit` as the only exit (#293).
+- Sign review bodies, replies and approvals with `🔫 PR Sniper automated review`
+  instead of a Private Use Area icon glyph that GitHub and Azure DevOps render as
+  an unknown character. Comments signed the old way stay recognized (#289).
 
 ## 0.5.3 - 2026-10-28
 

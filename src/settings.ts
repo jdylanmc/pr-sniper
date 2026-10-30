@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
+import { onCommitted, SETTINGS_CHANGED } from "./changes";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -136,7 +137,9 @@ export type SetupTarget =
   | "agents"
   | "doctrines"
   | "repositories"
-  | "preferences";
+  | "preferences"
+  // One Agent's editor with its model picker focused.
+  | { agent: string };
 export interface GuidedReturn {
   back: () => void;
 }
@@ -517,6 +520,8 @@ export async function mountSettings(
   let themeError = "";
   let conflict = false;
   let catalogConflict = false;
+  let externalPending = false;
+  let externalRead = 0;
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -566,7 +571,23 @@ export async function mountSettings(
   };
   const dialogs = createDialogs(
     content,
-    () => revision++,
+    () => {
+      revision++;
+      // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
+      // no other Reload (Repositories has its own). Once the last editor
+      // closes on a clean draft there, re-read instead.
+      if (conflict)
+        queueMicrotask(() => {
+          if (
+            conflict &&
+            !dialogs.hasOpen() &&
+            !dirty() &&
+            section !== "repositories" &&
+            !!reload.closest("[hidden]")
+          )
+            void external();
+        });
+    },
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
@@ -646,6 +667,10 @@ export async function mountSettings(
     reload.disabled = busy;
     catalogNotice.hidden = !catalogConflict;
     reloadCatalog.disabled = busy;
+    if (externalPending && !busy && !startupPending) {
+      externalPending = false;
+      void external();
+    }
   }
 
   async function commitResource(
@@ -1749,6 +1774,7 @@ export async function mountSettings(
     opener: HTMLElement,
     existing?: Agent,
     onSaved?: (agent?: Agent) => void,
+    focusModel = false,
   ) {
     const assigned = existing ? agentRepositories(existing) : [];
     const expected = clone(
@@ -2162,6 +2188,13 @@ export async function mountSettings(
         modelSelect.disabled = !models.some(modelSelectable);
         syncSignature();
         describeModel();
+        // Change model waits on the refresh control until the picker opens.
+        if (
+          focusModel &&
+          !modelSelect.disabled &&
+          document.activeElement === retryModels
+        )
+          modelSelect.focus();
       } catch (cause) {
         if (modal.isConnected && current === request)
           modelStatus.textContent = reason(cause);
@@ -2274,6 +2307,10 @@ export async function mountSettings(
       refreshAccounts();
     }
     void loadModels();
+    if (focusModel) {
+      modelSelect.closest("label")?.scrollIntoView({ block: "nearest" });
+      retryModels.focus();
+    }
     if (onSaved) releaseDiscardGuard = warnBeforeDiscard(modal, "Agent");
     modal.querySelector("form")!.onsubmit = async (event) => {
       event.preventDefault();
@@ -5216,28 +5253,7 @@ export async function mountSettings(
         dialogs.hasOpen()
       )
         return;
-      snapshot = state;
-      if (!state.settings) {
-        showError(state.error ?? "Unavailable");
-        return;
-      }
-      const retainAccounts =
-        (section === "accounts" ||
-          section === "copilot" ||
-          section === "github") &&
-        content.querySelector(".account-connection") !== null &&
-        sameResource(saved, state.settings);
-      saved = clone(state.settings);
-      draft = clone(saved);
-      if (!themePending) applyTheme(saved.theme);
-      conflict = false;
-      if (state.error) showError(state.error);
-      if (retainAccounts) {
-        changed();
-        window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
-        return;
-      }
-      render();
+      applySnapshot(state);
     } catch {
       if (
         requestRevision !== revision ||
@@ -5251,11 +5267,72 @@ export async function mountSettings(
       showError("Unavailable");
     }
   }
+  // Callers have checked that no draft, editor or save would be overwritten.
+  function applySnapshot(state: Snapshot) {
+    snapshot = state;
+    if (!state.settings) {
+      showError(state.error ?? "Unavailable");
+      return;
+    }
+    const retainAccounts =
+      (section === "accounts" ||
+        section === "copilot" ||
+        section === "github") &&
+      content.querySelector(".account-connection") !== null &&
+      sameResource(saved, state.settings);
+    saved = clone(state.settings);
+    draft = clone(saved);
+    if (!themePending) applyTheme(saved.theme);
+    conflict = false;
+    if (state.error) showError(state.error);
+    if (retainAccounts) {
+      changed();
+      window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
+      return;
+    }
+    // Azure DevOps renders nothing from saved Settings and keeps its own
+    // unsaved Organization draft; a remount would drop it.
+    if (section === "azure-devops") {
+      changed();
+      return;
+    }
+    render();
+  }
+  // A commit from another origin (control, another window) refreshes a clean
+  // view; an unsaved draft or open editor keeps its edits and is marked stale.
+  async function external() {
+    if (busy || startupPending || !saved) {
+      externalPending = true;
+      return;
+    }
+    const read = ++externalRead;
+    let state: Snapshot;
+    try {
+      state = await invoke<Snapshot>("snapshot");
+    } catch {
+      return;
+    }
+    if (read !== externalRead || !state.settings || !app.isConnected) return;
+    if (busy || startupPending) {
+      externalPending = true;
+      return;
+    }
+    if (sameResource(state.settings, saved)) return;
+    if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
+      applySnapshot(state);
+      return;
+    }
+    conflict = true;
+    showError("Changed elsewhere");
+    changed();
+  }
   window.addEventListener("focus", () => {
     if (app.closest("[hidden]")) return;
     refreshAgentAccounts?.();
     if (!dirty() && !busy && !startupPending && !dialogs.hasOpen()) void load();
   });
+  // Listen before the first read so no commit lands between them unseen.
+  await onCommitted(app, [SETTINGS_CHANGED], () => void external());
   await load();
   return {
     leaveGuidance,
@@ -5270,6 +5347,25 @@ export async function mountSettings(
       }
       guidance = origin;
       returnGenie.hidden = false;
+      if (typeof target === "object") {
+        if (options.embedded) homeOpener = "agents";
+        if (section !== "agents") navigate("agents");
+        settingsBack.hidden = true;
+        const agent = agents().find((entry) => entry.id === target.agent);
+        const edit = content.querySelector<HTMLButtonElement>(
+          `[data-agent-id="${CSS.escape(target.agent)}"] [data-edit]`,
+        );
+        if (!agent || !edit) {
+          (
+            content.querySelector<HTMLElement>(".resource-toolbar button") ??
+            returnGenie
+          ).focus({ preventScroll: true });
+          return true;
+        }
+        edit.scrollIntoView({ block: "nearest" });
+        editAgent(edit, agent, undefined, true);
+        return true;
+      }
       const next: Section =
         target === "ai" || target === "repository-account"
           ? target === "ai"

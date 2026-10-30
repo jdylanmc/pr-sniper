@@ -11,24 +11,26 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Machine sign-off is not approval. Ready for you = signed off and not approved by PR Sniper. A confirmed approval of the current head (`State::Approved`) leaves the Queue for Reviewed (**Approved**); a new head voids it. Unsettled or failed approval stays in Needs attention.
 - Retry: transient failures retry with backoff, 3 failed attempts, then **park** (`MAX_FAILED_ATTEMPTS`, `RETRY_WINDOW_SECONDS` = 15 min in `src-tauri/src/monitoring.rs`). Credential, permission and permanent failures park immediately.
 - Auto-resume: a parked Network/Provider/Timeout/RateLimited/Permission failure gets a fresh 3-attempt budget after a cooldown of 30m, 1h, 2h, 4h, 8h (`RESUME_COOLDOWNS_SECONDS`; `resume_cycle`, `resume_at` on the operation). After five cycles it waits for a human. Credential failures resume when the GitHub or Copilot account connects again. Explicit Retry starts a new operation (cycle 0): a poll failure retries the repository poll; a review restarts only if its own run failed with nothing published for that revision. Publication operations resume the same way (reconcile the original). Permanent failures never resume. Superseded, closed and merged work is never resumed.
-- Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → the failing Copilot or GitHub account) and **Retry**, **Retry all** pill (`retry_all_parked`; `Item.retry_all` marks the rows it re-arms: packet parks and failed review runs (same path as control `retry_all`), parked polls, and publications unless paused or withdrawn, re-checked at launch; permanent, panic and provider-action failures stay parked). A clock + time shows the next automatic retry. Failed detail lists Cause, Attempts, Last attempt, Next retry, Agent, Revision, Account and the raw error. Running holds active + queued jobs and external-wait PR rows without AI slots.
+- Parked failures live in Queue > **Needs attention**: cause chip, **Fix** (credentials → the failing Copilot or GitHub account; model → the refusing Agent's model picker) and **Retry**, model chip (model id + HTTP status), **Retry all** pill (`retry_all_parked`; `Item.retry_all` marks the rows it re-arms: packet parks and failed review runs (same path as control `retry_all`), parked polls, and publications unless paused or withdrawn, re-checked at launch; permanent, panic and provider-action failures stay parked). A clock + time shows the next automatic retry. Failed detail lists Cause, Operation (repository check, review, publish, write, follow-up, approve / merge), Attempts, Last attempt, Next retry, Agent, Model and HTTP (model refusals; primary **Change model**), Revision, Account and the raw error. Running holds active + queued jobs and external-wait PR rows without AI slots.
 - Teammates: teammate fail = PR-state fail. One Needs attention row per PR, chip = agent name + typed cause (`failed_teammate`; icons, no prose); detail adds Teammate row. Primary waits (`blocked_by`, Running chip = agent name + clock) until all teammates have report for same state. Good reports reused on retry. State move re-runs all. See [ADR-0021](adr/0021-review-packet.md).
 - Packet exits (`Item.exit`, `Item.progress`, typed `failure_cause`):
 
-  | Exit / host phase                                                             | Queue                                          | Chip                                                              |
-  | ----------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
-  | `ready_for_human`                                                             | Ready for you                                  | —                                                                 |
-  | `wait`                                                                        | out of human Queue; Running PR row, no AI slot | **Waiting on CI** / **Waiting on draft** / **Waiting on reviews** |
-  | `approve_pull_request`, `approve_and_merge`                                   | Ready for you                                  | **Approving** → **Merging**                                       |
-  | approval confirmed / merged                                                   | Reviewed (Approved / Merged)                   | —                                                                 |
-  | `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`)          | **Publishing**                                                    |
-  | writes confirmed + consumed                                                   | out of Queue (`waiting_for_author`)            | —                                                                 |
-  | write Tossed, budget left                                                     | re-queued (`queued`)                           | —                                                                 |
-  | toss budget spent (`error_count` ≥ 3)                                         | Needs attention                                | **Tossed**, Retry                                                 |
-  | write Failed after an effect                                                  | Needs attention                                | **Write failed**, Retry                                           |
-  | `panic_exit`                                                                  | Needs attention                                | **Panic** + cooldown clock                                        |
+  | Exit / host phase                           | Queue                                          | Chip                                                              |
+  | ------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
+  | `ready_for_human`                           | Ready for you                                  | —                                                                 |
+  | `wait`                                      | out of human Queue; Running PR row, no AI slot | **Waiting on CI** / **Waiting on draft** / **Waiting on reviews** |
+  | `approve_pull_request`, `approve_and_merge` | Ready for you                                  | **Approving** → **Merging**                                       |
 
-  Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
+| `lgtm` parked on pending CI (Parked LGTM) | Ready for you | **Approving** / **Merging**; blocker `LGTM pending on revision …` |
+| approval confirmed / merged | Reviewed (Approved / Merged) | — |
+| `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`) | **Publishing** |
+| writes confirmed + consumed | out of Queue (`waiting_for_author`) | — |
+| write Tossed, budget left | re-queued (`queued`) | — |
+| toss budget spent (`error_count` ≥ 3) | Needs attention | **Tossed**, Retry |
+| write Failed after an effect | Needs attention | **Write failed**, Retry |
+| `panic_exit` | Needs attention | **Panic** + cooldown clock |
+
+Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
 
 - Activity (packet runs): **Read** N of M, exit row (icon + exit, counts New / Replies / Resolved, Approve / Merge, Write phase, Progress), **Packet** row (State id, Schema, Tools, Offered, Denied, Hash), teammate **Report** rows (agent, finding count; tap = `file:line` + nano). `ready_for_human` summary shows local, never posted.
 - Stale only on new head or base. Completed reviews stay Ready despite config drift or a disabled repo. Merged/closed PRs move to Reviewed; tracked PRs of disabled repos keep a light lifecycle refresh.
@@ -50,7 +52,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 - Every run is packet mode ([review-packet.md](review-packet.md)). Discarded batch: no automatic re-review (once-per-lens removed).
 - Legacy runs (JSON decision) load as history. Unfinished ones are cancelled on startup (`Legacy review retired.`); **Retry review** starts a packet run.
 - Requests persist before capacity wait. Unexecuted initial requests may wait over 15 min and still get a first budget.
-- **Cancel review** stops inference; **Retry review** is explicit. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
+- **Cancel review** stops inference; **Retry review** is explicit. ↻ **Review again** (`review_again`) starts a new pass of a completed PR, first in line; unsettled provider writes reject; completed evidence and receipts stay. Changing account, Agent, prompt, Doctrine, repo or effective inputs invalidates affected in-flight work.
 - Pause: the panel header **Monitoring** switch (Pause/Resume automation) halts polling, AI and writes. No Settings pause card. `automation_snapshot` returns saved pause/capacity plus occupied, stopping, waiting work. `set_automation_paused` persists the gate and signals workers. State: `state/automation.json`.
 - Reserve path: `capacity::Coordinator::reserve` (`src-tauri/src/capacity.rs`).
 - Keychain: GitHub and Copilot tokens in separate account-addressed services. Never in config, state or diagnostics. See [ADR-0001](adr/0001-macos-foundation.md).

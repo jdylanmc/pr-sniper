@@ -90,6 +90,7 @@ fn waiting(message: &str) -> Failure {
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        model: None,
         resume: Default::default(),
     }
 }

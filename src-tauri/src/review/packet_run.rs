@@ -110,6 +110,9 @@ pub(crate) fn prepare(
     let base = gate_input(run, facts)?;
     let exits = gates::offered(&base);
     let offered = gates::callable(&base, &exits);
+    let lgtm_offered = exits
+        .iter()
+        .any(|(exit, offer)| *exit == crate::exits::Exit::Lgtm && offer.is_offered());
     if offered
         .iter()
         .all(|exit| *exit == crate::exits::Exit::PanicExit)
@@ -159,6 +162,7 @@ pub(crate) fn prepare(
         })
         .map(|r| r.evidence.clone())
         .collect();
+    let standing = resolutions.iter().map(|r| r.thread_id.clone()).collect();
     reads::stamp_targeted_revisions(&mut conversation, &observation, iterations);
     reads::stamp_new_since(&mut conversation, &observation, last_consumed_at);
     let checks = reads::checks(&observation);
@@ -269,6 +273,7 @@ pub(crate) fn prepare(
             .chain(receipts)
             .collect(),
         carried,
+        standing,
         lgtm_action: gates::lgtm_action(&base),
         thread_heads: conversation
             .threads
@@ -282,6 +287,7 @@ pub(crate) fn prepare(
             .collect(),
         teammate_findings: crate::packet::sections::teammate_finding_ids(&input),
         revision_reviewed,
+        lgtm_offered,
     };
     let facts = Arc::new(facts);
     let gate = exit_gate(

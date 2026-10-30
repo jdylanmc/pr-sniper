@@ -25,7 +25,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const SIGNATURE: &str = "\u{f05b} PR Sniper";
+/// Default attribution on every machine-authored review body and reply. U+1F52B has
+/// default emoji presentation, so it renders on GitHub and Azure DevOps without U+FE0F.
+pub const SIGNATURE: &str = "\u{1F52B} PR Sniper automated review";
+/// Earlier signature (a Private Use Area icon-font glyph); still recognized as ours.
+pub const LEGACY_SIGNATURE: &str = "\u{f05b} PR Sniper";
 const MAX_BODY_CHARS: usize = 65_536;
 /// Delay before a write waiting on its comment batch checks again.
 const WAIT_SECONDS: i64 = 10;
@@ -756,6 +760,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     retry_after_seconds: None,
                     origin: crate::backpressure::Origin::Github,
                     duck_setup: false,
+                    model: None,
                     resume: Default::default(),
                 });
             }

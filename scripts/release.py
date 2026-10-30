@@ -20,6 +20,12 @@ REPOSITORY = "jdylanmc/pr-sniper"
 TAP = "jdylanmc/homebrew-pr-sniper"
 BUNDLE_ID = "com.jdylanmc.pr-sniper"
 WORKFLOW = ".github/workflows/macos.yml"
+PIN_PREFIX = "changesets/ci-v"
+TAP_WORKFLOW = "publish.yml"
+# Ticket propagation lag fails only the tap's install verification step.
+TAP_VERIFY_STEP = "Audit, install, verify and uninstall only in disposable CI"
+TAP_BACKOFF = (300, 900, 1800)
+TAP_ATTEMPT_SECONDS = 2400
 VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 SHA = re.compile(r"[0-9a-f]{40}")
 UPPER_SHA = re.compile(r"[0-9A-F]{40}")
@@ -163,6 +169,16 @@ def tag_sha(api, tag):
     raise ReleaseError("Too many nested annotated tags.")
 
 
+def main_ci(run, sha, release_version):
+    """Main CI for the exact commit: a main push, or a run the autonomous
+    release dispatched on main or its pin branch (GITHUB_TOKEN merges start no push CI)."""
+    if run.get("head_sha") != sha:
+        return False
+    if run.get("event") == "push":
+        return run.get("head_branch") == "main"
+    return run.get("event") == "workflow_dispatch" and run.get("head_branch") in ("main", PIN_PREFIX + release_version)
+
+
 def gate(api, tag, root=Path("."), *, require_windows=False):
     expected = version(tag)
     require(config_version(root) == expected, "Tag does not match checked-in versions.")
@@ -172,12 +188,9 @@ def gate(api, tag, root=Path("."), *, require_windows=False):
     comparison = api.request(f"/repos/{REPOSITORY}/compare/{sha}...{main}")
     require(comparison["status"] in ("ahead", "identical"), "Release source is not on main.")
     workflow = urllib.parse.quote(WORKFLOW, safe="")
-    runs = api.pages(
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow}/runs?head_sha={sha}&event=push&branch=main",
-        "workflow_runs")
-    eligible = [run for run in runs if run.get("head_sha") == sha
-                and run.get("head_branch") == "main" and run.get("event") == "push"]
-    require(eligible, "No main-push CI exists for the exact tagged commit.")
+    runs = api.pages(f"/repos/{REPOSITORY}/actions/workflows/{workflow}/runs?head_sha={sha}", "workflow_runs")
+    eligible = [run for run in runs if main_ci(run, sha, expected)]
+    require(eligible, "No main CI exists for the exact tagged commit.")
     latest = max(eligible, key=lambda run: (run["id"], run.get("run_attempt", 1)))
     require(latest.get("status") == "completed" and latest.get("conclusion") == "success",
             "The latest exact-commit main CI must be complete and green.")
@@ -187,11 +200,9 @@ def gate(api, tag, root=Path("."), *, require_windows=False):
     if require_windows:
         windows_workflow = urllib.parse.quote(".github/workflows/windows.yml", safe="")
         windows_runs = api.pages(
-            f"/repos/{REPOSITORY}/actions/workflows/{windows_workflow}/runs?head_sha={sha}&event=push&branch=main",
-            "workflow_runs")
-        eligible_windows = [run for run in windows_runs if run.get("head_sha") == sha
-                            and run.get("head_branch") == "main" and run.get("event") == "push"]
-        require(eligible_windows, "No exact-commit Windows main-push CI exists.")
+            f"/repos/{REPOSITORY}/actions/workflows/{windows_workflow}/runs?head_sha={sha}", "workflow_runs")
+        eligible_windows = [run for run in windows_runs if main_ci(run, sha, expected)]
+        require(eligible_windows, "No exact-commit Windows main CI exists.")
         latest_windows = max(eligible_windows, key=lambda run: (run["id"], run.get("run_attempt", 1)))
         require(latest_windows.get("status") == "completed" and latest_windows.get("conclusion") == "success",
                 "The latest exact-commit Windows main CI must be complete and green.")
@@ -958,22 +969,73 @@ def tap_update(api, tap_api, directory=ASSETS):
         old_version = tuple(map(int, found[1].split(".")))
         new_version = tuple(map(int, manifest["version"].split(".")))
         require(new_version > old_version, "Refusing a same-version checksum change or tap downgrade.")
-    require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before tap update.")
-    tap_api.request(f"/repos/{TAP}/dispatches", "POST", {
-        "event_type": "pr-sniper-release",
-        "client_payload": {"tag": manifest["tag"], "source_sha": manifest["source_sha"],
-                           "sha256": manifest["sha256"]},
-    })
-    deadline = time.monotonic() + 600
+    attempts = len(TAP_BACKOFF) + 1
+    for attempt in range(attempts):
+        require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before tap update.")
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
+        tap_api.request(f"/repos/{TAP}/dispatches", "POST", {
+            "event_type": "pr-sniper-release",
+            "client_payload": {"tag": manifest["tag"], "source_sha": manifest["source_sha"],
+                               "sha256": manifest["sha256"]},
+        })
+        if await_tap(api, tap_api, manifest, content, since):
+            return
+        if attempt + 1 < attempts:
+            print(f"Tap install verification failed (attempt {attempt + 1}/{attempts}); "
+                  f"redispatching the same version in {TAP_BACKOFF[attempt]}s.")
+            time.sleep(TAP_BACKOFF[attempt])
+    raise ReleaseError(f"Tap install verification failed {attempts} times for the same version. "
+                       "The release stays published; rerun the tap publisher on main for this tag once fixed.")
+
+
+def tap_read(readers, path, field):
+    for reader in readers:
+        try:
+            return reader.pages(path, field)
+        except ReleaseError:
+            continue
+    return None
+
+
+def tap_run(api, tap_api, since):
+    """Oldest publisher run dispatched since `since`; None when unreadable."""
+    query = urllib.parse.quote(">=" + since, safe="")
+    runs = tap_read((tap_api, api), f"/repos/{TAP}/actions/workflows/{TAP_WORKFLOW}/runs"
+                    f"?event=repository_dispatch&created={query}", "workflow_runs") or []
+    runs = [run for run in runs if run.get("event") == "repository_dispatch"]
+    return min(runs, key=lambda run: run["id"]) if runs else None
+
+
+def tap_failed_steps(api, tap_api, run):
+    jobs = tap_read((tap_api, api), f"/repos/{TAP}/actions/runs/{run['id']}/jobs", "jobs")
+    if jobs is None:
+        return None
+    return {step.get("name") for job in jobs for step in job.get("steps") or []
+            if step.get("conclusion") == "failure"}
+
+
+def await_tap(api, tap_api, manifest, content, since):
+    """True once the exact cask is on tap main; False when only the tap's
+    install verification failed (notarization ticket lag), so a same-version
+    redispatch is safe. Any other outcome stops without redispatch."""
+    path = f"/repos/{TAP}/contents/Casks/pr-sniper.rb?ref=main"
+    deadline = time.monotonic() + TAP_ATTEMPT_SECONDS
     while time.monotonic() < deadline:
-        confirmed = tap_api.request(path + "?ref=main", missing=True)
+        confirmed = tap_api.request(path, missing=True)
         if confirmed is not None:
             require(confirmed.get("type") == "file" and confirmed.get("encoding") == "base64",
                     "Unexpected tap confirmation response.")
             if base64.b64decode(confirmed["content"]).decode() == content:
                 require(tag_sha(api, manifest["tag"]) == manifest["source_sha"],
                         "Tag moved before tap confirmation.")
-                return
+                return True
+        run = tap_run(api, tap_api, since)
+        if run and run.get("status") == "completed" and run.get("conclusion") != "success":
+            failed = tap_failed_steps(api, tap_api, run)
+            if failed == {TAP_VERIFY_STEP}:
+                return False
+            if failed is not None:
+                    raise ReleaseError("Tap publisher failed outside install verification; inspect it, no automatic redispatch.")
         time.sleep(20)
     raise ReleaseError("Tap dispatch was accepted, but matching cask publication is unconfirmed. Inspect the tap publisher; no automatic redispatch.")
 

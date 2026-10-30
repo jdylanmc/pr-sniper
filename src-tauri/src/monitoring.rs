@@ -61,6 +61,9 @@ pub enum OperationFailure {
     Permission,
     /// The agent called `panic_exit`: parks at once, resumes on the cooldown schedule.
     Panic,
+    /// The Agent's model refused the call while its account stayed verified
+    /// (`review::FailedModel` names it). Retried; another model is the remedy.
+    Model,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -68,6 +71,8 @@ pub enum OperationFailure {
 pub enum FailureClass {
     Credentials,
     Permission,
+    /// One Agent's model refused service; its account is fine.
+    Model,
     Network,
     Other,
 }
@@ -77,6 +82,7 @@ impl OperationFailure {
         match self {
             Self::Credentials => FailureClass::Credentials,
             Self::Permission => FailureClass::Permission,
+            Self::Model => FailureClass::Model,
             Self::Timeout | Self::RateLimited | Self::Network => FailureClass::Network,
             Self::Provider | Self::Permanent | Self::Superseded | Self::Tossed | Self::Panic => {
                 FailureClass::Other
@@ -87,7 +93,12 @@ impl OperationFailure {
     pub fn transient(&self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::RateLimited | Self::Network | Self::Provider | Self::Tossed
+            Self::Timeout
+                | Self::RateLimited
+                | Self::Network
+                | Self::Provider
+                | Self::Tossed
+                | Self::Model
         )
     }
 
