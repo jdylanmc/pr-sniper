@@ -44,12 +44,7 @@ const FAILED = new Set([
 ]);
 // Runs that never executed, e.g. `pull_request` runs awaiting approval with no
 // jobs. They neither pass nor fail CI.
-export const UNRAN = new Set([
-  "action_required",
-  "skipped",
-  "neutral",
-  "stale",
-]);
+const UNRAN = new Set(["action_required", "skipped", "neutral", "stale"]);
 
 export class StageError extends Error {
   constructor(stage, message, recovery) {
@@ -225,8 +220,7 @@ export async function ciPass(
   for (const workflow of CI_WORKFLOWS) {
     const run = latestRun(
       (await workflowRuns(ctx, workflow, `head_sha=${sha}`)).filter(
-        (run) =>
-          run.head_sha === sha && accept(run) && !UNRAN.has(run.conclusion),
+        (run) => run.head_sha === sha && accept(run),
       ),
     );
     if (!run) {
@@ -517,7 +511,8 @@ export async function land(ctx, version, { summary = "" } = {}) {
       stage: "land",
       accept: (run) =>
         run.head_branch === branch &&
-        ["pull_request", "workflow_dispatch"].includes(run.event),
+        ["pull_request", "workflow_dispatch"].includes(run.event) &&
+        !UNRAN.has(run.conclusion),
       ref: grace ? branch : null,
       state,
     });
@@ -582,10 +577,7 @@ async function ciGreen(ctx, version, sha) {
   for (const workflow of CI_WORKFLOWS) {
     const run = latestRun(
       (await workflowRuns(ctx, workflow, `head_sha=${sha}`)).filter(
-        (run) =>
-          run.head_sha === sha &&
-          mainCi(version)(run) &&
-          !UNRAN.has(run.conclusion),
+        (run) => run.head_sha === sha && mainCi(version)(run),
       ),
     );
     if (run?.status !== "completed" || run.conclusion !== "success")
