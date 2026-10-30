@@ -10,8 +10,9 @@ on:
 
 permissions: {}
 
+# Per SHA: a later main commit's pending run must not replace this one.
 concurrency:
-  group: release-tag
+  group: release-tag-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 defaults:

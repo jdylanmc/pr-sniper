@@ -1876,6 +1876,10 @@ test("changesets validate PRs, fold only at release through a bot PR and tag aft
     },
   });
   assert.deepEqual(tagger.permissions, {});
+  assert.equal(
+    tagger.concurrency.group,
+    "release-tag-${{ github.event.workflow_run.head_sha }}",
+  );
   assert.equal(tagger.concurrency["cancel-in-progress"], false);
   assert.deepEqual(tagger.jobs.tag.permissions, {
     contents: "write",
