@@ -188,11 +188,15 @@ normal PR and re-dispatch; the release PR is regenerated on the new `main`.
   (repository settings **Allow GitHub Actions to create and approve pull
   requests** and **Allow auto-merge** are on). It merges with a merge
   commit; nothing bypasses protection.
-- `GITHUB_TOKEN` pushes, PRs and auto-merges start no `push`/`pull_request`
+- `GITHUB_TOKEN` pushes, PRs and auto-merges start no runnable `push`/`pull_request`
   runs; only `workflow_dispatch` does. So the run dispatches the required CI
   workflows on the release branch (their check runs attach to the PR head
   commit) and, after merge, on a pin branch holding exactly the merge commit.
   Dispatching on `main` could test a later commit.
+- The bot-opened release PR gets `pull_request` runs that wait for approval
+  (`action_required`, no jobs). `land` ignores them and counts only its own
+  `workflow_dispatch` runs on the release branch; they report all four required
+  checks, so the pending runs need no approval.
 - If dispatched check runs ever stop satisfying the required checks, `land`
   fails after 15 minutes of green CI without a merge. The fix is a GitHub App
   installation token (contents, pull requests and actions write) used in place

@@ -41,6 +41,14 @@ const FAILED = new Set([
   "timed_out",
   "startup_failure",
 ]);
+// Runs that never executed: bot-opened PRs leave `pull_request` runs awaiting
+// approval with no jobs. They neither pass nor fail CI.
+export const UNRAN = new Set([
+  "action_required",
+  "skipped",
+  "neutral",
+  "stale",
+]);
 
 export class StageError extends Error {
   constructor(stage, message, recovery) {
@@ -216,7 +224,8 @@ export async function ciPass(
   for (const workflow of CI_WORKFLOWS) {
     const run = latestRun(
       (await workflowRuns(ctx, workflow, `head_sha=${sha}`)).filter(
-        (run) => run.head_sha === sha && accept(run),
+        (run) =>
+          run.head_sha === sha && accept(run) && !UNRAN.has(run.conclusion),
       ),
     );
     if (!run) {
@@ -470,9 +479,12 @@ export async function land(ctx, version, { summary = "" } = {}) {
       green = null;
       return undefined;
     }
+    // Only the runs land dispatches on the release branch count; the bot PR's
+    // own `pull_request` runs await approval and never execute.
     const ci = await ciPass(ctx, pr.head.sha, {
       stage: "land",
-      accept: () => true,
+      accept: (run) =>
+        run.event === "workflow_dispatch" && run.head_branch === branch,
       ref: branch,
       state,
     });
@@ -537,7 +549,10 @@ async function ciGreen(ctx, version, sha) {
   for (const workflow of CI_WORKFLOWS) {
     const run = latestRun(
       (await workflowRuns(ctx, workflow, `head_sha=${sha}`)).filter(
-        (run) => run.head_sha === sha && mainCi(version)(run),
+        (run) =>
+          run.head_sha === sha &&
+          mainCi(version)(run) &&
+          !UNRAN.has(run.conclusion),
       ),
     );
     if (run?.status !== "completed" || run.conclusion !== "success")

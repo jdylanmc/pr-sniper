@@ -420,6 +420,56 @@ test("land regenerates a behind branch, reruns runner loss and stops on real CI 
   );
 });
 
+test("land ignores the bot PR's unapproved pull_request runs and waits for its dispatched runs", async () => {
+  const gh = github();
+  const branch = "changesets/release-v0.6.0";
+  const prRun = (id, conclusion) => ({
+    id,
+    head_sha: HEAD,
+    head_branch: branch,
+    event: "pull_request",
+    status: "completed",
+    conclusion,
+    html_url: `run/${id}`,
+  });
+  let polls = 0;
+  const { ctx } = context(gh, {
+    tick: (s) => {
+      // Approval-pending PR runs appear after the dispatch with higher IDs.
+      if (polls++ === 0) {
+        s.runs["macos.yml"].push(prRun(900, "action_required"));
+        s.runs["windows.yml"].push(prRun(901, "skipped"));
+        s.runs["windows.yml"].push(prRun(902, "cancelled"));
+        return;
+      }
+      if (polls < 4) return;
+      for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
+        if (run.event === "workflow_dispatch") complete(run);
+      const pr = s.pulls[0];
+      if (
+        [...s.runs["macos.yml"], ...s.runs["windows.yml"]].every(
+          (run) =>
+            run.event !== "workflow_dispatch" || run.conclusion === "success",
+        )
+      )
+        Object.assign(pr, {
+          merged_at: "now",
+          merge_commit_sha: MERGE,
+          state: "closed",
+        });
+    },
+  });
+  assert.equal(await land(ctx, "0.6.0"), MERGE);
+  const dispatched = mutations(gh).filter(([, path]) =>
+    path.endsWith("/dispatches"),
+  );
+  assert.equal(dispatched.length, 2, "each workflow is dispatched once");
+  assert.equal(
+    mutations(gh).filter(([, path]) => path.includes("/rerun")).length,
+    0,
+  );
+});
+
 test("verify dispatches main CI on a pin branch at the exact merge commit, once", async () => {
   const gh = github();
   const { ctx } = context(gh, {
