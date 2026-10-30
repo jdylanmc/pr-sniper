@@ -169,10 +169,12 @@ viewport/dialog fallbacks through minification.
 
 ### Releases
 
-Follow [`docs/releases.md`](docs/releases.md). The human dispatches **Changesets**
-with the version; merge its release PR. **Release tag** tags that exact commit
-only after its main-push CI is green, then starts the signed release. Never move
-a published tag.
+Follow [`docs/releases.md`](docs/releases.md). Authorized operators (the owner,
+or an agent the owner has directed) may dispatch a release:
+`gh workflow run changesets.yml -R jdylanmc/pr-sniper --ref main [-f version=X.Y.Z]`.
+Everything after dispatch is CI-only. Major `X` is human-only
+(`.changes/config.json`); never change it. `Y`/`Z` derive from pending
+changesets (`added` → `Y`, else `Z`). Never move a published tag.
 
 ### Wrap-up
 

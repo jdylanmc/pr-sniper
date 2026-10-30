@@ -1216,11 +1216,11 @@ test("Windows artifact contains only the standalone app and exact-source provena
 test("both repository release runners execute workflow contracts without weakening macOS coverage", () => {
   assert.equal(
     scripts["test:release"],
-    "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs",
+    "python3 -B -m unittest discover -s tests/release -p 'test_*.py' && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs tests/release/autorelease.test.mjs",
   );
   assert.equal(
     scripts["test:release:windows"],
-    "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs",
+    "python -B -m unittest discover -s tests/release -p test_release.py && node --test tests/release/workflow.test.mjs tests/release/changesets.test.mjs tests/release/autorelease.test.mjs",
   );
 });
 
@@ -1822,24 +1822,29 @@ test("both native lanes run bounded real-app MCP acceptance and retain only safe
   );
 });
 
-test("changesets validate PRs, fold only at release through a bot PR and tag after exact main CI", () => {
+test("changesets validate PRs; one dispatch drives the release through CI-only stages", () => {
   const changesets = parse(
     readFileSync(".github/workflows/changesets.yml", "utf8"),
   );
   const tagger = parse(
     readFileSync(".github/workflows/release-tag.yml", "utf8"),
   );
-  const helper = readFileSync("scripts/changesets-pr.sh", "utf8");
   assert.deepEqual(Object.keys(changesets.on), [
     "pull_request",
     "workflow_dispatch",
   ]);
-  assert.deepEqual(Object.keys(changesets.on.workflow_dispatch.inputs), [
-    "version",
-    "summary",
-  ]);
+  const inputs = changesets.on.workflow_dispatch.inputs;
+  assert.deepEqual(Object.keys(inputs), ["version", "summary"]);
+  assert.equal(inputs.version.required, false);
   assert.deepEqual(changesets.permissions, { contents: "read" });
-  assert.deepEqual(Object.keys(changesets.jobs), ["changeset", "release"]);
+  assert.deepEqual(Object.keys(changesets.jobs), [
+    "changeset",
+    "plan",
+    "land",
+    "verify",
+    "tag",
+    "release",
+  ]);
   assert.equal(
     changesets.jobs.changeset.if,
     "${{ github.event_name == 'pull_request' }}",
@@ -1849,25 +1854,70 @@ test("changesets validate PRs, fold only at release through a bot PR and tag aft
     changesets.jobs.changeset.steps.at(-1).run,
     /^node scripts\/changesets\.mjs validate /,
   );
-  const release = changesets.jobs.release.steps
-    .map((s) => s.run || "")
-    .join("\n");
-  assert.match(release, /test "\$GITHUB_REF" = refs\/heads\/main/);
-  assert.match(release, /node scripts\/changesets\.mjs release "\$VERSION"/);
-  assert.match(
-    release,
-    /bash scripts\/changesets-pr\.sh "changesets\/release-v\$VERSION"/,
+  assert.equal(
+    changesets.jobs.plan.if,
+    "${{ github.event_name == 'workflow_dispatch' }}",
   );
-  assert.doesNotMatch(release, /HEAD:main|origin main\b/);
+  assert.match(
+    changesets.jobs.plan.steps[0].run,
+    /test "\$GITHUB_REF" = refs\/heads\/main/,
+  );
+  assert.equal(changesets.jobs.plan.steps[1].with.ref, "main");
+  const stages = {
+    plan: [[], { contents: "read", "pull-requests": "read", actions: "read" }],
+    land: [
+      ["plan"],
+      { contents: "write", "pull-requests": "write", actions: "write" },
+    ],
+    verify: [["plan", "land"], { contents: "write", actions: "write" }],
+    tag: [["plan", "land", "verify"], { contents: "write", actions: "write" }],
+    release: [["plan", "tag"], { contents: "read", actions: "write" }],
+  };
+  for (const [name, [needs, permissions]] of Object.entries(stages)) {
+    const job = changesets.jobs[name];
+    assert.deepEqual([job.needs || []].flat(), needs, name);
+    assert.deepEqual(job.permissions, permissions, name);
+    assert.equal(job.env.GH_TOKEN, "${{ github.token }}", name);
+    assert.equal(
+      job.steps.at(-1).run,
+      `node scripts/autorelease.mjs ${name}`,
+      name,
+    );
+    assert.ok(job["timeout-minutes"] <= 345, name);
+    assert.ok(
+      job.steps.at(-1)["timeout-minutes"] < job["timeout-minutes"],
+      name,
+    );
+    if (name !== "land")
+      assert.equal(
+        job.steps[name === "plan" ? 1 : 0].with["persist-credentials"],
+        false,
+        name,
+      );
+  }
+  assert.equal(
+    changesets.jobs.land.env.VERSION,
+    "${{ needs.plan.outputs.version }}",
+  );
+  assert.equal(changesets.jobs.tag.env.SHA, "${{ needs.land.outputs.sha }}");
+  assert.equal(
+    changesets.concurrency.group,
+    "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+  );
+  assert.ok(!existsSync("scripts/changesets-pr.sh"));
   for (const file of readdirSync(".github/workflows")) {
     const text = readFileSync(join(".github/workflows", file), "utf8");
-    assert.doesNotMatch(text, /changesets\.mjs consume/, file);
+    assert.doesNotMatch(
+      text,
+      /changesets\.mjs consume|HEAD:main|skip ci/i,
+      file,
+    );
   }
-  assert.match(helper, /push -q --force origin "HEAD:refs\/heads\/\$branch"/);
-  assert.match(helper, /for workflow in macos\.yml windows\.yml; do/);
-  assert.match(helper, /gh workflow run "\$workflow" --ref "\$branch"/);
-  assert.doesNotMatch(helper, /skip ci/i);
+  // GITHUB_TOKEN events start no push/PR runs: required CI must be dispatchable.
   assert.deepEqual(ci.on.workflow_dispatch, null);
+  assert.deepEqual(windows.on.workflow_dispatch, null);
+  for (const name of requiredChecks)
+    assert.ok(ci.jobs[name] || windows.jobs[name], name);
   assert.deepEqual(tagger.on, {
     workflow_run: {
       workflows: [ci.name, windows.name],
@@ -1885,17 +1935,13 @@ test("changesets validate PRs, fold only at release through a bot PR and tag aft
     contents: "write",
     actions: "write",
   });
-  const run = tagger.jobs.tag.steps.at(-1).run;
-  for (const pattern of [
-    /git show "\$SHA\^1:package\.json"/,
-    /refs\/tags\/\$tag/,
-    /for workflow in macos\.yml windows\.yml/,
-    /event=push&branch=main/,
-    /gh workflow run release\.yml --ref "\$tag"/,
-    /grep -qF "## \[\$version\] - " CHANGELOG\.md/,
-    /test "\$\(git rev-parse "\$tag\^\{commit\}"\)" = "\$SHA"/,
-    /if \[ "\$\(runs\)" = 0 \]; then dispatch;/,
-  ])
-    assert.match(run, pattern);
-  assert.ok(run.indexOf("max_by") < run.indexOf("git tag -a"));
+  assert.equal(
+    tagger.jobs.tag.env.SHA,
+    "${{ github.event.workflow_run.head_sha }}",
+  );
+  assert.equal(
+    tagger.jobs.tag.steps.at(-1).run,
+    "node scripts/autorelease.mjs tag-commit",
+  );
+  assert.equal(workflow.jobs.tap["timeout-minutes"], 240);
 });

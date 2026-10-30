@@ -22,7 +22,7 @@ separate acceptance; no developer installation was overwritten.
 
 ## What a version tag does
 
-Pushing a stable `vMAJOR.MINOR.PATCH` tag (or **Release tag** dispatching on one) automatically releases and updates
+Pushing a stable `vMAJOR.MINOR.PATCH` tag (or the release run dispatching on one) automatically releases and updates
 `jdylanmc/homebrew-pr-sniper` without an additional human approval prompt.
 Repository writers who can change workflows or create matching release tags
 are trusted release operators. Protect that access; credentials are not safe
@@ -32,9 +32,11 @@ gate.
 The pipeline:
 
 1. Require the tag to match all checked-in version fields, resolve to the exact
-   checkout and be on `main`. The latest **main-push** macOS CI for that exact
-   commit must have completed successfully. PR checks for another SHA do not
-   qualify. No release while required CI is pending or failed.
+   checkout and be on `main`. The latest **main** macOS CI for that exact
+   commit must have completed successfully: a `main` push run, or a run the
+   release dispatched on `main` or its `changesets/ci-vX.Y.Z` pin branch. PR
+   checks for another SHA do not qualify. No release while required CI is
+   pending or failed.
 2. Before any Apple upload, confirm the dedicated tap token can write the exact
    public tap and that its publisher workflow is merged. Then build on the
    pinned Apple Silicon macOS runner using the normal credential-free
@@ -61,8 +63,13 @@ The pipeline:
    the CI-owned app. Only afterward does it update `Casks/pr-sniper.rb` using
    its own repository-scoped token. Compare-and-swap file identity and version
    checks prevent concurrent overwrite, downgrade or same-version replacement.
-   The application job waits for exact matching cask bytes; a timeout is
-   unconfirmed, not success or an automatic redispatch.
+   The application job waits for exact matching cask bytes. If only the tap's
+   install-verification step fails (notarization ticket propagation lag), it
+   redispatches the same version after 5, 15 and 30 minutes (4 attempts). It
+   never re-signs or rewrites a version. Any other tap failure, or a timeout,
+   stops without redispatch. Reading tap runs uses `HOMEBREW_TAP_TOKEN`, then
+   `GITHUB_TOKEN`; if neither can read them, there is no automatic retry.
+   Windows publication and Chocolatey run after the tap succeeds.
 
 The existing `com.jdylanmc.pr-sniper` app identity is unchanged. Homebrew manages
 updates; there is no in-app updater and no `auto_updates` cask claim.
@@ -126,63 +133,83 @@ Only release automation edits `CHANGELOG.md`. Each PR adds one
 conflict. Entries accumulate on `main` until a release is sliced; nothing is
 consumed per merge. `scripts/changesets.mjs` owns the rules.
 
-| Workflow                   | Trigger            | Does                                                                                                                                         |
-| -------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Changesets** `changeset` | PR                 | `validate`: entry format; fails any `CHANGELOG.md` edit; fails without a `.changes/` entry unless label `no-changeset`; release PR exempt    |
-| **Changesets** `release`   | dispatch `version` | `release X.Y.Z` on `changesets/release-vX.Y.Z`: fold `.changes/*.md` into `## [X.Y.Z] - date`, delete them, bump versions, rebuild MCP asset |
-| **Release tag**            | main CI completed  | Release commit only: both main-push CI workflows green on that SHA, then annotated `vX.Y.Z` tag + dispatch signed release                    |
+### Versions
 
-Decisions:
+`X.Y.Z`. **X** is human-only: `.changes/config.json` `major` (now `0`). CI and
+agents never change it; a release whose major differs is refused. **Y** and
+**Z** are automatic:
 
-- Migration: history is unchanged. Items already under `## Unreleased` stay
-  there and fold into the next release section with the changesets.
-- `main` requires strict `macos`, `webkit`, `windows`, `windows-installer-acceptance`
-  checks with admins enforced. The bot never pushes to `main`; the release
-  commit lands through a bot PR, which also keeps the existing main-CI gate.
-- `GITHUB_TOKEN` pushes start no `push`/`pull_request` runs. Bot commits do not use
-  `[skip ci]`; `scripts/changesets-pr.sh` dispatches **macOS foundation** and
-  **Windows native application** on the bot branch so required checks report.
-- If **Allow GitHub Actions to create and approve pull requests** is off, the bot
-  pushes the branch and writes a compare link to the job summary; a maintainer
-  opens the PR (human-opened PRs run CI normally).
-- Release dispatches on `main` are serialized without cancellation; a rerun
-  regenerates the release branch from current `main`.
-- A tag pushed with `GITHUB_TOKEN` does not start **Signed macOS release**, so
-  **Release tag** dispatches it on the tag ref; the existing gate still requires
-  the exact tagged commit's green main-push CI.
-- **Release tag** is rerunnable: an existing tag must peel to the same commit
-  (never moved); if no **Signed macOS release** run exists for it, it dispatches one.
+| Pending changesets        | Next version |
+| ------------------------- | ------------ |
+| Any `type: added`         | `X.(Y+1).0`  |
+| Only other types          | `X.Y.(Z+1)`  |
+| None                      | Refused      |
+| `major` raised by a human | `major.0.0`  |
+
+An explicit `version` input is allowed if it keeps X and is newer than every
+tag and `main`'s version.
 
 ## Cut a release
 
-The human chooses the version. This delivery does not authorize an agent to
-cut a release merely because checks pass.
+Authorized operators (the owner, or an agent the owner has directed) may
+dispatch a release. Everything after dispatch is CI-only; no local machine,
+credential or agent session is involved.
 
-1. Run **Changesets** on `main` with `version` (and optional `summary`). It
-   folds every `.changes/*.md` (plus any legacy `Unreleased` items) into
-   `## [X.Y.Z] - YYYY-MM-DD`, deletes the consumed files,
-   updates `package.json`, both root npm lock version fields,
-   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, the PR Sniper entry in
-   `src-tauri/Cargo.lock`, both shown versions in `site/index.html` and the boot
-   version in `site/app.js`, then runs `npm run build:control-mcp` so the
-   bundled `src-tauri/resources/mcp/mcp-server.mjs` carries the new version.
-   Locally: `node scripts/changesets.mjs release X.Y.Z`.
-2. Review and merge the release PR to main. Its merge commit's normal
-   **macOS foundation** and **Windows native application** runs must pass,
-   including `npm run test:release`.
-3. **Release tag** then creates the annotated `vMAJOR.MINOR.PATCH` tag at that
-   exact verified commit and dispatches **Signed macOS release** on it. Only the
-   commit that changed the version is tagged; an existing tag is never moved or
-   overwritten. A manual annotated tag on the verified commit remains valid.
-4. Observe **Signed macOS release**. Missing credentials, Apple denial,
-   identity mismatch, invalid notarization and failed byte verification stop
-   publication. A tap failure does not roll back an already published valid
-   release; recover using the tap repository's `Publish verified cask` workflow
-   on `main`, selecting the already-published tag. Do not rerun signing.
+```sh
+gh workflow run changesets.yml -R jdylanmc/pr-sniper --ref main [-f version=X.Y.Z] [-f summary="..."]
+```
 
-Workflow dispatch is a recovery entry point: run it **on an existing version
-tag**, not `main`. The same tag/commit/CI/environment checks still apply.
-Release execution is serialized, without cancelling an active signing run.
+| Stage   | Job                   | Does                                                                                                                                                                                                                                      |
+| ------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| plan    | **Changesets** `plan` | Version: input, else the open release PR, else `main`'s unfinished version, else derived (table above)                                                                                                                                    |
+| land    | `land`                | `changesets/release-vX.Y.Z` from current `main` (fold, bump every version field, rebuild MCP asset, prettier); open the PR; dispatch required CI on it; enable auto-merge; regenerate when `main` moves (strict); return the merge commit |
+| verify  | `verify`              | Pin `changesets/ci-vX.Y.Z` at the exact merge commit; dispatch **macOS foundation** and **Windows native application** on it; wait green                                                                                                  |
+| tag     | `tag`                 | Annotated `vX.Y.Z` at that commit, then dispatch **Signed macOS release** on the tag                                                                                                                                                      |
+| release | `release`             | Wait for **Signed macOS release** (signing, notarization, publication, tap with ticket-lag retry, Windows assets, Chocolatey); confirm the cask version                                                                                   |
+
+The run summary links each stage's PR, CI runs, tag and release run. A failure
+names its stage and the safe recovery.
+
+Resume: re-dispatch with the same version (or none). Each stage skips finished
+work: a merged PR, green exact-commit CI, an existing tag at the same commit, a
+running or green release. A tag is never moved. On resume, a failed release run
+whose signing succeeded reruns only its failed downstream jobs while the signed
+artifact is retained (14 days); signing is never rerun automatically.
+
+Runner loss (a failed job with no failed step) is rerun automatically, up to
+3 attempts per run. Real test failures stop the stage: fix `main` through a
+normal PR and re-dispatch; the release PR is regenerated on the new `main`.
+
+### Trigger limitations and choices
+
+- `main` requires strict `macos`, `webkit`, `windows`,
+  `windows-installer-acceptance` checks with admins enforced. The bot never
+  pushes to `main`; the release lands through its PR and auto-merge
+  (repository settings **Allow GitHub Actions to create and approve pull
+  requests** and **Allow auto-merge** are on). It merges with a merge
+  commit; nothing bypasses protection.
+- `GITHUB_TOKEN` pushes, PRs and auto-merges start no `push`/`pull_request`
+  runs; only `workflow_dispatch` does. So the run dispatches the required CI
+  workflows on the release branch (their check runs attach to the PR head
+  commit) and, after merge, on a pin branch holding exactly the merge commit.
+  Dispatching on `main` could test a later commit.
+- If dispatched check runs ever stop satisfying the required checks, `land`
+  fails after 15 minutes of green CI without a merge. The fix is a GitHub App
+  installation token (contents, pull requests and actions write) used in place
+  of `GITHUB_TOKEN`: its pushes start normal CI.
+- A tag created with `GITHUB_TOKEN` does not start **Signed macOS release**, so
+  the creator dispatches it. A racing tagger only recovers a lost dispatch 5
+  minutes after the tag was created, so one tag never starts two signings.
+- **Release tag** (on `main` CI `workflow_run`) still tags a human-merged
+  release commit through the same code.
+- Release dispatches on `main` serialize without cancellation. Jobs wait at
+  most ~5.5 hours per stage; a timeout is resumable.
+- Migration: history is unchanged. Items already under `## Unreleased` fold
+  into the next release section with the changesets.
+
+Recovery entry points remain: **Signed macOS release** dispatched on an
+existing version tag, and the tap's `Publish verified cask` on `main` with an
+already-published tag. Do not rerun signing for a published version.
 
 ## Public artifacts and recovery
 

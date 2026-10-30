@@ -24,6 +24,7 @@ export const TYPES = [
 export const OPT_OUT_LABEL = "no-changeset";
 export const RELEASE_BRANCH_PREFIX = "changesets/release-v";
 export const BOT_AUTHORS = ["github-actions[bot]"];
+export const CONFIG = "config.json";
 const RESERVED = new Set(["README.md"]);
 const NAME = /^[a-z0-9][a-z0-9._-]*\.md$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -113,7 +114,10 @@ export function readChangesets(root = ".") {
   const directory = join(root, CHANGES_DIR);
   if (existsSync(directory))
     for (const entry of readdirSync(directory, { withFileTypes: true }))
-      if (!entry.isFile() || !entry.name.endsWith(".md"))
+      if (
+        !entry.isFile() ||
+        !(entry.name.endsWith(".md") || entry.name === CONFIG)
+      )
         throw new ChangesetError(
           `${entry.name}: only top-level .md files belong in ${CHANGES_DIR}/`,
         );
@@ -281,6 +285,49 @@ const newer = (a, b) => {
   return false;
 };
 
+// X is human-only: `.changes/config.json` `major`. Agents and CI pick Y and Z.
+export function configuredMajor(root = ".") {
+  const path = join(root, CHANGES_DIR, CONFIG);
+  if (!existsSync(path))
+    throw new ChangesetError(`${CHANGES_DIR}/${CONFIG}: missing`);
+  const { major } = JSON.parse(readFileSync(path, "utf8"));
+  if (!Number.isSafeInteger(major) || major < 0)
+    throw new ChangesetError(
+      `${CHANGES_DIR}/${CONFIG}: major must be a whole number`,
+    );
+  return major;
+}
+
+// Release version check: X equals the configured major; newer than `latest`.
+export function checkVersion(version, latest, major) {
+  if (!VERSION.test(version))
+    throw new ChangesetError(`invalid version "${version}"`);
+  if (Number(version.split(".")[0]) !== major)
+    throw new ChangesetError(
+      `${version}: major is human-only and fixed at ${major} in ${CHANGES_DIR}/${CONFIG}`,
+    );
+  if (!newer(version, latest))
+    throw new ChangesetError(`${version} must be newer than ${latest}`);
+  return version;
+}
+
+// `added` completes a feature: X.(Y+1).0. Anything else: X.Y.(Z+1).
+export function nextVersion(latest, changesets, major) {
+  if (changesets.length === 0)
+    throw new ChangesetError(
+      `no pending ${CHANGES_DIR}/*.md; nothing to release`,
+    );
+  const [x, y, z] = latest.split(".").map(Number);
+  const feature = changesets.some(({ type }) => type === "added");
+  const version =
+    x !== major
+      ? `${major}.0.0`
+      : feature
+        ? `${x}.${y + 1}.0`
+        : `${x}.${y}.${z + 1}`;
+  return checkVersion(version, latest, major);
+}
+
 export function bumpVersions(root, version) {
   for (const [file, rule] of VERSION_FIELDS) {
     const path = join(root, file);
@@ -298,11 +345,8 @@ export function bumpVersions(root, version) {
 }
 
 export function release(root, version, { date, summary = "", build } = {}) {
-  if (!VERSION.test(version))
-    throw new ChangesetError(`invalid version "${version}"`);
   const previous = currentVersion(root);
-  if (!newer(version, previous))
-    throw new ChangesetError(`${version} must be newer than ${previous}`);
+  checkVersion(version, previous, configuredMajor(root));
   const consumed = fold(root);
   const path = join(root, CHANGELOG);
   const day = date || new Date().toISOString().slice(0, 10);
@@ -344,7 +388,13 @@ export function validate({
   const release =
     BOT_AUTHORS.includes(author) ||
     (sameRepo && headRef.startsWith(RELEASE_BRANCH_PREFIX));
-  if (release) return { errors };
+  if (release) {
+    if (changed.some(({ path }) => path === `${CHANGES_DIR}/${CONFIG}`))
+      errors.push(
+        `${CHANGES_DIR}/${CONFIG} is human-only; release automation never changes the major version`,
+      );
+    return { errors };
+  }
   if (changed.some(({ path }) => path === CHANGELOG))
     errors.push(
       `${CHANGELOG} is release-only; add ${CHANGES_DIR}/<name>.md instead`,
@@ -414,6 +464,13 @@ export function main(argv = process.argv.slice(2)) {
     for (const name of listChangesets(root)) console.log(name);
     return 0;
   }
+  if (command === "next") {
+    const latest = options.latest || currentVersion(root);
+    console.log(
+      nextVersion(latest, readChangesets(root), configuredMajor(root)),
+    );
+    return 0;
+  }
   if (command === "release") {
     const result = release(root, value || "", {
       date: options.date,
@@ -424,7 +481,7 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
   console.error(
-    "usage: changesets.mjs validate [--base SHA --head SHA --labels a,b --head-ref REF --author LOGIN --same-repo true|false] | list | release X.Y.Z [--date YYYY-MM-DD] [--summary TEXT] [--skip-build]",
+    "usage: changesets.mjs validate [--base SHA --head SHA --labels a,b --head-ref REF --author LOGIN --same-repo true|false] | list | next [--latest X.Y.Z] | release X.Y.Z [--date YYYY-MM-DD] [--summary TEXT] [--skip-build]",
   );
   return 2;
 }

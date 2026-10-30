@@ -1,7 +1,9 @@
 name: Release tag
 
-# Tags a merged release PR only after its exact main commit is green on both
-# required CI workflows, then dispatches the signed release on that tag.
+# Tags a human-merged release commit only after its exact main commit is green
+# on both required CI workflows, then dispatches the signed release on that tag.
+# Bot-merged releases are tagged by the Changesets run (GITHUB_TOKEN merges
+# start no push CI); both paths share scripts/autorelease.mjs and are race-safe.
 on:
   workflow_run:
     workflows: [macOS foundation, Windows native application]
@@ -33,47 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
+          persist-credentials: false
+        timeout-minutes: 3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
         timeout-minutes: 3
       - name: Tag the release commit once both CI workflows passed
-        run: |
-          version="$(node -p 'require("./package.json").version')"
-          previous="$(git show "$SHA^1:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
-          if [ "$version" = "$previous" ]; then
-            echo "Not a release commit."
-            exit 0
-          fi
-          tag="v$version"
-          dispatch() {
-            gh workflow run release.yml --ref "$tag"
-            for _ in $(seq 30); do
-              [ "$(runs)" != 0 ] && return 0
-              sleep 5
-            done
-            echo "::error::release.yml run for $tag not observed."
-            return 1
-          }
-          runs() {
-            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?branch=$tag" --jq '.total_count'
-          }
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            # Never move a tag; recover a lost dispatch for the same commit.
-            test "$(git rev-parse "$tag^{commit}")" = "$SHA"
-            if [ "$(runs)" = 0 ]; then dispatch; else echo "$tag already released or releasing."; fi
-            exit 0
-          fi
-          grep -qF "## [$version] - " CHANGELOG.md
-          for workflow in macos.yml windows.yml; do
-            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&event=push&branch=main" --jq '.workflow_runs | max_by(.id) | .conclusion // ""')"
-            if [ "$conclusion" != success ]; then
-              echo "Waiting for $workflow on $SHA: ${conclusion:-pending}."
-              exit 0
-            fi
-          done
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "PR Sniper $version" "$SHA"
-          git push -q origin "refs/tags/$tag"
-          dispatch
+        run: node scripts/autorelease.mjs tag-commit
         timeout-minutes: 5
