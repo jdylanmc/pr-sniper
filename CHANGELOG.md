@@ -5,6 +5,24 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## [0.5.5] - 2026-10-30
+
+### Changed
+
+- Record changelog entries as one `.changes/*.md` file per PR instead of editing
+  `CHANGELOG.md`. Slicing a release folds them into the version section, deletes
+  them, bumps every version field and tags after main CI passes (#291).
+- Releases run end to end in CI from one dispatch of the Changesets workflow:
+  it picks the version from pending changesets when none is given (`added` bumps
+  the minor version, anything else the patch), lands the release PR through
+  auto-merge, tags after exact-commit CI, and retries Homebrew tap publication on
+  notarization ticket lag. Re-dispatching resumes an unfinished release (#296).
+
+### Fixed
+
+- Query the Chocolatey community feed with an Atom/XML-only `Accept` header; the feed rejects any request that allows JSON with HTTP 406, which blocked `choco-publish` before push (#288).
+- Autonomous release no longer fails `land` on the release PR's approval-pending `pull_request` runs; it approves them and waits for them to finish (#296).
+
 ## 0.5.4 - 2026-10-30
 
 Recovery release: parked reviews name what failed and how to fix it, Retry all
