@@ -286,6 +286,10 @@ test("plan derives Y/Z from pending changesets and resumes unfinished releases",
       resumed: true,
     },
   );
+  await assert.rejects(
+    plan(ctx, { ...base, requested: "0.7.0", changesets: [{ type: "added" }] }),
+    /another version/,
+  );
 });
 
 test("land opens the release PR, dispatches required CI on it, auto-merges and resumes merged PRs", async () => {

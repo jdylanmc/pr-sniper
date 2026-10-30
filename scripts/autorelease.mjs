@@ -321,6 +321,12 @@ export async function plan(ctx, { requested, mainVersion, changesets, major }) {
       requested === mainVersion ||
       prs.some((pr) => pr.head.ref === branchFor(requested));
     if (known) return { version: requested, resumed: true };
+    if (prs.length)
+      throw new StageError(
+        "plan",
+        `Release PR #${prs[0].number} is open for another version.`,
+        "Re-dispatch without a version to finish it, or close it first.",
+      );
     if (Number(requested.split(".")[0]) !== major)
       throw new StageError(
         "plan",
