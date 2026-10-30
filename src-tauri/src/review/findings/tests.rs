@@ -112,12 +112,15 @@ fn exact_revision_and_identity_fencing_includes_resolved_findings() {
 fn same_head_mistaken_resolution_updates_original_thread_not_a_new_root() {
     let c = contract(true, false);
     let a = assessment(Disposition::StillApplies);
-    let ready = ExitCall::ReadyForHuman {
-        summary: "No changes.".into(),
-    };
+    let silent = ExitCall::parse(
+        "leave_comments",
+        &json!({"new_comments":[{"path":"src/lib.rs","line":2,"body":"New defect."}]}),
+    )
+    .unwrap();
     assert!(c
-        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-        .is_err());
+        .validate(&silent, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap_err()
+        .starts_with("Earlier resolution was mistaken"));
     let (arguments, _) = extract(&json!({"new_comments":[{
         "finding_id":"existing","path":"src/lib.rs","line":1,
         "body":format!("Correction: earlier fix claim was wrong. {}", a.rationale)
@@ -452,14 +455,13 @@ fn later_resolution_starts_a_new_correction_episode_but_uncertain_resolution_blo
         // Sorting follows write attempts rather than the serialized array order.
         c.corrections = corrections(&[later, write.clone()], &write.job, "assignment");
         let a = assessment(Disposition::StillApplies);
+        // A handoff never needs the correction; only a reply depends on its episode.
         let mut ready = ExitCall::ReadyForHuman {
             summary: "Nothing new.".into(),
         };
-        assert_eq!(
-            c.prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-                .is_err(),
-            state == StepState::Done
-        );
+        assert!(c
+            .prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+            .is_ok());
         let mut call = correction_call(&a.rationale);
         assert_eq!(
             c.prepare(&mut call, &[a], &[], |_| Ok(())).is_ok(),
@@ -598,16 +600,11 @@ fn reconciled_resolution_receipt_requires_a_new_correction_after_restart() {
         "assignment",
     );
     let a = assessment(Disposition::StillApplies);
-    let mut ready = ExitCall::ReadyForHuman {
-        summary: "Old correction is not enough.".into(),
-    };
+    let mut correction = correction_call(&a.rationale);
     assert!(
-        c.prepare(&mut ready, std::slice::from_ref(&a), &[], |_| Ok(()))
-            .is_err(),
+        c.prepare(&mut correction, &[a], &[], |_| Ok(())).is_ok(),
         "The earlier acknowledgment cannot cover a later landed resolution"
     );
-    let mut correction = correction_call(&a.rationale);
-    assert!(c.prepare(&mut correction, &[a], &[], |_| Ok(())).is_ok());
 }
 
 #[test]
@@ -1429,6 +1426,131 @@ fn same_head_rerun_publishes_no_new_findings_unless_reviewed_again() {
     assert!(refused.starts_with("One review per revision"), "{refused}");
     c.identities.revision_reviewed = false;
     assert!(c.validate(&fresh, &[still], &[], |_| Ok(())).is_ok());
+}
+
+/// PR Sniper's root, then the PR author's (same account, unmarked) "fixed" reply,
+/// then the author resolved it. The primary finds the defect still there.
+fn mistakenly_resolved() -> Contract {
+    let mut c = contract(true, false);
+    c.identities.own_comments.insert("root".into());
+    c.threads[0].comments.push(CommentFact {
+        author_id: Some("11".into()),
+        id: "author-fixed".into(),
+        author: "author".into(),
+        body: "Fixed in abc123.".into(),
+    });
+    c
+}
+
+#[test]
+fn a_correction_worded_apart_from_its_rationale_is_accepted() {
+    let a = assessment(Disposition::StillApplies);
+    let body = "I resolved this too early. The rollback path still skips the provider filter.";
+    assert!(!body.contains(&a.rationale));
+    for mut c in [mistakenly_resolved(), contract(true, false)] {
+        // Also when PR Sniper's own comment is the thread's latest word.
+        c.identities.own_comments.insert("root".into());
+        let mut call = correction_call(body);
+        c.prepare(&mut call, std::slice::from_ref(&a), &[], |_| Ok(()))
+            .unwrap();
+        assert!(
+            matches!(&call, ExitCall::LeaveComments { reply_comments, .. }
+            if reply_comments[0].body.starts_with(CORRECTION) && reply_comments[0].body.ends_with(body))
+        );
+    }
+}
+
+#[test]
+fn a_refused_correction_still_leaves_an_honest_handoff() {
+    let a = assessment(Disposition::StillApplies);
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Thread existing: my earlier resolution was mistaken; the defect still applies."
+            .into(),
+    };
+    // Duplicate of a confirmed correction: the reply is refused, the handoff is not.
+    let mut c = contract(true, false);
+    let write = correction_write();
+    add_correction(&mut c, &write);
+    c.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    let mut duplicate = correction_call(&a.rationale);
+    assert!(c
+        .prepare(&mut duplicate, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_ok());
+    // No correction posted yet (e.g. no reply grant): handing off is still allowed,
+    // while silently leaving comments or waiting is not.
+    let c = mistakenly_resolved();
+    assert!(c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_ok());
+    let silent = ExitCall::parse(
+        "leave_comments",
+        &json!({"new_comments":[{"path":"src/lib.rs","line":2,"body":"New defect."}]}),
+    )
+    .unwrap();
+    assert!(c
+        .validate(&silent, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    let wait = ExitCall::Wait {
+        reason: crate::exits::WaitReason::Ci,
+    };
+    assert!(c
+        .validate(&wait, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .is_err());
+    // The host names the uncorrected thread even when the summary does not.
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    c.prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.starts_with("Nothing new.") && summary.ends_with("uncorrected: existing.")));
+    // A pending correction does not silence the notice; only a confirmed one does.
+    let mut pending = mistakenly_resolved();
+    let mut write = correction_write();
+    write.steps[0].state = crate::exit_writes::StepState::Attempted;
+    write.steps[0].receipt = None;
+    pending.corrections = corrections(std::slice::from_ref(&write), &write.job, "assignment");
+    let mut terse = ExitCall::ReadyForHuman {
+        summary: "Nothing new.".into(),
+    };
+    pending
+        .prepare(&mut terse, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap();
+    assert!(matches!(&terse, ExitCall::ReadyForHuman { summary }
+        if summary.ends_with("uncorrected: existing.")));
+}
+
+#[test]
+fn a_standing_own_resolution_needs_the_correction_even_when_not_carried() {
+    use crate::exit_writes::StepState;
+    // Fixed at blob A, then the file changed: not carried now, but the episode stands
+    // and would carry again if the file reverted. Only a correction reply ends it.
+    let write = resolved_write(Disposition::Fixed, StepState::Done);
+    let mut c = contract(true, false);
+    c.identities.standing = resolutions(std::slice::from_ref(&write), &write.job, "assignment")
+        .into_iter()
+        .map(|r| r.thread_id)
+        .collect();
+    assert!(!c.threads[0].carried);
+    let a = assessment(Disposition::StillApplies);
+    let ready = ExitCall::ReadyForHuman {
+        summary: "Still applies.".into(),
+    };
+    let refused = c
+        .validate(&ready, std::slice::from_ref(&a), &[], |_| Ok(()))
+        .unwrap_err();
+    assert!(!refused.contains("ready_for_human"), "{refused}");
+    assert!(c
+        .validate(
+            &correction_call("Still broken on this head."),
+            &[a],
+            &[],
+            |_| Ok(())
+        )
+        .is_ok());
 }
 
 #[test]
