@@ -1162,6 +1162,7 @@ pub fn publish(env: &mut impl Environment, run: &mut FollowUp) -> Result<(), Fai
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Github,
                 duck_setup: false,
+                model: None,
                 resume: Default::default(),
             });
         }

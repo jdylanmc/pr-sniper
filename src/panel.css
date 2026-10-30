@@ -1858,6 +1858,9 @@ body:has(.panel-shell) {
   background: var(--bg-red-fde9e5);
   color: var(--text-red-a53221);
 }
+.panel-shell .queue-teammate + .queue-model {
+  margin-left: 4px;
+}
 .panel-shell .queue-teammate .panel-icon {
   width: 11px;
   height: 11px;

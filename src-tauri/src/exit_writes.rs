@@ -760,6 +760,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     retry_after_seconds: None,
                     origin: crate::backpressure::Origin::Github,
                     duck_setup: false,
+                    model: None,
                     resume: Default::default(),
                 });
             }

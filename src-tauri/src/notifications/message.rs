@@ -132,7 +132,7 @@ impl Subject {
             repository: item.job.repository_name.clone(),
             number: item.job.number,
             title: item.job.title.clone(),
-            failure_cause: item.failure_cause.map(Into::into),
+            failure_cause: failure_cause(item),
         }
     }
 
@@ -165,8 +165,39 @@ pub struct Message {
     pub badge: Badge,
 }
 
+/// The item's typed cause for a Failure notice: an exit or publication cause,
+/// else the refusing model, else the access or network class.
+fn failure_cause(item: &queue::Item) -> Option<String> {
+    use crate::{monitoring::FailureClass, review::ModelRefusal};
+    if let Some(cause) = item.failure_cause {
+        return Some(cause.into());
+    }
+    if let Some(model) = &item.failed_model {
+        return Some(
+            match model.refusal {
+                ModelRefusal::Rejected => "model_rejected",
+                ModelRefusal::Unavailable => "model_unavailable",
+                ModelRefusal::Retired => "model_retired",
+            }
+            .into(),
+        );
+    }
+    match item.failure_class? {
+        FailureClass::Credentials => Some("credentials".into()),
+        FailureClass::Permission => Some("permission".into()),
+        FailureClass::Network => Some("network".into()),
+        FailureClass::Model | FailureClass::Other => None,
+    }
+}
+
 fn failure_reason(cause: &str) -> Option<&'static str> {
     match cause {
+        "model_rejected" => Some("Model rejected"),
+        "model_unavailable" => Some("Model unavailable"),
+        "model_retired" => Some("Model retired"),
+        "credentials" => Some("Sign in needed"),
+        "permission" => Some("No access"),
+        "network" => Some("Network error"),
         "publication_failed" => Some("Publish failed"),
         "publication_unresolved" => Some("Publish unconfirmed"),
         queue::CAUSE_PANIC => Some("Review crashed"),

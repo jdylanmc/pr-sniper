@@ -164,6 +164,7 @@ pub fn toss_and_requeue(
         error: None,
         packet: None,
         failed_duck: None,
+        failed_model: None,
         attempt_ducks: Vec::new(),
         feedback_context: None,
         phase: "Waiting for shared AI capacity".into(),

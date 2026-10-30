@@ -471,6 +471,9 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                     failure_cause: None,
                     failed_teammate: None,
                     failed_duck: None,
+                    failed_model: None,
+                    failed_operation: None,
+                    remedy: None,
                     blocked_by: None,
                     resume_at: None,
                     retry_all: false,
@@ -482,6 +485,39 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
             })
             .collect(),
     }
+}
+
+#[test]
+fn failure_notices_name_the_typed_cause_a_parked_item_needs() {
+    let mut item = merged_snapshot(1).items.remove(0);
+    item.state = queue::State::Failed;
+    item.failure_class = Some(crate::monitoring::FailureClass::Model);
+    item.failed_model = Some(crate::review::FailedModel {
+        agent_id: "agent".into(),
+        agent_name: "Reviewer".into(),
+        model: "example-model-fast".into(),
+        refusal: crate::review::ModelRefusal::Rejected,
+        status: Some(401),
+    });
+    let body = |item: &queue::Item| {
+        render(&queue_notice(Category::Failure), Some(&Subject::of(item))).body
+    };
+    assert!(body(&item).ends_with(" · Model rejected"));
+    item.failed_model = None;
+    for (class, reason) in [
+        (
+            crate::monitoring::FailureClass::Credentials,
+            "Sign in needed",
+        ),
+        (crate::monitoring::FailureClass::Permission, "No access"),
+        (crate::monitoring::FailureClass::Network, "Network error"),
+    ] {
+        item.failure_class = Some(class);
+        assert!(body(&item).ends_with(&format!(" · {reason}")));
+    }
+    // A typed exit or publication cause leads over the class.
+    item.failure_cause = Some("publication_failed");
+    assert!(body(&item).ends_with(" · Publish failed"));
 }
 
 #[test]
@@ -771,6 +807,9 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
                 failure_cause: None,
                 failed_teammate: None,
                 failed_duck: None,
+                failed_model: None,
+                failed_operation: None,
+                remedy: None,
                 blocked_by: None,
                 resume_at: None,
                 retry_all: false,

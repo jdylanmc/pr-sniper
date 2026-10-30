@@ -341,6 +341,8 @@ pub enum FailureKind {
     Provider,
     Credentials,
     Permission,
+    /// The Agent's model refused the call; the account stayed verified.
+    Model,
     Permanent,
     EligibilityOrConfiguration,
     Superseded,

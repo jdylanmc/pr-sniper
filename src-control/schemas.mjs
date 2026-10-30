@@ -165,7 +165,23 @@ const operationState = z.enum([
   "failed",
   "manual_retry",
 ]);
-const failureClass = z.enum(["credentials", "permission", "network", "other"]);
+export const failureClass = z.enum([
+  "credentials",
+  "permission",
+  "model",
+  "network",
+  "other",
+]);
+export const modelRefusal = z.enum(["rejected", "unavailable", "retired"]);
+export const failedOperation = z.enum([
+  "repository_check",
+  "review",
+  "publication",
+  "exit_write",
+  "follow_up",
+  "provider_action",
+]);
+export const remedy = z.enum(["sign_in", "change_model", "reconcile", "retry"]);
 export const notificationCategory = z.enum([
   "confirmation",
   "human_input",
@@ -313,6 +329,19 @@ export const queueItem = z
     state: id,
     failure_class: failureClass.nullable(),
     failure_cause: z.string().nullable(),
+    // The Agent model that refused a parked run; Change model is the remedy.
+    failed_model: z
+      .strictObject({
+        agent_id: id,
+        agent_name: z.string(),
+        model: z.string(),
+        refusal: modelRefusal,
+        status: z.number().int().optional(),
+      })
+      .nullable(),
+    // What failed and its likeliest fix; null unless the item failed.
+    failed_operation: failedOperation.nullable(),
+    remedy: remedy.nullable(),
     dismiss_token: z.string().nullable(),
     resume_at: z.number().nullable(),
     exit: exitName.nullable(),
