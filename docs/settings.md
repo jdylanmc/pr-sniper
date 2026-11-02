@@ -37,7 +37,9 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 
 ## Repositories
 
-- Compact drill-in rows per configured repo. Status: **Needs setup**, **Enabled**, **Paused**, **Reconnect account**. No bulk toggles. Repos of disconnected accounts sit in a bottom group.
+- One card per repository account. Header: provider mark (**GH** / **AZ**), account (GitHub login; Azure DevOps display name + `Azure DevOps / {org}`), magnifier to add. Rows below: compact drill-in per repo, schedule, monitor switch; no provider/account caption.
+- Order: connected GitHub accounts (connection order), Azure DevOps, then unreachable accounts (reconnect required, unknown: **Unavailable**) marked **Reconnect account**. A connected account with no repos keeps its card.
+- Status: **Needs setup**, **Enabled**, **Paused**, **Reconnect account**. No bulk toggles. Floating **+ URL**; the list scrolls clear of it.
 - Add by magnifier: connected GitHub account → personal owner or org with accessible repos → search. Org list derives from the accessible-repo catalog, not full membership. Managed usernames (enterprise underscore suffix) work.
 - Paginated GitHub reads keep successful results on SSO, malformed or later-page failure and show a boundary-specific warning. Never shown complete or empty on failure. **Retry** refreshes owners and the selected owner's repos; selection and search stay.
 - Session or credential loss, changed connection or unusable authorization clears that account's cached owners/results until fresh lookup. Unusable credential blocks native Save.

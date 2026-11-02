@@ -324,13 +324,17 @@ test("overlapping repository access requires an explicit acting account choice",
   }
 
   await expect(
-    page.getByRole("button", {
-      name: "jdylanmc/pr-sniper as jdylanmc",
-    }),
-  ).toContainText("GitHub / jdylanmc");
+    page
+      .getByRole("region", { name: "GitHub jdylanmc", exact: true })
+      .getByRole("button", {
+        name: "jdylanmc/pr-sniper as jdylanmc",
+      }),
+  ).toHaveCount(1);
   await expect(
-    page.getByRole("button", { name: "jdylanmc/pr-sniper as hubot" }),
-  ).toContainText("GitHub / hubot");
+    page
+      .getByRole("region", { name: "GitHub hubot", exact: true })
+      .getByRole("button", { name: "jdylanmc/pr-sniper as hubot" }),
+  ).toHaveCount(1);
   await saveChanges(page);
   await page.evaluate(() => window.__settingsIdle());
   const snapshot = await store("snapshot");

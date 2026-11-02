@@ -822,17 +822,70 @@ function repositoriesPage() {
       : (state.accounts.find((item) => item.id === repo.accountId)?.name ??
         state.forgotten.find((item) => item.id === repo.accountId)?.name ??
         "unbound");
-  const azureRow = azureName
-    ? `<div class="repository-account"><span class="provider-mark" data-brand="azure-devops">AZ</span><span class="row-copy"><strong>${esc(azureName)}</strong><small>${esc(azure.name)}</small></span><button class="repository-browse" data-page="ado-browser" data-focus-key="browse-azure-devops" aria-label="Browse repositories as ${esc(azureName)}" title="Browse repositories">${icon("search")}</button></div>`
-    : "";
   const row = (repo, live) =>
-    `<div class="repo-row"><button type="button" class="settings-row repo-open" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong><small>${isAzure(repo) ? "Azure DevOps" : "GitHub"} / ${esc(accountName(repo))}</small></span>${icon("chevron")}</button><button type="button" class="mini-switch" role="switch" aria-checked="${repo.enabled}" aria-label="Monitor ${esc(repo.name)}" data-action="toggle-repo" data-id="${esc(repo.id)}" data-focus-key="toggle-${esc(repo.id)}" ${disabled(!live)}></button></div>`;
-  const live = state.repos.filter(connected);
-  const lost = state.repos.filter((repo) => !connected(repo));
+    `<div class="repo-row"><button type="button" class="settings-row repo-open" data-page="repo" data-id="${esc(repo.id)}" data-focus-key="repo-${esc(repo.id)}"><span class="row-copy"><strong>${esc(repo.name)}</strong></span>${icon("chevron")}</button><button type="button" class="mini-switch" role="switch" aria-checked="${repo.enabled}" aria-label="Monitor ${esc(repo.name)}" data-action="toggle-repo" data-id="${esc(repo.id)}" data-focus-key="toggle-${esc(repo.id)}" ${disabled(!live)}></button></div>`;
+  // One card per repository account: connected GitHub, Azure DevOps, then
+  // accounts whose repositories cannot be reached.
+  const section = (key, brand, caption, name, browse, repos, live) =>
+    `<section class="settings-list repository-items${live ? "" : " repository-disconnected"}" data-account="${esc(key)}" aria-labelledby="account-${esc(key)}"><div class="repository-account"><span class="provider-mark" data-brand="${brand}" aria-hidden="true">${brand === "github" ? "GH" : "AZ"}</span><h3 class="row-copy" id="account-${esc(key)}"><small>${esc(caption)}</small> <strong>${esc(name)}</strong></h3>${browse}</div>${repos.map((repo) => row(repo, live)).join("")}</section>`;
+  const browse = (page, id, name, enabled = true) =>
+    `<button class="repository-browse" data-page="${page}" ${id ? `data-id="${esc(id)}"` : ""} data-focus-key="browse-${esc(id ?? "azure-devops")}" aria-label="Browse repositories as ${esc(name)}" title="Browse repositories" ${disabled(!enabled)}>${icon("search")}</button>`;
+  const live = accounts
+    .filter((account) => account.connected)
+    .map((account) =>
+      section(
+        account.id,
+        "github",
+        "GitHub",
+        account.name,
+        browse("repo-browser", account.id, account.name),
+        state.repos.filter(
+          (repo) => !isAzure(repo) && repo.accountId === account.id,
+        ),
+        true,
+      ),
+    );
+  if (azureName)
+    live.push(
+      section(
+        "azure-devops",
+        "azure-devops",
+        `Azure DevOps / ${azure.name}`,
+        azureName,
+        browse("ado-browser", null, azureName),
+        state.repos.filter(isAzure),
+        true,
+      ),
+    );
+  const lostKeys = [
+    ...accounts
+      .filter((account) => !account.connected)
+      .map((account) => account.id),
+    ...state.repos
+      .filter((repo) => !connected(repo))
+      .map((repo) => (isAzure(repo) ? "azure-devops" : repo.accountId)),
+  ].filter((key, index, keys) => keys.indexOf(key) === index);
+  const lost = lostKeys.map((key) => {
+    const account = accounts.find((item) => item.id === key);
+    const repos = state.repos.filter(
+      (repo) =>
+        !connected(repo) &&
+        (isAzure(repo) ? "azure-devops" : repo.accountId) === key,
+    );
+    return section(
+      key,
+      key === "azure-devops" ? "azure-devops" : "github",
+      key === "azure-devops" ? "Azure DevOps" : "GitHub",
+      repos[0] ? accountName(repos[0]) : account.name,
+      account ? browse("repo-browser", account.id, account.name, false) : "",
+      repos,
+      false,
+    );
+  });
+  const empty = !live.length && !lost.length;
   return `<div class="page-scroll has-fab" data-scroll="repos">
-    ${live.length ? `<div class="settings-list repository-items">${live.map((repo) => row(repo, true)).join("")}</div>` : ""}
-    <div class="settings-list repository-accounts">${accounts.map((account) => `<div class="repository-account"><span class="provider-mark" data-brand="github">GH</span><span class="row-copy"><strong>${esc(account.name)}</strong></span><button class="repository-browse" data-page="repo-browser" data-id="${esc(account.id)}" data-focus-key="browse-${esc(account.id)}" aria-label="Browse repositories as ${esc(account.name)}" title="Browse repositories" ${disabled(!account.connected)}>${icon("search")}</button></div>`).join("") + azureRow || `<button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button>`}</div>
-    ${lost.length ? `<div class="settings-list repository-items repository-disconnected">${lost.map((repo) => row(repo, false)).join("")}</div>` : ""}
+    ${live.join("")}${lost.join("")}
+    ${empty ? `<div class="settings-list repository-accounts"><button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button></div>` : ""}
   </div>
   <button type="button" class="floating-pill" data-page="repo-url" data-focus-key="repo-url" aria-label="Add repository by URL" title="Add repository by URL">${icon("plus")}URL</button>`;
 }

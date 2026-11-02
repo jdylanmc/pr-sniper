@@ -251,7 +251,15 @@ test("adds an Azure DevOps repository by URL and picks teammates with autocomple
     users: [{ id: BLAKE, login: "Blake Example" }],
   });
   const row = page.locator(`[data-repository="${saved[0].id}"]`);
-  await expect(row).toContainText("Azure DevOps / Avery Example");
+  await expect(
+    page
+      .getByRole("region", {
+        name: "Azure DevOps / contoso Avery Example",
+        exact: true,
+      })
+      .locator(`[data-repository="${saved[0].id}"]`),
+  ).toHaveCount(1);
+  await expect(row).not.toContainText("Azure DevOps /");
 });
 
 test("browses Azure DevOps projects and adds a repository", async ({
