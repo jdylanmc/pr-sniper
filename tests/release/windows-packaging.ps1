@@ -583,8 +583,8 @@ public class PackagingFixture { public static void Main() {} }
     Check ($publicNuspec.package.metadata.licenseUrl -ceq $arguments.LicenseUrl) 'Public license is pinned to the exact source commit.'
     Check ($publicNuspec.package.metadata.releaseNotes -ceq 'https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1') 'Public release notes link the exact GitHub release.'
     Check ($publicNuspec.package.metadata.packageSourceUrl -ceq "https://github.com/jdylanmc/pr-sniper/tree/$($arguments.Commit)/packaging/chocolatey") 'Tag releases link packaging source at the release commit.'
-    Check ($publicNuspec.package.metadata.description -match 'UNSIGNED PUBLIC RELEASE' -and
-        $publicNuspec.package.metadata.description -match 'do not disable security protections') 'Unsigned public trust limitations are disclosed.'
+    Check ($publicNuspec.package.metadata.description -match 'not code-signed' -and
+        $publicNuspec.package.metadata.description -match '^PR Sniper is ') 'Public description leads with the product and discloses unsigned status.'
     Check ($publicNuspec.package.metadata.dependencies.dependency.id -ceq 'webview2-runtime' -and
         $publicNuspec.package.metadata.dependencies.dependency.version -ceq '[154.0.4258.62,)') 'Public packages provision the reviewed WebView2 dependency before application installation.'
     Check (-not (Test-Path (Join-Path $arguments.Destination 'tools\installer.exe'))) 'Public packages download immutable release bytes, never embed a private candidate.'
