@@ -586,7 +586,11 @@ test("unavailable bound accounts remain identified and cannot silently rebind du
   const initial = await seed(store);
   // The default boundary returns no connected accounts, not a replacement actor.
   await start(page, store);
-  await expect(row(page)).toContainText("GitHub / Unavailable");
+  await expect(
+    page
+      .getByRole("region", { name: "GitHub Unavailable", exact: true })
+      .getByRole("button", { name: "fixture/compact", exact: true }),
+  ).toHaveCount(1);
   await expect(row(page)).toContainText("Reconnect account");
   const parent = await repositorySettings(page, "fixture/compact");
   await parent.locator("details.repository-group > summary").click();

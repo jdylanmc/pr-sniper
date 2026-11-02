@@ -23,7 +23,11 @@ async function boundConnection(page, repository, accountCaption) {
   await expect(row).toHaveAccessibleName(
     `${repository.name} as ${accountCaption}`,
   );
-  await expect(row).toContainText(`GitHub / ${accountCaption}`);
+  await expect(
+    page
+      .getByRole("region", { name: `GitHub ${accountCaption}`, exact: true })
+      .locator(`[data-repository="${repository.id}"]`),
+  ).toHaveCount(1);
   await row.click();
   const modal = page.getByRole("dialog", {
     name: repository.name,
@@ -684,8 +688,10 @@ test("missing repo scope disables every binding for one account only", async ({
     page.getByRole("button", { name: "octo/two", exact: true }),
   ).toContainText("Reconnect account");
   await expect(
-    page.getByRole("button", { name: "octo/three", exact: true }),
-  ).toContainText("GitHub / second");
+    page
+      .getByRole("region", { name: "GitHub second", exact: true })
+      .getByRole("button", { name: "octo/three", exact: true }),
+  ).toHaveCount(1);
   await section(page, "Accounts");
   await expect(
     page

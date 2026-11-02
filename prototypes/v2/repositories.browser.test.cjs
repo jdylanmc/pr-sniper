@@ -57,6 +57,7 @@ async function check(engine, name) {
     // No headings or hints: the grouped card overlaps the navy band by ~23px.
     const overlap = await page
       .locator(".repository-items")
+      .first()
       .evaluate(
         (el) =>
           document.querySelector(".app-header").getBoundingClientRect().bottom -

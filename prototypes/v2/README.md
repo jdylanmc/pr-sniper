@@ -58,8 +58,9 @@ Reconciled with the shipped panel UI: icon-first, minimal prose.
   insertable `{{tokens}}` and tips, auto-growing edge-to-edge text), and
   Signature. The default signature `🔫 pr-sniper(<name>:<model>)` follows name
   and model until edited, and has a reset icon.
-- **Repositories:** rows with the name, `GitHub / account`, and a slim monitor
-  switch; repositories whose account is disconnected sit dimmed at the bottom.
+- **Repositories:** one card per account, headed by a provider mark (GH/AZ),
+  the account and a magnifier; rows with the name and a slim monitor switch.
+  Accounts that are disconnected sit dimmed at the bottom.
   The repository editor is headed by the repository name and holds a Monitor
   switch, Reviewer requests, Agents on this repository, People you watch, and a
   collapsed _Repository_ disclosure of plain action rows.
