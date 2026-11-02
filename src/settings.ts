@@ -2529,45 +2529,106 @@ export async function mountSettings(
     );
   }
 
+  /** One section per repository account: connected GitHub accounts in
+   * connection order, then Azure DevOps, then accounts whose repositories
+   * cannot be reached (reconnect required or unknown) at the bottom. */
+  function repositoryAccountSections() {
+    type AccountSection = {
+      key: string;
+      provider: ConfiguredRepository["provider"];
+      name: string;
+      caption: string;
+      browse?: { github?: GithubAccount; azure?: true; enabled: boolean };
+      disconnected: boolean;
+      repositories: ConfiguredRepository[];
+    };
+    const providerLabel = (provider: ConfiguredRepository["provider"]) =>
+      provider === "github" ? "GitHub" : "Azure DevOps";
+    const keyOf = (provider: string, account?: string | null) =>
+      `${provider}:${account ?? ""}`;
+    const sections: AccountSection[] = [];
+    if (repositoryAccountsState === "ready")
+      for (const account of githubAccounts.filter(
+        (a) => a.state === "connected",
+      ))
+        sections.push({
+          key: keyOf("github", account.account_id),
+          provider: "github",
+          name: account.login,
+          caption: "GitHub",
+          browse: { github: account, enabled: true },
+          disconnected: false,
+          repositories: [],
+        });
+    const azureIdentity = azureDevopsIdentity();
+    if (azureIdentity)
+      sections.push({
+        key: keyOf("azure_devops", azureIdentity.id),
+        provider: "azure_devops",
+        name: azureIdentity.display_name,
+        caption: `Azure DevOps / ${azureDevopsOrganizationName() ?? ""}`,
+        browse: { azure: true, enabled: true },
+        disconnected: false,
+        repositories: [],
+      });
+    const missing: AccountSection[] = [];
+    if (repositoryAccountsState === "ready")
+      for (const account of githubAccounts.filter(
+        (a) => a.state !== "connected",
+      ))
+        missing.push({
+          key: keyOf("github", account.account_id),
+          provider: "github",
+          name: account.login,
+          caption: "GitHub",
+          browse: { github: account, enabled: false },
+          disconnected: true,
+          repositories: [],
+        });
+    for (const repository of repositories()) {
+      const key = keyOf(repository.provider, repository.provider_account_id);
+      let group = [...sections, ...missing].find((s) => s.key === key);
+      if (!group) {
+        group = {
+          key,
+          provider: repository.provider,
+          name: repository.provider_account_id ? "Unavailable" : "No account",
+          caption: providerLabel(repository.provider),
+          disconnected: repositoryAccountDisconnected(repository),
+          repositories: [],
+        };
+        missing.push(group);
+      }
+      group.repositories.push(repository);
+    }
+    return [...sections, ...missing];
+  }
+
   function renderRepositories() {
     content.innerHTML = `<section class="repository-library" aria-label="Repositories">
       <div class="section-actions"><h2>Your repositories</h2><button class="primary" id="add-repository" aria-label="Add repository by URL">+ URL</button></div>
-      <div class="repository-list native-repository-list"></div>
-      <div class="repository-list native-repository-list repository-disconnected" data-repository-disconnected hidden></div>
       ${conflict ? '<p role="alert">Settings changed</p><button data-repository-reload>Reload</button>' : ""}
-      <h2>Browse from an account</h2><div data-repository-accounts class="native-repository-list"></div></section>`;
+      <div data-repository-accounts class="repository-accounts"></div></section>`;
     const rows = () => {
-      const list = content.querySelector<HTMLElement>(".repository-list");
       const accounts = content.querySelector<HTMLElement>(
         "[data-repository-accounts]",
       );
-      if (!list || !accounts) return;
+      if (!accounts) return;
       const restore = rememberControl(content);
-      const disconnected = content.querySelector<HTMLElement>(
-        "[data-repository-disconnected]",
-      )!;
-      const rowsFor = (disconnectedGroup: boolean) =>
-        repositories()
-          .filter(
-            (repository) =>
-              repositoryAccountDisconnected(repository) === disconnectedGroup,
-          )
-          .map((repository) => {
-            const login = repositoryAccountLogin(repository);
-            const committed =
-              saved.repositories?.find((r) => r.id === repository.id) ??
-              repository;
-            const state = committed.enabled ? "Enabled" : "Disabled";
-            const label =
-              repositories().filter((r) => r.name === repository.name).length >
-              1
-                ? `${repository.name} as ${login ?? "Unavailable"}`
-                : repository.name;
-            return `<div class="native-repository-row repository-monitoring-row"><button type="button" class="repository-open" aria-label="${escape(label)}" data-dirty="${!sameResource(
-              repository,
-              saved.repositories?.find((r) => r.id === repository.id),
-            )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
-          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small>${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${escape(login ?? "Unavailable")}</small><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
+      const row = (repository: ConfiguredRepository) => {
+        const login = repositoryAccountLogin(repository);
+        const committed =
+          saved.repositories?.find((r) => r.id === repository.id) ?? repository;
+        const state = committed.enabled ? "Enabled" : "Disabled";
+        const label =
+          repositories().filter((r) => r.name === repository.name).length > 1
+            ? `${repository.name} as ${login ?? "Unavailable"}`
+            : repository.name;
+        return `<div class="native-repository-row repository-monitoring-row"><button type="button" class="repository-open" aria-label="${escape(label)}" data-dirty="${!sameResource(
+          repository,
+          saved.repositories?.find((r) => r.id === repository.id),
+        )}" data-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:settings">
+          <span class="settings-row-copy"><strong>${escape(repository.name)}</strong><small data-repository-schedule="${escape(repository.id)}">${escape(scheduleSummaries.get(repository.cron) ?? "")}</small><small data-repository-monitoring-detail="${escape(repository.id)}">${escape(repositoryMonitoringDetail(committed))}</small></span>
           <span class="settings-row-value" data-monitoring-state="${state.toLowerCase()}">${state}${
             sameResource(
               repository,
@@ -2576,29 +2637,29 @@ export async function mountSettings(
               ? ""
               : " / Draft"
           }</span><span aria-hidden="true">›</span></button><button type="button" class="repository-monitoring-toggle" role="switch" aria-checked="${committed.enabled}" aria-label="Monitor ${escape(label)}" data-toggle-repository="${escape(repository.id)}" data-focus-key="repository:${escape(repository.id)}:monitoring" ${busy ? "disabled" : ""}>${committed.enabled ? "Disable" : "Enable"}</button></div>`;
-          })
-          .join("");
-      disconnected.innerHTML = rowsFor(true);
-      disconnected.hidden = !disconnected.innerHTML;
-      list.innerHTML = rowsFor(false);
-      list.hidden = !list.innerHTML;
+      };
       const browseIcon =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg>';
-      const azureIdentity = azureDevopsIdentity();
+      const browse = (
+        section: ReturnType<typeof repositoryAccountSections>[number],
+      ) =>
+        section.browse?.github
+          ? `<button type="button" class="repository-browse" data-browse-account="${escape(section.browse.github.account_id)}" aria-label="Browse repositories as ${escape(section.name)}" data-focus-key="browse-account:${escape(section.browse.github.account_id)}" ${section.browse.enabled ? "" : "disabled"}>${browseIcon}</button>`
+          : section.browse?.azure
+            ? `<button type="button" class="repository-browse" data-browse-azure aria-label="Browse repositories as ${escape(section.name)}" data-focus-key="browse-azure-devops">${browseIcon}</button>`
+            : "";
       accounts.innerHTML =
         (repositoryAccountsState === "unavailable"
-          ? '<p role="alert">Unavailable</p><button data-retry-accounts>Retry</button>'
+          ? '<div class="repository-accounts-state"><p role="alert">Unavailable</p><button data-retry-accounts>Retry</button></div>'
           : repositoryAccountsState === "loading"
-            ? '<p role="status">Loading</p>'
-            : githubAccounts
-                .map(
-                  (account) =>
-                    `<div class="native-repository-row"><span class="settings-row-copy"><strong>${escape(account.login)}</strong><small>GitHub${account.state === "connected" ? "" : " / Reconnect required"}</small></span><button type="button" data-browse-account="${escape(account.account_id)}" aria-label="Browse repositories as ${escape(account.login)}" ${account.state === "connected" ? "" : "disabled"}>${browseIcon}</button></div>`,
-                )
-                .join("")) +
-        (azureIdentity
-          ? `<div class="native-repository-row" data-azure-account><span class="settings-row-copy"><strong>${escape(azureIdentity.display_name)}</strong><small>Azure DevOps / ${escape(azureDevopsOrganizationName() ?? "")}</small></span><button type="button" data-browse-azure aria-label="Browse repositories as ${escape(azureIdentity.display_name)}" data-focus-key="browse-azure-devops">${browseIcon}</button></div>`
-          : "");
+            ? '<p class="repository-accounts-state" role="status">Loading</p>'
+            : "") +
+        repositoryAccountSections()
+          .map((section, index) => {
+            const heading = `repository-account-${index}`;
+            return `<section class="repository-account-section repository-list native-repository-list${section.disconnected ? " repository-disconnected" : ""}" data-repository-account="${escape(section.key)}" data-provider="${section.provider}" ${section.disconnected ? "data-repository-disconnected" : ""} aria-labelledby="${heading}"><div class="repository-account-header"><span class="provider-mark" data-brand="${section.provider === "github" ? "github" : "azure-devops"}" aria-hidden="true">${section.provider === "github" ? "GH" : "AZ"}</span><h3 id="${heading}"><span class="repository-account-provider">${escape(section.caption)}</span> <span class="repository-account-name">${escape(section.name)}</span></h3>${section.disconnected ? '<span class="settings-row-value">Reconnect account</span>' : ""}${browse(section)}</div>${section.repositories.map(row).join("")}</section>`;
+          })
+          .join("");
       accounts
         .querySelector<HTMLButtonElement>("[data-retry-accounts]")
         ?.addEventListener("click", () =>
@@ -2606,11 +2667,8 @@ export async function mountSettings(
             new Event("pr-sniper:refresh-provider-accounts"),
           ),
         );
-      const lists = [list, disconnected];
-      lists
-        .flatMap((l) => [
-          ...l.querySelectorAll<HTMLButtonElement>("[data-toggle-repository]"),
-        ])
+      accounts
+        .querySelectorAll<HTMLButtonElement>("[data-toggle-repository]")
         .forEach((button) => {
           button.onclick = async () => {
             clearError();
@@ -2630,10 +2688,8 @@ export async function mountSettings(
             }
           };
         });
-      lists
-        .flatMap((l) => [
-          ...l.querySelectorAll<HTMLButtonElement>("[data-repository]"),
-        ])
+      accounts
+        .querySelectorAll<HTMLButtonElement>("[data-repository]")
         .forEach((button) => {
           button.onclick = () =>
             repositoryDialog(

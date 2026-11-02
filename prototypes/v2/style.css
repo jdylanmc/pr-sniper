@@ -2959,6 +2959,21 @@ button:disabled {
 .repo-row .settings-row + .settings-row {
   border-top: 0;
 }
+.repository-items .repository-account {
+  background: var(--bg-slate-f4f7f9);
+}
+.repository-items .repository-account + .repo-row {
+  border-top: 1px solid var(--line-slate-edf1f4);
+}
+.repository-account h3 {
+  display: flex;
+  flex-direction: column-reverse;
+  margin: 0;
+  font-size: 13px;
+}
+.repository-account h3 small {
+  font-weight: 500;
+}
 .repository-disconnected {
   opacity: 0.55;
 }

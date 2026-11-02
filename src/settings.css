@@ -191,6 +191,94 @@
   background: var(--panel-accent);
   color: var(--text-on-accent-navy);
 }
+/* One card per repository account; the header names provider and account. */
+.settings-window
+  .repository-library
+  .repository-list.repository-account-section {
+  display: block;
+  background: var(--panel-paper);
+  border: 1px solid var(--line-slate-eff2f5);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  /* Keep the last switch's focus ring inside the clipped card. */
+  padding-bottom: 4px;
+}
+.settings-window .repository-account-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-slate-f4f7f9);
+}
+.settings-window .repository-account-header:last-child {
+  margin-bottom: -4px;
+}
+.settings-window .repository-account-section > .native-repository-row {
+  border-top: 1px solid var(--line-slate-eff2f5);
+}
+.settings-window .repository-account-header h3 {
+  display: flex;
+  flex-direction: column-reverse;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-slate-243247);
+  overflow-wrap: anywhere;
+}
+.settings-window .repository-account-provider {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--panel-muted);
+}
+.settings-window .repository-account-header .settings-row-value {
+  max-width: none;
+}
+.settings-window .provider-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.settings-window .provider-mark[data-brand="github"] {
+  background: var(--text-slate-243247);
+  color: var(--panel-paper);
+}
+.settings-window .provider-mark[data-brand="azure-devops"] {
+  background: var(--bg-teal-e7f3f1);
+  color: var(--text-teal-327c84);
+}
+.settings-window .repository-browse {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line-slate-eff2f5);
+  border-radius: 9px;
+  background: var(--panel-paper);
+  color: var(--text-slate-243247);
+}
+.settings-window .repository-browse:hover:not(:disabled) {
+  background: var(--panel-mist);
+}
+.settings-window .repository-browse:disabled {
+  opacity: 0.5;
+}
+.settings-window .repository-accounts-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
 .settings-chevron {
   width: 13px;
   height: 13px;
@@ -2760,13 +2848,12 @@
   .settings-window
   .repository-library
   .repository-open
-  .settings-row-value,
-.panel-shell
-  .settings-window
-  .repository-library
-  [data-repository-accounts]
-  small {
+  .settings-row-value {
   display: none;
+}
+/* Clear the floating + URL pill at the end of the scroll. */
+.panel-shell .settings-window .repository-library {
+  padding-bottom: 76px;
 }
 .panel-shell .settings-window .repository-library > .section-actions {
   margin: 0;
