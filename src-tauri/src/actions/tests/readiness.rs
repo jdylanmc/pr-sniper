@@ -726,6 +726,14 @@ fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
         sign_off(crate::exits::LgtmAction::Merge),
         NOW + 13,
     );
+    // Before the action worker adopts it, the sign-off is not Ready either.
+    let unadopted = crate::queue::snapshot(&store, vec![]).unwrap();
+    let row = unadopted.items.iter().find(|i| i.id == item).unwrap();
+    assert_eq!(row.state, crate::queue::State::WaitingOnCi);
+    assert_eq!(row.progress, None);
+    assert!(crate::notifications::frames(&unadopted)
+        .iter()
+        .all(|frame| frame.event.is_none()));
     let observation = env.wire.0.lock().unwrap().observation.clone();
     synchronize(&store, &item, Ok(observation.clone()), NOW + 14).unwrap();
     packet::adopt(&store, &item).unwrap();

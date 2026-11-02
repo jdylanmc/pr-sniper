@@ -205,6 +205,10 @@ pub(crate) fn parked_on_ci(run: &FinalReview, observation: &Observation) -> bool
         && (facts.ci == gates::Ci::Pending || facts.ci == gates::Ci::Unknown && !facts.conflicts)
 }
 
+pub(crate) fn ci_green(observation: &Observation) -> bool {
+    Facts::from_observation(observation).ci == gates::Ci::Green
+}
+
 pub const LGTM_REVOKED: &str =
     "The review context changed. The parked LGTM is revoked; a fresh review follows.";
 
