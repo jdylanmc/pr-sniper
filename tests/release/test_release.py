@@ -407,7 +407,7 @@ class ReleaseTests(unittest.TestCase):
             "dependency_id": "webview2-runtime",
             "dependency_version": release.CHOCO_WEBVIEW2_VERSION_RANGE,
             "description": (
-                "UNSIGNED PUBLIC RELEASE: No Authenticode publisher identity. PR Sniper monitors repositories."
+                "PR Sniper monitors repositories. The installer is not code-signed yet."
                 if manifest.get("trust_mode") == "unsigned"
                 else "PR Sniper monitors configured repositories and prepares human-owned pull request review work."
             ),

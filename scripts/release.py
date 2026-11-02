@@ -49,6 +49,7 @@ CHOCO_ASSET_STATES = {name: state for state, name in CHOCO_STATE_ASSETS.items()}
 CHOCO_RECEIPT_STATES = tuple(CHOCO_STATE_ASSETS)
 CHOCO_WEBVIEW2_MIN_VERSION = "154.0.4258.62"
 CHOCO_WEBVIEW2_VERSION_RANGE = f"[{CHOCO_WEBVIEW2_MIN_VERSION},)"
+CHOCO_UNSIGNED_DISCLOSURE = "not code-signed"
 CHOCO_WEBVIEW2_ALLOWED_VERSIONS = (CHOCO_WEBVIEW2_VERSION_RANGE, CHOCO_WEBVIEW2_MIN_VERSION)
 
 
@@ -761,10 +762,10 @@ def verify_choco_nupkg(package_file, manifest, root=Path("."), package_source_sh
             require(bool(description) and "NEVER PUBLISH" not in description,
                     "Invalid Chocolatey nuspec description.")
             if manifest["trust_mode"] == "unsigned":
-                require("UNSIGNED PUBLIC RELEASE" in description,
+                require(CHOCO_UNSIGNED_DISCLOSURE in description,
                         "Unsigned public Chocolatey nuspec must disclose unsigned status.")
             else:
-                require("UNSIGNED PUBLIC RELEASE" not in description,
+                require(CHOCO_UNSIGNED_DISCLOSURE not in description,
                         "Signed public Chocolatey nuspec must not claim unsigned status.")
 
             require("tools/installer.json" in entries, "Chocolatey package is missing tools/installer.json.")

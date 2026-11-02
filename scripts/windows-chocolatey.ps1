@@ -91,15 +91,42 @@ Copy-Item (Join-Path $PSScriptRoot '..\packaging\chocolatey\*.ps1') $tools.FullN
 $license = if ($public) {
     '<licenseUrl>' + [Security.SecurityElement]::Escape($LicenseUrl) + '</licenseUrl>'
 } else { '' }
-$description = 'PR Sniper monitors configured repositories and prepares human-owned pull request review work. Windows 10/11 x64 and Microsoft Edge WebView2 Evergreen Runtime are required. Installs for the invoking user; does not start the app or enable login, notification or review automation. Settings and credentials are preserved. Copilot use requires a separate eligible account/subscription.'
+$webView2 = '- Microsoft Edge WebView2 Evergreen Runtime.'
+if ($public) { $webView2 += ' Chocolatey installs it as a dependency, which can need administrator rights.' }
+$description = @(
+    'PR Sniper is a system-tray app that puts AI agents on your pull request queue. GitHub Copilot agents review each new push to a pull request and reply to new comments. You get a short list of pull requests that are **Ready for you**. You make the final call. Agents act only with the permissions you grant, and nothing merges unless you allow it.'
+    ''
+    '## Features'
+    ''
+    '- Watches GitHub and Azure DevOps repositories, each on its own schedule.'
+    '- Admission rules pick which pull requests get reviewed: assigned, mentioned, by author, or by path.'
+    '- One review per push. Between pushes, agents reply to new comments.'
+    '- Per-repository grants to publish comments, reply, approve, and merge. Every grant starts off.'
+    '- Failed reviews retry with backoff. Review results stay on your computer.'
+    ''
+    '## Requirements'
+    ''
+    '- Windows 10 or 11, 64-bit.'
+    $webView2
+    '- A GitHub Copilot subscription, set up separately.'
+    ''
+    '## Install notes'
+    ''
+    '- Installs for the current user only.'
+    '- Does not start the app or turn on start at login, notifications, or review automation.'
+    '- Upgrades keep your settings and credentials. Quit PR Sniper before you upgrade.'
+)
 if ($Mode -eq 'LocalTest') {
-    $description = 'UNSIGNED TEST ONLY: hosted CI or explicitly authorized exact-hash local testing. NEVER PUBLISH. No project license or redistribution grant is asserted. ' + $description
+    $description = @('UNSIGNED TEST ONLY: hosted CI or explicitly authorized exact-hash local testing. NEVER PUBLISH. No project license or redistribution grant is asserted.', '') + $description
 } elseif ($Mode -eq 'PublicUnsigned') {
-    $description = 'UNSIGNED PUBLIC RELEASE: No Authenticode publisher identity. The installer is verified against its pinned SHA-256, not a signing certificate. Windows security policies may warn or block it; do not disable security protections. ' + $description
+    $description += @(
+        ''
+        '## Code signature'
+        ''
+        'The setup program is not code-signed yet, so Windows SmartScreen can show a warning. Chocolatey checks its SHA-256 checksum before it installs anything.'
+    )
 }
-if ($public) {
-    $description += ' Chocolatey provisions the shared WebView2 runtime as a dependency; that dependency may require elevation. Quit PR Sniper before upgrading.'
-}
+$description = [Security.SecurityElement]::Escape(($description -join "`n"))
 $releaseNotes = if ($public) {
     '<releaseNotes>https://github.com/jdylanmc/pr-sniper/releases/tag/v' + $packageVersion + '</releaseNotes>'
 } else { '' }
