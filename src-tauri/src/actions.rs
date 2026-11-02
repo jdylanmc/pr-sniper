@@ -898,6 +898,16 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.failed_operation = Some(queue::FailedOperation::ProviderAction);
                 item.remedy = Some(queue::Remedy::Retry);
                 item.summary = State::Failed.summary();
+            } else if item.state == State::MachineSignedOff
+                && !approval.settled
+                && observed
+                    .and_then(|o| o.observation.as_ref())
+                    .is_some_and(|o| packet::parked_on_ci(run, o))
+            {
+                // A Parked LGTM is not ready for a human and nothing is in flight.
+                item.state = State::WaitingOnCi;
+                item.summary = State::WaitingOnCi.summary();
+                item.progress = None;
             } else if item.progress.is_some() {
                 item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {
                     None

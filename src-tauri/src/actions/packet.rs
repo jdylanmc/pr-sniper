@@ -198,6 +198,13 @@ fn parked_ci(facts: &Facts, head: &str, untouched: bool) -> Result<(), String> {
     }
 }
 
+/// A Parked LGTM held by CI that has not finished: waiting on CI, not a hand-off.
+pub(crate) fn parked_on_ci(run: &FinalReview, observation: &Observation) -> bool {
+    let facts = Facts::from_observation(observation);
+    signed_off(run)
+        && (facts.ci == gates::Ci::Pending || facts.ci == gates::Ci::Unknown && !facts.conflicts)
+}
+
 pub const LGTM_REVOKED: &str =
     "The review context changed. The parked LGTM is revoked; a fresh review follows.";
 

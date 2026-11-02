@@ -750,17 +750,14 @@ fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
     assert!(env.wire.0.lock().unwrap().writes.is_empty());
     let projected = crate::queue::snapshot(&store, vec![]).unwrap();
     let row = projected.items.iter().find(|i| i.id == item).unwrap();
-    // Signed off, not handed to a human: the queue shows the LGTM and its parked action.
-    assert_eq!(row.state, crate::queue::State::MachineSignedOff);
+    // Parked on CI, not handed to a human: waiting on CI, nothing in flight, no Ready notice.
+    assert_eq!(row.state, crate::queue::State::WaitingOnCi);
     assert_eq!(row.exit, Some(Exit::Lgtm));
-    assert_eq!(
-        row.progress,
-        Some(if self_authored {
-            crate::queue::Progress::Merging
-        } else {
-            crate::queue::Progress::Approving
-        })
-    );
+    assert_eq!(row.progress, None);
+    assert!(!row.action_status.as_ref().unwrap().machine_clear);
+    assert!(crate::notifications::frames(&projected)
+        .iter()
+        .all(|frame| frame.event.is_none()));
     assert!(row
         .action_status
         .as_ref()
