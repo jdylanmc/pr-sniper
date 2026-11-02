@@ -1,0 +1,57 @@
+name: Chocolatey same-version re-push
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published X.Y.Z still awaiting Chocolatey moderation
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: pr-sniper-release
+  cancel-in-progress: false
+
+jobs:
+  chocolatey-repush:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    environment: pr-sniper-chocolatey
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CHOCO_REPUSH_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Download and verify published Windows release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -B scripts/release.py choco-repush-fetch
+      - name: Generate PublicUnsigned Chocolatey package from main's packaging and pack nupkg
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP 'pr-sniper-windows-release-assets'
+          $manifest = Get-Content (Join-Path $assets 'windows-manifest.json') -Raw | ConvertFrom-Json
+          $installer = Join-Path $assets $manifest.filename
+          $chocoDir = Join-Path $env:RUNNER_TEMP 'pr-sniper-chocolatey-package'
+          $url = "https://github.com/jdylanmc/pr-sniper/releases/download/$($manifest.tag)/$($manifest.filename)"
+          $license = "https://github.com/jdylanmc/pr-sniper/blob/$($manifest.source_sha)/LICENSE"
+          .\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned -Installer $installer -Version $manifest.version -Sha256 $manifest.sha256 -Commit $manifest.source_sha -Destination $chocoDir -Url $url -LicenseUrl $license -PackageSourceCommit $env:GITHUB_SHA
+          choco pack (Join-Path $chocoDir 'pr-sniper.nuspec') --output-directory=$assets
+          if ($LASTEXITCODE -ne 0) { throw 'choco pack failed.' }
+      - name: Verify package and re-push while awaiting moderation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: python -B scripts/release.py choco-repush
