@@ -403,6 +403,7 @@ class ReleaseTests(unittest.TestCase):
             "version": manifest["version"],
             "licenseUrl": f"https://github.com/{release.REPOSITORY}/blob/{manifest['source_sha']}/LICENSE",
             "releaseNotes": f"https://github.com/{release.REPOSITORY}/releases/tag/{manifest['tag']}",
+            "packageSourceUrl": f"https://github.com/{release.REPOSITORY}/tree/{manifest['source_sha']}/packaging/chocolatey",
             "dependency_id": "webview2-runtime",
             "dependency_version": release.CHOCO_WEBVIEW2_VERSION_RANGE,
             "description": (
@@ -421,6 +422,7 @@ class ReleaseTests(unittest.TestCase):
             f"    <version>{nuspec_meta['version']}</version>\n"
             f"    <licenseUrl>{nuspec_meta['licenseUrl']}</licenseUrl>\n"
             f"    <releaseNotes>{nuspec_meta['releaseNotes']}</releaseNotes>\n"
+            f"    <packageSourceUrl>{nuspec_meta['packageSourceUrl']}</packageSourceUrl>\n"
             f'    <dependencies><dependency id="{nuspec_meta["dependency_id"]}" '
             f'version="{nuspec_meta["dependency_version"]}" /></dependencies>\n'
             f"    <description>{nuspec_meta['description']}</description>\n"
@@ -723,6 +725,7 @@ class ReleaseTests(unittest.TestCase):
                 ("wrong-nuspec-id", {"nuspec_overrides": {"id": "pr-sniper-localtest"}}),
                 ("wrong-nuspec-version", {"nuspec_overrides": {"version": "0.1.1"}}),
                 ("wrong-license-url", {"nuspec_overrides": {"licenseUrl": "https://example.invalid/LICENSE"}}),
+                ("wrong-package-source", {"nuspec_overrides": {"packageSourceUrl": "https://example.invalid/src"}}),
                 ("wrong-release-notes", {"nuspec_overrides": {"releaseNotes": "https://example.invalid/notes"}}),
                 ("wrong-dependency", {"nuspec_overrides": {"dependency_version": "[1.0.0,)"}}),
                 ("missing-unsigned-disclosure", {"nuspec_overrides": {"description": "Missing disclosure"}}),
@@ -837,16 +840,25 @@ class ReleaseTests(unittest.TestCase):
                              (win_dir / manifest["filename"]).read_bytes())
             with self.assertRaisesRegex(release.ReleaseError, "already exists"):
                 release.choco_repush_fetch(self.api, "0.1.0", stage)
+            main_sha = "c" * 40
+            source = f"https://github.com/{release.REPOSITORY}/tree/{main_sha}/packaging/chocolatey"
             self.build_nupkg(stage / "pr-sniper.0.1.0.nupkg", manifest)
+            with patch.object(release, "command") as cmd, \
+                    self.assertRaisesRegex(release.ReleaseError, "metadata does not match"):
+                release.choco_repush(self.api, main_sha, stage,
+                                     status_reader=lambda *_: "awaiting_moderation", root=ROOT)
+            cmd.assert_not_called()
+            self.build_nupkg(stage / "pr-sniper.0.1.0.nupkg", manifest,
+                             nuspec_overrides={"packageSourceUrl": source})
             with patch.dict(os.environ, {"CHOCOLATEY_API_KEY": "key"}):
                 for state in ("not_found", "submitted", "rejected", "publicly_approved"):
                     with self.subTest(state=state), patch.object(release, "command") as cmd, \
                             self.assertRaisesRegex(release.ReleaseError, "still awaiting"):
-                        release.choco_repush(self.api, stage, status_reader=lambda *_, s=state: s, root=ROOT)
+                        release.choco_repush(self.api, main_sha, stage, status_reader=lambda *_, s=state: s, root=ROOT)
                     cmd.assert_not_called()
                 with patch.object(release, "command", return_value="pushed") as cmd:
                     result = release.choco_repush(
-                        self.api, stage, status_reader=lambda *_: "awaiting_moderation", root=ROOT)
+                        self.api, main_sha, stage, status_reader=lambda *_: "awaiting_moderation", root=ROOT)
                 cmd.assert_called_once()
                 self.assertEqual(cmd.call_args.args[0][:2], ["choco", "push"])
                 self.assertEqual(result["state"], "submitted")

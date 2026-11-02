@@ -582,6 +582,7 @@ public class PackagingFixture { public static void Main() {} }
         $publicNuspec.package.metadata.version -ceq '0.1.1') 'Unsigned public delivery uses the stable public identity, not the private test package.'
     Check ($publicNuspec.package.metadata.licenseUrl -ceq $arguments.LicenseUrl) 'Public license is pinned to the exact source commit.'
     Check ($publicNuspec.package.metadata.releaseNotes -ceq 'https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1') 'Public release notes link the exact GitHub release.'
+    Check ($publicNuspec.package.metadata.packageSourceUrl -ceq "https://github.com/jdylanmc/pr-sniper/tree/$($arguments.Commit)/packaging/chocolatey") 'Tag releases link packaging source at the release commit.'
     Check ($publicNuspec.package.metadata.description -match 'UNSIGNED PUBLIC RELEASE' -and
         $publicNuspec.package.metadata.description -match 'do not disable security protections') 'Unsigned public trust limitations are disclosed.'
     Check ($publicNuspec.package.metadata.dependencies.dependency.id -ceq 'webview2-runtime' -and
@@ -590,6 +591,15 @@ public class PackagingFixture { public static void Main() {} }
     $unsignedMetadata = Get-Content (Join-Path $arguments.Destination 'tools\installer.json') -Raw | ConvertFrom-Json
     Check ($unsignedMetadata.mode -ceq 'PublicUnsigned' -and
         -not $unsignedMetadata.signer_subject -and -not $unsignedMetadata.signer_thumbprint) 'Unsigned metadata does not fabricate a publisher identity.'
+    $repushArguments = $arguments.Clone()
+    $repushArguments.Destination = Join-Path $fixture 'public-repush'
+    $repushArguments.PackageSourceCommit = 'c' * 40
+    & $generator @repushArguments | Out-Null
+    $repushNuspec = [xml](Get-Content (Join-Path $repushArguments.Destination 'pr-sniper.nuspec') -Raw)
+    $repushMetadata = Get-Content (Join-Path $repushArguments.Destination 'tools\installer.json') -Raw | ConvertFrom-Json
+    Check ($repushNuspec.package.metadata.packageSourceUrl -ceq "https://github.com/jdylanmc/pr-sniper/tree/$('c' * 40)/packaging/chocolatey" -and
+        $repushNuspec.package.metadata.licenseUrl -ceq $arguments.LicenseUrl -and
+        $repushMetadata.commit -ceq $arguments.Commit) 'Re-push links its packaging source while keeping release provenance.'
     $arguments.Destination = Join-Path $fixture 'public-tampered-download'
     function Invoke-WebRequest {
         param($Uri, $OutFile)

@@ -47,7 +47,7 @@ jobs:
           $chocoDir = Join-Path $env:RUNNER_TEMP 'pr-sniper-chocolatey-package'
           $url = "https://github.com/jdylanmc/pr-sniper/releases/download/$($manifest.tag)/$($manifest.filename)"
           $license = "https://github.com/jdylanmc/pr-sniper/blob/$($manifest.source_sha)/LICENSE"
-          .\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned -Installer $installer -Version $manifest.version -Sha256 $manifest.sha256 -Commit $manifest.source_sha -Destination $chocoDir -Url $url -LicenseUrl $license
+          .\scripts\windows-chocolatey.ps1 -Mode PublicUnsigned -Installer $installer -Version $manifest.version -Sha256 $manifest.sha256 -Commit $manifest.source_sha -Destination $chocoDir -Url $url -LicenseUrl $license -PackageSourceCommit $env:GITHUB_SHA
           choco pack (Join-Path $chocoDir 'pr-sniper.nuspec') --output-directory=$assets
           if ($LASTEXITCODE -ne 0) { throw 'choco pack failed.' }
       - name: Verify package and re-push while awaiting moderation

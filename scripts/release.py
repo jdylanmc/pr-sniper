@@ -672,7 +672,7 @@ def publish_windows(api, directory=WINDOWS_ASSETS):
     return verify_windows_public(api, manifest, directory)
 
 
-def verify_choco_nupkg(package_file, manifest, root=Path(".")):
+def verify_choco_nupkg(package_file, manifest, root=Path("."), package_source_sha=None):
     package_file = Path(package_file)
     require(package_file.is_file() and not package_file.is_symlink(),
             "Chocolatey package file is unavailable.")
@@ -736,10 +736,13 @@ def verify_choco_nupkg(package_file, manifest, root=Path(".")):
                 for child in meta_elem
             }
             expected_license = f"https://github.com/{REPOSITORY}/blob/{manifest['source_sha']}/LICENSE"
+            expected_package_source = (f"https://github.com/{REPOSITORY}/tree/"
+                                       f"{package_source_sha or manifest['source_sha']}/packaging/chocolatey")
             require(meta_text.get("id") == CHOCO_PACKAGE_ID
                     and meta_text.get("version") == manifest["version"]
                     and meta_text.get("licenseUrl") == expected_license
-                    and meta_text.get("releaseNotes") == f"https://github.com/{REPOSITORY}/releases/tag/{manifest['tag']}",
+                    and meta_text.get("releaseNotes") == f"https://github.com/{REPOSITORY}/releases/tag/{manifest['tag']}"
+                    and meta_text.get("packageSourceUrl") == expected_package_source,
                     "Chocolatey nuspec metadata does not match release provenance.")
             deps_elem = next(
                 (child for child in meta_elem if child.tag.rsplit("}", 1)[-1] == "dependencies"),
@@ -961,12 +964,14 @@ def choco_repush_fetch(api, release_version, directory=WINDOWS_ASSETS):
     return manifest
 
 
-def choco_repush(api, directory=WINDOWS_ASSETS, status_reader=None, root=Path(".")):
+def choco_repush(api, package_source_sha, directory=WINDOWS_ASSETS, status_reader=None, root=Path(".")):
     """Re-push the same version with fixed packaging while Chocolatey moderation is still open."""
+    require(isinstance(package_source_sha, str) and SHA.fullmatch(package_source_sha),
+            "Invalid Chocolatey packaging source commit.")
     manifest = windows_metadata(directory)
     verify_windows_public(api, manifest, directory)
     package_file = Path(directory) / f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
-    nupkg_sha256 = verify_choco_nupkg(package_file, manifest, root=root)
+    nupkg_sha256 = verify_choco_nupkg(package_file, manifest, root=root, package_source_sha=package_source_sha)
     raw_status = (status_reader or choco_moderation_status)(CHOCO_PACKAGE_ID, manifest["version"])
     current_status = classify_choco_status(raw_status) if isinstance(raw_status, dict) else raw_status
     require(current_status == "awaiting_moderation",
@@ -1102,7 +1107,7 @@ def main():
             verify_windows_public(api, manifest, WINDOWS_ASSETS)
             print(json.dumps({"sha": manifest["source_sha"], "version": manifest["version"], "tag": tag}))
         else:
-            print(json.dumps(choco_repush(api)))
+            print(json.dumps(choco_repush(api, os.environ.get("GITHUB_SHA", ""))))
         return
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
             and os.environ.get("GITHUB_REF_TYPE") == "tag", "Release effects require this repository's tag workflow.")

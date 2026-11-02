@@ -8,9 +8,12 @@ param(
     [string] $Url,
     [string] $ExpectedThumbprint,
     [string] $ExpectedSubject,
-    [string] $LicenseUrl
+    [string] $LicenseUrl,
+    # Commit whose packaging scripts are inside the package; differs from $Commit only for a same-version re-push.
+    [ValidatePattern('^[a-f0-9]{40}$')][string] $PackageSourceCommit
 )
 $ErrorActionPreference = 'Stop'
+if (-not $PackageSourceCommit) { $PackageSourceCommit = $Commit }
 . (Join-Path $PSScriptRoot 'windows-signature.ps1')
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
 if ((Get-FileHash $Installer -Algorithm SHA256).Hash -ine $Sha256) { throw 'Installer checksum mismatch.' }
@@ -112,7 +115,7 @@ $dependencies = if ($public) {
     <title>PR Sniper</title>
     <authors>Dylan McCurry</authors>
     <projectUrl>https://github.com/jdylanmc/pr-sniper</projectUrl>
-    <packageSourceUrl>https://github.com/jdylanmc/pr-sniper/tree/$Commit/packaging/chocolatey</packageSourceUrl>
+    <packageSourceUrl>https://github.com/jdylanmc/pr-sniper/tree/$PackageSourceCommit/packaging/chocolatey</packageSourceUrl>
     <bugTrackerUrl>https://github.com/jdylanmc/pr-sniper/issues</bugTrackerUrl>
     $license
     $releaseNotes
