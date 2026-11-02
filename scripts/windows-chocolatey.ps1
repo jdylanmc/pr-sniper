@@ -97,6 +97,9 @@ if ($Mode -eq 'LocalTest') {
 if ($public) {
     $description += ' Chocolatey provisions the shared WebView2 runtime as a dependency; that dependency may require elevation. Quit PR Sniper before upgrading.'
 }
+$releaseNotes = if ($public) {
+    '<releaseNotes>https://github.com/jdylanmc/pr-sniper/releases/tag/v' + $packageVersion + '</releaseNotes>'
+} else { '' }
 $dependencies = if ($public) {
     '<dependencies><dependency id="webview2-runtime" version="[154.0.4258.62,)" /></dependencies>'
 } else { '' }
@@ -112,6 +115,7 @@ $dependencies = if ($public) {
     <packageSourceUrl>https://github.com/jdylanmc/pr-sniper/tree/$Commit/packaging/chocolatey</packageSourceUrl>
     <bugTrackerUrl>https://github.com/jdylanmc/pr-sniper/issues</bugTrackerUrl>
     $license
+    $releaseNotes
     $dependencies
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <summary>Human-owned pull request review from the Windows system tray.</summary>

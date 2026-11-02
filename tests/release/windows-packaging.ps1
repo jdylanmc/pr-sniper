@@ -450,6 +450,7 @@ public class PackagingFixture { public static void Main() {} }
     Check ($nuspec.package.metadata.version -ceq '0.1.1-localtest') 'Test package must be a prerelease.'
     Check ($nuspec.package.metadata.authors -ceq 'Dylan McCurry') 'Preserve actual authorship.'
     Check (-not $nuspec.package.metadata.licenseUrl) 'Do not invent a project license.'
+    Check (-not $nuspec.package.metadata.releaseNotes) 'Test packages link no public release notes.'
     Check (-not $nuspec.package.metadata.dependencies) 'Private lifecycle tests must not install a shared runtime dependency.'
     Check ((Get-FileHash (Join-Path $arguments.Destination 'tools\installer.exe')).Hash -ceq $hash) 'Pin exact local bytes.'
     $installScript = Join-Path $arguments.Destination 'tools\chocolateyinstall.ps1'
@@ -580,6 +581,7 @@ public class PackagingFixture { public static void Main() {} }
     Check ($publicNuspec.package.metadata.id -ceq 'pr-sniper' -and
         $publicNuspec.package.metadata.version -ceq '0.1.1') 'Unsigned public delivery uses the stable public identity, not the private test package.'
     Check ($publicNuspec.package.metadata.licenseUrl -ceq $arguments.LicenseUrl) 'Public license is pinned to the exact source commit.'
+    Check ($publicNuspec.package.metadata.releaseNotes -ceq 'https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1') 'Public release notes link the exact GitHub release.'
     Check ($publicNuspec.package.metadata.description -match 'UNSIGNED PUBLIC RELEASE' -and
         $publicNuspec.package.metadata.description -match 'do not disable security protections') 'Unsigned public trust limitations are disclosed.'
     Check ($publicNuspec.package.metadata.dependencies.dependency.id -ceq 'webview2-runtime' -and

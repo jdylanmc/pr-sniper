@@ -1945,3 +1945,49 @@ test("changesets validate PRs; one dispatch drives the release through CI-only s
   );
   assert.equal(workflow.jobs.tap["timeout-minutes"], 240);
 });
+
+test("Chocolatey re-push is main-only, reuses published bytes and isolates the API key", () => {
+  const repush = parse(
+    readFileSync(".github/workflows/chocolatey-repush.yml", "utf8"),
+  );
+  assert.deepEqual(Object.keys(repush.on), ["workflow_dispatch"]);
+  assert.deepEqual(repush.permissions, {});
+  assert.equal(repush.concurrency.group, workflow.concurrency.group);
+  const job = repush.jobs["chocolatey-repush"];
+  assert.equal(job.if, "github.ref == 'refs/heads/main'");
+  assert.equal(job.environment, "pr-sniper-chocolatey");
+  assert.deepEqual(job.permissions, { contents: "read" });
+  const commands = runs(job);
+  assert.equal(commands[0], "python -B scripts/release.py choco-repush-fetch");
+  assert.match(commands[1], /windows-chocolatey\.ps1 -Mode PublicUnsigned/);
+  assert.doesNotMatch(commands[1], /npm |cargo |bundle|choco push/);
+  assert.equal(commands[2], "python -B scripts/release.py choco-repush");
+  const secretSteps = job.steps.filter((step) =>
+    JSON.stringify(step).includes("secrets."),
+  );
+  assert.deepEqual(
+    secretSteps.map((step) => step.run),
+    ["python -B scripts/release.py choco-repush"],
+  );
+  for (const step of job.steps) {
+    if (step.uses)
+      assert.match(step.uses, /^[A-Za-z0-9-]+\/[a-z0-9-]+@[a-f0-9]{40}$/);
+    if (step.uses?.startsWith("actions/checkout@"))
+      assert.equal(step.with["persist-credentials"], false);
+  }
+});
+
+test("Chocolatey download passes its checksum on the same line (CPMR0073)", () => {
+  const lines = readFileSync(
+    "packaging/chocolatey/chocolateyinstall.ps1",
+    "utf8",
+  )
+    .split(/\r?\n/)
+    .filter((line) => line.includes("Get-ChocolateyWebFile"));
+  assert.equal(lines.length, 1);
+  assert.match(
+    lines[0],
+    /-Url64bit \$url -Checksum64 \$checksum64 -ChecksumType64 'sha256'/,
+  );
+  assert.doesNotMatch(lines[0], /`\s*$/);
+});

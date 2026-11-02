@@ -738,7 +738,8 @@ def verify_choco_nupkg(package_file, manifest, root=Path(".")):
             expected_license = f"https://github.com/{REPOSITORY}/blob/{manifest['source_sha']}/LICENSE"
             require(meta_text.get("id") == CHOCO_PACKAGE_ID
                     and meta_text.get("version") == manifest["version"]
-                    and meta_text.get("licenseUrl") == expected_license,
+                    and meta_text.get("licenseUrl") == expected_license
+                    and meta_text.get("releaseNotes") == f"https://github.com/{REPOSITORY}/releases/tag/{manifest['tag']}",
                     "Chocolatey nuspec metadata does not match release provenance.")
             deps_elem = next(
                 (child for child in meta_elem if child.tag.rsplit("}", 1)[-1] == "dependencies"),
@@ -944,6 +945,43 @@ def choco_publish(api, directory=WINDOWS_ASSETS, nupkg_path=None, status_reader=
     }
 
 
+def choco_repush_fetch(api, release_version, directory=WINDOWS_ASSETS):
+    """Stage an already-published Windows release's exact public bytes for a same-version re-push."""
+    tag = "v" + version("v" + release_version)
+    directory = Path(directory)
+    require(not directory.exists() and not directory.is_symlink(),
+            "Windows release assets directory already exists; do not overwrite earlier staged assets.")
+    directory.mkdir(parents=True)
+    base = f"https://github.com/{REPOSITORY}/releases/download/{tag}/"
+    for name in (windows_filename(release_version), "windows-manifest.json", "WINDOWS-SHA256SUMS"):
+        (directory / name).write_bytes(public_bytes(base + name))
+    manifest = windows_metadata(directory)
+    require(manifest["tag"] == tag, "Published Windows manifest does not match the requested version.")
+    verify_windows_public(api, manifest, directory)
+    return manifest
+
+
+def choco_repush(api, directory=WINDOWS_ASSETS, status_reader=None, root=Path(".")):
+    """Re-push the same version with fixed packaging while Chocolatey moderation is still open."""
+    manifest = windows_metadata(directory)
+    verify_windows_public(api, manifest, directory)
+    package_file = Path(directory) / f"{CHOCO_PACKAGE_ID}.{manifest['version']}.nupkg"
+    nupkg_sha256 = verify_choco_nupkg(package_file, manifest, root=root)
+    raw_status = (status_reader or choco_moderation_status)(CHOCO_PACKAGE_ID, manifest["version"])
+    current_status = classify_choco_status(raw_status) if isinstance(raw_status, dict) else raw_status
+    require(current_status == "awaiting_moderation",
+            "Re-push only replaces a version that is still awaiting Chocolatey moderation.")
+    api_key = os.environ.get("CHOCOLATEY_API_KEY", "").strip()
+    require(api_key, "Required Chocolatey publishing credential is missing.")
+    require(tag_sha(api, manifest["tag"]) == manifest["source_sha"], "Tag moved before Chocolatey re-push.")
+    try:
+        command(["choco", "push", str(package_file), "--source", CHOCO_PUSH_SOURCE, "--api-key", api_key])
+    except ReleaseError as error:
+        raise ReleaseError(str(error).replace(api_key, "[REDACTED]")) from None
+    return {"version": manifest["version"], "source_sha": manifest["source_sha"],
+            "nupkg_sha256": nupkg_sha256, "state": "submitted"}
+
+
 def tap_ready(api):
     repository = api.request(f"/repos/{TAP}")
     require(repository["full_name"] == TAP and repository["default_branch"] == "main"
@@ -1045,6 +1083,27 @@ def main():
     if action == "check":
         print("Release version:", config_version())
         return
+    repush_actions = ("choco-repush-fetch", "choco-repush", "check-windows-release")
+    if action in repush_actions[:2] or (action in repush_actions and "CHOCO_REPUSH_VERSION" in os.environ):
+        require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+                and os.environ.get("GITHUB_REF_TYPE") == "branch"
+                and os.environ.get("GITHUB_REF_NAME") == "main",
+                "Chocolatey re-push requires this repository's main-branch dispatch.")
+        tag = "v" + version("v" + os.environ.get("CHOCO_REPUSH_VERSION", ""))
+        api = Github(os.environ.get("GITHUB_TOKEN"))
+        # Bind manifest provenance checks to the published tag, not the dispatching branch.
+        os.environ["GITHUB_REF_NAME"] = tag
+        os.environ["SOURCE_SHA"] = tag_sha(api, tag)
+        if action == "choco-repush-fetch":
+            print(json.dumps(choco_repush_fetch(api, tag[1:])))
+        elif action == "check-windows-release":
+            # windows-chocolatey.ps1 preflight: the published release, not a fresh exact-commit CI gate.
+            manifest = windows_metadata(WINDOWS_ASSETS)
+            verify_windows_public(api, manifest, WINDOWS_ASSETS)
+            print(json.dumps({"sha": manifest["source_sha"], "version": manifest["version"], "tag": tag}))
+        else:
+            print(json.dumps(choco_repush(api)))
+        return
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
             and os.environ.get("GITHUB_REF_TYPE") == "tag", "Release effects require this repository's tag workflow.")
     tag = os.environ.get("GITHUB_REF_NAME", "")
@@ -1078,7 +1137,7 @@ def main():
     elif action == "choco-publish":
         print(json.dumps(choco_publish(api)))
     else:
-        raise ReleaseError("Expected check, gate, check-windows-release, stage-windows-release, verify-choco-nupkg, tap-ready, publish, publish-windows, tap or choco-publish.")
+        raise ReleaseError("Expected check, gate, check-windows-release, stage-windows-release, verify-choco-nupkg, tap-ready, publish, publish-windows, tap, choco-publish, choco-repush-fetch or choco-repush.")
 
 
 if __name__ == "__main__":

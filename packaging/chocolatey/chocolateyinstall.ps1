@@ -28,8 +28,8 @@ if ($metadata.mode -eq 'LocalTest') {
     }
     $url = "https://github.com/jdylanmc/pr-sniper/releases/download/v$($metadata.version)/pr-sniper-$($metadata.version)-x64-setup.exe"
     if ($metadata.url -cne $url) { throw 'Unexpected public installer URL.' }
-    Get-ChocolateyWebFile -PackageName 'pr-sniper' -FileFullPath $installer -Url64bit $url `
-        -Checksum64 $metadata.sha256 -ChecksumType64 'sha256' | Out-Null
+    $checksum64 = $metadata.sha256
+    Get-ChocolateyWebFile -PackageName 'pr-sniper' -FileFullPath $installer -Url64bit $url -Checksum64 $checksum64 -ChecksumType64 'sha256' | Out-Null
 } else { throw 'Unknown package distribution mode.' }
 # Retain the pin even if the caller disables Chocolatey's own checksum feature.
 if ((Get-FileHash $installer -Algorithm SHA256).Hash -ine $metadata.sha256) { throw 'Installer checksum mismatch.' }

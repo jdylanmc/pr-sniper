@@ -234,6 +234,20 @@ commit and asset hashes, reconcile deliberately or choose a new version.
 Published-byte mismatch or tag movement stops tap publication. A failed cask
 audit leaves the valid GitHub release available but the prior tap unchanged.
 
+**Chocolatey same-version re-push.** Chocolatey moderation asks for fixes as
+the same version. While a version is `awaiting_moderation`, dispatch
+`gh workflow run chocolatey-repush.yml -R jdylanmc/pr-sniper --ref main -f version=X.Y.Z`.
+
+| Step    | Does                                                                                              |
+| ------- | ------------------------------------------------------------------------------------------------- |
+| Fetch   | Downloads the published installer, `windows-manifest.json`, `WINDOWS-SHA256SUMS`; verifies hashes |
+| Package | `windows-chocolatey.ps1 -Mode PublicUnsigned` with `main`'s scripts; no installer rebuild         |
+| Re-push | `verify-choco-nupkg` checks, then `choco push` only if the feed reports `awaiting_moderation`     |
+
+It writes no new receipts. The `pr-sniper-chocolatey` environment allows only
+`v*` tags; temporarily add a `main` deployment-branch policy for the run, then
+remove it.
+
 Forced runner loss can interrupt cleanup; GitHub-hosted disposable runners are
 required. This workflow is not designed for a shared persistent self-hosted
 signing machine. No release step modifies developer app data, login items,
