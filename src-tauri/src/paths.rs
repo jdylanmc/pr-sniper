@@ -13,11 +13,15 @@ use crate::provider::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
+/// Patterns one path list may hold: both legacy path rules' worth, so every
+/// migrated include + exclude list fits.
+pub const MAX_PATTERNS: usize = 2 * MAX_VALUES_PER_RULE;
+
 /// Validates one path list; `owner` names it in errors.
 pub fn validate(patterns: &[String], owner: &str) -> Result<(), String> {
-    if patterns.len() > MAX_VALUES_PER_RULE {
+    if patterns.len() > MAX_PATTERNS {
         return Err(format!(
-            "{owner} paths can list at most {MAX_VALUES_PER_RULE} patterns."
+            "{owner} paths can list at most {MAX_PATTERNS} patterns."
         ));
     }
     let mut seen = HashSet::new();
@@ -104,6 +108,10 @@ pub enum Strategy {
 #[serde(deny_unknown_fields)]
 pub struct PathFacts {
     pub head_sha: String,
+    /// Base the diff was read against: a retarget changes the files. Facts
+    /// saved without one are stale.
+    #[serde(default)]
+    pub base_sha: String,
     /// The provider reports this many changed files but cannot list them
     /// all: no review runs on this head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,9 +154,10 @@ pub struct SecondaryPlan {
 }
 
 impl PathFacts {
-    fn incomplete(head: &str, count: u64, tried: Vec<Strategy>) -> Self {
+    fn incomplete(pull: &PullRequest, count: u64, tried: Vec<Strategy>) -> Self {
         Self {
-            head_sha: head.into(),
+            head_sha: pull.head_sha.clone(),
+            base_sha: pull.base_sha.clone(),
             incomplete: Some(count),
             tried,
             gate: Vec::new(),
@@ -157,9 +166,14 @@ impl PathFacts {
         }
     }
 
-    /// Taken for this head and these inputs.
-    pub fn current(&self, head: &str, plan: &Plan) -> bool {
-        self.head_sha == head
+    /// Read for this revision: head and base.
+    pub fn at(&self, pull: &PullRequest) -> bool {
+        self.head_sha == pull.head_sha && self.base_sha == pull.base_sha
+    }
+
+    /// Taken for this revision and these inputs.
+    pub fn current(&self, pull: &PullRequest, plan: &Plan) -> bool {
+        self.at(pull)
             && (self.incomplete.is_some()
                 || self.gate == plan.gate
                     && plan.secondaries.iter().all(|s| {
@@ -169,25 +183,35 @@ impl PathFacts {
                     }))
     }
 
-    /// The gate keeps this head out of the queue.
-    pub fn gated_out(&self, head: &str) -> bool {
-        self.head_sha == head && self.incomplete.is_none() && !self.admitted
+    /// The gate keeps this revision out of the queue.
+    pub fn gated_out(&self, pull: &PullRequest) -> bool {
+        self.at(pull) && self.incomplete.is_none() && !self.admitted
     }
 
-    /// Changed files the provider cannot list in full at this head.
+    /// Changed files the provider cannot list in full at this revision.
+    pub fn incomplete_for(&self, pull: &PullRequest) -> Option<u64> {
+        self.incomplete.filter(|_| self.at(pull))
+    }
+
+    /// The parked count at `head`, for display.
     pub fn incomplete_at(&self, head: &str) -> Option<u64> {
         self.incomplete.filter(|_| self.head_sha == head)
     }
 
-    /// A secondary with globs whose facts at this head say no file matched
-    /// since `since`. Facts for other inputs never skip.
-    pub fn skips(&self, head: &str, assignment_id: &str, since: Option<&str>) -> bool {
-        self.head_sha == head
+    /// A secondary whose facts for this revision, its current `patterns` and
+    /// `since` say no file matched. Facts for other inputs never skip.
+    pub fn skips(
+        &self,
+        pull: &PullRequest,
+        assignment_id: &str,
+        since: Option<&str>,
+        patterns: &[String],
+    ) -> bool {
+        self.at(pull)
             && self.incomplete.is_none()
-            && self
-                .secondaries
-                .get(assignment_id)
-                .is_some_and(|f| !f.matched && f.since.as_deref() == since)
+            && self.secondaries.get(assignment_id).is_some_and(|f| {
+                !f.matched && f.since.as_deref() == since && f.patterns == patterns
+            })
     }
 }
 
@@ -267,7 +291,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
     previous: Option<&PathFacts>,
 ) -> Result<PathFacts, ConnectionError> {
     let head = pull.head_sha.as_str();
-    let previous = previous.filter(|p| p.head_sha == head);
+    let previous = previous.filter(|p| p.at(pull));
     if let Some(previous) = previous.filter(|p| p.incomplete.is_some()) {
         return Ok(previous.clone());
     }
@@ -285,7 +309,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
         scope,
         files: None,
     };
-    let parked = |(count, tried): Parked| PathFacts::incomplete(head, count, tried);
+    let parked = |(count, tried): Parked| PathFacts::incomplete(pull, count, tried);
     if previous.is_none() {
         let globbed = !plan.gate.is_empty() || !plan.secondaries.is_empty();
         match reader.changed_file_listing(repository, pull, globbed)? {
@@ -355,6 +379,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
     }
     Ok(PathFacts {
         head_sha: head.into(),
+        base_sha: pull.base_sha.clone(),
         incomplete: None,
         tried: Vec::new(),
         gate: plan.gate.clone(),

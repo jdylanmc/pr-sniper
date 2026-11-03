@@ -49,7 +49,7 @@ export function pathProblem(value: string, existing: string[]): string {
   )
     return "Invalid path";
   if (existing.includes(value)) return "Already added";
-  if (existing.length >= 100) return "Limit 100";
+  if (existing.length >= 200) return "Limit 200";
   return "";
 }
 

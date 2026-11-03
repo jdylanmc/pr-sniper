@@ -362,6 +362,28 @@ fn path_globs_validate_on_save_and_never_sit_on_the_primary() {
         assert!(save(bad.clone(), json!([]), json!([])).is_err(), "{bad}");
         assert!(save(json!([]), json!([]), bad.clone()).is_err(), "{bad}");
     }
-    let many: Vec<_> = (0..101).map(|i| format!("p{i}/")).collect();
+    let many: Vec<_> = (0..201).map(|i| format!("p{i}/")).collect();
     assert!(save(json!(many), json!([]), json!([])).is_err());
+    assert!(save(json!(many[..200]), json!([]), json!(many[..200])).is_ok());
+}
+
+#[test]
+fn full_legacy_path_rules_migrate_and_still_load_and_save() {
+    let root = tempfile::tempdir().unwrap();
+    let includes: Vec<_> = (0..100).map(|i| format!("src/{i}/")).collect();
+    let excludes: Vec<_> = (0..100).map(|i| format!("src/{i}/gen/")).collect();
+    let store = legacy_file(
+        root.path(),
+        json!({"launch_at_login": false, "admission_migration_version": 1, "repositories": [
+            repository(FIRST, "o/full", json!({"admission": {"mode": "filtered", "rules": [
+                {"kind": "include_paths", "enabled": true, "paths": includes},
+                {"kind": "exclude_paths", "enabled": true, "paths": excludes}
+            ]}})),
+        ]}),
+    );
+    let settings = store.load_settings().unwrap();
+    assert_eq!(settings.repositories[0].paths.len(), 200);
+    assert_eq!(settings.repositories[0].paths[100], "!src/0/gen/");
+    store.save_settings(&settings).unwrap();
+    assert_eq!(store.load_settings().unwrap(), settings);
 }

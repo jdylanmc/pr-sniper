@@ -119,7 +119,7 @@ scope. Repository schedules are five-field cron in the saved IANA time zone.
 Path globs (ADR 0027): repository
 `paths` gate admission (AND); a secondary assignment's `paths` decide whether
 it reviews a revision (files changed since its last review). Include patterns
-plus `!pattern` excludes, last match wins, at most 100 of 1–256 characters.
+plus `!pattern` excludes, last match wins, at most 200 of 1–256 characters.
 A primary with `paths` is rejected; legacy `include_paths`/`exclude_paths`
 admission rules are rejected. Empty or absent: no gate, every revision.
 No generic settings replacement/import, credentials, authentication or shell

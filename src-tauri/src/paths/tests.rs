@@ -49,11 +49,22 @@ fn pull() -> PullRequest {
         state: Lifecycle::Open,
         draft: false,
         head_sha: HEAD.into(),
-        base_sha: "d".repeat(40),
+        base_sha: BASE.into(),
         head_repository_id: None,
         base_repository_id: "1".into(),
         updated_at: "2026-11-01T00:00:00Z".into(),
         files: vec![],
+    }
+}
+
+const BASE: &str = "dddddddddddddddddddddddddddddddddddddddd";
+
+/// The pull request at another head or base.
+fn at(head: &str, base: &str) -> PullRequest {
+    PullRequest {
+        head_sha: head.into(),
+        base_sha: base.into(),
+        ..pull()
     }
 }
 
@@ -256,13 +267,13 @@ fn validation_reuses_admission_limits() {
     let long = "x".repeat(MAX_PATTERN_LENGTH);
     validate(&[long.clone(), format!("!{long}")], "Assignment").unwrap();
     assert!(validate(&[format!("{long}x")], "Assignment").is_err());
-    let many: Vec<_> = (0..=MAX_VALUES_PER_RULE)
-        .map(|i| format!("p{i}/"))
-        .collect();
+    // Room for both legacy path rules (100 each) after migration.
+    assert_eq!(MAX_PATTERNS, 2 * MAX_VALUES_PER_RULE);
+    let many: Vec<_> = (0..=MAX_PATTERNS).map(|i| format!("p{i}/")).collect();
     assert!(validate(&many, "Repository")
         .unwrap_err()
-        .contains("at most 100"));
-    validate(&many[..MAX_VALUES_PER_RULE], "Repository").unwrap();
+        .contains("at most 200"));
+    validate(&many[..MAX_PATTERNS], "Repository").unwrap();
     assert!(validate(&strings(&["src/", "src/"]), "Repository")
         .unwrap_err()
         .contains("twice"));
@@ -274,8 +285,8 @@ fn empty_globs_only_check_visibility() {
     let facts = read(&stub, &Plan::default(), None).unwrap();
     assert_eq!(stub.calls(), ["listing:false"]);
     assert!(facts.admitted && facts.incomplete.is_none() && facts.secondaries.is_empty());
-    assert!(!facts.gated_out(HEAD));
-    assert!(facts.current(HEAD, &Plan::default()));
+    assert!(!facts.gated_out(&pull()));
+    assert!(facts.current(&pull(), &Plan::default()));
     // Same head and inputs: nothing to read again.
     let again = read(&stub, &Plan::default(), Some(&facts)).unwrap();
     assert_eq!(again, facts);
@@ -305,7 +316,7 @@ fn incomplete_listing_climbs_to_a_tree_diff_before_parking() {
         .incomplete(3_500)
         .tree(Ok(TreeDiff::Complete(files(&["src/a.rs"]))));
     let facts = read(&stub, &gate, None).unwrap();
-    assert!(facts.incomplete.is_none() && !facts.gated_out(HEAD));
+    assert!(facts.incomplete.is_none() && !facts.gated_out(&pull()));
     assert_eq!(stub.calls(), ["listing:true", "merge_base", "tree:9..b:[]"]);
     // Step 3: a truncated tree falls back to the scoped walk.
     let stub = Stub::new(vec![])
@@ -313,7 +324,7 @@ fn incomplete_listing_climbs_to_a_tree_diff_before_parking() {
         .tree(Ok(TreeDiff::Truncated))
         .tree(Ok(TreeDiff::Complete(files(&["docs/a.md"]))));
     let facts = read(&stub, &gate, None).unwrap();
-    assert!(facts.gated_out(HEAD), "decided on the scoped list");
+    assert!(facts.gated_out(&pull()), "decided on the scoped list");
     assert_eq!(stub.calls()[3], "tree:9..b:[\"src/\"]");
     // Step 5: only after every strategy failed.
     let stub = Stub::new(vec![]).incomplete(3_500);
@@ -357,16 +368,22 @@ fn capped_compare_climbs_the_ladder_then_uses_the_whole_pull_request() {
     };
     let stub =
         capped(Stub::new(files(&["src/a.rs"]))).tree(Ok(TreeDiff::Complete(files(&["docs/a.md"]))));
-    assert!(read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
     assert_eq!(stub.calls()[2], "tree:a..b:[]");
     let stub = capped(Stub::new(files(&["src/a.rs"])))
         .tree(Ok(TreeDiff::Truncated))
         .tree(Ok(TreeDiff::Complete(files(&["src/b.rs"]))));
-    assert!(!read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(!read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
     assert_eq!(stub.calls()[3], "tree:a..b:[\"src/\"]");
     // Both cut off: the complete whole-PR list decides, conservatively.
     let stub = capped(Stub::new(files(&["src/a.rs"])));
-    assert!(!read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(!read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
 }
 
 #[test]
@@ -376,9 +393,9 @@ fn incomplete_listing_parks_with_or_without_globs() {
         let facts = read(&stub, &plan, None).unwrap();
         assert_eq!(facts.incomplete_at(HEAD), Some(3_001));
         assert_eq!(facts.incomplete_at(OLD), None);
-        assert!(!facts.gated_out(HEAD), "never decided on a partial list");
-        assert!(!facts.skips(HEAD, "s", None));
-        assert!(facts.current(HEAD, &plan));
+        assert!(!facts.gated_out(&pull()), "never decided on a partial list");
+        assert!(!facts.skips(&pull(), "s", None, &strings(&["docs/"])));
+        assert!(facts.current(&pull(), &plan));
     }
 }
 
@@ -386,17 +403,22 @@ fn incomplete_listing_parks_with_or_without_globs() {
 fn gate_admits_matching_and_keeps_out_others() {
     let gate = plan(&["src/", "!src/gen/"], &[]);
     let matching = read(&Stub::new(files(&["src/a.rs"])), &gate, None).unwrap();
-    assert!(!matching.gated_out(HEAD));
+    assert!(!matching.gated_out(&pull()));
     let other = read(&Stub::new(files(&["docs/a.md"])), &gate, None).unwrap();
-    assert!(other.gated_out(HEAD));
-    assert!(!other.gated_out(OLD), "only for the head it was read at");
+    assert!(other.gated_out(&pull()));
+    assert!(
+        !other.gated_out(&at(OLD, BASE)),
+        "only for the revision it was read at"
+    );
     let excluded = read(&Stub::new(files(&["src/gen/a.rs"])), &gate, None).unwrap();
-    assert!(excluded.gated_out(HEAD));
+    assert!(excluded.gated_out(&pull()));
     // A changed gate is re-evaluated on the same head.
     let widened = plan(&["docs/"], &[]);
-    assert!(!other.current(HEAD, &widened));
+    assert!(!other.current(&pull(), &widened));
     let stub = Stub::new(files(&["docs/a.md"]));
-    assert!(!read(&stub, &widened, Some(&other)).unwrap().gated_out(HEAD));
+    assert!(!read(&stub, &widened, Some(&other))
+        .unwrap()
+        .gated_out(&pull()));
     assert_eq!(stub.calls(), ["listing:true"]);
 }
 
@@ -410,9 +432,9 @@ fn first_secondary_review_matches_the_whole_pull_request() {
         ["listing:true"],
         "one whole-PR list for every glob"
     );
-    assert!(!facts.skips(HEAD, "docs", None));
-    assert!(facts.skips(HEAD, "api", None));
-    assert!(!facts.skips(HEAD, "unglobbed", None));
+    assert!(!facts.skips(&pull(), "docs", None, &strings(&["docs/"])));
+    assert!(facts.skips(&pull(), "api", None, &strings(&["api/"])));
+    assert!(!facts.skips(&pull(), "unglobbed", None, &strings(&["docs/"])));
 }
 
 #[test]
@@ -422,16 +444,23 @@ fn secondary_matches_incrementally_since_its_last_review() {
     let p = plan(&[], &[("s", &["src/"], Some(OLD))]);
     let facts = read(&stub, &p, None).unwrap();
     // The whole PR touches src/, but nothing since its review does.
-    assert!(facts.skips(HEAD, "s", Some(OLD)));
+    assert!(facts.skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
     assert_eq!(
         stub.calls(),
         ["listing:true".to_string(), format!("since:{OLD}")]
     );
     // Its inputs moved (another review completed): these facts never skip.
-    assert!(!facts.skips(HEAD, "s", Some("e".repeat(40).as_str())));
+    assert!(!facts.skips(
+        &pull(),
+        "s",
+        Some("e".repeat(40).as_str()),
+        &strings(&["src/"])
+    ));
 
     stub.since = Ok(Since::Files(files(&["src/b.rs"])));
-    assert!(!read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(!read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
 }
 
 #[test]
@@ -439,9 +468,13 @@ fn rebase_or_capped_compare_falls_back_to_the_whole_pull_request() {
     let mut stub = Stub::new(files(&["src/a.rs"]));
     stub.since = Ok(Since::WholePullRequest);
     let p = plan(&[], &[("s", &["src/"], Some(OLD))]);
-    assert!(!read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(!read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["src/"])));
     let p = plan(&[], &[("s", &["lib/"], Some(OLD))]);
-    assert!(read(&stub, &p, None).unwrap().skips(HEAD, "s", Some(OLD)));
+    assert!(read(&stub, &p, None)
+        .unwrap()
+        .skips(&pull(), "s", Some(OLD), &strings(&["lib/"])));
 }
 
 #[test]
@@ -450,7 +483,7 @@ fn reviewed_head_has_no_new_files() {
     let p = plan(&[], &[("s", &["src/"], Some(HEAD))]);
     let previous = read(&Stub::new(files(&["src/a.rs"])), &Plan::default(), None).unwrap();
     let facts = read(&stub, &p, Some(&previous)).unwrap();
-    assert!(facts.skips(HEAD, "s", Some(HEAD)));
+    assert!(facts.skips(&pull(), "s", Some(HEAD), &strings(&["src/"])));
     assert!(stub.calls().is_empty(), "no provider read decides it");
 }
 
@@ -499,4 +532,28 @@ fn facts_round_trip_and_reject_unknown_fields() {
     let mut extra = json;
     extra["surprise"] = true.into();
     assert!(serde_json::from_value::<PathFacts>(extra).is_err());
+}
+
+#[test]
+fn a_retargeted_base_or_changed_patterns_never_reuse_facts() {
+    let gate = plan(&["src/"], &[("s", &["docs/"], None)]);
+    let facts = read(&Stub::new(files(&["docs/a.md"])), &gate, None).unwrap();
+    assert!(facts.gated_out(&pull()));
+    // Same head, new base: another diff, so the facts are stale and re-read.
+    let moved = at(HEAD, OLD);
+    assert!(!facts.current(&moved, &gate));
+    assert!(!facts.gated_out(&moved));
+    let stub = Stub::new(files(&["src/a.rs"]));
+    let fresh = read_facts(&stub, &repository(), &moved, &gate, Some(&facts)).unwrap();
+    assert!(!fresh.gated_out(&moved));
+    assert_eq!(stub.calls()[0], "listing:true");
+    // Legacy facts without a base are stale too.
+    let mut legacy = serde_json::to_value(&facts).unwrap();
+    legacy.as_object_mut().unwrap().remove("base_sha");
+    let legacy: PathFacts = serde_json::from_value(legacy).unwrap();
+    assert!(!legacy.current(&pull(), &gate));
+    // A verdict taken for other secondary patterns never skips.
+    let skipping = read(&Stub::new(files(&["src/a.rs"])), &gate, None).unwrap();
+    assert!(skipping.skips(&pull(), "s", None, &strings(&["docs/"])));
+    assert!(!skipping.skips(&pull(), "s", None, &strings(&["src/"])));
 }

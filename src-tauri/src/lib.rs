@@ -1957,7 +1957,7 @@ pub(crate) fn explicit_facts(
     };
     let plan = paths.plan(&pull.id);
     let previous = paths.facts.get(&pull.id);
-    if previous.is_some_and(|f| f.current(&pull.head_sha, &plan)) {
+    if previous.is_some_and(|f| f.current(pull, &plan)) {
         return Ok(previous.cloned());
     }
     paths::read_facts(reader, &target.connection.repository, pull, &plan, previous).map(Some)
@@ -1980,7 +1980,7 @@ fn path_facts(
     }) {
         let plan = ticket.paths.plan(&pull.id);
         let previous = ticket.paths.facts.get(&pull.id);
-        if previous.is_some_and(|f| f.current(&pull.head_sha, &plan)) {
+        if previous.is_some_and(|f| f.current(pull, &plan)) {
             continue;
         }
         facts.insert(

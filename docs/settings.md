@@ -49,7 +49,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Azure DevOps **Add people**: debounced prefix search of the directory (IdentityPicker); when it fails, recent pull request authors and reviewers (**Recent**). People save as identity ID + display name.
 - Selecting adds a durable disabled, unassigned row and opens its config. Leaving before Save keeps the disabled row. No repo-count limit.
 - Save writes admission rules, paths and assignments; first valid Save enables monitoring. Rules: [polling.md](polling.md). Existing repos migrated to filters with monitoring off.
-- **Paths** row (admission card): drill-in list of globs, trash per row, add field (`src/** or !docs/` placeholder), inline error (**Path required**, **Invalid path**, **Already added**, **Limit 100**). Summary: count. Gate semantics: [polling.md](polling.md#paths). Old Filtered **Include paths** / **Exclude paths** rules moved here on load.
+- **Paths** row (admission card): drill-in list of globs, trash per row, add field (`src/** or !docs/` placeholder), inline error (**Path required**, **Invalid path**, **Already added**, **Limit 200**). Summary: count. Gate semantics: [polling.md](polling.md#paths). Old Filtered **Include paths** / **Exclude paths** rules moved here on load.
 - Back keeps the repo draft for the session. Cancel discards only that repo's unsaved changes. Back/Cancel asks before discarding unsaved assignment or nested Agent fields.
 - Closing the repo editor cancels pending draft lookup. Owner, account or route changes fence async results. Failed reads/saves keep errors and retry; no unbound success fallback.
 - Unbinding: Save or Cancel repo changes first. Unrelated Preferences drafts do not block.

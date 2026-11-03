@@ -140,6 +140,10 @@ fn entry(name: &str) -> Value {
 }
 
 fn pull(head: char) -> PullRequest {
+    on_base(head, 'f')
+}
+
+fn on_base(head: char, base: char) -> PullRequest {
     PullRequest {
         mentioned: false,
         id: "9".into(),
@@ -154,7 +158,7 @@ fn pull(head: char) -> PullRequest {
         state: Lifecycle::Open,
         draft: false,
         head_sha: sha(head),
-        base_sha: sha('f'),
+        base_sha: sha(base),
         head_repository_id: Some("100".into()),
         base_repository_id: "100".into(),
         updated_at: "2026-11-01T00:00:00Z".into(),
@@ -164,6 +168,21 @@ fn pull(head: char) -> PullRequest {
 
 /// One poll: listing, path facts through the provider, then the commit.
 fn scan(monitor: &mut Monitor, store: &Store, wire: &Wire, head: char, at: i64) {
+    let (ticket, result) = read(monitor, store, wire, pull(head), at);
+    monitor.finish(store, ticket, result, at + 1).unwrap();
+}
+
+/// A poll's reads, before its commit.
+fn read(
+    monitor: &mut Monitor,
+    store: &Store,
+    wire: &Wire,
+    pull: PullRequest,
+    at: i64,
+) -> (
+    crate::monitoring::PollTicket,
+    Result<PollResult, crate::provider::ConnectionError>,
+) {
     let ticket = monitor.prepare_checks(store, at, true).unwrap().remove(0);
     let connection = Connection {
         identity: Identity {
@@ -179,16 +198,15 @@ fn scan(monitor: &mut Monitor, store: &Store, wire: &Wire, head: char, at: i64) 
             comment: CommentCapability::Available,
         },
     };
-    let pulls = vec![pull(head)];
+    let pulls = vec![pull];
     let client = GithubClient::new(wire.clone());
-    let facts = crate::path_facts(&client, &connection, &pulls, &ticket).unwrap();
-    let result = PollResult {
+    let result = crate::path_facts(&client, &connection, &pulls, &ticket).map(|facts| PollResult {
         connection,
         pull_requests: pulls,
         states: Default::default(),
         facts,
-    };
-    monitor.finish(store, ticket, Ok(result), at + 1).unwrap();
+    });
+    (ticket, result)
 }
 
 /// Each assignment's entry for `head`.
@@ -468,4 +486,60 @@ fn dispatch(store: &Store, now: i64) -> Vec<String> {
         .filter(|w| w.blocked_by.is_none() && w.reason.is_none())
         .map(|w| w.key.id)
         .collect()
+}
+
+#[test]
+fn a_retarget_on_the_same_head_re_reads_the_gate() {
+    let (_root, store, mut monitor) = configured(&["src/"], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    assert!(waiting(&store, 'a').is_empty());
+    // Retargeted to another base: same head, now touching src/.
+    wire.head('a', &["src/auth.rs"]);
+    let (ticket, result) = read(&mut monitor, &store, &wire, on_base('a', 'e'), NOW + 10);
+    monitor.finish(&store, ticket, result, NOW + 11).unwrap();
+    assert_eq!(waiting(&store, 'a').len(), 2);
+}
+
+#[test]
+fn a_verdict_read_with_old_secondary_paths_never_skips_under_new_ones() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.rs"]);
+    let (ticket, result) = read(&mut monitor, &store, &wire, pull('a'), NOW);
+    // Saved while the poll was in flight: the teammate now wants src/.
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[1].paths = vec!["src/".into()];
+    store.save_settings(&settings).unwrap();
+    monitor.finish(&store, ticket, result, NOW + 1).unwrap();
+    assert_eq!(waiting(&store, 'a')[TEAMMATE], WAITING_AI_CAPACITY);
+    // The next poll reads the new patterns and keeps it.
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    assert_eq!(waiting(&store, 'a')[TEAMMATE], WAITING_AI_CAPACITY);
+}
+
+#[test]
+fn a_push_racing_the_path_read_requeues_the_poll_without_a_failure() {
+    let (_root, store, mut monitor) = configured(&["src/"], &[]);
+    let wire = Wire::default();
+    // Listed at a, but the detail read already sees b.
+    wire.head('b', &["src/a.rs"]);
+    let (ticket, result) = read(&mut monitor, &store, &wire, pull('a'), NOW);
+    assert!(matches!(
+        result,
+        Err(crate::provider::ConnectionError::RevisionChanged)
+    ));
+    monitor.finish(&store, ticket, result, NOW + 1).unwrap();
+    let health = monitor
+        .snapshot()
+        .into_iter()
+        .find(|h| h.repository_id == REPO)
+        .unwrap();
+    let operation = health.operation.unwrap();
+    assert_eq!(operation.state, OperationState::Queued);
+    assert_eq!(operation.failure, None);
+    assert_eq!(operation.attempt_count, 0);
+    assert!(operation.next_attempt_at.is_some());
+    assert!(waiting(&store, 'a').is_empty() && waiting(&store, 'b').is_empty());
 }

@@ -1761,7 +1761,7 @@ impl Monitor {
         if expected.assignments.is_empty() {
             return Err("Assign a saved Agent before queueing this pull request.".into());
         }
-        if facts.as_ref().is_some_and(|f| f.gated_out(&pull.head_sha)) {
+        if facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
             return Ok(ExplicitAdmission {
                 queued: false,
                 message: format!(
@@ -2988,8 +2988,8 @@ impl Monitor {
             }
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let facts = path_facts.get(&pull.id);
-            let gated_out = facts.is_some_and(|f| f.gated_out(&pull.head_sha));
-            let incomplete = facts.and_then(|f| f.incomplete_at(&pull.head_sha));
+            let gated_out = facts.is_some_and(|f| f.gated_out(&pull));
+            let incomplete = facts.and_then(|f| f.incomplete_for(&pull));
             let eligibility = eligibility(
                 &ticket.watched_authors,
                 ticket.admission.as_ref(),
@@ -3215,10 +3215,11 @@ impl Monitor {
                 // A teammate's report covers every state of its review revision.
                 let teammate = primary.is_some_and(|primary| primary != assignment.assignment_id);
                 let needed = if teammate { revision_seq } else { state_seq };
-                let globbed = configuration
+                let globs = configuration
                     .secondary_paths
                     .iter()
-                    .any(|(id, _)| *id == assignment.assignment_id);
+                    .find(|(id, _)| *id == assignment.assignment_id)
+                    .map(|(_, patterns)| patterns.as_slice());
                 if let Some(i) = existing {
                     let job = &queue.jobs[i];
                     let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= needed);
@@ -3267,16 +3268,16 @@ impl Monitor {
                     WAITING_AI_CAPACITY
                 } else if incomplete.is_some() {
                     WAITING_INCOMPLETE_FILES
-                } else if globbed && {
+                } else if globs.is_some_and(|patterns| {
                     let since = reviewed
                         .get(&pull.id)
                         .and_then(|r| r.get(&assignment.assignment_id))
                         .map(String::as_str);
                     since == Some(pull.head_sha.as_str())
                         || facts.is_some_and(|f| {
-                            f.skips(&pull.head_sha, &assignment.assignment_id, since)
+                            f.skips(&pull, &assignment.assignment_id, since, patterns)
                         })
-                } {
+                }) {
                     WAITING_SKIPPED_NO_MATCHING_FILES
                 } else {
                     WAITING_AI_CAPACITY

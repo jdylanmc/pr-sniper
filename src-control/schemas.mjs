@@ -88,7 +88,7 @@ export const tools = z.enum([
   "submit_report",
 ]);
 // Path globs (ADR 0027): include patterns and `!pattern` excludes.
-export const pathGlobs = z.array(z.string().min(1).max(257)).max(100);
+export const pathGlobs = z.array(z.string().min(1).max(257)).max(200);
 export const assignment = z.strictObject({
   id: uuid,
   agent_id: uuid,

@@ -28,7 +28,7 @@ Per repository, set in the repo editor.
 
 ## Paths
 
-[ADR-0027](adr/0027-path-globs.md). Globs: include patterns plus `!pattern` excludes, gitignore-style, last match wins per file (either name of a rename); only excludes = everything else. Pattern syntax and limits as admission (≤ 100, 1–256 chars).
+[ADR-0027](adr/0027-path-globs.md). Globs: include patterns plus `!pattern` excludes, gitignore-style, last match wins per file (either name of a rename); only excludes = everything else. Pattern syntax as admission, 1–256 chars; ≤ 200 per list (both old path rules fit).
 
 | Glob                        | Rule                                                                                                                                                                            |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -36,7 +36,7 @@ Per repository, set in the repo editor.
 | Secondary `paths` (trigger) | Files changed since that assignment's last completed review of the PR (none: whole PR). No match: entry `skipped_no_matching_files`, item **Skipped: no matching files**.       |
 | Primary                     | None: reviews everything the gate admits. Skips never block its barrier, exits, readiness, approval or merge.                                                                   |
 
-Facts per head (`monitoring.json` `path_facts`): read once per new head or changed input; same head and inputs are reused.
+Facts per revision (`monitoring.json` `path_facts`): read once per new head, base (retarget) or changed input; same revision and inputs are reused.
 
 Complete changed-file list ladder; first complete wins, no file-count limit of ours:
 

@@ -872,7 +872,7 @@
       const paths = item.paths ?? [];
       requireValue(
         Array.isArray(paths) &&
-          paths.length <= 100 &&
+          paths.length <= 200 &&
           paths.every(
             (value, index) => !pathProblem(value, paths.slice(0, index)),
           ),
