@@ -87,6 +87,8 @@ export const tools = z.enum([
   "panic_exit",
   "submit_report",
 ]);
+// Path globs (ADR 0027): include patterns and `!pattern` excludes.
+export const pathGlobs = z.array(z.string().min(1).max(257)).max(100);
 export const assignment = z.strictObject({
   id: uuid,
   agent_id: uuid,
@@ -103,6 +105,8 @@ export const assignment = z.strictObject({
   ),
   tools: nullableOptional(z.array(tools)),
   rubber_duck: nullableOptional(id),
+  // Secondary trigger; a primary has none.
+  paths: pathGlobs.optional(),
 });
 export const repository = z.strictObject({
   id: uuid,
@@ -125,12 +129,9 @@ export const repository = z.strictObject({
             "mentioned",
             "include_users",
             "exclude_users",
-            "include_paths",
-            "exclude_paths",
           ]),
           enabled: z.boolean(),
           users: nullableOptional(z.array(watched)),
-          paths: nullableOptional(z.array(z.string())),
         }),
       ),
     }),
@@ -138,6 +139,8 @@ export const repository = z.strictObject({
   assignments: z.array(assignment).optional(),
   primary_assignment_id: nullableOptional(id),
   review_drafts: z.boolean().optional(),
+  // Repository gate, ANDed with admission.
+  paths: pathGlobs.optional(),
 });
 export const preferences = z.strictObject({
   defaults: policy,
@@ -329,6 +332,24 @@ export const queueItem = z
     state: id,
     failure_class: failureClass.nullable(),
     failure_cause: z.string().nullable(),
+    // `incomplete_files`: the reported count and the strategies tried.
+    incomplete_files: z
+      .strictObject({
+        count: z.number().int(),
+        tried: z.array(z.enum(["listing", "tree_diff", "scoped_tree_diff"])),
+      })
+      .nullable()
+      .optional(),
+    // Secondaries whose path globs matched nothing changed since their review.
+    skipped: z
+      .array(
+        z.strictObject({
+          assignment_id: id,
+          agent_name: z.string(),
+          reason: z.enum(["no_matching_files"]),
+        }),
+      )
+      .optional(),
     // The Agent model that refused a parked run; Change model is the remedy.
     failed_model: z
       .strictObject({

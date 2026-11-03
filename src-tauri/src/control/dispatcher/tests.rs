@@ -187,7 +187,8 @@ impl Runtime for Fixture {
         &self,
         account: &str,
         _: &str,
-    ) -> Result<(crate::provider::ResolvedTarget, u64), Error> {
+        _: &crate::monitoring::PathTicket,
+    ) -> Result<super::Resolved, Error> {
         assert_eq!(account, "101");
         Ok((
             crate::provider::ResolvedTarget {
@@ -227,6 +228,7 @@ impl Runtime for Fixture {
                 }),
             },
             7,
+            None,
         ))
     }
     fn launch(&self, batch: Batch) {

@@ -54,7 +54,7 @@ const azureResolution = {
   account_generation: 0,
   pull_request: null,
 };
-async function fixture(mode) {
+async function fixture(mode, { queue = [queueItem] } = {}) {
   const base = path.resolve("src-tauri/target");
   await fs.mkdir(base, { recursive: true });
   const root = await fs.mkdtemp(path.join(base, "mcp-adapter-"));
@@ -74,8 +74,8 @@ async function fixture(mode) {
           }
         : request.operation === "queue"
           ? {
-              values: [queueItem],
-              total: 1,
+              values: queue,
+              total: queue.length,
               next_offset: null,
             }
           : request.operation === "accounts"
@@ -401,6 +401,105 @@ test("MCP lists, resolves and saves Azure DevOps repositories with setup state",
       value,
     });
     assert.equal(f.calls.at(-1).account_generation, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("MCP round-trips repository and secondary path globs and shows skipped reviews", async () => {
+  const primary = randomUUID();
+  const secondary = randomUUID();
+  const skipped = {
+    ...queueItem,
+    skipped: [
+      {
+        assignment_id: secondary,
+        agent_name: "Docs reviewer",
+        reason: "no_matching_files",
+      },
+    ],
+  };
+  const parked = {
+    ...queueItem,
+    id: "item-2",
+    state: "failed",
+    failure_class: "other",
+    failure_cause: "incomplete_files",
+    incomplete_files: {
+      count: 3001,
+      tried: ["listing", "tree_diff", "scoped_tree_diff"],
+    },
+  };
+  const f = await fixture("modern", { queue: [skipped, parked] });
+  try {
+    const id = randomUUID();
+    const value = {
+      id,
+      provider: "github",
+      name: "octo-org/app",
+      enabled: false,
+      paths: ["src/", "!src/gen/"],
+      primary_assignment_id: primary,
+      assignments: [
+        { id: primary, agent_id: randomUUID(), comment: false },
+        {
+          id: secondary,
+          agent_id: randomUUID(),
+          comment: false,
+          paths: ["docs/"],
+        },
+      ],
+    };
+    await f.client.callTool({
+      name: "validate_repository",
+      arguments: { id, expected: null, value },
+    });
+    assert.deepEqual(f.calls.at(-1).edit, {
+      kind: "repository",
+      id,
+      expected: null,
+      value,
+    });
+    const request = (
+      await f.client.callTool({ name: "prepare_request", arguments: {} })
+    ).structuredContent;
+    await f.client.callTool({
+      name: "save_repository",
+      arguments: {
+        ...request,
+        revision: "a".repeat(64),
+        id,
+        expected: null,
+        value,
+      },
+    });
+    assert.deepEqual(f.calls.at(-1).edit.value.paths, ["src/", "!src/gen/"]);
+    assert.deepEqual(f.calls.at(-1).edit.value.assignments[1].paths, ["docs/"]);
+    // Legacy path admission rules and empty globs never reach the app.
+    const calls = f.calls.length;
+    for (const bad of [
+      { ...value, paths: [""] },
+      {
+        ...value,
+        admission: {
+          mode: "filtered",
+          rules: [{ kind: "include_paths", enabled: true, paths: ["src/"] }],
+        },
+      },
+    ]) {
+      const rejected = await f.client.callTool({
+        name: "validate_repository",
+        arguments: { id, expected: null, value: bad },
+      });
+      assert.equal(rejected.isError, true);
+    }
+    assert.equal(f.calls.length, calls);
+    const queue = await f.client.callTool({
+      name: "list_queue",
+      arguments: {},
+    });
+    assert.equal(queue.isError, false, JSON.stringify(queue));
+    assert.deepEqual(queue.structuredContent.result.values, [skipped, parked]);
   } finally {
     await f.close();
   }

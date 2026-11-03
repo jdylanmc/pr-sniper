@@ -143,6 +143,7 @@ fn scan(
     let tickets = monitor.prepare_checks(store, at, true).unwrap();
     assert_eq!(tickets.len(), 1);
     let result = PollResult {
+        facts: Default::default(),
         connection: Connection {
             identity: Identity {
                 id: "22".into(),

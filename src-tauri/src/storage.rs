@@ -419,6 +419,11 @@ pub struct Assignment {
     /// Rubber Duck Agent id. Honored on the primary only; inert elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rubber_duck: Option<String>,
+    /// Secondary trigger globs (`crate::paths`): the assignment reviews a
+    /// revision only when a file changed since its last review matches.
+    /// Empty = every revision. The primary never has any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 impl Assignment {
@@ -704,6 +709,10 @@ pub struct Repository {
     /// Include draft pull requests in review.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub review_drafts: bool,
+    /// Repository gate globs (`crate::paths`), ANDed with admission. Empty =
+    /// no gate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 /// Committed with configuration, not with the recoverable polling cache.
@@ -1048,6 +1057,7 @@ impl Settings {
             if let Some(admission) = &repository.admission {
                 admission.validate_for(&repository.provider)?;
             }
+            crate::paths::validate(&repository.paths, "Repository")?;
             crate::admission::validate_identities(
                 &repository.provider,
                 &repository.watched_authors,
@@ -1073,6 +1083,12 @@ impl Settings {
                 }
                 if let Some(schedule) = &assignment.schedule {
                     schedule.validate()?;
+                }
+                crate::paths::validate(&assignment.paths, "Assignment")?;
+                if !assignment.paths.is_empty()
+                    && repository.primary_assignment_id() == Some(assignment.id.as_str())
+                {
+                    return Err("The primary assignment reviews every admitted change. Clear its paths or make it a secondary.".into());
                 }
                 if assignment
                     .tools
@@ -1258,6 +1274,28 @@ impl Settings {
         }
         changed
     }
+}
+
+/// Idempotent, every load: legacy admission path rules move into the
+/// repository paths gate (ADR 0027). True when one moved.
+fn migrate_path_rules(settings: &mut Settings) -> bool {
+    let mut migrated = false;
+    for repository in &mut settings.repositories {
+        let Some(patterns) = repository
+            .admission
+            .as_mut()
+            .and_then(AdmissionConfig::take_legacy_paths)
+        else {
+            continue;
+        };
+        for pattern in patterns {
+            if !repository.paths.contains(&pattern) {
+                repository.paths.push(pattern);
+            }
+        }
+        migrated = true;
+    }
+    migrated
 }
 
 /// Legacy effective values: defaults plus overrides plus the repository list.
@@ -2581,6 +2619,7 @@ impl Store {
         // Files without repositories to migrate are left byte-for-byte alone;
         // every later save stamps the version.
         let migrated_admission = migrate_admission && migrate_admission_rules(&mut settings);
+        let migrated_paths = migrate_path_rules(&mut settings);
         // After the pre-alpha reconciliation, which still reads legacy titles.
         let migrated_ids = settings.migrate_library_ids();
         settings
@@ -2592,6 +2631,7 @@ impl Store {
             || migrated_ids
             || reconciled_permissions
             || migrated_admission
+            || migrated_paths
             || migrated_schedule
         {
             self.write_settings(&settings)?;
@@ -2643,6 +2683,7 @@ impl Store {
         }
         settings.repositories.push(Repository {
             review_drafts: false,
+            paths: Vec::new(),
             id: uuid::Uuid::new_v4().to_string(),
             provider: ProviderId::Github,
             name,

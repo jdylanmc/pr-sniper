@@ -18,6 +18,7 @@ pub mod monitoring;
 pub mod notifications;
 pub mod packet;
 pub mod panel;
+pub mod paths;
 pub mod policy;
 pub mod pr_state;
 mod process_path;
@@ -1927,7 +1928,7 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
 }
 
 /// Verifies the ticket's repository binding and reads its open and tracked
-/// pull requests, with changed files where an enabled path rule needs them.
+/// pull requests.
 fn poll_repository(
     reader: &(impl RepositoryReader + PullRequestReader + ?Sized),
     ticket: &monitoring::PollTicket,
@@ -1936,18 +1937,58 @@ fn poll_repository(
     if connection.repository.id != ticket.provider_repository_id {
         return Err(ConnectionError::RepositoryChanged);
     }
-    let mut pull_requests =
+    let pull_requests =
         reader.poll_tracked_pull_requests(&connection.repository, &ticket.tracked)?;
-    // The polling listing has no changed files; load them only
-    // for pull requests that an enabled path rule must decide.
-    for pull in pull_requests.iter_mut().filter(|pull| {
-        pull.state == provider::Lifecycle::Open
-            && !pull.draft
-            && monitoring::needs_changed_files(ticket, pull)
-    }) {
-        pull.files = reader.pull_request_files(&connection.repository, pull.number)?;
-    }
     Ok((connection, pull_requests))
+}
+
+/// Path facts of an explicitly requested open pull request.
+pub(crate) fn explicit_facts(
+    reader: &(impl PullRequestReader + ?Sized),
+    target: &provider::ResolvedTarget,
+    paths: &monitoring::PathTicket,
+) -> Result<Option<paths::PathFacts>, ConnectionError> {
+    let Some(pull) = target
+        .pull_request
+        .as_ref()
+        .filter(|p| p.state == provider::Lifecycle::Open)
+    else {
+        return Ok(None);
+    };
+    let plan = paths.plan(&pull.id);
+    let previous = paths.facts.get(&pull.id);
+    if previous.is_some_and(|f| f.current(&pull.head_sha, &plan)) {
+        return Ok(previous.cloned());
+    }
+    paths::read_facts(reader, &target.connection.repository, pull, &plan, previous).map(Some)
+}
+
+/// Path facts (ADR 0027) for open pull requests that are tracked or would be
+/// admitted, re-read only when their head or an input changed.
+fn path_facts(
+    reader: &(impl PullRequestReader + ?Sized),
+    connection: &Connection,
+    pull_requests: &[PullRequest],
+    ticket: &monitoring::PollTicket,
+) -> Result<BTreeMap<String, paths::PathFacts>, ConnectionError> {
+    let mut facts = BTreeMap::new();
+    for pull in pull_requests.iter().filter(|pull| {
+        pull.state == provider::Lifecycle::Open
+            && (!pull.draft || ticket.paths.review_drafts)
+            && (ticket.tracked.iter().any(|(id, _)| id == &pull.id)
+                || monitoring::scan_admits(ticket, pull))
+    }) {
+        let plan = ticket.paths.plan(&pull.id);
+        let previous = ticket.paths.facts.get(&pull.id);
+        if previous.is_some_and(|f| f.current(&pull.head_sha, &plan)) {
+            continue;
+        }
+        facts.insert(
+            pull.id.clone(),
+            paths::read_facts(reader, &connection.repository, pull, &plan, previous)?,
+        );
+    }
+    Ok(facts)
 }
 
 /// One Azure DevOps repository poll as its bound identity: admission and
@@ -1962,12 +2003,14 @@ fn poll_azure_devops(
         return Err(ConnectionError::WrongIdentity);
     }
     let (connection, pull_requests) = poll_repository(&session, ticket)?;
+    let facts = path_facts(&session, &connection, &pull_requests, ticket)?;
     let states = tracked_states(&session, &connection, &pull_requests, ticket)?;
     Ok((
         monitoring::PollResult {
             connection,
             pull_requests,
             states,
+            facts,
         },
         follow_up::host::Scan::default(),
     ))
@@ -2024,6 +2067,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     &mut pull_requests,
                     &connection.identity,
                 )?;
+                let facts = path_facts(&*client, &connection, &pull_requests, &ticket_for_poll)?;
                 let states =
                     tracked_states(&*client, &connection, &pull_requests, &ticket_for_poll)?;
                 Ok((
@@ -2031,6 +2075,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                         connection,
                         pull_requests,
                         states,
+                        facts,
                     },
                     follow_ups,
                 ))
@@ -2655,7 +2700,15 @@ async fn admit_explicit_pull_request(
             return Err("Use a supported GitHub pull request URL.".into());
         }
         let read_at = now_seconds()?;
-        let (resolved, read_generation) = repository_read(
+        let path_ticket = {
+            let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
+            let monitor = host
+                .monitor
+                .lock()
+                .map_err(|_| "Monitoring is unavailable.")?;
+            monitor.path_ticket(&store, &expected)?
+        };
+        let (resolved, facts, read_generation) = repository_read(
             &host.github_generations,
             &host.github_auth,
             account_id,
@@ -2665,7 +2718,8 @@ async fn admit_explicit_pull_request(
                     &format!("https://github.com/{}/pull/{number}", expected.name),
                     &identity.id,
                 )?;
-                Ok((target, generation))
+                let facts = explicit_facts(&*client, &target, &path_ticket)?;
+                Ok((target, facts, generation))
             },
         )?;
         let generations = host
@@ -2694,6 +2748,7 @@ async fn admit_explicit_pull_request(
                 &auth.monitoring_accounts(),
                 &expected,
                 resolved,
+                facts,
                 read_at,
                 now,
             )?;
@@ -5442,6 +5497,7 @@ mod github_auth_tests {
         let mut settings = Settings::default();
         settings.repositories.push(Repository {
             review_drafts: false,
+            paths: Vec::new(),
             id: "00000000-0000-4000-8000-000000000001".into(),
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),
@@ -5506,6 +5562,7 @@ mod github_auth_tests {
 
     fn monitoring_result() -> PollResult {
         PollResult {
+            facts: Default::default(),
             states: Default::default(),
             connection: Connection {
                 identity: identity("22", "current-login"),

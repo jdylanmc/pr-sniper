@@ -90,6 +90,7 @@ fn finish_poll(
             store,
             ticket,
             Ok(PollResult {
+                facts: Default::default(),
                 connection: Connection {
                     identity: Identity {
                         id: "22".into(),
@@ -371,6 +372,7 @@ fn wait_inflight_completion_while_paused_only_dispatches_after_resume() {
         &store,
         ticket,
         Ok(PollResult {
+            facts: Default::default(),
             connection: Connection {
                 identity: Identity {
                     id: "22".into(),

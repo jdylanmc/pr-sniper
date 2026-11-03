@@ -611,3 +611,101 @@ test("a discarded publication leaves Needs attention", async ({ store }) => {
   expect(item.state).toBe("machine_signed_off");
   expect(item.failure_cause ?? null).toBeNull();
 });
+
+test("an incomplete changed-file list parks for a human with what was tried and no Retry", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const job = fixture.state.jobs.find((j) => j.number === 1);
+  job.waiting = "incomplete_files";
+  fixture.state.reviews = fixture.state.reviews.filter(
+    (r) => r.job.number !== 1,
+  );
+  fixture.state.publications = fixture.state.publications.filter(
+    (p) => p.review.job.number !== 1,
+  );
+  fixture.state.monitoring = {
+    path_facts: {
+      [job.configuration_id]: {
+        1: {
+          head_sha: job.head_sha,
+          incomplete: 3001,
+          tried: ["listing", "tree_diff", "scoped_tree_diff"],
+          admitted: true,
+        },
+      },
+    },
+  };
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.state).toBe("failed");
+  expect(item.failure_cause).toBe("incomplete_files");
+  expect(item.incomplete_files).toEqual({
+    count: 3001,
+    tried: ["listing", "tree_diff", "scoped_tree_diff"],
+  });
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  const status = page.locator("[data-queue-status]");
+  await expect(status.locator(".queue-status-label")).toHaveText(
+    "Can't see all 3001 changed files: needs a human",
+  );
+  const facts = status.locator(".queue-facts");
+  const row = (label) => facts.locator(`dt:text-is("${label}") + dd`);
+  await expect(row("Changed files")).toHaveText("3001");
+  await expect(row("Tried")).toHaveText("Listing, Tree diff, Scoped tree diff");
+  await expect(status.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(status.locator("[data-queue-primary]")).toHaveText(/Open/);
+});
+
+test("a skipped secondary shows in Activity and holds nothing", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const settings = (await store("snapshot")).settings;
+  const teammate = "00000000-0000-4000-8000-000000000009";
+  const agent = { ...settings.agents[0], id: teammate, name: "Docs reviewer" };
+  settings.agents.push(agent);
+  const repository = settings.repositories[0];
+  repository.primary_assignment_id = repository.assignments[0].id;
+  repository.assignments.push({
+    id: teammate,
+    agent_id: teammate,
+    comment: false,
+    paths: ["docs/"],
+  });
+  await store("seed_settings", settings);
+  const job = fixture.state.jobs.find((j) => j.number === 1);
+  fixture.state.jobs.push({
+    ...job,
+    assignment_id: teammate,
+    waiting: "skipped_no_matching_files",
+  });
+  await store("seed_queue_state", fixture.state);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 1,
+  );
+  expect(item.skipped).toEqual([
+    {
+      assignment_id: teammate,
+      agent_name: "Docs reviewer",
+      reason: "no_matching_files",
+    },
+  ]);
+  expect(item.state).not.toBe("failed");
+  expect(item.blocked_by ?? null).toBeNull();
+  await store("panel_navigate", {
+    route: { tab: "queue", detail: { type: "item", item_id: item.id } },
+  });
+  await page.goto("/");
+  await expect(page.locator("[data-queue-activity]")).toContainText("Skipped");
+  await expect(page.locator("[data-queue-activity]")).toContainText(
+    "No matching files",
+  );
+});

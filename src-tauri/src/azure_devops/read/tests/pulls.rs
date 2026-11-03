@@ -1,5 +1,5 @@
 use super::*;
-use crate::provider::{Lifecycle, PullRequestReader, TreeEntry};
+use crate::provider::{Lifecycle, PullRequest, PullRequestReader, TreeEntry};
 
 const TEAM: &str = "00000000-0000-0000-0000-0000000000d1";
 
@@ -211,6 +211,157 @@ fn reads_changed_files_of_the_latest_iteration() {
         .collect();
     assert!(changes[0].contains("%24compareTo=0") && changes[0].contains("%24skip=0"));
     assert!(changes[1].contains("%24skip=3"));
+}
+
+fn pull_at(head: u32) -> PullRequest {
+    PullRequest {
+        mentioned: false,
+        id: "7".into(),
+        number: 7,
+        title: "Change 7".into(),
+        author: None,
+        requested_reviewers: vec![],
+        requested_teams: vec![],
+        state: Lifecycle::Open,
+        draft: false,
+        head_sha: sha(head),
+        base_sha: sha(900),
+        head_repository_id: None,
+        base_repository_id: key().id(),
+        updated_at: "2026-10-20T10:00:00Z".into(),
+        files: vec![],
+    }
+}
+
+fn three_iterations(wire: &FakeWire) {
+    wire.json(
+        &git("pullRequests/7/iterations?"),
+        json!({"value": [
+            {"id": 3, "sourceRefCommit": {"commitId": sha(3)}},
+            {"id": 1, "sourceRefCommit": {"commitId": sha(1)}},
+            {"id": 2, "sourceRefCommit": {"commitId": sha(2)}}
+        ]}),
+    );
+}
+
+fn edits(paths: impl IntoIterator<Item = String>) -> Vec<Value> {
+    paths
+        .into_iter()
+        .map(|path| json!({"item": {"path": format!("/{path}"), "objectId": sha(10)}, "changeType": "edit"}))
+        .collect()
+}
+
+#[test]
+fn path_listing_pages_iteration_changes_to_the_end_without_a_file_cap() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    three_iterations(&wire);
+    let page = |from: usize, to: usize| edits((from..to).map(|n| format!("src/f{n}.rs")));
+    wire.json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": page(0, 1000), "nextSkip": 1000, "nextTop": 1000}),
+    )
+    .json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": page(1000, 2000), "nextSkip": 2000, "nextTop": 1000}),
+    )
+    .json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": page(2000, 3001), "nextSkip": 0, "nextTop": 0}),
+    );
+    let reader = reader(&wire, &runtime).unwrap();
+    let pull = pull_at(3);
+    // No total is reported: nothing is read until a glob needs the list.
+    assert_eq!(
+        reader.changed_file_listing(&remote(), &pull, false),
+        Ok(crate::provider::Listing::Visible)
+    );
+    assert!(wire.urls().iter().all(|u| !u.contains("/iterations")));
+    let Ok(crate::provider::Listing::Complete(files)) =
+        reader.changed_file_listing(&remote(), &pull, true)
+    else {
+        panic!("complete listing")
+    };
+    assert_eq!(files.len(), 3001);
+    let skips: Vec<_> = wire
+        .urls()
+        .into_iter()
+        .filter(|u| u.contains("/changes?"))
+        .collect();
+    assert_eq!(skips.len(), 3);
+    assert!(skips[2].contains("%24skip=2000") && skips[2].contains("%24compareTo=0"));
+}
+
+#[test]
+fn a_change_listing_that_stops_advancing_is_incomplete() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    three_iterations(&wire);
+    wire.json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": edits(["a".to_string()]), "nextSkip": 5}),
+    )
+    .json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": edits(["b".to_string()]), "nextSkip": 5}),
+    );
+    let reader = reader(&wire, &runtime).unwrap();
+    assert_eq!(
+        reader.changed_file_listing(&remote(), &pull_at(3), true),
+        Err(ConnectionError::IncompleteRead)
+    );
+    // A head that is not the latest iteration moved during the read.
+    three_iterations(&wire);
+    assert_eq!(
+        reader.changed_file_listing(&remote(), &pull_at(2), true),
+        Err(ConnectionError::RevisionChanged)
+    );
+}
+
+#[test]
+fn incremental_changes_compare_to_the_last_reviewed_iteration() {
+    use crate::provider::Since;
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    three_iterations(&wire);
+    wire.json(
+        &git("pullRequests/7/iterations/3/changes?"),
+        json!({"changeEntries": edits(["docs/a.md".to_string()])}),
+    );
+    let reader = reader(&wire, &runtime).unwrap();
+    let pull = pull_at(3);
+    let Ok(Since::Files(files)) = reader.changed_files_since(&remote(), &pull, &sha(1)) else {
+        panic!("incremental files")
+    };
+    assert_eq!(files[0].path, "docs/a.md");
+    let changes: Vec<_> = wire
+        .urls()
+        .into_iter()
+        .filter(|u| u.contains("/changes?"))
+        .collect();
+    assert!(changes[0].contains("%24compareTo=1"), "{}", changes[0]);
+    // Unknown old head (rebase onto a new push history): whole PR.
+    three_iterations(&wire);
+    assert_eq!(
+        reader.changed_files_since(&remote(), &pull, &sha(77)),
+        Ok(Since::WholePullRequest)
+    );
+    // Reviewed the latest iteration: nothing changed since.
+    three_iterations(&wire);
+    assert_eq!(
+        reader.changed_files_since(&remote(), &pull, &sha(3)),
+        Ok(Since::Files(vec![]))
+    );
+    // A newer push than the polled head is a moved revision.
+    let stale = pull_at(2);
+    three_iterations(&wire);
+    assert_eq!(
+        reader.changed_files_since(&remote(), &stale, &sha(1)),
+        Err(ConnectionError::RevisionChanged)
+    );
 }
 
 #[test]

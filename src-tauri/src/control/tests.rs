@@ -290,6 +290,7 @@ fn readonly_assignment_fixture() -> (
         actions: None,
         tools: None,
         rubber_duck: None,
+        paths: Vec::new(),
     });
     (root, store, settings, repository)
 }

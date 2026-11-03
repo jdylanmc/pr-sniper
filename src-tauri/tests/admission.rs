@@ -63,9 +63,7 @@ fn migration_materializes_legacy_values_and_disables_monitoring() {
             (IncludeUsers, true),
             (Assigned, true),
             (Mentioned, true),
-            (ExcludeUsers, false),
-            (IncludePaths, false),
-            (ExcludePaths, false)
+            (ExcludeUsers, false)
         ]
     );
     let ids: Vec<_> = admission.rules[0]
@@ -130,7 +128,7 @@ fn migration_is_idempotent_and_never_reenables() {
 fn migration_leaves_repositories_with_admission_alone() {
     let root = tempfile::tempdir().unwrap();
     let configured = json!({"mode": "filtered", "rules": [
-        {"kind": "exclude_paths", "enabled": true, "paths": ["docs/"]}
+        {"kind": "exclude_users", "enabled": true, "users": [{"id": "5", "login": "a"}]}
     ]});
     let store = legacy_file(
         root.path(),
@@ -146,6 +144,53 @@ fn migration_leaves_repositories_with_admission_alone() {
         configured
     );
     assert!(!settings.repositories[1].enabled);
+}
+
+#[test]
+fn path_rules_migrate_into_the_repository_gate_once() {
+    let root = tempfile::tempdir().unwrap();
+    let store = legacy_file(
+        root.path(),
+        json!({"launch_at_login": false, "admission_migration_version": 1, "repositories": [
+            repository(FIRST, "o/paths", json!({"admission": {"mode": "filtered", "rules": [
+                {"kind": "assigned", "enabled": true},
+                {"kind": "include_paths", "enabled": true, "paths": ["src/", "docs/"]},
+                {"kind": "exclude_paths", "enabled": true, "paths": ["src/gen/"]}
+            ]}})),
+            repository(SECOND, "o/only", json!({"admission": {"mode": "filtered", "rules": [
+                {"kind": "include_paths", "enabled": true, "paths": ["app/"]},
+                {"kind": "exclude_paths", "enabled": false, "paths": ["vendor/"]}
+            ]}})),
+            repository(THIRD, "o/nothing", json!({"admission": {"mode": "all", "rules": [
+                {"kind": "mentioned", "enabled": true}
+            ]}})),
+        ]}),
+    );
+    let settings = store.load_settings().unwrap();
+    let [paths, only, none] = &settings.repositories[..] else {
+        panic!()
+    };
+    assert!(paths.enabled && only.enabled, "monitoring is kept");
+    assert_eq!(paths.paths, ["src/", "docs/", "!src/gen/"]);
+    assert_eq!(
+        serde_json::to_value(paths.admission.as_ref().unwrap()).unwrap(),
+        json!({"mode": "filtered", "rules": [{"kind": "assigned", "enabled": true}]})
+    );
+    assert_eq!(only.paths, ["app/"]);
+    assert_eq!(only.admission.as_ref().unwrap().mode, AdmissionMode::All);
+    assert!(only.admission.as_ref().unwrap().rules.is_empty());
+    assert!(none.paths.is_empty());
+    // Written once, then idempotent and byte-stable.
+    let path = root.path().join("config/settings.json");
+    let written = fs::read(&path).unwrap();
+    assert_eq!(store.load_settings().unwrap(), settings);
+    assert_eq!(fs::read(&path).unwrap(), written);
+    let saved: Value = serde_json::from_slice(&written).unwrap();
+    assert_eq!(
+        saved["repositories"][0]["paths"],
+        json!(["src/", "docs/", "!src/gen/"])
+    );
+    assert!(saved["repositories"][2].get("paths").is_none());
 }
 
 #[test]
@@ -241,8 +286,8 @@ fn invalid_admission_is_rejected_on_save_and_unknown_fields_fail_to_parse() {
     let store = Store::new(root.path().to_path_buf());
     store.load_settings().unwrap();
     for bad in [
-        json!({"mode": "filtered", "rules": [{"kind": "include_paths", "enabled": true, "paths": ["/abs"]}]}),
-        json!({"mode": "filtered", "rules": [{"kind": "include_paths", "enabled": true, "paths": ["a/../b"]}]}),
+        json!({"mode": "filtered", "rules": [{"kind": "include_paths", "enabled": true, "paths": ["src/"]}]}),
+        json!({"mode": "filtered", "rules": [{"kind": "exclude_paths", "enabled": false, "paths": []}]}),
         json!({"mode": "filtered", "rules": [{"kind": "assigned", "enabled": true}, {"kind": "assigned", "enabled": true}]}),
         json!({"mode": "filtered", "rules": [{"kind": "include_users", "enabled": true, "users": [{"id": "0", "login": "x"}]}]}),
     ] {
@@ -264,4 +309,59 @@ fn invalid_admission_is_rejected_on_save_and_unknown_fields_fail_to_parse() {
         .is_err()
     );
     assert!(store.load_settings().unwrap().repositories.is_empty());
+}
+
+#[test]
+fn path_globs_validate_on_save_and_never_sit_on_the_primary() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().to_path_buf());
+    let mut settings = store.load_settings().unwrap();
+    for id in [FIRST, SECOND] {
+        settings.agents.push(
+            serde_json::from_value(json!({
+                "id": id, "name": format!("Agent {id}"), "model": "fixture-model",
+                "prompt": "Review.", "signature": "fixture"
+            }))
+            .unwrap(),
+        );
+    }
+    store.save_settings(&settings).unwrap();
+    const A1: &str = "f53ae3be-2ad5-44aa-b257-9298186e1c61";
+    const A2: &str = "f53ae3be-2ad5-44aa-b257-9298186e1c62";
+    let save = |gate: Value, primary_paths: Value, secondary_paths: Value| {
+        let value = serde_json::from_value(repository(
+            THIRD,
+            "octo-org/app",
+            json!({
+                "enabled": false, "paths": gate, "primary_assignment_id": A1,
+                "assignments": [
+                    {"id": A1, "agent_id": FIRST, "comment": false, "paths": primary_paths},
+                    {"id": A2, "agent_id": SECOND, "comment": false, "paths": secondary_paths}
+                ]
+            }),
+        ))
+        .unwrap();
+        store.validate_resource(ResourceEdit::Repository {
+            id: THIRD.into(),
+            expected: None,
+            value: Some(Box::new(value)),
+        })
+    };
+    let saved = save(json!(["src/", "!src/gen/"]), json!([]), json!(["docs/"])).unwrap();
+    let repository = &saved.repositories[0];
+    assert_eq!(repository.paths, ["src/", "!src/gen/"]);
+    assert_eq!(repository.assignments[1].paths, ["docs/"]);
+    let error = save(json!([]), json!(["src/"]), json!([])).unwrap_err();
+    assert!(error.contains("primary assignment"), "{error}");
+    for bad in [
+        json!(["/abs"]),
+        json!(["!"]),
+        json!(["a/../b"]),
+        json!(["x", "x"]),
+    ] {
+        assert!(save(bad.clone(), json!([]), json!([])).is_err(), "{bad}");
+        assert!(save(json!([]), json!([]), bad.clone()).is_err(), "{bad}");
+    }
+    let many: Vec<_> = (0..101).map(|i| format!("p{i}/")).collect();
+    assert!(save(json!(many), json!([]), json!([])).is_err());
 }

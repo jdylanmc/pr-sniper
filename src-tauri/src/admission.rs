@@ -1,10 +1,11 @@
 //! Ordered, per-repository pull request admission rules.
 //!
 //! When a repository has no `admission`, the legacy watched-author,
-//! reviewer-assignment and mention behavior applies unchanged.
+//! reviewer-assignment and mention behavior applies unchanged. Path scoping
+//! is the separate repository gate (`crate::paths`, ADR 0027).
 
 use crate::policy::WatchedIdentity;
-use crate::provider::{ChangedFile, PullRequest};
+use crate::provider::PullRequest;
 use crate::storage::ProviderId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -29,8 +30,18 @@ pub enum AdmissionRuleKind {
     Mentioned,
     IncludeUsers,
     ExcludeUsers,
+    /// Legacy: read only so the load-time migration can move it into the
+    /// repository paths gate. Saves reject it.
     IncludePaths,
+    /// Legacy, like `IncludePaths`.
     ExcludePaths,
+}
+
+impl AdmissionRuleKind {
+    /// A legacy path rule, migrated into `Repository::paths`.
+    pub fn legacy_path(self) -> bool {
+        matches!(self, Self::IncludePaths | Self::ExcludePaths)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +51,7 @@ pub struct AdmissionRule {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub users: Option<Vec<WatchedIdentity>>,
+    /// Legacy path rule values; see `AdmissionRuleKind::IncludePaths`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
 }
@@ -56,8 +68,6 @@ pub enum Decision {
     /// `None`: mode "all" admits without a deciding rule.
     Admit(Option<AdmissionRuleKind>),
     Reject(Option<AdmissionRuleKind>),
-    /// A reachable, enabled path rule needs the changed-file list first.
-    NeedFiles,
 }
 
 impl Decision {
@@ -73,16 +83,11 @@ impl AdmissionRule {
             AdmissionRuleKind::IncludeUsers | AdmissionRuleKind::ExcludeUsers
         )
         .then(Vec::new);
-        let paths = matches!(
-            kind,
-            AdmissionRuleKind::IncludePaths | AdmissionRuleKind::ExcludePaths
-        )
-        .then(Vec::new);
         Self {
             kind,
             enabled,
             users,
-            paths,
+            paths: None,
         }
     }
 
@@ -93,10 +98,6 @@ impl AdmissionRule {
 
     fn users(&self) -> &[WatchedIdentity] {
         self.users.as_deref().unwrap_or(&[])
-    }
-
-    fn paths(&self) -> &[String] {
-        self.paths.as_deref().unwrap_or(&[])
     }
 }
 
@@ -109,8 +110,6 @@ impl Default for AdmissionConfig {
                 AdmissionRule::new(AdmissionRuleKind::Mentioned, true),
                 AdmissionRule::new(AdmissionRuleKind::IncludeUsers, false),
                 AdmissionRule::new(AdmissionRuleKind::ExcludeUsers, false),
-                AdmissionRule::new(AdmissionRuleKind::IncludePaths, false),
-                AdmissionRule::new(AdmissionRuleKind::ExcludePaths, false),
             ],
         }
     }
@@ -132,10 +131,39 @@ impl AdmissionConfig {
                 AdmissionRule::new(AdmissionRuleKind::Assigned, reviewer_assignment),
                 AdmissionRule::new(AdmissionRuleKind::Mentioned, true),
                 AdmissionRule::new(AdmissionRuleKind::ExcludeUsers, false),
-                AdmissionRule::new(AdmissionRuleKind::IncludePaths, false),
-                AdmissionRule::new(AdmissionRuleKind::ExcludePaths, false),
             ],
         }
+    }
+
+    /// Removes the legacy path rules: enabled include patterns, then enabled
+    /// excludes as `!pattern`, in rule order. A Filtered config whose only
+    /// enabled rules were path rules, at least one an include, becomes All:
+    /// the gate admits what that include admitted. Disabled path rules
+    /// migrate to nothing. `None` when there was no path rule.
+    pub fn take_legacy_paths(&mut self) -> Option<Vec<String>> {
+        if !self.rules.iter().any(|rule| rule.kind.legacy_path()) {
+            return None;
+        }
+        let enabled = |kind| {
+            self.rules
+                .iter()
+                .filter(move |rule| rule.enabled && rule.kind == kind)
+                .flat_map(|rule| rule.paths.iter().flatten().cloned())
+        };
+        let mut patterns: Vec<String> = enabled(AdmissionRuleKind::IncludePaths)
+            .chain(enabled(AdmissionRuleKind::ExcludePaths).map(|p| format!("!{p}")))
+            .collect();
+        let mut seen = HashSet::new();
+        patterns.retain(|pattern| seen.insert(pattern.clone()));
+        let included = patterns.iter().any(|p| !p.starts_with('!'));
+        self.rules.retain(|rule| !rule.kind.legacy_path());
+        if included
+            && self.mode == AdmissionMode::Filtered
+            && !self.rules.iter().any(|rule| rule.enabled)
+        {
+            self.mode = AdmissionMode::All;
+        }
+        Some(patterns)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -149,19 +177,20 @@ impl AdmissionConfig {
             if !kinds.insert(rule.kind) {
                 return Err("Each admission rule kind can appear at most once.".into());
             }
+            if rule.kind.legacy_path() {
+                return Err(
+                    "Path admission rules moved to repository paths. Use `paths` on the repository."
+                        .into(),
+                );
+            }
             let takes_users = matches!(
                 rule.kind,
                 AdmissionRuleKind::IncludeUsers | AdmissionRuleKind::ExcludeUsers
             );
-            let takes_paths = matches!(
-                rule.kind,
-                AdmissionRuleKind::IncludePaths | AdmissionRuleKind::ExcludePaths
-            );
-            if rule.users.is_some() && !takes_users || rule.paths.is_some() && !takes_paths {
+            if rule.users.is_some() && !takes_users || rule.paths.is_some() {
                 return Err("Admission rule values do not belong to this rule kind.".into());
             }
             validate_users(provider, rule.users())?;
-            validate_paths(rule.paths())?;
         }
         Ok(())
     }
@@ -203,13 +232,7 @@ impl AdmissionConfig {
                 .any(|rule| rule.enabled && rule.kind == AdmissionRuleKind::Mentioned)
     }
 
-    /// `files` is `None` when the changed-file list has not been loaded.
-    pub fn decide(
-        &self,
-        account_id: &str,
-        pull: &PullRequest,
-        files: Option<&[ChangedFile]>,
-    ) -> Decision {
+    pub fn decide(&self, account_id: &str, pull: &PullRequest) -> Decision {
         if self.mode == AdmissionMode::Explicit {
             return Decision::Reject(None);
         }
@@ -230,43 +253,14 @@ impl AdmissionConfig {
                 AdmissionRuleKind::ExcludeUsers if author_in(rule, pull) => {
                     return Decision::Reject(Some(rule.kind))
                 }
-                AdmissionRuleKind::IncludePaths | AdmissionRuleKind::ExcludePaths => {
-                    if rule.paths().is_empty() {
-                        continue;
-                    }
-                    let Some(files) = files else {
-                        return Decision::NeedFiles;
-                    };
-                    if rule.kind == AdmissionRuleKind::IncludePaths {
-                        if files
-                            .iter()
-                            .any(|file| file_names(file).any(|name| matches_any(rule, name)))
-                        {
-                            return Decision::Admit(Some(rule.kind));
-                        }
-                    } else if !files.is_empty()
-                        && files
-                            .iter()
-                            .all(|file| file_names(file).all(|name| matches_any(rule, name)))
-                    {
-                        return Decision::Reject(Some(rule.kind));
-                    }
-                }
                 _ => {}
             }
         }
         Decision::Reject(None)
     }
 
-    /// Decision using the pull request's own file list.
     pub fn admits(&self, account_id: &str, pull: &PullRequest) -> bool {
-        self.decide(account_id, pull, Some(&pull.files)).admitted()
-    }
-
-    /// True when the changed-file list is needed (and not yet loaded) before
-    /// this pull request can be decided.
-    pub fn needs_changed_files(&self, account_id: &str, pull: &PullRequest) -> bool {
-        pull.files.is_empty() && self.decide(account_id, pull, None) == Decision::NeedFiles
+        self.decide(account_id, pull).admitted()
     }
 }
 
@@ -280,16 +274,6 @@ fn author_in(rule: &AdmissionRule, pull: &PullRequest) -> bool {
     pull.author
         .as_ref()
         .is_some_and(|author| rule.users().iter().any(|user| user.id == author.id))
-}
-
-fn file_names(file: &ChangedFile) -> impl Iterator<Item = &str> {
-    std::iter::once(file.path.as_str()).chain(file.previous_path.as_deref())
-}
-
-fn matches_any(rule: &AdmissionRule, name: &str) -> bool {
-    rule.paths()
-        .iter()
-        .any(|pattern| glob_matches(pattern, name))
 }
 
 fn validate_users(provider: &ProviderId, users: &[WatchedIdentity]) -> Result<(), String> {
@@ -348,25 +332,13 @@ pub fn validate_identities(provider: &ProviderId, users: &[WatchedIdentity]) -> 
     Ok(())
 }
 
-fn validate_paths(paths: &[String]) -> Result<(), String> {
-    if paths.len() > MAX_VALUES_PER_RULE {
-        return Err(format!(
-            "An admission rule can list at most {MAX_VALUES_PER_RULE} path patterns."
-        ));
-    }
-    for pattern in paths {
-        if pattern.is_empty()
-            || pattern.chars().count() > MAX_PATTERN_LENGTH
-            || pattern.starts_with('/')
-            || pattern.chars().any(char::is_control)
-            || pattern.split('/').any(|segment| segment == "..")
-        {
-            return Err(format!(
-                "Path patterns must be 1-{MAX_PATTERN_LENGTH} characters, repository-relative, without '..' or control characters."
-            ));
-        }
-    }
-    Ok(())
+/// One repository-relative glob (without a leading `!`).
+pub(crate) fn valid_pattern(pattern: &str) -> bool {
+    !(pattern.is_empty()
+        || pattern.chars().count() > MAX_PATTERN_LENGTH
+        || pattern.starts_with('/')
+        || pattern.chars().any(char::is_control)
+        || pattern.split('/').any(|segment| segment == ".."))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -464,6 +436,7 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::github::{metadata::Lifecycle, Identity};
+    use crate::provider::ChangedFile;
 
     fn identity(id: &str) -> WatchedIdentity {
         WatchedIdentity {
@@ -590,7 +563,7 @@ mod tests {
         let p = pull("11", &[ME], false, vec![file("src/a.rs", None)]);
         let assigned = filtered(vec![rule(AdmissionRuleKind::Assigned, true)]);
         assert_eq!(
-            assigned.decide(ME, &p, Some(&p.files)),
+            assigned.decide(ME, &p),
             Decision::Admit(Some(AdmissionRuleKind::Assigned))
         );
         assert!(!assigned.admits("99", &p));
@@ -608,32 +581,15 @@ mod tests {
             rule(AdmissionRuleKind::Assigned, true),
         ]);
         assert_eq!(
-            exclude.decide(ME, &p, Some(&p.files)),
+            exclude.decide(ME, &p),
             Decision::Reject(Some(AdmissionRuleKind::ExcludeUsers))
-        );
-
-        let include_paths = filtered(vec![paths(AdmissionRuleKind::IncludePaths, &["src/"])]);
-        assert!(include_paths.admits(ME, &p));
-        assert!(!include_paths.admits(ME, &pull("11", &[], false, vec![file("docs/a.md", None)])));
-
-        let exclude_paths = filtered(vec![
-            paths(AdmissionRuleKind::ExcludePaths, &["docs/"]),
-            rule(AdmissionRuleKind::Assigned, true),
-        ]);
-        let docs = pull("11", &[ME], false, vec![file("docs/a.md", None)]);
-        assert_eq!(
-            exclude_paths.decide(ME, &docs, Some(&docs.files)),
-            Decision::Reject(Some(AdmissionRuleKind::ExcludePaths))
         );
     }
 
     #[test]
     fn no_matching_rule_rejects_and_empty_rules_reject() {
         let p = pull("11", &[], false, vec![file("a", None)]);
-        assert_eq!(
-            filtered(vec![]).decide(ME, &p, Some(&p.files)),
-            Decision::Reject(None)
-        );
+        assert_eq!(filtered(vec![]).decide(ME, &p), Decision::Reject(None));
         assert!(!filtered(vec![rule(AdmissionRuleKind::Assigned, true)]).admits(ME, &p));
     }
 
@@ -645,7 +601,6 @@ mod tests {
         config.mode = AdmissionMode::All;
         assert!(config.admits(ME, &p));
         assert_eq!(config.rules.len(), 1);
-        assert!(!config.needs_changed_files(ME, &p));
         let mut anonymous = p.clone();
         anonymous.author = None;
         assert!(config.admits(ME, &anonymous));
@@ -660,10 +615,7 @@ mod tests {
         let mut include = users(AdmissionRuleKind::IncludeUsers, &["11"]);
         include.enabled = false;
         assert!(!filtered(vec![include]).admits(ME, &pull("11", &[], false, vec![])));
-        let mut path = paths(AdmissionRuleKind::ExcludePaths, &["**"]);
-        path.enabled = false;
         let p = pull("11", &[], false, vec![file("a", None)]);
-        assert!(!filtered(vec![path]).needs_changed_files(ME, &pull("11", &[], false, vec![])));
         assert!(!filtered(vec![rule(AdmissionRuleKind::Mentioned, true)]).admits(ME, &p));
     }
 
@@ -679,9 +631,6 @@ mod tests {
                         AdmissionRuleKind::ExcludeUsers | AdmissionRuleKind::IncludeUsers => {
                             users(*kind, &[author])
                         }
-                        AdmissionRuleKind::ExcludePaths | AdmissionRuleKind::IncludePaths => {
-                            paths(*kind, &["docs/"])
-                        }
                         _ => rule(*kind, true),
                     })
                     .collect(),
@@ -693,122 +642,21 @@ mod tests {
             (Assigned, ExcludeUsers),
             (Mentioned, ExcludeUsers),
             (IncludeUsers, ExcludeUsers),
-            (IncludePaths, ExcludeUsers),
-            (Assigned, ExcludePaths),
-            (Mentioned, ExcludePaths),
-            (IncludeUsers, ExcludePaths),
-            (IncludePaths, ExcludePaths),
         ] {
             assert_eq!(
-                make(&[admit, exclude]).decide(ME, &p, Some(&p.files)),
+                make(&[admit, exclude]).decide(ME, &p),
                 Decision::Admit(Some(admit)),
                 "{admit:?} before {exclude:?}"
             );
             assert_eq!(
-                make(&[exclude, admit]).decide(ME, &p, Some(&p.files)),
+                make(&[exclude, admit]).decide(ME, &p),
                 Decision::Reject(Some(exclude)),
                 "{exclude:?} before {admit:?}"
             );
         }
         // A rejecting rule that does not match does not stop later admits.
         let other = pull("12", &[], true, vec![file("src/a", None)]);
-        assert!(make(&[ExcludeUsers, ExcludePaths, Mentioned]).admits(ME, &other));
-    }
-
-    #[test]
-    fn exclude_paths_requires_every_file_and_at_least_one() {
-        let config = filtered(vec![
-            paths(AdmissionRuleKind::ExcludePaths, &["docs/", "*.md"]),
-            rule(AdmissionRuleKind::Mentioned, true),
-        ]);
-        let all_docs = pull(
-            "11",
-            &[],
-            true,
-            vec![file("docs/a.txt", None), file("README.md", None)],
-        );
-        assert_eq!(
-            config.decide(ME, &all_docs, Some(&all_docs.files)),
-            Decision::Reject(Some(AdmissionRuleKind::ExcludePaths))
-        );
-        let mixed = pull(
-            "11",
-            &[],
-            true,
-            vec![file("docs/a.txt", None), file("src/a.rs", None)],
-        );
-        assert!(config.admits(ME, &mixed));
-        // Vacuous truth must not exclude PRs without files.
-        let empty = pull("11", &[], true, vec![]);
-        assert!(config.admits(ME, &empty));
-    }
-
-    #[test]
-    fn renames_match_on_either_path() {
-        let rename = pull(
-            "11",
-            &[],
-            false,
-            vec![file("docs/new.md", Some("src/old.rs"))],
-        );
-        let include = filtered(vec![paths(AdmissionRuleKind::IncludePaths, &["src/"])]);
-        assert!(include.admits(ME, &rename));
-        let include_new = filtered(vec![paths(AdmissionRuleKind::IncludePaths, &["docs/"])]);
-        assert!(include_new.admits(ME, &rename));
-
-        let exclude = filtered(vec![
-            paths(AdmissionRuleKind::ExcludePaths, &["docs/"]),
-            rule(AdmissionRuleKind::Mentioned, true),
-        ]);
-        let moved_out_of_docs = pull(
-            "11",
-            &[],
-            true,
-            vec![file("docs/new.md", Some("src/old.rs"))],
-        );
-        // The previous path is not excluded, so the rename is not all-excluded.
-        assert!(exclude.admits(ME, &moved_out_of_docs));
-        let within_docs = pull(
-            "11",
-            &[],
-            true,
-            vec![file("docs/new.md", Some("docs/old.md"))],
-        );
-        assert!(!exclude.admits(ME, &within_docs));
-    }
-
-    #[test]
-    fn empty_file_list_matches_no_path_rule() {
-        let p = pull("11", &[], true, vec![]);
-        let config = filtered(vec![
-            paths(AdmissionRuleKind::IncludePaths, &["**"]),
-            paths(AdmissionRuleKind::ExcludePaths, &["**"]),
-        ]);
-        assert_eq!(
-            config.decide(ME, &p, Some(&p.files)),
-            Decision::Reject(None)
-        );
-    }
-
-    #[test]
-    fn changed_files_are_needed_only_when_a_path_rule_is_reached() {
-        use AdmissionRuleKind::*;
-        let p = pull("11", &[ME], false, vec![]);
-        let reached = filtered(vec![rule(Mentioned, true), paths(IncludePaths, &["src/"])]);
-        assert!(reached.needs_changed_files(ME, &p));
-        // An earlier decisive rule means no fetch is needed.
-        let decided = filtered(vec![rule(Assigned, true), paths(IncludePaths, &["src/"])]);
-        assert!(!decided.needs_changed_files(ME, &p));
-        let excluded = filtered(vec![
-            users(ExcludeUsers, &["11"]),
-            paths(IncludePaths, &["src/"]),
-        ]);
-        assert!(!excluded.needs_changed_files(ME, &p));
-        // Loaded files are never refetched; empty path lists never need files.
-        let loaded = pull("11", &[], false, vec![file("src/a", None)]);
-        assert!(!reached.needs_changed_files(ME, &loaded));
-        assert!(!filtered(vec![paths(ExcludePaths, &[])]).needs_changed_files(ME, &p));
-        assert!(!AdmissionConfig::default().needs_changed_files(ME, &p));
+        assert!(make(&[ExcludeUsers, Mentioned]).admits(ME, &other));
     }
 
     #[test]
@@ -823,9 +671,7 @@ mod tests {
                 (Assigned, true),
                 (Mentioned, true),
                 (IncludeUsers, false),
-                (ExcludeUsers, false),
-                (IncludePaths, false),
-                (ExcludePaths, false)
+                (ExcludeUsers, false)
             ]
         );
         let watched = AdmissionConfig::from_legacy(&[identity("11")], false);
@@ -837,9 +683,7 @@ mod tests {
                 (IncludeUsers, true),
                 (Assigned, false),
                 (Mentioned, true),
-                (ExcludeUsers, false),
-                (IncludePaths, false),
-                (ExcludePaths, false)
+                (ExcludeUsers, false)
             ]
         );
         assert_eq!(watched.rules[0].users, Some(vec![identity("11")]));
@@ -854,7 +698,7 @@ mod tests {
             "mode": "filtered",
             "rules": [
                 {"kind": "include_users", "enabled": true, "users": [{"id": "5", "login": "a"}]},
-                {"kind": "exclude_paths", "enabled": false, "paths": ["docs/"]},
+                {"kind": "exclude_users", "enabled": false, "users": []},
                 {"kind": "assigned", "enabled": true}
             ]
         }))
@@ -880,38 +724,16 @@ mod tests {
     #[test]
     fn validation_rejects_bad_input() {
         use AdmissionRuleKind::*;
-        let bad_paths = [
-            "",
-            "/abs",
-            "a/../b",
-            "..",
-            "../x",
-            "a\u{0}b",
-            "tab\there",
-            &"x".repeat(257),
-        ];
-        for pattern in bad_paths {
-            assert!(
-                filtered(vec![paths(IncludePaths, &[pattern])])
-                    .validate()
-                    .is_err(),
-                "{pattern:?}"
-            );
+        // Path rules are legacy: only the load-time migration reads them.
+        for kind in [IncludePaths, ExcludePaths] {
+            let error = filtered(vec![paths(kind, &["src/"])])
+                .validate()
+                .unwrap_err();
+            assert!(error.contains("repository paths"), "{error}");
         }
-        filtered(vec![paths(
-            IncludePaths,
-            &[&"x".repeat(256), "..x", "a..b/"],
-        )])
-        .validate()
-        .unwrap();
-        let many: Vec<_> = (0..101).map(|i| format!("p{i}/")).collect();
-        let many: Vec<_> = many.iter().map(String::as_str).collect();
-        assert!(filtered(vec![paths(ExcludePaths, &many)])
-            .validate()
-            .is_err());
-        assert!(filtered(vec![paths(ExcludePaths, &many[..100])])
-            .validate()
-            .is_ok());
+        let mut stray = users(IncludeUsers, &["5"]);
+        stray.paths = Some(vec!["src/".into()]);
+        assert!(filtered(vec![stray]).validate().is_err());
         let ids: Vec<_> = (1..=101).map(|i| i.to_string()).collect();
         let ids: Vec<_> = ids.iter().map(String::as_str).collect();
         assert!(filtered(vec![users(IncludeUsers, &ids)])
@@ -975,6 +797,44 @@ mod tests {
                 "{invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_path_rules_move_out_losslessly() {
+        use AdmissionRuleKind::*;
+        let mut disabled = paths(IncludePaths, &["vendor/"]);
+        disabled.enabled = false;
+        let mut config = filtered(vec![
+            users(IncludeUsers, &["11"]),
+            paths(ExcludePaths, &["src/gen/"]),
+            disabled.clone(),
+        ]);
+        config
+            .rules
+            .insert(1, paths(IncludePaths, &["src/", "docs/"]));
+        assert_eq!(
+            config.take_legacy_paths(),
+            Some(vec!["src/".into(), "docs/".into(), "!src/gen/".into()])
+        );
+        assert_eq!(config.mode, AdmissionMode::Filtered);
+        assert_eq!(config.rules, vec![users(IncludeUsers, &["11"])]);
+        config.validate().unwrap();
+        // Idempotent: nothing left to move.
+        assert_eq!(config.take_legacy_paths(), None);
+
+        // Only path rules on: everything else was the gate, so All.
+        let mut only = filtered(vec![rule(Assigned, false), paths(IncludePaths, &["src/"])]);
+        assert_eq!(only.take_legacy_paths(), Some(vec!["src/".into()]));
+        assert_eq!(only.mode, AdmissionMode::All);
+        // Exclude-only admitted nothing before and still admits nothing.
+        let mut excluded = filtered(vec![paths(ExcludePaths, &["docs/"])]);
+        assert_eq!(excluded.take_legacy_paths(), Some(vec!["!docs/".into()]));
+        assert_eq!(excluded.mode, AdmissionMode::Filtered);
+        // Disabled path rules migrate to nothing and change no mode.
+        let mut off = filtered(vec![disabled]);
+        assert_eq!(off.take_legacy_paths(), Some(vec![]));
+        assert_eq!(off.mode, AdmissionMode::Filtered);
+        assert!(off.rules.is_empty());
     }
 
     #[test]

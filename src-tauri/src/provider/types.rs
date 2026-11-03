@@ -203,6 +203,36 @@ pub struct ReviewContext {
     pub base: BTreeMap<String, TreeEntry>,
 }
 
+/// A pull request's changed files at its head (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    /// Every changed file can be listed; the list was not requested.
+    Visible,
+    /// Every changed file, complete.
+    Complete(Vec<ChangedFile>),
+    /// The provider reports this many changed files but cannot list them all.
+    Incomplete(u64),
+}
+
+/// Files changed between an earlier head and the current one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Since {
+    Files(Vec<ChangedFile>),
+    /// The provider list stopped at its cap: try a tree diff.
+    Capped,
+    /// Not an incremental change (rebase, force-push, unknown old head):
+    /// use the whole pull request.
+    WholePullRequest,
+}
+
+/// Paths whose tree entry (object or mode) differs between two commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeDiff {
+    Complete(Vec<ChangedFile>),
+    /// A tree read was cut off: the diff would be partial.
+    Truncated,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ResolvedTarget {
     pub connection: Connection,

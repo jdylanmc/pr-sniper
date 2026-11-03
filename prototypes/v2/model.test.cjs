@@ -1045,74 +1045,50 @@ test("the first matching rule wins in every ordering of include and exclude user
   assert.equal(M.admits(base(["exclude_users", "include_users"]), pr()), false);
 });
 
-test("precedence permutations across assigned, include users and exclude paths", () => {
-  const kinds = ["assigned", "include_users", "exclude_paths"];
-  const permutations = (items) =>
-    items.length < 2
-      ? [items]
-      : items.flatMap((item, i) =>
-          permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(
-            (rest) => [item, ...rest],
-          ),
-        );
-  assert.equal(permutations(kinds).length, 6);
-  for (const permutation of permutations(kinds)) {
-    const repo = filtered((a) => {
-      rule(a, "assigned").enabled = true;
-      rule(a, "include_users").enabled = true;
-      rule(a, "include_users").users = ["Casey Lee"];
-      rule(a, "exclude_paths").enabled = true;
-      rule(a, "exclude_paths").paths = ["src/", "docs/"];
-      order(a, [
-        ...permutation,
-        ...M.ruleKinds.filter((k) => !kinds.includes(k)),
-      ]);
-    });
-    // Every changed file is excluded, so the outcome depends on what comes first.
-    const expected =
-      permutation.indexOf("exclude_paths") >
-      Math.min(
-        permutation.indexOf("assigned"),
-        permutation.indexOf("include_users"),
-      );
-    assert.equal(
-      M.admits(repo, pr({ reviewRequested: true })),
-      expected,
-      permutation.join(">"),
-    );
-  }
+test("the Paths gate ANDs with admission, last match wins", () => {
+  const repo = filtered((a) => {
+    rule(a, "assigned").enabled = true;
+  });
+  repo.paths = ["src/", "!src/gen/"];
+  const files = (...paths) => paths.map((path) => ({ path }));
+  const requested = (...paths) =>
+    pr({ reviewRequested: true, files: files(...paths) });
+  assert.equal(M.admits(repo, requested("src/a.ts")), true);
+  assert.equal(M.admits(repo, requested("docs/a.md")), false);
+  assert.equal(M.admits(repo, requested("src/gen/a.ts")), false);
+  assert.equal(M.admits(repo, requested("src/gen/a.ts", "src/b.ts")), true);
+  // Admission still decides first: a matching path never admits on its own.
+  assert.equal(M.admits(repo, pr({ files: files("src/a.ts") })), false);
+  // Only excludes: everything else matches; empty: no gate.
+  assert.equal(M.pathsMatch(["!docs/"], ["src/a.ts"]), true);
+  assert.equal(M.pathsMatch(["!docs/"], ["docs/a.md"]), false);
+  assert.equal(M.pathsMatch([], []), true);
 });
 
-test("exclude paths rejects only when every changed file matches", () => {
-  const repo = filtered((a) => {
-    rule(a, "exclude_paths").enabled = true;
-    rule(a, "exclude_paths").paths = ["docs/", "**/*.md"];
-    rule(a, "include_users").enabled = true;
-    rule(a, "include_users").users = ["Casey Lee"];
-  });
-  rule(repo.admission, "include_users").enabled = true;
-  order(repo.admission, [
-    "exclude_paths",
-    ...M.ruleKinds.filter((k) => k !== "exclude_paths"),
-  ]);
+test("old path rules migrate into the Paths gate", () => {
+  const state = M.seed();
+  const legacy = plain(state.repos[0]);
+  legacy.admission.mode = "filtered";
+  legacy.admission.rules = [
+    { kind: "assigned", enabled: false },
+    { kind: "include_paths", enabled: true, paths: ["src/"] },
+    { kind: "exclude_paths", enabled: true, paths: ["src/gen/"] },
+    { kind: "mentioned", enabled: false },
+    { kind: "include_users", enabled: false, users: [] },
+    { kind: "exclude_users", enabled: false, users: [] },
+  ];
+  state.repos[0] = legacy;
+  const migrated = M.migrate(plain(state)).repos[0];
+  assert.deepEqual(plain(migrated.paths), ["src/", "!src/gen/"]);
+  assert.equal(migrated.admission.mode, "all");
   assert.equal(
-    M.admits(repo, pr({ files: [{ path: "docs/a.md" }, { path: "x.md" }] })),
+    migrated.admission.rules.some((r) => r.kind.endsWith("_paths")),
     false,
   );
-  assert.equal(M.admits(repo, pr()), true);
-  assert.equal(M.admits(repo, pr({ files: [] })), true);
-});
-
-test("include paths admits when any changed file matches", () => {
-  const repo = filtered((a) => {
-    rule(a, "include_paths").enabled = true;
-    rule(a, "include_paths").paths = ["tests/", "src/**/*.ts"];
-  });
-  assert.equal(M.admits(repo, pr({ files: [{ path: "src/x/y.ts" }] })), true);
-  assert.equal(M.admits(repo, pr({ files: [{ path: "tests/a.js" }] })), true);
-  assert.equal(M.admits(repo, pr({ files: [{ path: "lib/a.ts" }] })), false);
-  rule(repo.admission, "include_paths").paths = [];
-  assert.equal(M.admits(repo, pr()), false);
+  assert.deepEqual(
+    plain(M.migrate(plain({ ...state, repos: [migrated] })).repos[0]),
+    plain(migrated),
+  );
 });
 
 test("path globs: directory prefix, star, double star and question mark", () => {
@@ -1144,6 +1120,9 @@ test("path patterns are validated", () => {
   assert.match(M.pathProblem("..", []), /repository-relative/);
   assert.match(M.pathProblem("docs/", ["docs/"]), /Already added/);
   assert.equal(M.pathProblem("docs/"), "");
+  assert.equal(M.pathProblem("!docs/"), "");
+  assert.match(M.pathProblem("!"), /repository-relative/);
+  assert.match(M.pathProblem("!/abs"), /repository-relative/);
 });
 
 test("old repository data migrates deterministically to admission", () => {
@@ -1201,35 +1180,28 @@ test("admission validation is strict", () => {
     (a) => (rule(a, "include_users").users = [""]),
     (a) => (rule(a, "include_users").users = ["A", "A"]),
     (a) => delete rule(a, "exclude_users").users,
-    (a) => (rule(a, "include_paths").paths = ["/abs"]),
-    (a) => (rule(a, "include_paths").paths = ["x/../y"]),
-    (a) => (rule(a, "include_paths").paths = ["a", "a"]),
-    (a) => (rule(a, "exclude_paths").paths = ["a".repeat(257)]),
+    (a) => a.rules.push({ kind: "include_paths", enabled: true, paths: [] }),
     (a) => (rule(a, "assigned").users = []),
   ])
     assert.throws(() => M.validate(mutate(change)), /pull request filters/);
   // Rules may be reordered freely.
   M.validate(mutate((a) => a.rules.reverse()));
+  for (const paths of [["/abs"], ["x/../y"], ["a", "a"], ["a".repeat(257)]]) {
+    const state = M.seed();
+    state.repos[0].paths = paths;
+    assert.throws(() => M.validate(state), /Invalid paths/);
+  }
 });
 
-test("detection and trust honor admission rules", () => {
+test("detection and trust honor admission rules and the Paths gate", () => {
   let state = M.seed();
   state.repos.forEach((repo) => {
-    repo.admission = filtered((a) => {
-      rule(a, "exclude_paths").enabled = true;
-      rule(a, "exclude_paths").paths = ["src/", "tests/"];
-      rule(a, "include_users").enabled = true;
-      rule(a, "include_users").users = [];
-    }).admission;
+    repo.admission = M.defaultAdmission();
+    repo.paths = ["!src/", "!tests/"];
   });
   assert.throws(() => M.update(state, "detect"), /No sample PRs match/);
   state.repos.forEach((repo) => {
-    rule(repo.admission, "include_paths").enabled = true;
-    rule(repo.admission, "include_paths").paths = ["src/"];
-    order(repo.admission, [
-      "include_paths",
-      ...M.ruleKinds.filter((k) => k !== "include_paths"),
-    ]);
+    repo.paths = ["src/"];
   });
   state = M.update(state, "detect");
   assert(state.reviews.some((review) => review.number >= 500));

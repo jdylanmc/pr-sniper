@@ -96,6 +96,38 @@ pub trait PullRequestReader {
         repository: &RemoteRepository,
         number: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError>;
+    /// Whether every changed file at `pull.head_sha` can be listed, with the
+    /// complete list when `list`. A moved head is `RevisionChanged`.
+    fn changed_file_listing(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        list: bool,
+    ) -> Result<Listing, ConnectionError>;
+    /// Files changed from `old_head` to `pull.head_sha`.
+    fn changed_files_since(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        old_head: &str,
+    ) -> Result<Since, ConnectionError>;
+    /// Merge base of the pull request's base and head: the whole-PR diff
+    /// starts there.
+    fn merge_base(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+    ) -> Result<String, ConnectionError>;
+    /// Entries that differ between the trees of `from` and `to`. `scope`:
+    /// directory prefixes (`""` = the root) to walk instead of reading both
+    /// whole trees; entries outside every prefix are left out.
+    fn tree_diff(
+        &self,
+        repository: &RemoteRepository,
+        from: &str,
+        to: &str,
+        scope: &[String],
+    ) -> Result<TreeDiff, ConnectionError>;
     /// Diff, base revision and both trees of one exact head.
     fn review_context(
         &self,
@@ -348,6 +380,37 @@ impl<P> ProviderSession for P where
 }
 
 /// Brings the provider interfaces into scope for method-call syntax.
+/// Blobs and submodules whose object or mode differs between two recursive
+/// trees, as changed files. Directories themselves are not files.
+pub fn tree_changes(
+    old: &std::collections::BTreeMap<String, TreeEntry>,
+    new: &std::collections::BTreeMap<String, TreeEntry>,
+) -> Vec<ChangedFile> {
+    let file = |entry: &&TreeEntry| entry.kind != "tree";
+    let mut changes = Vec::new();
+    let paths: std::collections::BTreeSet<_> = old.keys().chain(new.keys()).collect();
+    for path in paths {
+        let (before, after) = (old.get(path).filter(file), new.get(path).filter(file));
+        let status = match (before, after) {
+            (None, None) => continue,
+            (Some(b), Some(a)) if b.sha == a.sha && b.mode == a.mode => continue,
+            (Some(_), Some(_)) => "modified",
+            (None, Some(_)) => "added",
+            (Some(_), None) => "removed",
+        };
+        changes.push(ChangedFile {
+            path: path.clone(),
+            previous_path: None,
+            status: status.into(),
+            additions: 0,
+            deletions: 0,
+            changes: 0,
+            sha: after.or(before).map(|e| e.sha.clone()).unwrap_or_default(),
+        });
+    }
+    changes
+}
+
 pub mod prelude {
     pub use super::{
         AccountReader, CheckLogReader, CommentReader, CommentWriter, Guardable, PeopleSearch,

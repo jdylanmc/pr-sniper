@@ -16,6 +16,14 @@ const paths = {
   retry: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   open: "M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6v6m0-6-9 9",
   duck: "M9 7.5a3.5 3.5 0 1 1 6.2 2.2L18 11l-2.6 1.1M4 13h7.5c1.6 0 3-.5 4.3-1.3.9 3.6-1.7 7.3-6.3 7.3C6 19 4 16.5 4 13Z",
+  skipped: "M5 5l8 7-8 7V5Zm10 0v14",
+};
+
+const skipReasons: Record<
+  NonNullable<QueueItem["skipped"]>[number]["reason"],
+  string
+> = {
+  no_matching_files: "No matching files",
 };
 
 const folded = (others?: Record<string, number>) =>
@@ -478,6 +486,20 @@ export function activityRows(
         ["Receipt", peer.id, true],
         ["Actor", peer.actor_id],
         ["Head", peer.head, true],
+      ],
+    });
+  // Secondaries whose path globs matched nothing changed since their review.
+  for (const skipped of item.skipped ?? [])
+    rows.push({
+      kind: "skipped",
+      icon: paths.skipped,
+      verb: "Skipped",
+      value: skipReasons[skipped.reason],
+      agent: skipped.agent_name,
+      facts: [
+        ["Agent", skipped.agent_name],
+        ["Reason", skipReasons[skipped.reason]],
+        ["Revision", short(head)],
       ],
     });
   return rows;
