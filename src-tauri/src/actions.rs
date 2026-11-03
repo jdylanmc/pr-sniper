@@ -876,11 +876,23 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         }
         // The packet final of the item's own exit run: its progress, or a parked toss
         // (a toss under budget re-queued a newer run, so it no longer matches).
-        if let Some((run, approval)) = final_review.as_ref().and_then(|f| {
+        let exit_final = final_review.as_ref().and_then(|f| {
             let packet = f.packet.as_ref()?;
             (!f.cancelled && Some(&packet.run_id) == item.exit_run_id.as_ref())
                 .then_some((f, packet))
-        }) {
+        });
+        if exit_final.is_none()
+            && item.state == State::MachineSignedOff
+            && item.exit == Some(crate::exits::Exit::Lgtm)
+            && item.progress.is_some()
+        {
+            // An acting LGTM before adoption may still park on CI: a saved observation
+            // predates this exit, so it never proves green CI for it.
+            item.state = State::WaitingOnCi;
+            item.summary = State::WaitingOnCi.summary();
+            item.progress = None;
+        }
+        if let Some((run, approval)) = exit_final {
             let own = |e: &&Effect| e.final_id == run.id;
             let tossed = effects
                 .iter()
@@ -898,6 +910,15 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.failed_operation = Some(queue::FailedOperation::ProviderAction);
                 item.remedy = Some(queue::Remedy::Retry);
                 item.summary = State::Failed.summary();
+            } else if item.state == State::MachineSignedOff
+                && !approval.settled
+                && packet::parked_on_ci(run, observed.and_then(|o| o.observation.as_ref()))
+            {
+                // A Parked LGTM is not ready for a human and nothing is in flight. Without
+                // a current observation (e.g. a rate-limited read) CI is not shown green.
+                item.state = State::WaitingOnCi;
+                item.summary = State::WaitingOnCi.summary();
+                item.progress = None;
             } else if item.progress.is_some() {
                 item.progress = if approval.settled || (approved && !run.basis.permissions.merge) {
                     None

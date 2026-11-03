@@ -21,7 +21,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
   | `wait`                                      | out of human Queue; Running PR row, no AI slot | **Waiting on CI** / **Waiting on draft** / **Waiting on reviews** |
   | `approve_pull_request`, `approve_and_merge` | Ready for you                                  | **Approving** → **Merging**                                       |
 
-| `lgtm` parked on pending CI (Parked LGTM) | Ready for you | **Approving** / **Merging**; blocker `LGTM pending on revision …` |
+| `lgtm` parked on pending CI (Parked LGTM) | out of human Queue (`waiting_on_ci`); Running PR row, no Ready notice | **Waiting on CI**; blocker `LGTM pending on revision …` |
 | approval confirmed / merged | Reviewed (Approved / Merged) | — |
 | `leave_comments` writes running (exit_writes Planned/Verified, batch pending) | out of Queue (`awaiting_publication`) | **Publishing** |
 | writes confirmed + consumed | out of Queue (`waiting_for_author`) | — |
