@@ -948,6 +948,9 @@ pub struct PollResult {
 pub struct ExplicitAdmission {
     pub queued: bool,
     pub message: String,
+    /// The repository paths gate rejected this revision: no work may start.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gated_out: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1753,6 +1756,7 @@ impl Monitor {
             return Ok(ExplicitAdmission {
                 queued: false,
                 message: format!("PR #{} is not queued: this repository is disabled. Enable it and save to queue the requested PR.", pull.number),
+                gated_out: false,
             });
         }
         if pull.state != Lifecycle::Open || (pull.draft && !expected.review_drafts) {
@@ -1768,6 +1772,7 @@ impl Monitor {
                     "PR #{} is not queued: no changed file matches this repository's paths.",
                     pull.number
                 ),
+                gated_out: true,
             });
         }
         self.synchronize_configuration(store, accounts, now)?;
@@ -1826,6 +1831,7 @@ impl Monitor {
             queued: true,
             message: format!("PR #{number} is admitted to the review queue{} Existing work for this iteration is reused. Account, Agent availability and shared capacity still gate execution; no action permissions were granted.",
                 if paused { "; monitoring is paused, so it will not run until resumed." } else { "." }),
+            gated_out: false,
         })
     }
 

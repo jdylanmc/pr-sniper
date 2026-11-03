@@ -121,7 +121,7 @@ Path globs (ADR 0027): repository
 it reviews a revision (files changed since its last review). Include patterns
 plus `!pattern` excludes, last match wins, at most 200 of 1–256 characters.
 A primary with `paths` is rejected; legacy `include_paths`/`exclude_paths`
-admission rules are rejected. Empty or absent: no gate, every revision.
+admission rules are rejected. Empty or absent: no gate, every revision. A `watch` of a revision the gate rejects fails `paths_gate` and starts nothing, even with `review_again`.
 No generic settings replacement/import, credentials, authentication or shell
 operations exist. Unknown fields and operation names are rejected.
 

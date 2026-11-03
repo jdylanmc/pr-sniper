@@ -21,6 +21,8 @@ struct Fixture {
     launched: Mutex<Vec<String>>,
     polls: Mutex<Vec<String>>,
     head: Mutex<String>,
+    /// Path facts the next resolve reports.
+    facts: Mutex<Option<crate::paths::PathFacts>>,
     azure: Option<crate::azure_devops::setup::Report>,
 }
 impl Fixture {
@@ -63,6 +65,7 @@ impl Fixture {
             launched: Mutex::new(vec![]),
             polls: Mutex::new(vec![]),
             head: Mutex::new("a".repeat(40)),
+            facts: Mutex::new(None),
             azure: None,
         }
     }
@@ -228,7 +231,7 @@ impl Runtime for Fixture {
                 }),
             },
             7,
-            None,
+            self.facts.lock().unwrap().clone(),
         ))
     }
     fn launch(&self, batch: Batch) {
@@ -603,6 +606,33 @@ fn watch_again_preserves_confirmed_publications_from_current_and_older_heads() {
             vec![published]
         );
     }
+}
+
+#[test]
+fn watch_again_on_a_revision_the_paths_gate_rejects_starts_nothing() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    fixture.complete();
+    {
+        let store = fixture.store.lock().unwrap();
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].paths = vec!["docs/".into()];
+        store.save_settings(&settings).unwrap();
+    }
+    *fixture.facts.lock().unwrap() = Some(
+        serde_json::from_value(json!({
+            "head_sha": "a".repeat(40), "base_sha": "b".repeat(40),
+            "gate": ["docs/"], "admitted": false
+        }))
+        .unwrap(),
+    );
+    let before = fixture.store.lock().unwrap().load_queue().unwrap();
+    let reply = fixture.call(fixture.watch(true));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error"]["code"], "paths_gate");
+    assert_eq!(reply["error"]["detail"]["admitted"], false);
+    assert_eq!(fixture.store.lock().unwrap().load_queue().unwrap(), before);
+    assert!(fixture.launched.lock().unwrap().is_empty());
 }
 
 #[test]

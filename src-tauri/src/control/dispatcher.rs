@@ -618,7 +618,7 @@ fn watch(
         work::hold(&store, &expected.id, number, true).map_err(storage)?;
     }
     let configured = (|| -> Result<usize, Error> {
-        runtime
+        let admission = runtime
             .monitor()
             .lock()
             .map_err(|_| storage(()))?
@@ -632,6 +632,13 @@ fn watch(
                 now,
             )
             .map_err(|e| Error::new("intake_failed", e))?;
+        // The paths gate rejected this revision: no new pass, overrides or dispatch.
+        if admission.gated_out {
+            return Err(Error::new(
+                "paths_gate",
+                json!({"admitted":false,"reason":admission.message}),
+            ));
+        }
         if review_again {
             work::request_again(&store, &expected.id, number, now).map_err(|e| {
                 Error::new("watch_configuration", json!({"admitted":true,"reason":e}))
