@@ -690,6 +690,14 @@ fn ci_turning_green_mid_run_leaves_the_primary_its_sign_off() {
 /// A clean primary with merge authority signs off while CI is still running: the
 /// sign-off is accepted and parked on this revision, with nothing written.
 fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
+    parked_lgtm_after(self_authored, false)
+}
+
+/// `saved_green`: an earlier read saved green CI on the same head before CI reran.
+fn parked_lgtm_after(
+    self_authored: bool,
+    saved_green: bool,
+) -> (tempfile::TempDir, String, PrSnapshot) {
     let (root, store, item) = fixture(1, true, true);
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].assignments[0]
@@ -702,6 +710,11 @@ fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
     let state = snapshot(false, "");
     poll(&store, &state, NOW + 10);
     let env = env(&store);
+    if saved_green {
+        let mut green = env.wire.0.lock().unwrap().observation.clone();
+        green.checks = Some("SUCCESS".into());
+        synchronize(&store, &item, Ok(green), NOW + 11).unwrap();
+    }
     {
         let mut server = env.wire.0.lock().unwrap();
         server.observation.checks = Some("PENDING".into());
@@ -774,6 +787,38 @@ fn parked_lgtm(self_authored: bool) -> (tempfile::TempDir, String, PrSnapshot) {
         .iter()
         .any(|b| b.starts_with("LGTM pending on revision")));
     (root, item, state)
+}
+
+#[test]
+fn parked_lgtm_is_not_ready_on_an_earlier_green_read_of_the_same_head() {
+    // The fixture snapshots before adoption and asserts no Ready frame or chip.
+    for self_authored in [true, false] {
+        parked_lgtm_after(self_authored, true);
+    }
+}
+
+#[test]
+fn parked_lgtm_stays_waiting_on_ci_through_a_rate_limited_read() {
+    let (root, item, _) = parked_lgtm(true);
+    let store = Store::new(root.path().into());
+    let failure = crate::review::Failure::from(crate::github::ConnectionError::RateLimited);
+    assert!(failure.rate_limited());
+    synchronize(&store, &item, Err(failure), NOW + 15).unwrap();
+    let ledger = store.load_actions().unwrap();
+    let observed = ledger
+        .observations
+        .iter()
+        .find(|o| o.item_id == item)
+        .unwrap();
+    assert!(observed.observation.is_none() && observed.error.is_none());
+    let projected = crate::queue::snapshot(&store, vec![]).unwrap();
+    let row = projected.items.iter().find(|i| i.id == item).unwrap();
+    assert_eq!(row.state, crate::queue::State::WaitingOnCi);
+    assert_eq!(row.progress, None);
+    assert!(!row.action_status.as_ref().unwrap().machine_clear);
+    assert!(crate::notifications::frames(&projected)
+        .iter()
+        .all(|frame| frame.event.is_none()));
 }
 
 #[test]

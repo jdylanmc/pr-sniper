@@ -198,15 +198,14 @@ fn parked_ci(facts: &Facts, head: &str, untouched: bool) -> Result<(), String> {
     }
 }
 
-/// A Parked LGTM held by CI that has not finished: waiting on CI, not a hand-off.
-pub(crate) fn parked_on_ci(run: &FinalReview, observation: &Observation) -> bool {
-    let facts = Facts::from_observation(observation);
+/// A Parked LGTM held by CI not confirmed green: pending, unknown without conflicts,
+/// or no current observation. Waiting on CI, not a hand-off.
+pub(crate) fn parked_on_ci(run: &FinalReview, observation: Option<&Observation>) -> bool {
     signed_off(run)
-        && (facts.ci == gates::Ci::Pending || facts.ci == gates::Ci::Unknown && !facts.conflicts)
-}
-
-pub(crate) fn ci_green(observation: &Observation) -> bool {
-    Facts::from_observation(observation).ci == gates::Ci::Green
+        && observation.is_none_or(|o| {
+            let facts = Facts::from_observation(o);
+            facts.ci == gates::Ci::Pending || facts.ci == gates::Ci::Unknown && !facts.conflicts
+        })
 }
 
 pub const LGTM_REVOKED: &str =

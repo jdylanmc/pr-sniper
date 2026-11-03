@@ -885,11 +885,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             && item.state == State::MachineSignedOff
             && item.exit == Some(crate::exits::Exit::Lgtm)
             && item.progress.is_some()
-            && !observed
-                .and_then(|o| o.observation.as_ref())
-                .is_some_and(|o| o.head == item.job.head_sha && packet::ci_green(o))
         {
-            // An acting LGTM before adoption may still park on CI: never Ready meanwhile.
+            // An acting LGTM before adoption may still park on CI: a saved observation
+            // predates this exit, so it never proves green CI for it.
             item.state = State::WaitingOnCi;
             item.summary = State::WaitingOnCi.summary();
             item.progress = None;
@@ -914,11 +912,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                 item.summary = State::Failed.summary();
             } else if item.state == State::MachineSignedOff
                 && !approval.settled
-                && observed
-                    .and_then(|o| o.observation.as_ref())
-                    .is_some_and(|o| packet::parked_on_ci(run, o))
+                && packet::parked_on_ci(run, observed.and_then(|o| o.observation.as_ref()))
             {
-                // A Parked LGTM is not ready for a human and nothing is in flight.
+                // A Parked LGTM is not ready for a human and nothing is in flight. Without
+                // a current observation (e.g. a rate-limited read) CI is not shown green.
                 item.state = State::WaitingOnCi;
                 item.summary = State::WaitingOnCi.summary();
                 item.progress = None;
