@@ -128,6 +128,12 @@ impl Watchdog {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).retired = true;
     }
 
+    /// Awake total budget left.
+    pub fn remaining(&self) -> Duration {
+        self.total
+            .saturating_sub(self.clock.now().since(self.started).awake)
+    }
+
     /// Sleep since the attempt started.
     pub fn slept(&self) -> Duration {
         self.clock.now().since(self.started).slept()

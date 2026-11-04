@@ -120,7 +120,7 @@ impl DuckEngine {
             return Err(Failure::permanent("Rubber duck runtime was not prepared.").duck_setup());
         };
         let client = operation
-            .wait(Client::start(*options))
+            .wait_live(Client::start(*options))
             .await
             .map_err(Failure::operation)
             .and_then(|result| result.map_err(Failure::sdk))
@@ -180,12 +180,11 @@ pub(super) struct DuckTool {
     pub repository_name: String,
     pub facts: Arc<ToolFacts>,
     pub primary_exit: Arc<ExitState>,
-    /// The primary attempt's deadline; duck time counts against it.
-    pub deadline: Instant,
     pub operation: Operation,
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-    progress: Option<Arc<super::Watchdog>>,
+    /// The primary attempt's watchdog: its awake total budget bounds duck time.
+    progress: Arc<super::Watchdog>,
     /// The primary attempt's host-panic latch: a panic in a duck call ends the run.
     host_failure: Arc<HostFailure>,
     started: AtomicU32,
@@ -239,7 +238,7 @@ impl DuckTool {
         operation: Operation,
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-        progress: Option<Arc<super::Watchdog>>,
+        progress: Arc<super::Watchdog>,
         host_failure: Arc<HostFailure>,
         claim_evidence: Option<ClaimEvidence>,
     ) -> Arc<Self> {
@@ -250,7 +249,6 @@ impl DuckTool {
             repository_name,
             facts,
             primary_exit,
-            deadline: operation.deadline,
             operation,
             local_gate,
             diagnostics,
@@ -377,11 +375,12 @@ impl DuckTool {
         if self.started.load(Ordering::SeqCst) >= setup.limits.max_calls {
             return refuse(DuckFailure::LimitReached, input);
         }
-        let now = Instant::now();
+        // Awake time, as the watchdog counts it: an `Instant` deadline counts
+        // Windows sleep.
         let available = self
-            .deadline
-            .checked_sub(Duration::from_secs(duck::EXIT_RESERVE_SECONDS))
-            .map_or(Duration::ZERO, |end| end.saturating_duration_since(now));
+            .progress
+            .remaining()
+            .saturating_sub(Duration::from_secs(duck::EXIT_RESERVE_SECONDS));
         let timeout = Duration::from_secs(u64::from(self.call_timeout_seconds()));
         if available < timeout.min(Duration::from_secs(duck::MIN_CALL_SECONDS)) {
             return refuse(DuckFailure::BudgetExhausted, input);
@@ -506,7 +505,7 @@ impl DuckTool {
                 self.local_gate.clone(),
             )
             .with_facts(self.facts.clone())
-            .with_progress(self.progress.clone())
+            .with_progress(Some(self.progress.clone()))
             .with_host_failure(self.host_failure.clone()),
         );
         if let Some((id, text)) = &inline {
@@ -666,9 +665,7 @@ impl DuckTool {
             if let Some(trace) = diagnostics {
                 trace.event(&event.event_type, &event.data);
             }
-            if let Some(progress) = &self.progress {
-                progress.event(&event.event_type, &event.data);
-            }
+            self.progress.event(&event.event_type, &event.data);
             let pushed = events.push(&event.event_type, &event.data);
             if let Ok(mut usage) = usage.lock() {
                 *usage = events.usage();

@@ -1186,9 +1186,21 @@ async fn execute<K: Task>(
     operation: &Operation,
     request: Request<K>,
 ) -> Result<ReviewResult<K::Output>, Failure> {
+    let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
+    execute_with(options, identity, operation, request, progress).await
+}
+
+/// From here the watchdog alone owns the attempt's time budget, on the awake
+/// axis; `operation` contributes cancellation, quit and account changes only.
+async fn execute_with<K: Task>(
+    options: ClientOptions,
+    identity: &Identity,
+    operation: &Operation,
+    request: Request<K>,
+    progress: Arc<Watchdog>,
+) -> Result<ReviewResult<K::Output>, Failure> {
     let diagnostics = request.diagnostics.clone();
     let failure_commit = request.failure_commit.clone();
-    let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
     let original_gate = request.local_gate.clone();
     let gate_progress = progress.clone();
     let mut request = request;
@@ -1407,7 +1419,7 @@ async fn execute<K: Task>(
                     local()
                 }),
                 diagnostics.clone(),
-                Some(progress.clone()),
+                progress.clone(),
                 host_failure.clone(),
                 finding_primary.then(|| {
                     let reads = tools.clone();

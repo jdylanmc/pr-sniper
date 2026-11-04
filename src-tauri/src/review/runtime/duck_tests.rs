@@ -648,6 +648,40 @@ fn records(root: &Path, method: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn duck_admission_and_startup_use_the_awake_budget_not_an_expired_instant_deadline() {
+    // Windows `Instant` counts sleep: the operation deadline has passed while the
+    // watchdog's awake budget still has 10 minutes.
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let mut expired = operation(600);
+    expired.deadline = Instant::now();
+    let request = primary_request(duck.setup);
+    let progress = Arc::new(Watchdog::new(
+        (Instant::now() + Duration::from_secs(600)).into(),
+        request.inactivity,
+    ));
+    let result = execute_with(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &expired,
+        request,
+        progress,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result.ducks[0].outcome,
+        DuckOutcome::Verdict { .. }
+    ));
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 1);
+}
+
+#[tokio::test]
 async fn a_slow_duck_times_out_is_aborted_and_closed_and_the_primary_still_exits() {
     let (root, result, _) = review("duck-call", "verdict-slow", limits(8, 1), 600).await;
     let result = result.unwrap();

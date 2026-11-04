@@ -982,7 +982,14 @@ async fn execute_attempt(
         Ok((result, generation))
     }
     .await;
-    attempt.finish(outcome)
+    // Covers failures outside the runtime too (setup, credentials, final checks).
+    attempt.finish(outcome).map_err(|mut error| {
+        let slept = clock.now().since(started).slept().as_secs();
+        error.slept_seconds = error
+            .slept_seconds
+            .max(u32::try_from(slept).unwrap_or(u32::MAX));
+        error
+    })
 }
 
 /// The provider transport speaks ConnectionError; keep a rejected local gate's
