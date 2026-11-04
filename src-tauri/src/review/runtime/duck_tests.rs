@@ -1184,14 +1184,24 @@ async fn a_host_panic_in_a_duck_exit_ends_the_primary_now_and_reaches_the_host_l
 async fn a_duck_call_window_counts_sleep() {
     use crate::clock::{Clock, Simulated};
     let source = Simulated::new();
-    let clock = Clock::with(source.clone());
-    let window = super::duck_tool::CallWindow {
-        started: clock.now(),
-        limit: Duration::from_secs(180),
-    };
+    let window =
+        super::duck_tool::CallWindow::new(Clock::with(source.clone()), Duration::from_secs(180));
     tokio::time::advance(Duration::from_secs(30)).await;
     source.sleep(Duration::from_secs(60));
-    assert!(!window.over(clock.now()));
+    assert!(!window.over());
     source.sleep(Duration::from_secs(90));
-    assert!(window.over(clock.now()));
+    assert!(window.over());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_duck_call_window_keeps_awake_time_when_the_wall_clock_is_set_back() {
+    use crate::clock::{Clock, Simulated};
+    let source = Simulated::new();
+    let window =
+        super::duck_tool::CallWindow::new(Clock::with(source.clone()), Duration::from_secs(180));
+    tokio::time::advance(Duration::from_secs(120)).await;
+    source.set_back(Duration::from_secs(3600));
+    assert!(!window.over());
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert!(window.over());
 }

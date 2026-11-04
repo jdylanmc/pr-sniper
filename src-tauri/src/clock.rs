@@ -44,7 +44,8 @@ impl Source for System {
     }
 }
 
-/// Injectable time source; the default reads the system clocks.
+/// Injectable time source; the default reads the system clocks. Compare only
+/// stamps from the same `Clock`: awake time has a per-clock origin.
 #[derive(Clone)]
 pub(crate) struct Clock(Arc<dyn Source>);
 

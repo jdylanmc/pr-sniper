@@ -3585,9 +3585,17 @@ impl JobOperation {
         }
     }
 
-    /// Sleep, like offline time, is not part of the retry window.
-    pub fn credit_sleep(&mut self, seconds: u32) {
-        self.retry_deadline = self.retry_deadline.saturating_add(i64::from(seconds));
+    /// Sleep, like offline time, is not part of the retry window. Sleep inside a
+    /// recorded offline interval is left to `resume_online`, never credited twice;
+    /// the sleep is taken to end at `now`, so the credit errs low.
+    pub fn credit_sleep(&mut self, seconds: u32, now: i64) {
+        let slept = i64::from(seconds);
+        let credit = self.offline_since.map_or(slept, |since| {
+            since
+                .saturating_sub(now.saturating_sub(slept))
+                .clamp(0, slept)
+        });
+        self.retry_deadline = self.retry_deadline.saturating_add(credit);
     }
 
     pub fn suspend_offline(&mut self, now: i64) {
@@ -4736,6 +4744,31 @@ mod read_diagnostic_tests {
             "{delays:?}"
         );
         assert!(delays.iter().any(|delay| *delay < 5), "{delays:?}");
+    }
+
+    #[test]
+    fn sleep_inside_a_recorded_outage_is_credited_once() {
+        let mut operation = running_operation();
+        operation.attempt_count = 2;
+        let deadline = operation.retry_deadline;
+        let woke = 5 * 3600;
+        // Wi-Fi dropped, then the lid closed for 4h: the outage covers the sleep.
+        operation.freeze_offline(woke - 4 * 3600 - 60);
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline);
+        operation.state = OperationState::Queued;
+        operation.resume_online(woke + 60);
+        assert_eq!(operation.retry_deadline, deadline + 4 * 3600 + 120);
+
+        // An outage that began 1h into a 4h sleep covers 3h of it.
+        let mut operation = running_operation();
+        operation.freeze_offline(woke - 3 * 3600);
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline + 3600);
+
+        let mut operation = running_operation();
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline + 4 * 3600);
     }
 
     fn running_operation() -> JobOperation {

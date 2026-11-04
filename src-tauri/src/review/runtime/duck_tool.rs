@@ -202,15 +202,24 @@ pub(super) struct DuckTool {
 
 /// One duck call's time limit. Sleep counts: a call whose session slept past its
 /// limit is presumed dead and times out on wake.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct CallWindow {
-    pub started: crate::clock::Stamp,
-    pub limit: Duration,
+    clock: crate::clock::Clock,
+    started: crate::clock::Stamp,
+    limit: Duration,
 }
 
 impl CallWindow {
-    pub fn over(&self, now: crate::clock::Stamp) -> bool {
-        now.since(self.started).total >= self.limit
+    pub fn new(clock: crate::clock::Clock, limit: Duration) -> Self {
+        Self {
+            started: clock.now(),
+            clock,
+            limit,
+        }
+    }
+
+    pub fn over(&self) -> bool {
+        self.clock.now().since(self.started).total >= self.limit
     }
 }
 
@@ -377,10 +386,7 @@ impl DuckTool {
         if available < timeout.min(Duration::from_secs(duck::MIN_CALL_SECONDS)) {
             return refuse(DuckFailure::BudgetExhausted, input);
         }
-        let window = CallWindow {
-            started: crate::clock::Clock::default().now(),
-            limit: timeout.min(available),
-        };
+        let window = CallWindow::new(crate::clock::Clock::default(), timeout.min(available));
         if (setup.gated)() {
             return refuse(DuckFailure::RateLimited, input);
         }
@@ -451,10 +457,9 @@ impl DuckTool {
     }
 
     /// Ends a call that outlives its window or its primary.
-    async fn watch(&self, window: CallWindow) -> DuckFailure {
-        let clock = crate::clock::Clock::default();
+    async fn watch(&self, window: &CallWindow) -> DuckFailure {
         loop {
-            if window.over(clock.now()) {
+            if window.over() {
                 return DuckFailure::TimedOut;
             }
             if self.primary_exit.taken() {
@@ -557,7 +562,7 @@ impl DuckTool {
         let session = tokio::select! {
             biased;
             created = create => created.map_err(|_| (DuckFailure::Failed, Some(DuckReason::SessionCreate)))?,
-            failure = self.watch(window) => return Err((failure, None)),
+            failure = self.watch(&window) => return Err((failure, None)),
         };
         call.session_id = Some(session.id().to_string());
         if let Some(trace) = &diagnostics {
@@ -573,7 +578,7 @@ impl DuckTool {
         let result = tokio::select! {
             biased;
             result = self.converse(&session, packet_text, &names, &reads, &exits, diagnostics.as_ref(), &usage) => result,
-            failure = self.watch(window) => Err((failure, None)),
+            failure = self.watch(&window) => Err((failure, None)),
         };
         if let Ok(usage) = usage.lock() {
             (call.input_tokens, call.output_tokens, call.tool_calls) = *usage;

@@ -371,7 +371,7 @@ pub(crate) fn complete(
         crate::connectivity::sync_operation(store, &mut current.operation, Some(since), now);
         current.operation.suspend_offline(now);
         if let Some(error) = outcome.as_ref().err() {
-            current.operation.credit_sleep(error.slept_seconds);
+            current.operation.credit_sleep(error.slept_seconds, now);
         }
         current.result = None;
         current.attempt_ducks.clear();
@@ -477,7 +477,7 @@ pub(crate) fn complete(
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
-                current.operation.credit_sleep(error.slept_seconds);
+                current.operation.credit_sleep(error.slept_seconds, now);
                 current.operation.fail(&error.monitoring(), now);
                 current.operation.credentials_origin = (current.operation.failure
                     == Some(monitoring::OperationFailure::Credentials))
