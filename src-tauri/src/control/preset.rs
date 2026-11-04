@@ -67,6 +67,7 @@ pub(crate) fn apply(
             actions: None,
             tools: None,
             rubber_duck: None,
+            paths: Vec::new(),
         })
         .collect();
     Ok(json!({

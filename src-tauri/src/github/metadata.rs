@@ -5,56 +5,30 @@ use std::collections::{BTreeMap, HashSet};
 
 pub use crate::provider::{ChangedFile, Lifecycle, PullRequest, RequestedTeam};
 
+/// GitHub's pull request files listing stops at this many files.
+pub(super) const FILES_LISTING_CAP: u64 = 3_000;
+/// A compare listing at this many files may be cut off.
+pub(super) const COMPARE_FILES_CAP: usize = 300;
+
 impl<T: Transport> GithubClient<T> {
     pub(super) fn changed_files(
         &self,
         path: &str,
         count: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError> {
-        // GitHub's files endpoint cannot return more than 3,000 files.
-        if count > 3_000 {
+        if count > FILES_LISTING_CAP {
             return Err(ConnectionError::LimitExceeded);
         }
-        let raw_files = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
-        if raw_files.len() as u64 != count {
+        let files = self.listed_files(path)?;
+        if files.len() as u64 != count {
             return Err(ConnectionError::IncompleteRead);
         }
-        let mut paths = HashSet::new();
-        let mut files = Vec::new();
-        for file in raw_files {
-            let filename = text(&file["filename"])?;
-            if !paths.insert(filename.clone()) {
-                return Err(ConnectionError::IncompleteRead);
-            }
-            let status = text(&file["status"])?;
-            if ![
-                "added",
-                "removed",
-                "modified",
-                "renamed",
-                "copied",
-                "changed",
-                "unchanged",
-            ]
-            .contains(&status.as_str())
-            {
-                return Err(ConnectionError::InvalidResponse);
-            }
-            let previous_path = optional_text(file.get("previous_filename"))?;
-            if status == "renamed" && previous_path.is_none() {
-                return Err(ConnectionError::InvalidResponse);
-            }
-            files.push(ChangedFile {
-                path: filename,
-                previous_path,
-                status,
-                additions: unsigned(&file["additions"])?,
-                deletions: unsigned(&file["deletions"])?,
-                changes: unsigned(&file["changes"])?,
-                sha: sha(&file["sha"])?,
-            });
-        }
         Ok(files)
+    }
+
+    /// Every file `{path}/files` lists, paged to the end.
+    pub(super) fn listed_files(&self, path: &str) -> Result<Vec<ChangedFile>, ConnectionError> {
+        changed_file_entries(self.pages(&format!("{path}/files?per_page=100&page=1"))?)
     }
 
     pub(super) fn pages(&self, first: &str) -> Result<Vec<Value>, ConnectionError> {
@@ -96,6 +70,49 @@ impl<T: Transport> GithubClient<T> {
             }
         }
     }
+}
+
+/// Changed-file entries of a files or compare listing; a repeated name is an
+/// incomplete read.
+pub(super) fn changed_file_entries(
+    raw_files: Vec<Value>,
+) -> Result<Vec<ChangedFile>, ConnectionError> {
+    let mut paths = HashSet::new();
+    let mut files = Vec::new();
+    for file in raw_files {
+        let filename = text(&file["filename"])?;
+        if !paths.insert(filename.clone()) {
+            return Err(ConnectionError::IncompleteRead);
+        }
+        let status = text(&file["status"])?;
+        if ![
+            "added",
+            "removed",
+            "modified",
+            "renamed",
+            "copied",
+            "changed",
+            "unchanged",
+        ]
+        .contains(&status.as_str())
+        {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        let previous_path = optional_text(file.get("previous_filename"))?;
+        if status == "renamed" && previous_path.is_none() {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        files.push(ChangedFile {
+            path: filename,
+            previous_path,
+            status,
+            additions: unsigned(&file["additions"])?,
+            deletions: unsigned(&file["deletions"])?,
+            changes: unsigned(&file["changes"])?,
+            sha: sha(&file["sha"])?,
+        });
+    }
+    Ok(files)
 }
 
 pub(super) fn polling_pull_request(value: &Value) -> Result<PullRequest, ConnectionError> {

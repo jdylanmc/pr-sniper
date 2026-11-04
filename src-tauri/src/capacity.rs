@@ -191,6 +191,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         // Reservations are added back by snapshot until their workers finish teardown.
         if crate::monitoring::retired(&candidate.job)
             || candidate.job.waiting == crate::monitoring::WAITING_REPOSITORY_DISABLED
+            || candidate.job.waiting == crate::monitoring::WAITING_INCOMPLETE_FILES
             || repositories
                 .iter()
                 .find(|repository| repository.id == candidate.job.configuration_id)

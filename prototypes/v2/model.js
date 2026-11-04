@@ -135,16 +135,8 @@
     return result;
   };
 
-  const ruleKinds = [
-    "assigned",
-    "mentioned",
-    "include_users",
-    "exclude_users",
-    "include_paths",
-    "exclude_paths",
-  ];
+  const ruleKinds = ["assigned", "mentioned", "include_users", "exclude_users"];
   const userKind = (kind) => kind.endsWith("_users");
-  const pathKind = (kind) => kind.endsWith("_paths");
   const defaultAdmission = (users = []) => ({
     mode: users.length ? "filtered" : "all",
     rules: ruleKinds.map((kind) => ({
@@ -156,7 +148,6 @@
       ...(userKind(kind)
         ? { users: kind === "include_users" ? [...users] : [] }
         : {}),
-      ...(pathKind(kind) ? { paths: [] } : {}),
     })),
   });
   const notificationTypeKeys = [
@@ -201,6 +192,27 @@
     // Saved demos from before Voices: seed once, never top up.
     state.voices ??= voiceSeeds();
     state.repos = state.repos.map((repo) => {
+      // Path rules moved into the repository Paths gate (ADR 0027).
+      if (repo?.admission?.rules?.some((r) => r.kind.endsWith("_paths"))) {
+        const enabled = (kind) =>
+          repo.admission.rules
+            .filter((r) => r.kind === kind && r.enabled)
+            .flatMap((r) => r.paths ?? []);
+        const moved = [
+          ...enabled("include_paths"),
+          ...enabled("exclude_paths").map((p) => `!${p}`),
+        ];
+        repo.paths = [...new Set([...(repo.paths ?? []), ...moved])];
+        repo.admission.rules = repo.admission.rules.filter(
+          (r) => !r.kind.endsWith("_paths"),
+        );
+        if (
+          repo.admission.mode === "filtered" &&
+          moved.some((p) => !p.startsWith("!")) &&
+          !repo.admission.rules.some((r) => r.enabled)
+        )
+          repo.admission.mode = "all";
+      }
       if (!repo || repo.admission !== undefined) return repo;
       const { watched, reviewerRequests, ...rest } = repo;
       const users = Array.isArray(watched) ? watched : [];
@@ -217,10 +229,12 @@
   };
   const pathProblem = (value, existing = []) => {
     if (typeof value !== "string" || !value.trim()) return "Enter a path.";
+    const glob = value.startsWith("!") ? value.slice(1) : value;
     if (
-      value.length > 256 ||
-      value.startsWith("/") ||
-      value.split("/").includes("..")
+      !glob ||
+      glob.length > 256 ||
+      glob.startsWith("/") ||
+      glob.split("/").includes("..")
     )
       return "Use a repository-relative pattern without .. or a leading /.";
     if (existing.includes(value)) return "Already added.";
@@ -245,16 +259,31 @@
     }
     return new RegExp(`^${source}$`).test(path);
   };
+  // Gitignore-style: last match wins; only excludes start from everything.
+  const pathsMatch = (patterns, paths) =>
+    !patterns.length ||
+    paths.some((path) => {
+      let selected = patterns.every((p) => p.startsWith("!"));
+      for (const pattern of patterns)
+        if (pattern.startsWith("!")) {
+          if (globMatches(pattern.slice(1), path)) selected = false;
+        } else if (globMatches(pattern, path)) selected = true;
+      return selected;
+    });
+  // The repository Paths gate ANDs with admission.
+  const admits = (repo, review) =>
+    pathsMatch(
+      repo.paths ?? [],
+      (review.files ?? []).map((file) => file.path),
+    ) && admittedByRules(repo, review);
   // Enabled rules run in order; the first one that matches decides.
-  const admits = (repo, review) => {
+  const admittedByRules = (repo, review) => {
     const admission = repo.admission;
     if (admission.mode === "all") return true;
     if (admission.mode === "explicit") return false;
-    const paths = (review.files ?? []).map((file) => file.path);
     for (const rule of admission.rules) {
       if (!rule.enabled) continue;
       const users = rule.users ?? [];
-      const patterns = rule.paths ?? [];
       switch (rule.kind) {
         case "assigned":
           if (review.reviewRequested === true) return true;
@@ -267,18 +296,6 @@
           break;
         case "exclude_users":
           if (users.includes(review.author)) return false;
-          break;
-        case "include_paths":
-          if (paths.some((path) => patterns.some((p) => globMatches(p, path))))
-            return true;
-          break;
-        case "exclude_paths":
-          if (
-            paths.length &&
-            patterns.length &&
-            paths.every((path) => patterns.some((p) => globMatches(p, path)))
-          )
-            return false;
           break;
       }
     }
@@ -665,11 +682,7 @@
       invalid,
     );
     admission.rules.forEach((rule) => {
-      const valueKey = userKind(rule.kind)
-        ? "users"
-        : pathKind(rule.kind)
-          ? "paths"
-          : "";
+      const valueKey = userKind(rule.kind) ? "users" : "";
       const expected = ["enabled", "kind", ...(valueKey ? [valueKey] : [])];
       requireValue(
         typeof rule.enabled === "boolean" &&
@@ -681,11 +694,7 @@
       requireValue(
         Array.isArray(values) &&
           new Set(values).size === values.length &&
-          values.every((value, index) =>
-            valueKey === "users"
-              ? text(value)
-              : !pathProblem(value, values.slice(0, index)),
-          ),
+          values.every((value) => text(value)),
         invalid,
       );
     });
@@ -860,6 +869,15 @@
         "An assigned agent is missing.",
       );
       validateAdmission(item.admission);
+      const paths = item.paths ?? [];
+      requireValue(
+        Array.isArray(paths) &&
+          paths.length <= 200 &&
+          paths.every(
+            (value, index) => !pathProblem(value, paths.slice(0, index)),
+          ),
+        "Invalid paths.",
+      );
       requireValue(
         ["inherit", "on", "off"].includes(item.start) &&
           ["inherit", "on", "off"].includes(item.comments),
@@ -1540,6 +1558,7 @@
     migrate,
     notificationTypeKeys,
     admits,
+    pathsMatch,
     globMatches,
     pathProblem,
     defaultAdmission,

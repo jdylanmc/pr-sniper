@@ -358,8 +358,6 @@ export const ruleLabels = {
   mentioned: "Mentioning me in comments",
   include_users: "Include users",
   exclude_users: "Exclude users",
-  include_paths: "Include paths",
-  exclude_paths: "Exclude paths",
 };
 
 export async function setRule(page, kind, enabled) {
@@ -375,13 +373,12 @@ export async function openRule(page, kind) {
     .click();
 }
 
-export async function addPath(page, kind, pattern) {
-  await openRule(page, kind);
-  await page.getByLabel("Path pattern", { exact: true }).fill(pattern);
-  await page
-    .locator(".admission-path-form")
-    .getByRole("button", { name: "Add", exact: true })
-    .click();
+/** Adds a repository Paths glob from the open repository editor. */
+export async function addPath(page, editor, pattern) {
+  await editor.locator("[data-open-paths]").click();
+  const paths = page.locator("[data-repository-paths]");
+  await paths.getByLabel("Path pattern", { exact: true }).fill(pattern);
+  await paths.getByRole("button", { name: "Add", exact: true }).click();
 }
 
 export async function addUser(page, kind, login) {

@@ -8,13 +8,132 @@ use super::{
 };
 use crate::provider::{
     AccountReader, Capabilities, ChangedFile, CommentCapability, Connection, ConnectionError,
-    Lifecycle, Person, PullRequest, PullRequestReader, RemoteRepository, RepositoryBrowser,
-    RepositoryOwner, RepositoryReader, RequestedTeam, ResolvedTarget, ReviewContext, ReviewFile,
-    TreeEntry,
+    Lifecycle, Listing, Person, PullRequest, PullRequestReader, RemoteRepository,
+    RepositoryBrowser, RepositoryOwner, RepositoryReader, RequestedTeam, ResolvedTarget,
+    ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+/// Tree reads one scoped walk may spend before it counts as cut off.
+const MAX_SCOPED_TREE_READS: usize = 5_000;
+
+/// A level-by-level tree diff under scope prefixes (`""` = everything).
+struct ScopedWalk<'a, T: Transport> {
+    client: &'a GithubClient<T>,
+    name: &'a str,
+    scope: &'a [String],
+    reads: usize,
+    files: Vec<ChangedFile>,
+}
+
+impl<T: Transport> ScopedWalk<'_, T> {
+    fn directory_in_scope(&self, directory: &str) -> bool {
+        self.scope
+            .iter()
+            .any(|p| p.starts_with(directory) || directory.starts_with(p.as_str()))
+    }
+
+    /// One tree level by object or commit; `None` when cut off.
+    fn level(
+        &mut self,
+        sha: Option<&str>,
+    ) -> Result<Option<BTreeMap<String, TreeEntry>>, ConnectionError> {
+        let Some(sha) = sha else {
+            return Ok(Some(BTreeMap::new()));
+        };
+        self.reads += 1;
+        if self.reads > MAX_SCOPED_TREE_READS {
+            return Ok(None);
+        }
+        let (value, _) = self
+            .client
+            .read(&format!("/repos/{}/git/trees/{sha}", self.name))?;
+        match value["truncated"].as_bool() {
+            Some(true) => return Ok(None),
+            Some(false) => {}
+            None => return Err(ConnectionError::IncompleteRead),
+        }
+        let entries: Vec<TreeEntry> = serde_json::from_value(value["tree"].clone())
+            .map_err(|_| ConnectionError::InvalidResponse)?;
+        let mut level = BTreeMap::new();
+        for entry in entries {
+            if entry.path.is_empty()
+                || entry.path.contains('/')
+                || entry.sha.len() != 40
+                || !entry.sha.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            if level.insert(entry.path.clone(), entry).is_some() {
+                return Err(ConnectionError::IncompleteRead);
+            }
+        }
+        Ok(Some(level))
+    }
+
+    /// False when a read was cut off.
+    fn walk(
+        &mut self,
+        old: Option<&str>,
+        new: Option<&str>,
+        directory: &str,
+    ) -> Result<bool, ConnectionError> {
+        if old == new {
+            return Ok(true);
+        }
+        let (Some(before), Some(after)) = (self.level(old)?, self.level(new)?) else {
+            return Ok(false);
+        };
+        let names: BTreeSet<_> = before.keys().chain(after.keys()).cloned().collect();
+        for name in names {
+            let (b, a) = (before.get(&name), after.get(&name));
+            if b.zip(a)
+                .is_some_and(|(b, a)| b.sha == a.sha && b.mode == a.mode)
+            {
+                continue;
+            }
+            let path = format!("{directory}{name}");
+            let file = |e: Option<&TreeEntry>| e.filter(|e| e.kind != "tree").cloned();
+            let (fb, fa) = (file(b), file(a));
+            if (fb.is_some() || fa.is_some())
+                && self.scope.iter().any(|p| path.starts_with(p.as_str()))
+                && fb
+                    .as_ref()
+                    .zip(fa.as_ref())
+                    .is_none_or(|(b, a)| b.sha != a.sha || b.mode != a.mode)
+            {
+                self.files.push(ChangedFile {
+                    status: match (&fb, &fa) {
+                        (Some(_), Some(_)) => "modified",
+                        (None, _) => "added",
+                        _ => "removed",
+                    }
+                    .into(),
+                    sha: fa.or(fb).map(|e| e.sha).unwrap_or_default(),
+                    path: path.clone(),
+                    previous_path: None,
+                    additions: 0,
+                    deletions: 0,
+                    changes: 0,
+                });
+            }
+            let tree =
+                |e: Option<&TreeEntry>| e.filter(|e| e.kind == "tree").map(|e| e.sha.clone());
+            let (tb, ta) = (tree(b), tree(a));
+            let child = format!("{path}/");
+            if (tb.is_some() || ta.is_some())
+                && tb != ta
+                && self.directory_in_scope(&child)
+                && !self.walk(tb.as_deref(), ta.as_deref(), &child)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
 
 impl<T: Transport> AccountReader for GithubClient<T> {
     fn current_identity(&self) -> Result<Person, ConnectionError> {
@@ -387,6 +506,142 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
             .as_u64()
             .ok_or(ConnectionError::InvalidResponse)?;
         self.changed_files(&path, count)
+    }
+
+    /// The PR's `changed_files` against what `/files` lists, paged to the end.
+    fn changed_file_listing(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        list: bool,
+    ) -> Result<Listing, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let path = format!("/repos/{name}/pulls/{}", pull.number);
+        let count = |client: &Self| -> Result<u64, ConnectionError> {
+            let (detail, _) = client.read(&path)?;
+            if detail["head"]["sha"].as_str() != Some(pull.head_sha.as_str()) {
+                return Err(ConnectionError::RevisionChanged);
+            }
+            detail["changed_files"]
+                .as_u64()
+                .ok_or(ConnectionError::InvalidResponse)
+        };
+        let reported = count(self)?;
+        // Listing past GitHub's cap cannot complete: no pointless paging.
+        if reported > super::metadata::FILES_LISTING_CAP {
+            return Ok(Listing::Incomplete(reported));
+        }
+        if !list {
+            return Ok(Listing::Visible);
+        }
+        let files = self.listed_files(&path)?;
+        let listed = files.len() as u64;
+        if listed == reported {
+            return Ok(Listing::Complete(files));
+        }
+        // Short of the count on the same head is a listing that cannot finish;
+        // anything else is a read that raced a push.
+        if listed < reported && count(self)? == reported {
+            return Ok(Listing::Incomplete(reported));
+        }
+        Err(ConnectionError::IncompleteRead)
+    }
+
+    /// The PR's merge base, from `compare/{base}...{head}`.
+    fn merge_base(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+    ) -> Result<String, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let (value, _) = self.read(&format!(
+            "/repos/{name}/compare/{}...{}?per_page=1",
+            pull.base_sha, pull.head_sha
+        ))?;
+        sha(&value["merge_base_commit"]["sha"])
+    }
+
+    /// Recursive trees of both commits; with a scope, a level-by-level walk
+    /// that only enters differing subtrees under the scope prefixes.
+    fn tree_diff(
+        &self,
+        repository: &RemoteRepository,
+        from: &str,
+        to: &str,
+        scope: &[String],
+    ) -> Result<TreeDiff, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        if scope.is_empty() {
+            let tree = |revision: &str| match self.review_tree(&name, revision) {
+                Err(ConnectionError::LimitExceeded) => Ok(None),
+                other => other.map(Some),
+            };
+            return Ok(match (tree(from)?, tree(to)?) {
+                (Some(old), Some(new)) => {
+                    TreeDiff::Complete(crate::provider::tree_changes(&old, &new))
+                }
+                _ => TreeDiff::Truncated,
+            });
+        }
+        let mut walk = ScopedWalk {
+            client: self,
+            name: &name,
+            scope,
+            reads: 0,
+            files: Vec::new(),
+        };
+        Ok(if walk.walk(Some(from), Some(to), "")? {
+            TreeDiff::Complete(walk.files)
+        } else {
+            TreeDiff::Truncated
+        })
+    }
+
+    /// `compare/{old}...{head}`: only an `ahead` comparison is incremental.
+    fn changed_files_since(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        old_head: &str,
+    ) -> Result<Since, ConnectionError> {
+        let name = crate::storage::canonical_repository(&repository.name)
+            .map_err(|_| ConnectionError::InvalidRepository)?;
+        let commit = |sha: &str| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+        if !commit(old_head) || !commit(&pull.head_sha) {
+            return Ok(Since::WholePullRequest);
+        }
+        let response = match self.transport.get(&format!(
+            "/repos/{name}/compare/{old_head}...{}",
+            pull.head_sha
+        )) {
+            Err(ConnectionError::LimitExceeded) => return Ok(Since::WholePullRequest),
+            other => other?,
+        };
+        // An old head no longer in the repository (force-push, gc).
+        if matches!(response.status, 404 | 422) {
+            return Ok(Since::WholePullRequest);
+        }
+        let (value, _) = super::provider::parse_response(response)?;
+        match value["status"].as_str() {
+            Some("identical") => Ok(Since::Files(Vec::new())),
+            Some("ahead") => {
+                let raw = value["files"]
+                    .as_array()
+                    .ok_or(ConnectionError::InvalidResponse)?;
+                if raw.len() >= super::metadata::COMPARE_FILES_CAP {
+                    return Ok(Since::Capped);
+                }
+                Ok(Since::Files(super::metadata::changed_file_entries(
+                    raw.clone(),
+                )?))
+            }
+            // Behind or diverged: the old head is not an ancestor (rebase).
+            Some(_) => Ok(Since::WholePullRequest),
+            None => Err(ConnectionError::InvalidResponse),
+        }
     }
 
     fn review_context(

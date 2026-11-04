@@ -819,6 +819,42 @@ impl PullRequestReader for Session {
         self.0.pull_request_files(repository, number)
     }
 
+    fn changed_file_listing(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        list: bool,
+    ) -> Result<crate::provider::Listing, ConnectionError> {
+        self.0.changed_file_listing(repository, pull, list)
+    }
+
+    fn changed_files_since(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        old_head: &str,
+    ) -> Result<crate::provider::Since, ConnectionError> {
+        self.0.changed_files_since(repository, pull, old_head)
+    }
+
+    fn merge_base(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+    ) -> Result<String, ConnectionError> {
+        self.0.merge_base(repository, pull)
+    }
+
+    fn tree_diff(
+        &self,
+        repository: &RemoteRepository,
+        from: &str,
+        to: &str,
+        scope: &[String],
+    ) -> Result<crate::provider::TreeDiff, ConnectionError> {
+        self.0.tree_diff(repository, from, to, scope)
+    }
+
     fn review_context(
         &self,
         repository: &RemoteRepository,

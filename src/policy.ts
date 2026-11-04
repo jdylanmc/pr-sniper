@@ -80,6 +80,8 @@ export interface Assignment {
   tools?: PacketTool[];
   /** Rubber Duck Agent id. Honored on the primary only. */
   rubber_duck?: string;
+  /** Secondary trigger globs; the primary has none. */
+  paths?: string[];
 }
 
 /** Mirrors `PACKET_TOOLS` in src-tauri/src/storage.rs (checked by a Rust test). */

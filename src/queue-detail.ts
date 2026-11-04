@@ -4,6 +4,7 @@ import type { MonitoringSnapshot, PublicationCandidate } from "./monitoring";
 import {
   compactDuration,
   failureChip,
+  incompleteFilesLabel,
   openDestination,
   type FailedOperation,
   type QueueItem,
@@ -75,6 +76,12 @@ const causes: Record<string, [string, "fix" | "retry"]> = {
   model_retired: ["Model retired", "retry"],
 };
 const modelCauses = ["model_rejected", "model_unavailable", "model_retired"];
+
+const strategyLabels = {
+  listing: "Listing",
+  tree_diff: "Tree diff",
+  scoped_tree_diff: "Scoped tree diff",
+} as const;
 
 const operationLabels: Record<FailedOperation, string> = {
   repository_check: "Repository check",
@@ -233,6 +240,7 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
 }
 
 export function failureLabel(cause: string, item?: QueueItem) {
+  if (item && cause === "incomplete_files") return incompleteFilesLabel(item);
   if (item && cause.startsWith("publication_")) return failureChip(item);
   return causes[cause]?.[0] ?? (cause ? humanize(cause) : "Failed");
 }
@@ -424,7 +432,14 @@ export function renderQueueStatus(
   );
   const actions = document.createElement("div");
   actions.className = "queue-status-actions";
-  if (failed) {
+  // Nothing to retry: a human reviews it, or a new revision re-evaluates it.
+  if (failed && cause === "incomplete_files") {
+    const open = githubLink(item, context);
+    open.classList.add("queue-primary");
+    open.dataset.queuePrimary = "open";
+    open.innerHTML = `${icon(paths.github)}<span>Open</span>`;
+    actions.append(open);
+  } else if (failed) {
     const target: FixTarget | undefined = !context.fix
       ? undefined
       : item.failed_model && modelCauses.includes(cause)
@@ -572,6 +587,14 @@ function renderFailureFacts(
   ];
   if (item.failed_operation)
     rows.push(["Operation", operationLabels[item.failed_operation]]);
+  if (item.incomplete_files)
+    rows.push(
+      ["Changed files", String(item.incomplete_files.count)],
+      [
+        "Tried",
+        item.incomplete_files.tried.map((s) => strategyLabels[s]).join(", "),
+      ],
+    );
   if (operation) {
     const cycle = operation.resume_cycle ?? 0;
     rows.push([

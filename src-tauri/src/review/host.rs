@@ -1426,6 +1426,8 @@ pub(crate) async fn cancel_review(
 }
 
 #[cfg(test)]
+mod path_glob_tests;
+#[cfg(test)]
 mod stale_revision_tests;
 #[cfg(test)]
 mod tests;

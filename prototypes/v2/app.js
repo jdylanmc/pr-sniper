@@ -1140,7 +1140,7 @@ function repoEditor(id) {
     `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
   return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
     <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}${row("Review drafts", `<input type="checkbox" class="switch" name="reviewDrafts" aria-label="Review drafts" ${checked(repo.reviewDrafts)} />`)}</section>
-    <section class="group-card admission-group">${row("Explicit PRs only", `<input type="checkbox" class="switch" name="admissionExplicit" aria-label="Explicit PRs only" ${checked(repo.admission.mode === "explicit")} />`)}${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button></section>
+    <section class="group-card admission-group">${row("Explicit PRs only", `<input type="checkbox" class="switch" name="admissionExplicit" aria-label="Explicit PRs only" ${checked(repo.admission.mode === "explicit")} />`)}${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button><button type="button" class="kv-row kv-link" data-action="open-paths"><span>Paths</span><span class="kv-value" data-paths-summary></span>${icon("chevron")}</button></section>
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>
     <details class="group-card repo-disclosure"><summary>Repository</summary>
@@ -1207,6 +1207,7 @@ function initRepoForm(form) {
   form._admission = Demo.copy(
     values?.admission ?? saved?.admission ?? Demo.defaultAdmission(),
   );
+  form._paths = [...(values?.paths ?? saved?.paths ?? [])];
   form._route = [...(route().draft?.admissionRoute ?? [])];
   form._provider = saved?.provider ?? "github";
   renderRepoLists(form);
@@ -1219,11 +1220,8 @@ const ruleLabels = {
   mentioned: "Mentioning me in comments",
   include_users: "Include users",
   exclude_users: "Exclude users",
-  include_paths: "Include paths",
-  exclude_paths: "Exclude paths",
 };
-const valueRule = (rule) =>
-  rule.kind.endsWith("_users") || rule.kind.endsWith("_paths");
+const valueRule = (rule) => rule.kind.endsWith("_users");
 const handle = (person) => `@${person.toLowerCase().replaceAll(" ", "-")}`;
 
 function syncAdmission(form) {
@@ -1240,6 +1238,9 @@ function syncAdmission(form) {
     admission.mode !== "filtered"
       ? ""
       : `${admission.rules.filter((rule) => rule.enabled).length} on`;
+  form.querySelector("[data-paths-summary]").textContent = form._paths.length
+    ? String(form._paths.length)
+    : "";
   renderAdmission(form);
 }
 
@@ -1272,10 +1273,11 @@ function renderAdmission(form) {
       .join("")}</section>`;
     return;
   }
-  const rule = currentRule(form);
-  pageTitle.textContent = ruleLabels[rule.kind];
-  const users = rule.kind.endsWith("_users");
-  const values = users ? rule.users : rule.paths;
+  const pathView = name === "paths";
+  const rule = pathView ? null : currentRule(form);
+  pageTitle.textContent = pathView ? "Paths" : ruleLabels[rule.kind];
+  const users = !pathView;
+  const values = pathView ? form._paths : rule.users;
   // Azure DevOps people are display names, not handles.
   const person = (value) =>
     form._provider === "azure_devops" ? value : handle(value);
@@ -1293,7 +1295,7 @@ function renderAdmission(form) {
     const choices = Demo.people.filter((person) => !values.includes(person));
     view.innerHTML = `${list}<select class="picker" data-picker="people" aria-label="Add people" hidden><option value="">Choose a person</option>${choices.map((person) => `<option value="${esc(person)}">${esc(person)}</option>`).join("")}</select><button type="button" class="floating-pill" data-action="add-people" ${disabled(!choices.length)}>${icon("plus")}Add people</button>`;
   } else
-    view.innerHTML = `${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
+    view.innerHTML = `${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="src/** or !docs/" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
 }
 
 /** Directory people whose name or address starts with the query. */
@@ -1337,14 +1339,17 @@ function popAdmission(form) {
     ? form.querySelector(
         `[data-action="open-rule"][data-kind="${left.replace("rule:", "")}"]`,
       )
-    : form.querySelector('[data-action="open-filters"]');
+    : form.querySelector(
+        left === "paths"
+          ? '[data-action="open-paths"]'
+          : '[data-action="open-filters"]',
+      );
   target?.focus({ preventScroll: true });
 }
 
 function addAdmissionValue(form, value) {
   const rule = currentRule(form);
-  const users = rule.kind.endsWith("_users");
-  (users ? rule.users : rule.paths).push(value);
+  rule.users.push(value);
   rule.enabled = true;
   dirty = true;
   renderAdmission(form);
@@ -1432,6 +1437,7 @@ function captureDraft() {
           reviewDrafts: get("reviewDrafts").checked,
           agentIds: [...form._agents],
           admission: Demo.copy(form._admission),
+          paths: [...form._paths],
           schedule: text("schedule"),
           minutes: Number(text("minutes")),
           cron: text("cron"),
@@ -2067,6 +2073,7 @@ function readForm(form) {
             scope: bool("scope"),
             agentIds: all("agentIds"),
             admission: Demo.copy(form._admission),
+            paths: [...form._paths],
             schedule,
             minutes:
               schedule === "interval"
@@ -2636,6 +2643,7 @@ popover.addEventListener("click", (event) => {
       if (!picker.hidden) picker.focus();
     },
     "open-filters": () => pushAdmission(form, "filters"),
+    "open-paths": () => pushAdmission(form, "paths"),
     "open-rule": () => pushAdmission(form, `rule:${button.dataset.kind}`),
     "move-rule": () => {
       const rules = form._admission.rules;
@@ -2653,8 +2661,8 @@ popover.addEventListener("click", (event) => {
         ?.focus({ preventScroll: true });
     },
     "remove-value": () => {
-      const rule = currentRule(form);
-      const values = rule.users ?? rule.paths;
+      const values =
+        form._route.at(-1) === "paths" ? form._paths : currentRule(form).users;
       values.splice(Number(button.dataset.index), 1);
       dirty = true;
       renderAdmission(form);
@@ -2663,14 +2671,16 @@ popover.addEventListener("click", (event) => {
       const input = form.querySelector("[data-path-input]");
       const alert = form.querySelector('[data-admission-view] [role="alert"]');
       const value = input.value.trim();
-      const problem = Demo.pathProblem(value, currentRule(form).paths);
+      const problem = Demo.pathProblem(value, form._paths);
       if (problem) {
         alert.textContent = problem;
         alert.hidden = false;
         input.focus();
         return;
       }
-      addAdmissionValue(form, value);
+      form._paths.push(value);
+      dirty = true;
+      renderAdmission(form);
       form.querySelector("[data-path-input]").focus();
     },
     "unassign-agent": () => {

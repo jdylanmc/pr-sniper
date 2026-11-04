@@ -44,6 +44,7 @@ import {
   primaryAssignmentId,
   repositoryProviderContext,
   azureDevopsOrganization,
+  pathProblem,
 } from "./repositories";
 import { defaultTools, doctrineIds } from "./policy";
 import {
@@ -3751,6 +3752,62 @@ export async function mountSettings(
     };
   }
 
+  /** Path glob list: rows with remove, and an add field (no nested form). */
+  function pathListEditor(
+    host: HTMLElement,
+    read: () => string[],
+    write: (next: string[]) => void,
+  ) {
+    host.replaceChildren();
+    const list = document.createElement("div");
+    list.className = "admission-values";
+    list.dataset.pathList = "";
+    const add = document.createElement("div");
+    add.className = "admission-path-form";
+    add.innerHTML = `<input name="path" aria-label="Path pattern" placeholder="src/** or !docs/" autocomplete="off" spellcheck="false" /><button type="button" class="primary" data-add-path>Add</button><p role="alert" hidden></p>`;
+    const input = add.querySelector<HTMLInputElement>("[name=path]")!;
+    const alert = add.querySelector<HTMLElement>("[role=alert]")!;
+    const draw = () => {
+      list.replaceChildren();
+      read().forEach((value, index) => {
+        const row = document.createElement("div");
+        row.className = "watchlist-row";
+        row.dataset.path = value;
+        row.innerHTML = `<span><code>${escape(value)}</code></span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+        row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
+          write(read().filter((_, i) => i !== index));
+          draw();
+          // The removed row's trash button is gone: land on the add field.
+          input.focus({ preventScroll: true });
+        };
+        list.append(row);
+      });
+    };
+    const submit = () => {
+      const value = input.value.trim();
+      const problem = pathProblem(value, read());
+      alert.hidden = !problem;
+      alert.textContent = problem;
+      input.setAttribute("aria-invalid", String(!!problem));
+      if (problem) return;
+      write([...read(), value]);
+      input.value = "";
+      draw();
+    };
+    add.querySelector<HTMLButtonElement>("[data-add-path]")!.onclick = submit;
+    input.onkeydown = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      submit();
+    };
+    input.oninput = () => {
+      alert.hidden = true;
+      input.removeAttribute("aria-invalid");
+    };
+    host.append(list, add);
+    draw();
+  }
+
   function repositoryDialog(
     repository: ConfiguredRepository,
     opener: HTMLElement,
@@ -3760,7 +3817,7 @@ export async function mountSettings(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(`${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${repositoryAccountLogin(repository) ?? (repository.provider_account_id ? "Unavailable" : "No account")}`)}</p></section>
         <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
-        <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
+        <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><button type="button" class="doctrine-row" data-open-paths aria-label="Paths"><span>Paths</span><span class="doctrine-summary" data-paths-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
         <div class="assignment-list"></div>
@@ -4104,7 +4161,7 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "assignment-row";
         const primary = primaryAssignmentId(repository) === assignment.id;
-        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${primary && assignment.rubber_duck ? " \u00b7 Rubber duck" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
+        row.innerHTML = `<div><strong>${escape(agent?.name ?? "Deleted agent")}</strong><p>${primary ? `Primary${assignments.length === 1 ? " (automatic)" : ""} \u00b7 ` : "Secondary \u00b7 "}${assignment.comment ? "Publish Comment" : "Initial findings local"}${primary && assignment.actions?.reply ? " \u00b7 Reply Comment" : ""}${primary && assignment.actions?.merge ? " \u00b7 Approve & Merge" : primary && assignment.actions?.approve ? " \u00b7 Approve" : ""}${primary && assignment.rubber_duck ? " \u00b7 Rubber duck" : ""}${assignment.tools?.length ? ` \u00b7 ${assignment.tools.length} Tools` : ""}${!primary && assignment.paths?.length ? ` \u00b7 ${assignment.paths.length} Paths` : ""}</p><p>${escape(agent?.model ?? "Unavailable")}</p></div><button data-edit aria-label="Edit assignment">Edit</button><button data-remove aria-label="Remove assignment" title="Remove">${icon("trash")}</button>`;
         for (const action of ["edit", "remove"])
           row.querySelector<HTMLElement>(`[data-${action}]`)!.dataset.focusKey =
             `assignment:${assignment.id}:${action}`;
@@ -4147,8 +4204,6 @@ export async function mountSettings(
           rule("mentioned", true),
           rule("include_users", authors.length > 0, { users: [...authors] }),
           rule("exclude_users", false, { users: [] }),
-          rule("include_paths", false, { paths: [] }),
-          rule("exclude_paths", false, { paths: [] }),
         ],
       };
     };
@@ -4163,13 +4218,9 @@ export async function mountSettings(
       mentioned: "Mentioning me in comments",
       include_users: "Include users",
       exclude_users: "Exclude users",
-      include_paths: "Include paths",
-      exclude_paths: "Exclude paths",
     };
-    const valueKind = (kind: AdmissionKind) =>
-      kind.endsWith("_users") || kind.endsWith("_paths");
-    const ruleCount = (rule: AdmissionRule) =>
-      rule.users?.length ?? rule.paths?.length ?? 0;
+    const valueKind = (kind: AdmissionKind) => kind.endsWith("_users");
+    const ruleCount = (rule: AdmissionRule) => rule.users?.length ?? 0;
     const chevron =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
 
@@ -4183,6 +4234,8 @@ export async function mountSettings(
       const openFilters = modal.querySelector<HTMLButtonElement>(
         "[data-open-filters]",
       )!;
+      const openPaths =
+        modal.querySelector<HTMLButtonElement>("[data-open-paths]")!;
       const view = modal.querySelector<HTMLElement>("[data-admission-view]")!;
       const route: string[] = [];
       const sync = () => {
@@ -4194,6 +4247,10 @@ export async function mountSettings(
         const on = a.rules.filter((r) => r.enabled).length;
         modal.querySelector("[data-filter-summary]")!.textContent =
           a.mode === "filtered" ? `${on} on` : "";
+        const paths = repository.paths?.length ?? 0;
+        modal.querySelector("[data-paths-summary]")!.textContent = paths
+          ? String(paths)
+          : "";
       };
       explicitInput.onchange = () => {
         editAdmission().mode = explicitInput.checked ? "explicit" : "filtered";
@@ -4209,7 +4266,7 @@ export async function mountSettings(
         announceEditor();
       };
       const pop = () => {
-        route.pop();
+        const closed = route.pop();
         if (options.embedded) dropTop();
         const next = route[route.length - 1];
         if (!next) {
@@ -4217,7 +4274,9 @@ export async function mountSettings(
           view.replaceChildren();
           delete modal.dataset.view;
           sync();
-          openFilters.focus({ preventScroll: true });
+          (closed === "paths" ? openPaths : openFilters).focus({
+            preventScroll: true,
+          });
         } else if (next === "filters") {
           renderFilters();
           if (!options.embedded) {
@@ -4306,89 +4365,66 @@ export async function mountSettings(
         group.className = "repository-group";
         const list = document.createElement("div");
         list.className = "admission-values";
-        const users = rule.kind.endsWith("_users");
         const draw = () => {
           list.replaceChildren();
-          const values: string[] = users
-            ? (rule.users ?? []).map((u) =>
-                repository.provider === "azure_devops"
-                  ? u.login
-                  : `@${u.login}`,
-              )
-            : (rule.paths ?? []);
+          const values: string[] = (rule.users ?? []).map((u) =>
+            repository.provider === "azure_devops" ? u.login : `@${u.login}`,
+          );
           values.forEach((value, index) => {
             const row = document.createElement("div");
             row.className = "watchlist-row";
-            row.innerHTML = `<span>${users ? escape(value) : `<code>${escape(value)}</code>`}</span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+            row.innerHTML = `<span>${escape(value)}</span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
             row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick =
               () => {
                 editAdmission();
-                if (users)
-                  rule.users = (rule.users ?? []).filter((_, i) => i !== index);
-                else
-                  rule.paths = (rule.paths ?? []).filter((_, i) => i !== index);
+                rule.users = (rule.users ?? []).filter((_, i) => i !== index);
                 changed();
                 draw();
                 // The removed row's trash button is gone: land on the add control.
                 view
-                  .querySelector<HTMLElement>(
-                    ".admission-add, .admission-path-form input",
-                  )
+                  .querySelector<HTMLElement>(".admission-add")
                   ?.focus({ preventScroll: true });
               };
             list.append(row);
           });
         };
         group.append(list);
-        if (users) {
-          const add = document.createElement("button");
-          add.type = "button";
-          add.className = "primary admission-add";
-          add.textContent = "Add people";
-          add.onclick = () =>
-            addPersonDialog(add, repository, rule.users ?? [], (identity) => {
-              editAdmission();
-              rule.users = [...(rule.users ?? []), identity];
-              rule.enabled = true;
-              changed();
-              draw();
-            });
-          view.append(group, add);
-        } else {
-          const form = document.createElement("form");
-          form.className = "admission-path-form";
-          form.innerHTML = `<input name="path" aria-label="Path pattern" placeholder="docs/ or src/**/*.ts" autocomplete="off" /><button type="submit" class="primary">Add</button><p role="alert" hidden></p>`;
-          form.onsubmit = (event) => {
-            event.preventDefault();
-            const input = form.querySelector<HTMLInputElement>("[name=path]")!;
-            const alert = form.querySelector<HTMLElement>("[role=alert]")!;
-            const value = input.value.trim();
-            const problem = !value
-              ? "Path required"
-              : value.length > 256 ||
-                  value.startsWith("/") ||
-                  value.split("/").includes("..")
-                ? "Invalid path"
-                : (rule.paths ?? []).includes(value)
-                  ? "Already added"
-                  : "";
-            alert.hidden = !problem;
-            alert.textContent = problem;
-            if (problem) return;
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "primary admission-add";
+        add.textContent = "Add people";
+        add.onclick = () =>
+          addPersonDialog(add, repository, rule.users ?? [], (identity) => {
             editAdmission();
-            rule.paths = [...(rule.paths ?? []), value];
+            rule.users = [...(rule.users ?? []), identity];
             rule.enabled = true;
             changed();
-            input.value = "";
             draw();
-          };
-          view.append(group, form);
-        }
+          });
+        view.append(group, add);
         draw();
+      }
+
+      function renderPaths() {
+        view.replaceChildren();
+        const group = document.createElement("section");
+        group.className = "repository-group";
+        group.dataset.repositoryPaths = "";
+        pathListEditor(
+          group,
+          () => repository.paths ?? [],
+          (next) => {
+            if (next.length) repository.paths = next;
+            else delete repository.paths;
+            changed();
+          },
+        );
+        view.append(group);
       }
 
       openFilters.onclick = () =>
         push("Filtered pull requests", "filters", renderFilters);
+      openPaths.onclick = () => push("Paths", "paths", renderPaths);
       sync();
     }
     setupAdmission();
@@ -4417,10 +4453,12 @@ export async function mountSettings(
         <section class="repository-group" data-assign-main><button type="button" class="doctrine-row" data-open-agent aria-label="Choose Agent"><span>Agent</span><span class="doctrine-summary" data-agent-summary></span>${chevron}</button>
         <label class="repository-check"><input type="checkbox" role="switch" name="primary" aria-label="Primary" ${isPrimary ? "checked" : ""} ${sole ? "disabled" : ""} /><span>Primary</span></label>
         <button type="button" class="doctrine-row" data-open-duck aria-label="Rubber duck" ${isPrimary ? "" : "hidden"}><span>Rubber duck</span><span class="doctrine-summary" data-duck-summary></span>${chevron}</button>
+        <button type="button" class="doctrine-row" data-open-paths aria-label="Paths"><span>Paths</span><span class="doctrine-summary" data-paths-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-permissions aria-label="Permissions"><span>Permissions</span><span class="doctrine-summary" data-permission-summary></span>${chevron}</button>
         <button type="button" class="doctrine-row" data-open-tools aria-label="Tools"><span>Tools</span><span class="doctrine-summary" data-tool-summary></span>${chevron}</button></section>
         <section class="repository-group" data-assign-agents hidden><div data-agent-choices role="radiogroup" aria-label="Agent"></div><div class="resource-actions"><button type="button" data-create-agent>Create new Agent</button></div></section>
         <section class="repository-group" data-assign-duck hidden><div data-duck-choices role="radiogroup" aria-label="Rubber duck"></div></section>
+        <section class="repository-group" data-assign-paths hidden><div data-paths-editor></div></section>
         <section class="repository-group" data-assign-permissions hidden>
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
@@ -4458,7 +4496,12 @@ export async function mountSettings(
       "[data-duck-choices]",
     )!;
     let lastDuck = duckInput.value;
+    // Secondary trigger globs; a primary reviews every admitted change.
+    let paths = [...(existing?.paths ?? [])];
+    const openPaths =
+      modal.querySelector<HTMLButtonElement>("[data-open-paths]")!;
     const sections = {
+      paths: modal.querySelector<HTMLElement>("[data-assign-paths]")!,
       duck: modal.querySelector<HTMLElement>("[data-assign-duck]")!,
       tools: modal.querySelector<HTMLElement>("[data-assign-tools]")!,
       agent: modal.querySelector<HTMLElement>("[data-assign-agents]")!,
@@ -4471,6 +4514,7 @@ export async function mountSettings(
         "[name=comment]:checked, [name=reply]:checked, [name=action]:checked:not([value=none])",
       ).length;
     const viewTitles = {
+      paths: "Paths",
       duck: "Rubber duck",
       agent: "Agent",
       permissions: "Permissions",
@@ -4603,6 +4647,15 @@ export async function mountSettings(
           checkedAction.value;
       openPermissions.querySelector("[data-permission-summary]")!.textContent =
         String(permissionCount());
+      const isPrimaryNow =
+        modal.querySelector<HTMLInputElement>("[name=primary]")!.checked;
+      openPaths.disabled = isPrimaryNow;
+      openPaths.querySelector("[data-paths-summary]")!.textContent =
+        isPrimaryNow
+          ? "All admitted changes"
+          : paths.length
+            ? String(paths.length)
+            : "";
     };
     refreshSelection(existing?.agent_id ?? "");
     const closeView = () => {
@@ -4616,6 +4669,7 @@ export async function mountSettings(
       refreshSelection();
       (
         ({
+          paths: openPaths,
           duck: openDuck,
           agent: openAgent,
           permissions: openPermissions,
@@ -4653,6 +4707,16 @@ export async function mountSettings(
     openPermissions.onclick = () => openView("permissions", "Permissions");
     openTools.onclick = () => openView("tools", "Tools");
     openDuck.onclick = () => openView("duck", "Rubber duck");
+    openPaths.onclick = () => {
+      pathListEditor(
+        modal.querySelector<HTMLElement>("[data-paths-editor]")!,
+        () => paths,
+        (next) => {
+          paths = next;
+        },
+      );
+      openView("paths", "Paths");
+    };
     duckChoices.onchange = (event) => {
       const input = event.target as HTMLInputElement;
       if (input.name !== "duck-choice") return;
@@ -4743,6 +4807,7 @@ export async function mountSettings(
           ...modal.querySelectorAll<HTMLInputElement>("[name=tool]:checked"),
         ].map((input) => input.value as PacketTool);
         if (toolsExplicit && tools.length) value.tools = tools;
+        if (!primary.checked && paths.length) value.paths = paths;
         if (primary.checked && duckInput.value) {
           if (!agents().some((agent) => agent.id === duckInput.value))
             throw "Rubber duck unavailable";

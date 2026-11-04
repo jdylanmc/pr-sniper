@@ -114,6 +114,30 @@ pub enum Remedy {
 pub const CAUSE_PANIC: &str = "panic";
 pub const CAUSE_TOSSED: &str = "tossed";
 pub const CAUSE_EXIT_FAILED: &str = "exit_failed";
+/// The provider cannot list every changed file: no review, needs a human.
+pub const CAUSE_INCOMPLETE_FILES: &str = "incomplete_files";
+
+/// Why an assignment did not review this revision. Typed; the UI labels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    NoMatchingFiles,
+}
+
+/// Changed files the provider reported but no strategy could list in full.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IncompleteFiles {
+    pub count: u64,
+    pub tried: Vec<crate::paths::Strategy>,
+}
+
+/// A secondary assignment that skipped this revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkippedReview {
+    pub assignment_id: String,
+    pub agent_name: String,
+    pub reason: SkipReason,
+}
 
 #[derive(Clone, Serialize)]
 pub struct Item {
@@ -134,8 +158,13 @@ pub struct Item {
     // Set only for failed items; the Queue shows credential failures only.
     pub failure_class: Option<monitoring::FailureClass>,
     // Typed cause of a failed item: `publication_failed`, `publication_unresolved`,
-    // `panic`, `tossed` (parked after the toss budget) or `exit_failed`.
+    // `panic`, `tossed` (parked after the toss budget), `exit_failed` or
+    // `incomplete_files`.
     pub failure_cause: Option<&'static str>,
+    /// `incomplete_files`: the reported count and the strategies tried.
+    pub incomplete_files: Option<IncompleteFiles>,
+    /// Secondary assignments that skipped this revision.
+    pub skipped: Vec<SkippedReview>,
     // A parked teammate holds this PR's primary back; its typed cause rides along.
     pub failed_teammate: Option<review::teammates::FailedTeammate>,
     // The primary's Rubber Duck could not be set up: the duck Agent's name.
@@ -172,6 +201,8 @@ pub struct Snapshot {
     pub exit_writes: Vec<crate::exit_writes::ExitWrite>,
     #[serde(skip)]
     pub(crate) pr_states: crate::pr_state::PrStates,
+    #[serde(skip)]
+    pub(crate) path_facts: BTreeMap<String, BTreeMap<String, crate::paths::PathFacts>>,
     pub items: Vec<Item>,
 }
 
@@ -254,6 +285,7 @@ fn project_saved(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot,
         pending_threads: ledger.pending_threads,
         exit_writes: ledger.exit_writes,
         pr_states: store.load_pr_states()?,
+        path_facts: monitoring.path_facts,
         tracked: store.load_queue_state()?.tracked,
         health,
         jobs,
@@ -368,6 +400,9 @@ fn review_state(
             .last()
             .is_some_and(|r| r.state == RemoteState::Commented)
     });
+    if candidate.job.waiting == monitoring::WAITING_INCOMPLETE_FILES {
+        return State::Failed;
+    }
     if obsolete(&candidate.job)
         || publication.is_some_and(|p| {
             matches!(
@@ -722,9 +757,25 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             pr_states: &snapshot.pr_states,
         };
         let mut blocked_publication = false;
+        let skipped: Vec<_> = reviews
+            .iter()
+            .filter(|r| {
+                r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES && r.run.is_none()
+            })
+            .map(|r| SkippedReview {
+                assignment_id: r.assignment_id.clone(),
+                agent_name: r.agent_name.clone(),
+                reason: SkipReason::NoMatchingFiles,
+            })
+            .collect();
+        let incomplete = reviews
+            .iter()
+            .any(|r| r.job.waiting == monitoring::WAITING_INCOMPLETE_FILES);
+        // A skipped secondary has nothing to report: it never holds the item.
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
+            .filter(|r| !skipped.iter().any(|s| s.assignment_id == r.assignment_id))
             .map(|r| {
                 review_state(
                     settings,
@@ -1073,9 +1124,22 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let failure_cause = if state == State::Failed {
             exit_cause
                 .or_else(|| publication_cause(&snapshot.publications, &publication_items, &id))
+                .or(incomplete.then_some(CAUSE_INCOMPLETE_FILES))
         } else {
             None
         };
+        let incomplete_files = (failure_cause == Some(CAUSE_INCOMPLETE_FILES))
+            .then(|| {
+                let facts = snapshot
+                    .path_facts
+                    .get(&job.configuration_id)?
+                    .get(&job.pull_request_id)?;
+                Some(IncompleteFiles {
+                    count: facts.incomplete_at(&job.head_sha)?,
+                    tried: facts.tried.clone(),
+                })
+            })
+            .flatten();
         let failure_class = (state == State::Failed).then(|| {
             failed_teammate
                 .as_ref()
@@ -1111,16 +1175,19 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 }
             })
             .flatten();
-        let remedy = failure_class.map(|class| match class {
-            monitoring::FailureClass::Credentials => Remedy::SignIn,
-            _ if model_leads => Remedy::ChangeModel,
-            _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
-            _ if exit_failure.is_some_and(|(_, _, uncertain)| uncertain) => Remedy::Reconcile,
-            _ if failed_operation == Some(FailedOperation::FollowUp) && follow_up_uncertain => {
-                Remedy::Reconcile
-            }
-            _ => Remedy::Retry,
-        });
+        // Only a new revision or a human clears an incomplete file list.
+        let remedy = failure_class
+            .filter(|_| failure_cause != Some(CAUSE_INCOMPLETE_FILES))
+            .map(|class| match class {
+                monitoring::FailureClass::Credentials => Remedy::SignIn,
+                _ if model_leads => Remedy::ChangeModel,
+                _ if failure_cause == Some("publication_unresolved") => Remedy::Reconcile,
+                _ if exit_failure.is_some_and(|(_, _, uncertain)| uncertain) => Remedy::Reconcile,
+                _ if failed_operation == Some(FailedOperation::FollowUp) && follow_up_uncertain => {
+                    Remedy::Reconcile
+                }
+                _ => Remedy::Retry,
+            });
         // The primary's exit leads; a teammate's report is never the item's exit.
         let exit_run = reviews
             .iter()
@@ -1168,6 +1235,8 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             },
             retry_all: false,
             failure_cause,
+            incomplete_files,
+            skipped,
             failure_class,
             failed_teammate,
             failed_duck,

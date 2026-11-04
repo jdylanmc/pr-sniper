@@ -407,6 +407,7 @@ fn job() -> QueueJob {
 
 fn merged_snapshot(count: usize) -> queue::Snapshot {
     queue::Snapshot {
+        path_facts: Default::default(),
         pending_threads: vec![],
         feedback: Default::default(),
         mentions: vec![],
@@ -443,6 +444,8 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                 });
                 let id = queue::item_id(&job);
                 queue::Item {
+                    incomplete_files: None,
+                    skipped: Vec::new(),
                     dismiss_token: None,
                     dismissed: false,
                     action_status: Some(crate::actions::Status {
@@ -780,6 +783,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
     ];
     for (state, category) in states {
         let snapshot = queue::Snapshot {
+            path_facts: Default::default(),
             pending_threads: vec![],
             feedback: Default::default(),
             mentions: vec![],
@@ -792,6 +796,8 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             exit_writes: vec![],
             pr_states: Default::default(),
             items: vec![queue::Item {
+                incomplete_files: None,
+                skipped: Vec::new(),
                 dismiss_token: None,
                 dismissed: false,
                 action_status: None,
@@ -847,6 +853,7 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
         "next_run":0,"schedule_available":false,"last_failure":"account_disconnected","in_flight":false
     })).unwrap();
     let snapshot = queue::Snapshot {
+        path_facts: Default::default(),
         pending_threads: vec![],
         feedback: Default::default(),
         mentions: vec![],
