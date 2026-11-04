@@ -349,4 +349,24 @@ mod tests {
             7200
         );
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_watchdog_alone_owns_the_total_budget_during_an_attempt() {
+        // Windows `Instant` counts sleep: an operation deadline can pass while the
+        // awake budget has time left. 6 min awake, progress, then 10 min asleep.
+        let (source, clock) = sleeping(Duration::from_secs(15 * 60));
+        tokio::time::advance(Duration::from_secs(6 * 60)).await;
+        clock.progress().unwrap();
+        source.sleep(Duration::from_secs(10 * 60));
+        let mut operation = super::super::tests::operation(60);
+        operation.deadline = std::time::Instant::now();
+        let gate: super::super::Gate = Arc::new(|| Ok(()));
+        let host = super::super::HostFailure::default();
+        let still_running = tokio::time::timeout(
+            Duration::from_secs(60),
+            super::super::monitor_attempt(&clock, &operation, &gate, None, &host),
+        )
+        .await;
+        assert!(still_running.is_err());
+    }
 }

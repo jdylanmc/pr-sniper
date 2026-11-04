@@ -1343,7 +1343,7 @@ async fn execute<K: Task>(
                 request.client,
                 request.repository_name,
                 Arc::new(move || {
-                    tool_operation.check().map_err(Failure::operation)?;
+                    tool_operation.check_live().map_err(Failure::operation)?;
                     tool_gate()
                 }),
             )
@@ -1403,7 +1403,7 @@ async fn execute<K: Task>(
                 exit_tools.state.clone(),
                 operation.clone(),
                 Arc::new(move || {
-                    duck_operation.check().map_err(Failure::operation)?;
+                    duck_operation.check_live().map_err(Failure::operation)?;
                     local()
                 }),
                 diagnostics.clone(),
@@ -1443,7 +1443,7 @@ async fn execute<K: Task>(
             tokio::task::spawn_blocking(move || Failure::caught(gate_trace.as_deref(), || gate()))
                 .await
                 .map_err(|_| Failure::permanent("Pre-invocation eligibility check failed."))??;
-            operation.check().map_err(Failure::operation)?;
+            operation.check_live().map_err(Failure::operation)?;
             (request.local_gate)()?;
             let mut subscription = session.subscribe();
             session.send(prompt).await.map_err(Failure::sdk)?;
@@ -1557,7 +1557,7 @@ async fn execute<K: Task>(
                 read: u32::try_from(read).unwrap_or(u32::MAX),
                 changed: u32::try_from(paths.len()).unwrap_or(u32::MAX),
             });
-            operation.check().map_err(Failure::operation)?;
+            operation.check_live().map_err(Failure::operation)?;
             (request.local_gate)()?;
             Ok(result)
         }
@@ -1656,7 +1656,9 @@ async fn monitor_attempt(
             }
             return expiry.failure();
         }
-        if let Err(error) = operation.check() {
+        // The watchdog owns the time budget on the awake axis; `Instant` counts
+        // Windows sleep.
+        if let Err(error) = operation.check_live() {
             return Failure::operation(error);
         }
         if let Err(error) = gate() {

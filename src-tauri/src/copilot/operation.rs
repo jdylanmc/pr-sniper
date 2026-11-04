@@ -78,6 +78,18 @@ impl Operation {
         Ok(())
     }
 
+    /// Cancellation, quit and account changes only, not the deadline: for work
+    /// whose time budget another clock owns (a review attempt's watchdog).
+    pub fn check_live(&self) -> Result<(), String> {
+        self.check_current(
+            *self
+                .account
+                .generation
+                .lock()
+                .map_err(|_| "Copilot account state is unavailable.")?,
+        )
+    }
+
     pub fn check(&self) -> Result<(), String> {
         self.check_generation(
             *self

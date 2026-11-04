@@ -331,6 +331,52 @@ fn a_transient_failure_after_a_short_sleep_keeps_the_slept_window() {
 }
 
 #[test]
+fn a_pause_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::provider("Flaky.")),
+        101,
+    )
+    .unwrap();
+    let next = store.load_reviews().unwrap()[0]
+        .operation
+        .next_attempt_at
+        .unwrap();
+    let run = running_packet(&store, &template, next);
+    assert_eq!(run.operation.attempt_count, 2);
+    let deadline = run.operation.retry_deadline;
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.interruption = Some(crate::capacity::Interruption::Pause);
+    store.save_reviews(&reviews).unwrap();
+    let mut paused = Failure::cancelled();
+    paused.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(paused), deadline + 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+}
+
+#[test]
+fn a_latched_gate_failure_keeps_the_sleep_of_the_committed_one() {
+    let attempt = AttemptGuard::new(Arc::new(|| Err(Failure::timeout())));
+    assert!(attempt.gate()().is_err());
+    let mut stamped = Failure::timeout();
+    stamped.slept_seconds = 600;
+    let committed = attempt.commit(stamped);
+    assert_eq!(committed.slept_seconds, 600);
+    assert_eq!(
+        attempt
+            .finish::<()>(Err(Failure::timeout()))
+            .unwrap_err()
+            .slept_seconds,
+        600
+    );
+}
+
+#[test]
 fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
     let (_root, store, template) = fixture();
     let run = running_packet(&store, &template, 100);

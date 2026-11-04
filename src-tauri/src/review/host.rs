@@ -378,6 +378,9 @@ pub(crate) fn complete(
         current.phase = "Offline".into();
         current.error = None;
     } else if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
+        if let Some(error) = outcome.as_ref().err() {
+            current.operation.credit_sleep(error.slept_seconds, now);
+        }
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
@@ -662,12 +665,13 @@ async fn execute_attempt(
         return Err(Failure::timeout());
     }
     let started_at = now_seconds().map_err(Failure::permanent)?;
-    let started = Instant::now();
+    // Awake time, like the runtime watchdog's total budget: sleep never spends it.
+    let clock = crate::clock::Clock::default();
+    let started = clock.now();
     // Preparation may extend the window once the PR size is known (Rubber Duck only).
-    let deadline_at = Arc::new(std::sync::Mutex::new(
-        started + Duration::from_secs(remaining as u64),
-    ));
-    let gate_deadline = deadline_at.clone();
+    let budget = Arc::new(std::sync::Mutex::new(Duration::from_secs(remaining as u64)));
+    let gate_budget = budget.clone();
+    let gate_clock = clock.clone();
     let generation = app
         .state::<Host>()
         .github_generations
@@ -683,10 +687,9 @@ async fn execute_attempt(
     // only after its inputs were rewritten, not hundreds of times per attempt.
     let validated = super::ValidatedSelection::default();
     let gate: runtime::Gate = Arc::new(move || {
-        if gate_deadline
-            .lock()
-            .map_or(true, |deadline| Instant::now() >= *deadline)
-        {
+        if gate_budget.lock().map_or(true, |budget| {
+            gate_clock.now().since(started).awake >= *budget
+        }) {
             return Err(Failure::timeout());
         }
         if gate_cancelled.load(Ordering::SeqCst) {
@@ -883,8 +886,8 @@ async fn execute_attempt(
                 let end = started_at.saturating_add(window);
                 if end > current.operation.retry_deadline {
                     current.operation.retry_deadline = end;
-                    if let Ok(mut deadline) = deadline_at.lock() {
-                        *deadline = started + Duration::from_secs(window.max(0) as u64);
+                    if let Ok(mut budget) = budget.lock() {
+                        *budget = Duration::from_secs(window.max(0) as u64);
                     }
                 }
             }
@@ -930,9 +933,11 @@ async fn execute_attempt(
             failure_commit: Some(attempt.committer()),
             duck,
         };
-        let deadline = *deadline_at
-            .lock()
-            .map_err(|_| Failure::permanent("Review deadline unavailable."))?;
+        let deadline = Instant::now()
+            + budget
+                .lock()
+                .map_err(|_| Failure::permanent("Review deadline unavailable."))?
+                .saturating_sub(clock.now().since(started).awake);
         let mut result = integration.review(request, cancelled, deadline).await?;
         diagnostics.emit(crate::storage::diagnostics::Event::Phase {
             phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
@@ -1079,7 +1084,12 @@ impl AttemptGuard {
 
     fn commit(&self, error: Failure) -> Failure {
         match self.rejected.lock() {
-            Ok(mut rejected) => rejected.get_or_insert(error).clone(),
+            Ok(mut rejected) => {
+                let slept = error.slept_seconds;
+                let latched = rejected.get_or_insert(error);
+                latched.slept_seconds = latched.slept_seconds.max(slept);
+                latched.clone()
+            }
             Err(_) => Failure::permanent("Review attempt gate unavailable."),
         }
     }

@@ -98,7 +98,7 @@ impl DuckEngine {
         self.setup
             .account
             .as_ref()
-            .is_none_or(|operation| operation.check().is_ok())
+            .is_none_or(|operation| operation.check_live().is_ok())
     }
 
     pub async fn start(mut setup: DuckSetup, operation: &Operation) -> Result<Self, Failure> {
@@ -468,7 +468,7 @@ impl DuckTool {
             if self.engine.ending.load(Ordering::SeqCst) {
                 return DuckFailure::Unavailable;
             }
-            if self.operation.check().is_err()
+            if self.operation.check_live().is_err()
                 || (self.local_gate)().is_err()
                 || !self.engine.account_ok()
             {
