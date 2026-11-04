@@ -105,6 +105,7 @@ fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) 
 
 fn poll_result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
+        facts: Default::default(),
         states: Default::default(),
         connection: Connection {
             identity: Identity {
@@ -574,6 +575,7 @@ fn an_older_intake_read_never_moves_the_observation_back() {
                 connection: poll_result(vec![]).connection,
                 pull_request: Some(pull('a')),
             },
+            None,
             NOW + 50,
             NOW + 150,
         )

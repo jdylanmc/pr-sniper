@@ -102,7 +102,19 @@ export interface QueueItem {
     | "panic"
     | "tossed"
     | "exit_failed"
+    | "incomplete_files"
     | null;
+  // `incomplete_files`: the reported count and the strategies tried.
+  incomplete_files?: {
+    count: number;
+    tried: ("listing" | "tree_diff" | "scoped_tree_diff")[];
+  } | null;
+  // Secondaries that skipped this revision.
+  skipped?: {
+    assignment_id: string;
+    agent_name: string;
+    reason: "no_matching_files";
+  }[];
   // Retry all re-arms it; human decisions stay parked.
   retry_all?: boolean;
   // The primary's exit and the host effect it still has in flight.
@@ -253,9 +265,16 @@ const causeChips: Record<string, string> = {
   tossed: "Tossed",
   exit_failed: "Write failed",
 };
+// Owner-approved wording: no review runs until a human or a new revision.
+export const incompleteFilesLabel = (item: QueueItem) =>
+  item.incomplete_files
+    ? `Can't see all ${item.incomplete_files.count} changed files: needs a human`
+    : "Can't see all changed files: needs a human";
 // Access and network classes keep their chip; otherwise the typed cause.
 export function failureChip(item: QueueItem) {
   const failureClass = item.failure_class ?? "other";
+  if (item.failure_cause === "incomplete_files")
+    return incompleteFilesLabel(item);
   if (failureClass === "other" && item.failure_cause)
     return causeChips[item.failure_cause] ?? failureChips.other;
   return failureChips[failureClass];
@@ -273,7 +292,9 @@ const clockPath = "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18";
 const retryPath = "M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4";
 const retryIcon = `<svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${retryPath}"/></svg>`;
 // Credentials parks retry too: each attempt re-verifies the account first.
-const retryable = (item: QueueItem) => item.state === "failed";
+// Only a new revision clears an incomplete file list: nothing to retry.
+const retryable = (item: QueueItem) =>
+  item.state === "failed" && item.failure_cause !== "incomplete_files";
 
 export function humanQueue(items: QueueItem[]): QueueItem[] {
   const current = new Map<string, QueueItem>();

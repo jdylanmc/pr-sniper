@@ -102,7 +102,9 @@ fn poll(
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
     let (connection, pull_requests) = crate::poll_repository(&reader, ticket)?;
+    let facts = crate::path_facts(&reader, &connection, &pull_requests, ticket)?;
     Ok(PollResult {
+        facts,
         connection,
         pull_requests,
         states: Default::default(),
@@ -214,6 +216,41 @@ fn admits_picked_teammates_ignores_drafts_and_takes_each_iteration_as_a_revision
         .collect();
     numbers.sort();
     assert_eq!(numbers, [1, 3]);
+}
+
+#[test]
+fn the_paths_gate_reads_iteration_changes_and_keeps_out_other_prs() {
+    let (_root, store, mut monitor) = monitored();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].paths = vec!["src/".into(), "!src/gen/".into()];
+    store.save_settings(&settings).unwrap();
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = signed_in_wire(json!({"value": [
+        raw_pull(1, BLAKE, 1, false),
+        raw_pull(2, BLAKE, 2, false),
+        raw_pull(3, BLAKE, 3, false),
+    ]}));
+    let edit =
+        |path: &str| json!({"item": {"path": path, "objectId": sha(50)}, "changeType": "edit"});
+    for (number, path) in [(1, "/src/a.rs"), (2, "/docs/a.md"), (3, "/src/gen/a.rs")] {
+        wire.json(
+            &git(&format!("pullRequests/{number}/iterations?")),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(number)}}]}),
+        )
+        .json(
+            &git(&format!("pullRequests/{number}/iterations/1/changes?")),
+            json!({"changeEntries": [edit(path)]}),
+        );
+    }
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    let numbers: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .map(|j| j.number)
+        .collect();
+    assert_eq!(numbers, [1], "only the PR with an admitted path is queued");
 }
 
 /// The cause a repository poll parks with after failing every attempt it

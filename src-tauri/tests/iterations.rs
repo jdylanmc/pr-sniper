@@ -114,6 +114,7 @@ fn pull(head: char) -> PullRequest {
 fn result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
         states: Default::default(),
+        facts: Default::default(),
         connection: Connection {
             identity: Identity {
                 id: "22".into(),
@@ -178,6 +179,7 @@ fn explicit_at(
             connection: resolved.connection,
             pull_request: Some(pull),
         },
+        None,
         now,
         now,
     )
@@ -406,6 +408,7 @@ fn explicit_pr_rejects_stale_saved_configuration_without_queueing_work() {
                 connection: resolved.connection,
                 pull_request: Some(pull('a')),
             },
+            None,
             NOW,
             NOW,
         )
@@ -448,6 +451,7 @@ fn explicit_pr_cannot_bypass_disabled_account_agent_or_revision_gates() {
                 connection: resolved.connection,
                 pull_request: Some(pull('a')),
             },
+            None,
             NOW,
             NOW
         )

@@ -340,8 +340,6 @@ async function check(engine, name) {
       "Mentioning me in comments",
       "Include users",
       "Exclude users",
-      "Include paths",
-      "Exclude paths",
     ]);
     assert.equal(
       await page
@@ -355,7 +353,7 @@ async function check(engine, name) {
     );
     assert.equal(
       await page
-        .locator('[data-rule="exclude_paths"] [data-dir="1"]')
+        .locator('[data-rule="exclude_users"] [data-dir="1"]')
         .isDisabled(),
       true,
     );
@@ -364,14 +362,7 @@ async function check(engine, name) {
       await page
         .locator("[data-rule]")
         .evaluateAll((rows) => rows.map((row) => row.dataset.rule)),
-      [
-        "assigned",
-        "include_users",
-        "mentioned",
-        "exclude_users",
-        "include_paths",
-        "exclude_paths",
-      ],
+      ["assigned", "include_users", "mentioned", "exclude_users"],
     );
     await page.locator('[data-rule="include_users"] [data-dir="-1"]').click();
     assert.equal(
@@ -405,16 +396,14 @@ async function check(engine, name) {
       await page.locator('[data-rule="include_users"] input').isChecked(),
       true,
     );
-    await page.locator('[data-rule="exclude_paths"] .admission-open').click();
+    await back();
+    await page.locator('[data-action="open-paths"]').click();
     await settle();
-    assert.equal(
-      await page.locator("#page-title").innerText(),
-      "Exclude paths",
-    );
+    assert.equal(await page.locator("#page-title").innerText(), "Paths");
     const pathInput = page.getByLabel("Path pattern");
     assert.equal(
       await pathInput.getAttribute("placeholder"),
-      "docs/ or src/**/*.ts",
+      "src/** or !docs/",
     );
     for (const [value, message] of [
       ["", /Enter a path/],
@@ -443,17 +432,14 @@ async function check(engine, name) {
     );
     await back();
     assert.equal(
-      await page.locator('[data-rule="exclude_paths"] input').isChecked(),
-      true,
+      (await page.locator("[data-paths-summary]").innerText()).trim(),
+      "1",
     );
-    await page.locator('[data-rule="exclude_paths"] input').uncheck();
-    await page.locator('[data-rule="exclude_paths"] input').check();
-    await back();
     assert.equal(
       await page.locator("#page-title").innerText(),
       "sample/new-project",
     );
-    assert.match(await filtersRow.innerText(), /Filtered pull requests\s+4 on/);
+    assert.match(await filtersRow.innerText(), /Filtered pull requests\s+3 on/);
     await page.locator(".schedule-details > summary").click();
     await page.locator('input[name="scope"]').check();
     await page.locator('select[name="schedule"]').selectOption("interval");
@@ -473,18 +459,10 @@ async function check(engine, name) {
     assert.equal(savedRepo.admission.mode, "filtered");
     assert.deepEqual(
       savedRepo.admission.rules.map((rule) => rule.kind),
-      [
-        "include_users",
-        "assigned",
-        "mentioned",
-        "exclude_users",
-        "include_paths",
-        "exclude_paths",
-      ],
+      ["include_users", "assigned", "mentioned", "exclude_users"],
     );
     assert.equal(savedRepo.admission.rules[0].users.length, 1);
-    assert.deepEqual(savedRepo.admission.rules.at(-1).paths, ["docs/"]);
-    assert.equal(savedRepo.admission.rules.at(-1).enabled, true);
+    assert.deepEqual(savedRepo.paths, ["docs/"]);
     assert.equal("watched" in savedRepo, false);
     const editRepo = async () => {
       await page.locator(`[data-page="repo"][data-id="${newRepoId}"]`).click();

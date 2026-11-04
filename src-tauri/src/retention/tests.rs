@@ -104,6 +104,7 @@ fn finish_scan(
             store,
             ticket,
             Ok(PollResult {
+                facts: Default::default(),
                 states: Default::default(),
                 connection: Connection {
                     identity: Identity {

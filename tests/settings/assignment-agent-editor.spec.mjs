@@ -942,3 +942,90 @@ test("Review drafts switch persists only when on", async ({ page, store }) => {
     (await store("snapshot")).settings.repositories[0].review_drafts,
   ).toBeUndefined();
 });
+
+const pathRows = (scope) => scope.locator("[data-path-list] [data-path]");
+const addPathPattern = async (scope, pattern) => {
+  await scope.getByLabel("Path pattern", { exact: true }).fill(pattern);
+  await scope.getByLabel("Path pattern", { exact: true }).press("Enter");
+};
+
+test("repository Paths gate edits inline and saves include and exclude globs", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const repository = await repositorySettings(page, "fixture/assignment");
+  await expect(repository.locator("[data-paths-summary]")).toHaveText("");
+  await repository.locator("[data-open-paths]").click();
+  const paths = page.locator("[data-repository-paths]");
+  await addPathPattern(paths, "src/**");
+  await addPathPattern(paths, "/abs");
+  await expect(paths.getByRole("alert")).toHaveText("Invalid path");
+  await expect(paths.getByLabel("Path pattern")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await addPathPattern(paths, "src/**");
+  await expect(paths.getByRole("alert")).toHaveText("Already added");
+  await addPathPattern(paths, "!src/gen/");
+  await addPathPattern(paths, "docs/");
+  await expect(paths.getByRole("alert")).toBeHidden();
+  await expect(pathRows(paths)).toHaveCount(3);
+  await paths.getByRole("button", { name: "Remove docs/" }).click();
+  await expect(paths.getByLabel("Path pattern")).toBeFocused();
+  await assignmentBack(page, repository);
+  await expect(repository.locator("[data-open-paths]")).toBeFocused();
+  await expect(repository.locator("[data-paths-summary]")).toHaveText("2");
+  await button(repository, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect((await store("snapshot")).settings.repositories[0].paths).toEqual([
+    "src/**",
+    "!src/gen/",
+  ]);
+  // Emptied: the field is omitted again.
+  const again = await repositorySettings(page, "fixture/assignment");
+  await again.locator("[data-open-paths]").click();
+  const list = page.locator("[data-repository-paths]");
+  await list.getByRole("button", { name: "Remove src/**" }).click();
+  await list.getByRole("button", { name: "Remove !src/gen/" }).click();
+  await assignmentBack(page, again);
+  await button(again, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect(
+    (await store("snapshot")).settings.repositories[0].paths,
+  ).toBeUndefined();
+});
+
+test("secondary assignment Paths save; a primary shows all admitted changes", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  const open = assignment.locator("[data-open-paths]");
+  await expect(open).toBeEnabled();
+  await open.click();
+  const editor = assignment.locator("[data-paths-editor]");
+  await addPathPattern(editor, "docs/");
+  await addPathPattern(editor, "!docs/generated/");
+  await assignmentBack(page, assignment);
+  await expect(open).toBeFocused();
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText("2");
+  await primarySwitch(assignment).check();
+  await expect(open).toBeDisabled();
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText(
+    "All admitted changes",
+  );
+  await primarySwitch(assignment).uncheck();
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText("2");
+  await saveAssignment(page, assignment);
+  let saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.assignments[0].paths).toEqual(["docs/", "!docs/generated/"]);
+  // Made primary: it reviews everything, so its paths are dropped.
+  const again = await openAssignment(page);
+  await primarySwitch(again).check();
+  await saveAssignment(page, again);
+  saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.primary_assignment_id).toBe(assignmentId);
+  expect(saved.assignments[0].paths).toBeUndefined();
+});

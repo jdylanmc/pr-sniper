@@ -91,6 +91,12 @@ fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
 
 /// Platform/provider collaborators only. Routing, receipts, validation and
 /// scheduling remain production code in isolated dispatcher tests.
+pub(super) type Resolved = (
+    crate::provider::ResolvedTarget,
+    u64,
+    Option<crate::paths::PathFacts>,
+);
+
 pub(super) trait Runtime {
     fn store(&self) -> &Mutex<Store>;
     fn monitor(&self) -> &Mutex<Monitor>;
@@ -98,11 +104,13 @@ pub(super) trait Runtime {
     fn auth(&self) -> &Mutex<GithubAuth>;
     fn copilot_auth(&self) -> &Mutex<GithubAuth>;
     fn generations(&self) -> &Mutex<BTreeMap<String, u64>>;
+    /// The target and, for an open pull request, its path facts.
     fn resolve(
         &self,
         account: &str,
         url: &str,
-    ) -> Result<(crate::provider::ResolvedTarget, u64), Error>;
+        paths: &crate::monitoring::PathTicket,
+    ) -> Result<Resolved, Error>;
     fn launch(&self, batch: Batch);
     fn start_checks(&self) -> Result<(), Error>;
     fn login_status(&self) -> Result<Value, Error>;
@@ -140,17 +148,17 @@ impl Runtime for Native<'_> {
         &self,
         account: &str,
         url: &str,
-    ) -> Result<(crate::provider::ResolvedTarget, u64), Error> {
+        paths: &crate::monitoring::PathTicket,
+    ) -> Result<Resolved, Error> {
         crate::repository_read(
             self.generations(),
             self.auth(),
             account,
             || crate::acquire_read_session(self.host, account),
             |identity, client, generation| {
-                Ok((
-                    client.resolve_repository_target(url, &identity.id)?,
-                    generation,
-                ))
+                let target = client.resolve_repository_target(url, &identity.id)?;
+                let facts = crate::explicit_facts(&*client, &target, paths)?;
+                Ok((target, generation, facts))
             },
         )
         .map_err(operation)
@@ -419,6 +427,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 "id":item.id,"configuration_id":item.job.configuration_id,"number":item.job.number,
                 "title":item.job.title.chars().take(256).collect::<String>(), "state":item.state,
                 "failure_class":item.failure_class,"failure_cause":item.failure_cause,
+                "incomplete_files":item.incomplete_files,"skipped":item.skipped,
                 "failed_model":item.failed_model,
                 "failed_operation":item.failed_operation,"remedy":item.remedy,
                 "dismiss_token":item.dismiss_token,
@@ -570,7 +579,12 @@ fn watch(
         .as_deref()
         .ok_or_else(|| Error::new("account_required", ()))?;
     let read_at = crate::now_seconds().map_err(storage)?;
-    let (resolved, observed) = runtime.resolve(account, &url)?;
+    let paths = {
+        let store = runtime.store().lock().map_err(|_| storage(()))?;
+        let monitor = runtime.monitor().lock().map_err(|_| storage(()))?;
+        monitor.path_ticket(&store, &expected).map_err(storage)?
+    };
+    let (resolved, observed, facts) = runtime.resolve(account, &url, &paths)?;
     let generations = runtime.generations().lock().map_err(|_| storage(()))?;
     let auth = runtime.auth().lock().map_err(|_| storage(()))?;
     crate::validate_explicit_intake_generation(
@@ -604,7 +618,7 @@ fn watch(
         work::hold(&store, &expected.id, number, true).map_err(storage)?;
     }
     let configured = (|| -> Result<usize, Error> {
-        runtime
+        let admission = runtime
             .monitor()
             .lock()
             .map_err(|_| storage(()))?
@@ -613,10 +627,18 @@ fn watch(
                 &auth.monitoring_accounts(),
                 &expected,
                 resolved,
+                facts,
                 read_at,
                 now,
             )
             .map_err(|e| Error::new("intake_failed", e))?;
+        // The paths gate rejected this revision: no new pass, overrides or dispatch.
+        if admission.gated_out {
+            return Err(Error::new(
+                "paths_gate",
+                json!({"admitted":false,"reason":admission.message}),
+            ));
+        }
         if review_again {
             work::request_again(&store, &expected.id, number, now).map_err(|e| {
                 Error::new("watch_configuration", json!({"admitted":true,"reason":e}))

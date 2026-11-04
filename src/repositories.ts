@@ -1,17 +1,11 @@
 import type { Assignment, PolicyOverrides, WatchedIdentity } from "./policy";
 
 export type AdmissionKind =
-  | "assigned"
-  | "mentioned"
-  | "include_users"
-  | "exclude_users"
-  | "include_paths"
-  | "exclude_paths";
+  "assigned" | "mentioned" | "include_users" | "exclude_users";
 export interface AdmissionRule {
   kind: AdmissionKind;
   enabled: boolean;
   users?: WatchedIdentity[];
-  paths?: string[];
 }
 /** All pull requests, or the first enabled matching rule (in order) decides. */
 export interface Admission {
@@ -39,6 +33,24 @@ export interface Repository {
   review_preset?: string;
   /** Include draft pull requests in review. Absent = off. */
   review_drafts?: boolean;
+  /** Path gate, ANDed with admission: include globs and `!` excludes. */
+  paths?: string[];
+}
+
+/** One path glob, as `paths::validate` checks it; `""` when valid. */
+export function pathProblem(value: string, existing: string[]): string {
+  const glob = value.startsWith("!") ? value.slice(1) : value;
+  if (!glob) return "Path required";
+  if (
+    [...glob].length > 256 ||
+    glob.startsWith("/") ||
+    glob.split("/").includes("..") ||
+    /[\u0000-\u001f\u007f-\u009f]/.test(glob)
+  )
+    return "Invalid path";
+  if (existing.includes(value)) return "Already added";
+  if (existing.length >= 200) return "Limit 200";
+  return "";
 }
 
 // This identifies the intake context, not repository access or PR admission.

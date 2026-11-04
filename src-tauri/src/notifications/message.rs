@@ -203,6 +203,7 @@ fn failure_reason(cause: &str) -> Option<&'static str> {
         queue::CAUSE_PANIC => Some("Review crashed"),
         queue::CAUSE_TOSSED => Some("Retries exhausted"),
         queue::CAUSE_EXIT_FAILED => Some("Review failed"),
+        queue::CAUSE_INCOMPLETE_FILES => Some("Can't see all changed files"),
         _ => None,
     }
 }

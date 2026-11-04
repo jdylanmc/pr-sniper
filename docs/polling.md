@@ -21,11 +21,36 @@ Reference for scheduled detection, admission rules, the read-only GitHub connect
 Per repository, set in the repo editor.
 
 - **All pull requests**, or **Filtered pull requests**: ordered, sortable rules. First enabled matching rule decides.
-- Rules: assigned to me (**Assigned to me for review**), **Mentioning me in comments**, include users, exclude users, include paths, exclude paths.
-- Path rules: prefix or glob, e.g. `docs/`, `src/**/*.ts`.
+- Rules: assigned to me (**Assigned to me for review**), **Mentioning me in comments**, include users, exclude users. Path scoping is the separate [Paths](#paths) gate; old path rules migrated there (enabled ones only; a Filtered config left with only an include path rule becomes All).
 - Repositories migrated once from old activation modes. Monitoring was switched off until reviewed.
 - Repository Save is atomic. It reads no backlog. A separate polling cache can recover authorization after a failed write or restart. Sync failures are visible.
 - Acting-account mention can admit a PR for primary follow-up: [provider-writes.md](provider-writes.md#mentions).
+
+## Paths
+
+[ADR-0027](adr/0027-path-globs.md). Globs: include patterns plus `!pattern` excludes, gitignore-style, last match wins per file (either name of a rename); only excludes = everything else. Pattern syntax as admission, 1–256 chars; ≤ 200 per list (both old path rules fit).
+
+| Glob                        | Rule                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository `paths` (gate)   | AND on top of admission and explicit intake. Re-evaluated per revision: a tracked PR whose new revision does not match gets no new work; existing entries stay. Empty: no gate. |
+| Secondary `paths` (trigger) | Files changed since that assignment's last completed review of the PR (none: whole PR). No match: entry `skipped_no_matching_files`, item **Skipped: no matching files**.       |
+| Primary                     | None: reviews everything the gate admits. Skips never block its barrier, exits, readiness, approval or merge.                                                                   |
+
+Facts per revision (`monitoring.json` `path_facts`): read once per new head, base (retarget) or changed input; same revision and inputs are reused.
+
+Complete changed-file list ladder; first complete wins, no file-count limit of ours:
+
+| Step                | GitHub                                                                                                                                                                                                     | Azure DevOps                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1. Listing          | `changed_files` (every new head); ≤ 3,000: `/pulls/{n}/files` paged to the end when a glob needs it. Incremental: `compare/{old}...{head}` (not `ahead` or missing old head: whole PR; 300 files: step 2). | Iteration changes paged to the end (`$compareTo` 0 or the old head's iteration). No reported total: complete. |
+| 2. Tree diff        | `git/trees/{sha}?recursive=1` of merge base (`compare` `merge_base_commit`) or old head and head; blob sha/mode differences.                                                                               | `items?recursionLevel=Full` of both commits.                                                                  |
+| 3. Scoped tree diff | Globs only. Level-by-level walk under each include's fixed prefix, only into differing subtrees (≤ 5,000 tree reads).                                                                                      | Not needed (uncapped listing).                                                                                |
+| 4. Local git        | Not yet ([#305](https://github.com/jdylanmc/pr-sniper/issues/305)).                                                                                                                                        |                                                                                                               |
+| 5. Park             | No review; Queue › Needs attention **Can't see all N changed files: needs a human** with the strategies tried; next revision re-evaluates.                                                                 |                                                                                                               |
+
+- Without globs only completeness is checked: the count, and steps 2 then 5 when it exceeds the listing cap.
+- An incremental read that cannot complete falls back to the whole-PR list (may run, never misses).
+- Rate limits, network failures and raced reads retry under the poll's retry policy; they never decide a gate, skip or park.
 
 ## Heartbeat (PR state)
 
@@ -77,19 +102,19 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 
 Same schedule, admission, retry and parking as GitHub, through the provider read interfaces (`azure_devops/read/pulls.rs`). Auth: Azure CLI token source ([ADR-0026](adr/0026-azure-devops-auth-via-azure-cli.md)).
 
-| Step          | Rule                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| List          | `GET {org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status=active`, `$top`=100 / `$skip` pages; a PR seen twice = `IncompleteRead` (retries). Over 5,000 = `LimitExceeded`. |
-| Tracked       | Missing from the active listing: read on its own (`completed` → Merged, `abandoned` → Closed).                                                                                                         |
-| Revision      | Head = `lastMergeSourceCommit` (latest iteration's source commit): each push is a new Iteration. Base = `lastMergeTargetCommit`.                                                                       |
-| Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                               |
-| Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams); path rules read changed files. No mention scan.                                                   |
-| Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages, ≤ 3,000.                                                                      |
-| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                  |
-| Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                           |
-| Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401 drops the token and retries once; `Retry-After` reaches the shared retry policy.                                                                  |
-| Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                    |
-| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                 |
+| Step          | Rule                                                                                                                                                                                                       |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List          | `GET {org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status=active`, `$top`=100 / `$skip` pages; a PR seen twice = `IncompleteRead` (retries). Over 5,000 = `LimitExceeded`.     |
+| Tracked       | Missing from the active listing: read on its own (`completed` → Merged, `abandoned` → Closed).                                                                                                             |
+| Revision      | Head = `lastMergeSourceCommit` (latest iteration's source commit): each push is a new Iteration. Base = `lastMergeTargetCommit`.                                                                           |
+| Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                                   |
+| Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams). No mention scan. [Paths](#paths) read iteration changes.                                              |
+| Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages to the end (no file limit; a `nextSkip` that does not advance = `IncompleteRead`). |
+| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                      |
+| Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                               |
+| Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401 drops the token and retries once; `Retry-After` reaches the shared retry policy.                                                                      |
+| Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                        |
+| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                     |
 
 Parked causes (Queue › **Needs attention**):
 

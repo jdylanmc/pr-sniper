@@ -30,6 +30,9 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 | write Failed after an effect | Needs attention | **Write failed**, Retry |
 | `panic_exit` | Needs attention | **Panic** + cooldown clock |
 
+- **Can't see all N changed files: needs a human** (`incomplete_files`): no strategy listed every changed file ([polling.md](polling.md#paths)). No review ran; no Retry; detail shows **Changed files** and **Tried**. A new revision re-evaluates.
+- **Skipped: no matching files**: Activity row per secondary whose paths matched nothing changed since its last review (`Item.skipped`). Never holds the item, the primary or its exits.
+
 Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
 
 - Activity (packet runs): **Read** N of M, exit row (icon + exit, counts New / Replies / Resolved, Approve / Merge, Write phase, Progress), **Packet** row (State id, Schema, Tools, Offered, Denied, Hash), teammate **Report** rows (agent, finding count; tap = `file:line` + nano). `ready_for_human` summary shows local, never posted.
@@ -71,17 +74,17 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 - Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.
 - Copy: title = state word, then `repo#123`; body = PR title, then at most one reason. Repo and PR title in banners are owner-approved (2026-10-23). Rendered at send time from the live queue item; `state/notifications.json` keeps no PR text. Title ≤ 48 chars, body ≤ 90; longer text ends in `…`. Line breaks, control, bidi-control and XML-invalid (U+FFFE/U+FFFF) characters are stripped. The live item matches by id or legacy alias. A Failure notice stores the item's typed failure cause when sent (`failure_cause`, no text); banner and history render its reason from that alone. Item gone: state word alone, body **Open the queue**.
 
-| Type                 | Title                | Body                                                                                                   | Badge          |
-| -------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ | -------------- |
-| Confirmation         | Confirm · repo#123   | PR title                                                                                               | Amber `!`      |
-| Human input          | Needs you · repo#123 | PR title                                                                                               | Amber `!`      |
-| Ready                | Ready · repo#123     | PR title · Needs your review                                                                           | Blue crosshair |
-| Final review cleared | Cleared · repo#123   | PR title · Needs your review                                                                           | Blue crosshair |
-| Approved             | Approved · repo#123  | PR title · Needs your review                                                                           | Green check    |
-| Merged               | Merged · repo#123    | PR title                                                                                               | Green check    |
-| Failure              | Failed · repo#123    | PR title [· Publish failed / Publish unconfirmed / Review crashed / Retries exhausted / Review failed] | Red `×`        |
-| Failure, no PR       | Failed · Repo check  | Open Settings                                                                                          | Red `×`        |
-| Opt-in confirmation  | Notifications on     | PR alerts show here                                                                                    | Blue crosshair |
+| Type                 | Title                | Body                                                                                                                                 | Badge          |
+| -------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| Confirmation         | Confirm · repo#123   | PR title                                                                                                                             | Amber `!`      |
+| Human input          | Needs you · repo#123 | PR title                                                                                                                             | Amber `!`      |
+| Ready                | Ready · repo#123     | PR title · Needs your review                                                                                                         | Blue crosshair |
+| Final review cleared | Cleared · repo#123   | PR title · Needs your review                                                                                                         | Blue crosshair |
+| Approved             | Approved · repo#123  | PR title · Needs your review                                                                                                         | Green check    |
+| Merged               | Merged · repo#123    | PR title                                                                                                                             | Green check    |
+| Failure              | Failed · repo#123    | PR title [· Publish failed / Publish unconfirmed / Review crashed / Retries exhausted / Review failed / Can't see all changed files] | Red `×`        |
+| Failure, no PR       | Failed · Repo check  | Open Settings                                                                                                                        | Red `×`        |
+| Opt-in confirmation  | Notifications on     | PR alerts show here                                                                                                                  | Blue crosshair |
 
 - Badges: `src-tauri/icons/notifications/*.png` (256 px RGBA, white rim for dark and light), embedded in the binary; regenerate with `swift scripts/generate-notification-badges.swift`. Shape and title word carry the state, not color alone. macOS: `macos/*.png` variant (disc padded to half the canvas, 64 px inset, so the thumbnail stays smaller than the app icon); per-request copy in `<data root>/notification-badges/` attached as the thumbnail (the app icon stays the main icon); UserNotifications moves it into its store, leftovers are deleted after the request. Windows: `appLogoOverride` from a stable `<data root>/notification-badges/<state>.png`. A badge that cannot be written is skipped; the notice still sends.
 - `state/notifications.json`: profile-scoped request identities, observed transitions, send intent, outcomes, destinations. Same transition never repeats on poll/restart; a new cause or re-entry may notify.

@@ -24,6 +24,10 @@ pub const WAITING_SCOPE_EXCLUDED: &str = "scope_excluded";
 pub const WAITING_CLOSED: &str = "closed";
 pub const WAITING_MERGED: &str = "merged";
 pub const WAITING_ASSIGNMENT_REMOVED: &str = "assignment_removed";
+/// A secondary whose path globs match no file changed since its last review.
+pub const WAITING_SKIPPED_NO_MATCHING_FILES: &str = "skipped_no_matching_files";
+/// The provider cannot list every changed file: parked for a human, no review.
+pub const WAITING_INCOMPLETE_FILES: &str = "incomplete_files";
 pub const CONFIGURATION_SAVE_REQUIRED: &str = "repository_configuration_required";
 const RETRY_WINDOW_SECONDS: i64 = 15 * 60;
 const SUPERSEDED_RETRY_SECONDS: i64 = 30;
@@ -676,6 +680,9 @@ pub struct MonitoringState {
     /// Set once the pre-fix "conversation_admission" poll failures were requeued.
     #[serde(default)]
     pub admission_upgrade_done: bool,
+    /// Path facts per repository configuration id, then pull request id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub path_facts: BTreeMap<String, BTreeMap<String, crate::paths::PathFacts>>,
 }
 
 /// Retired poll operations kept for diagnosis; nothing reads them back, so
@@ -852,6 +859,92 @@ pub struct PollTicket {
     pub prepared_at: i64,
     /// Orders tickets prepared in the same second (`next_observation`).
     pub sequence: u64,
+    pub paths: PathTicket,
+}
+
+/// What a poll needs to read path facts (ADR 0027).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathTicket {
+    pub gate: Vec<String>,
+    /// Secondary assignments with globs: (assignment id, patterns).
+    pub secondaries: Vec<(String, Vec<String>)>,
+    pub review_drafts: bool,
+    /// Saved facts by pull request id.
+    pub facts: BTreeMap<String, crate::paths::PathFacts>,
+    /// Head of each assignment's last completed review, by pull request id.
+    pub reviewed: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl PathTicket {
+    pub fn plan(&self, pull_request_id: &str) -> crate::paths::Plan {
+        let reviewed = self.reviewed.get(pull_request_id);
+        crate::paths::Plan {
+            gate: self.gate.clone(),
+            secondaries: self
+                .secondaries
+                .iter()
+                .map(|(id, patterns)| crate::paths::SecondaryPlan {
+                    assignment_id: id.clone(),
+                    patterns: patterns.clone(),
+                    since: reviewed.and_then(|r| r.get(id)).cloned(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Head of each assignment's newest completed review per pull request of
+/// one repository binding. Only runs by the assignment's current Agent count:
+/// a replaced Agent's review is no baseline for the new one.
+pub(crate) fn reviewed_heads(
+    reviews: &[crate::review::ReviewRun],
+    assignments: &[ScanAssignment],
+    configuration_id: &str,
+    account_id: &str,
+    repository_id: &str,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    type Order = (u64, u64, i64);
+    let mut heads: BTreeMap<String, BTreeMap<String, (Order, String)>> = BTreeMap::new();
+    for run in reviews {
+        let job = &run.job;
+        let Some(assignment) = job.assignment_id.as_ref() else {
+            continue;
+        };
+        let agent = job
+            .work
+            .as_ref()
+            .map_or(run.selection.agent.id.as_str(), |w| w.agent_id.as_str());
+        if !assignments
+            .iter()
+            .any(|a| &a.assignment_id == assignment && a.agent_id == agent)
+        {
+            continue;
+        }
+        if run.operation.state != OperationState::Completed
+            || job.configuration_id != configuration_id
+            || job.account_id != account_id
+            || job.repository_id != repository_id
+        {
+            continue;
+        }
+        let at = (
+            job.work.as_ref().map_or(0, |w| w.iteration),
+            job.work.as_ref().map_or(0, |w| w.state_seq),
+            run.operation.initial_attempt_at,
+        );
+        let entry = heads
+            .entry(job.pull_request_id.clone())
+            .or_default()
+            .entry(assignment.clone())
+            .or_insert((at, job.head_sha.clone()));
+        if at >= entry.0 {
+            *entry = (at, job.head_sha.clone());
+        }
+    }
+    heads
+        .into_iter()
+        .map(|(pull, by)| (pull, by.into_iter().map(|(a, (_, h))| (a, h)).collect()))
+        .collect()
 }
 
 pub struct PollResult {
@@ -859,12 +952,17 @@ pub struct PollResult {
     pub pull_requests: Vec<PullRequest>,
     /// Fresh provider state per tracked open pull request id.
     pub states: BTreeMap<String, crate::github::state::PrSnapshot>,
+    /// Path facts read this poll, by pull request id.
+    pub facts: BTreeMap<String, crate::paths::PathFacts>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ExplicitAdmission {
     pub queued: bool,
     pub message: String,
+    /// The repository paths gate rejected this revision: no work may start.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gated_out: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -927,6 +1025,21 @@ struct ConfiguredSchedule {
     trigger_policy: Option<String>,
     assignments: Vec<ScanAssignment>,
     review_drafts: bool,
+    /// Repository gate globs.
+    paths: Vec<String>,
+    /// Secondary assignments with globs: (assignment id, patterns).
+    secondary_paths: Vec<(String, Vec<String>)>,
+}
+
+impl ConfiguredSchedule {
+    fn path_ticket(&self) -> PathTicket {
+        PathTicket {
+            gate: self.paths.clone(),
+            secondaries: self.secondary_paths.clone(),
+            review_drafts: self.review_drafts,
+            ..PathTicket::default()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1020,6 +1133,7 @@ impl Monitor {
             &watched_authors,
             policy.reviewer_assignment,
             admission.as_ref(),
+            &repository.paths,
         )?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
@@ -1501,6 +1615,18 @@ impl Monitor {
             });
             match queue {
                 Ok(queue) => {
+                    let reviews = if tickets.iter().any(|t| !t.paths.secondaries.is_empty()) {
+                        match store.review_evidence() {
+                            Ok(reviews) => reviews,
+                            Err(error) => {
+                                self.state = previous;
+                                self.leases = previous_leases;
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    };
                     for ticket in &mut tickets {
                         ticket.tracked = tracked_for(
                             &queue,
@@ -1508,6 +1634,21 @@ impl Monitor {
                             &ticket.provider_account_id,
                             &ticket.provider_repository_id,
                         );
+                        ticket.paths.facts = self
+                            .state
+                            .path_facts
+                            .get(&ticket.repository_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        if !ticket.paths.secondaries.is_empty() {
+                            ticket.paths.reviewed = reviewed_heads(
+                                &reviews,
+                                &ticket.assignments,
+                                &ticket.repository_id,
+                                &ticket.provider_account_id,
+                                &ticket.provider_repository_id,
+                            );
+                        }
                     }
                 }
                 Err(error) => {
@@ -1552,12 +1693,48 @@ impl Monitor {
         Ok(())
     }
 
+    /// Path inputs of one repository for explicit intake, like a poll ticket's.
+    pub fn path_ticket(
+        &self,
+        store: &Store,
+        repository: &crate::storage::Repository,
+    ) -> Result<PathTicket, String> {
+        let settings = store.load_settings()?;
+        let Some(configuration) = configured_schedules(&settings)
+            .into_iter()
+            .find(|c| c.repository_id == repository.id)
+        else {
+            return Ok(PathTicket::default());
+        };
+        let mut ticket = configuration.path_ticket();
+        ticket.facts = self
+            .state
+            .path_facts
+            .get(&repository.id)
+            .cloned()
+            .unwrap_or_default();
+        if let (false, Some(binding)) =
+            (ticket.secondaries.is_empty(), repository.account_binding())
+        {
+            ticket.reviewed = reviewed_heads(
+                &store.review_evidence()?,
+                &configuration.assignments,
+                &repository.id,
+                &binding.account.account_id,
+                &binding.repository.repository_id,
+            );
+        }
+        Ok(ticket)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn admit_explicit_pull_request(
         &mut self,
         store: &Store,
         accounts: &BTreeMap<String, AccountAvailability>,
         expected: &crate::storage::Repository,
         resolved: crate::provider::ResolvedTarget,
+        facts: Option<crate::paths::PathFacts>,
         read_at: i64,
         now: i64,
     ) -> Result<ExplicitAdmission, String> {
@@ -1593,6 +1770,7 @@ impl Monitor {
             return Ok(ExplicitAdmission {
                 queued: false,
                 message: format!("PR #{} is not queued: this repository is disabled. Enable it and save to queue the requested PR.", pull.number),
+                gated_out: false,
             });
         }
         if pull.state != Lifecycle::Open || (pull.draft && !expected.review_drafts) {
@@ -1600,6 +1778,16 @@ impl Monitor {
         }
         if expected.assignments.is_empty() {
             return Err("Assign a saved Agent before queueing this pull request.".into());
+        }
+        if facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
+            return Ok(ExplicitAdmission {
+                queued: false,
+                message: format!(
+                    "PR #{} is not queued: no changed file matches this repository's paths.",
+                    pull.number
+                ),
+                gated_out: true,
+            });
         }
         self.synchronize_configuration(store, accounts, now)?;
         let configured = configured_schedules(&settings);
@@ -1632,6 +1820,7 @@ impl Monitor {
             tracked: Vec::new(),
             prepared_at: read_at,
             sequence: next_observation(),
+            paths: configuration.path_ticket(),
         };
         let number = pull.number;
         let pull_id = pull.id.clone();
@@ -1641,6 +1830,7 @@ impl Monitor {
             &ticket,
             PollResult {
                 connection: resolved.connection,
+                facts: facts.into_iter().map(|f| (pull.id.clone(), f)).collect(),
                 pull_requests: vec![pull],
                 states: BTreeMap::new(),
             },
@@ -1655,6 +1845,7 @@ impl Monitor {
             queued: true,
             message: format!("PR #{number} is admitted to the review queue{} Existing work for this iteration is reused. Account, Agent availability and shared capacity still gate execution; no action permissions were granted.",
                 if paused { "; monitoring is paused, so it will not run until resumed." } else { "." }),
+            gated_out: false,
         })
     }
 
@@ -2433,6 +2624,7 @@ impl Monitor {
                 tracked: Vec::new(),
                 prepared_at: now,
                 sequence: next_observation(),
+                paths: configuration.path_ticket(),
             });
         }
         tickets
@@ -2759,6 +2951,17 @@ impl Monitor {
             .recover_evidence(store)
             .map_err(MonitoringError::Storage)?;
         let reviews = store.review_evidence().map_err(MonitoringError::Storage)?;
+        let reviewed = if configuration.secondary_paths.is_empty() {
+            BTreeMap::new()
+        } else {
+            reviewed_heads(
+                &reviews,
+                &configuration.assignments,
+                &ticket.repository_id,
+                &ticket.provider_account_id,
+                &ticket.provider_repository_id,
+            )
+        };
         let reserved: HashSet<_> = store
             .load_publications()
             .map_err(MonitoringError::Storage)?
@@ -2773,6 +2976,24 @@ impl Monitor {
         let snapshots = result.states;
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
+        let mut path_facts = self
+            .state
+            .path_facts
+            .get(&ticket.repository_id)
+            .cloned()
+            .unwrap_or_default();
+        // A full poll lists every open and tracked PR: facts of others are gone.
+        if explicit_pull_id.is_none() {
+            path_facts.retain(|id, _| pulls.iter().any(|p| &p.id == id));
+        }
+        path_facts.extend(result.facts);
+        if path_facts.is_empty() {
+            self.state.path_facts.remove(&ticket.repository_id);
+        } else {
+            self.state
+                .path_facts
+                .insert(ticket.repository_id.clone(), path_facts.clone());
+        }
         let mut seen = HashSet::new();
         for pull in pulls {
             if !seen.insert(pull.id.clone()) {
@@ -2787,6 +3008,9 @@ impl Monitor {
                 return Err(check_error(ConnectionError::RepositoryChanged));
             }
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
+            let facts = path_facts.get(&pull.id);
+            let gated_out = facts.is_some_and(|f| f.gated_out(&pull));
+            let incomplete = facts.and_then(|f| f.incomplete_for(&pull));
             let eligibility = eligibility(
                 &ticket.watched_authors,
                 ticket.admission.as_ref(),
@@ -2827,6 +3051,7 @@ impl Monitor {
                 if legacy.is_none()
                     && (pull.state != Lifecycle::Open
                         || skip_draft
+                        || gated_out
                         || (explicit_pull_id != Some(pull.id.as_str())
                             && (!eligibility.admitted
                                 || !(admission_candidate
@@ -2942,7 +3167,9 @@ impl Monitor {
                     record.external_wait = None;
                 }
             }
-            if pull.state != Lifecycle::Open || skip_draft {
+            // A revision outside the repository paths gets no new work;
+            // existing entries stay.
+            if pull.state != Lifecycle::Open || skip_draft || gated_out {
                 continue;
             }
             if pr_states
@@ -2979,6 +3206,7 @@ impl Monitor {
             );
             let state_seq = pr_states.state_seq(&binding);
             let revision_seq = pr_states.revision_seq(&binding);
+
             let primary = settings
                 .repositories
                 .iter()
@@ -3008,6 +3236,11 @@ impl Monitor {
                 // A teammate's report covers every state of its review revision.
                 let teammate = primary.is_some_and(|primary| primary != assignment.assignment_id);
                 let needed = if teammate { revision_seq } else { state_seq };
+                let globs = configuration
+                    .secondary_paths
+                    .iter()
+                    .find(|(id, _)| *id == assignment.assignment_id)
+                    .map(|(_, patterns)| patterns.as_slice());
                 if let Some(i) = existing {
                     let job = &queue.jobs[i];
                     let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= needed);
@@ -3049,6 +3282,27 @@ impl Monitor {
                         .map(|(i, _)| i);
                     adopting = existing.is_some();
                 }
+                // Only work that has not run yet is held or skipped.
+                let ran =
+                    existing.is_some_and(|i| reviews.iter().any(|r| r.matches_job(&queue.jobs[i])));
+                let waiting = if ran {
+                    WAITING_AI_CAPACITY
+                } else if incomplete.is_some() {
+                    WAITING_INCOMPLETE_FILES
+                } else if globs.is_some_and(|patterns| {
+                    let since = reviewed
+                        .get(&pull.id)
+                        .and_then(|r| r.get(&assignment.assignment_id))
+                        .map(String::as_str);
+                    since == Some(pull.head_sha.as_str())
+                        || facts.is_some_and(|f| {
+                            f.skips(&pull, &assignment.assignment_id, since, patterns)
+                        })
+                }) {
+                    WAITING_SKIPPED_NO_MATCHING_FILES
+                } else {
+                    WAITING_AI_CAPACITY
+                };
                 let work = if let Some(mut work) = existing.and_then(|i| queue.jobs[i].work.clone())
                 {
                     work.state_seq = work.state_seq.max(state_seq);
@@ -3128,7 +3382,7 @@ impl Monitor {
                     watched_author: eligibility.watched_author,
                     all_authors: eligibility.all_authors,
                     requested_reviewer: eligibility.requested_reviewer,
-                    waiting: WAITING_AI_CAPACITY.into(),
+                    waiting: waiting.into(),
                     detected_at: existing.map(|i| queue.jobs[i].detected_at).unwrap_or(now),
                 };
                 if let Some(index) = existing {
@@ -3253,8 +3507,6 @@ pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
     .admitted
 }
 
-/// True when path rules decide this pull request but its changed files have
-/// not been loaded; the polling listing does not include them.
 fn tracked_for(
     queue: &QueueState,
     configuration_id: &str,
@@ -3287,13 +3539,6 @@ fn tracked_for(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-pub fn needs_changed_files(ticket: &PollTicket, pull: &PullRequest) -> bool {
-    ticket
-        .admission
-        .as_ref()
-        .is_some_and(|admission| admission.needs_changed_files(&ticket.provider_account_id, pull))
 }
 
 fn activation_admission_candidate(
@@ -3394,6 +3639,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             &watched_authors,
             policy.reviewer_assignment,
             admission.as_ref(),
+            &repository.paths,
         )
         .ok();
         let binding = repository.account_binding();
@@ -3434,6 +3680,15 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
                 })
                 .collect(),
             review_drafts: repository.review_drafts,
+            paths: repository.paths.clone(),
+            secondary_paths: repository
+                .assignments
+                .iter()
+                .filter(|a| {
+                    !a.paths.is_empty() && repository.primary_assignment_id() != Some(&a.id)
+                })
+                .map(|a| (a.id.clone(), a.paths.clone()))
+                .collect(),
         });
     }
     configured
@@ -3456,6 +3711,8 @@ fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &Pol
         && configuration.provider_repository_id.as_deref() == Some(&ticket.provider_repository_id)
         && configuration.policy == ticket.policy
         && configuration.trigger_policy.as_deref() == Some(&ticket.trigger_policy)
+        // Which drafts had path facts read depends on it (ADR 0027).
+        && configuration.review_drafts == ticket.paths.review_drafts
 }
 
 fn awaits_scheduled_run(health: &ScheduleHealth) -> bool {
@@ -3953,6 +4210,7 @@ pub fn retired(job: &QueueJob) -> bool {
             | WAITING_SCOPE_EXCLUDED
             | WAITING_ASSIGNMENT_REMOVED
             | WAITING_REPOSITORY_REMOVED
+            | WAITING_SKIPPED_NO_MATCHING_FILES
     )
 }
 
@@ -4075,6 +4333,7 @@ fn trigger_policy(
     watched_authors: &[WatchedIdentity],
     reviewer_assignment: bool,
     admission: Option<&AdmissionConfig>,
+    gate: &[String],
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
@@ -4082,9 +4341,12 @@ fn trigger_policy(
         .collect();
     authors.sort_unstable();
     // Legacy keys keep their exact shape so unchanged repositories stay valid.
-    match admission {
-        None => serde_json::to_string(&(authors, reviewer_assignment)),
-        Some(admission) => serde_json::to_string(&("admission", admission)),
+    // An empty gate keeps the key unchanged.
+    match (admission, gate) {
+        (None, []) => serde_json::to_string(&(authors, reviewer_assignment)),
+        (None, gate) => serde_json::to_string(&(authors, reviewer_assignment, "paths", gate)),
+        (Some(admission), []) => serde_json::to_string(&("admission", admission)),
+        (Some(admission), gate) => serde_json::to_string(&("admission", admission, "paths", gate)),
     }
     .map_err(|_| ConnectionError::Configuration)
 }
@@ -4868,20 +5130,53 @@ mod admission_tests {
     }
 
     #[test]
-    fn exclusions_beat_mentions_and_path_rules_use_loaded_files() {
+    fn exclusions_beat_mentions_and_files_never_admit() {
         let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
-            {"kind": "exclude_paths", "enabled": true, "paths": ["docs/"]},
-            {"kind": "mentioned", "enabled": true},
-            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "12", "login": "u"}]},
+            {"kind": "mentioned", "enabled": true}
         ]}));
-        assert!(!eligible(&configured, &pull("12", &[], true, &["docs/a.md"])).admitted);
-        assert!(eligible(&configured, &pull("12", &[], true, &["docs/a.md", "x"])).admitted);
-        assert!(eligible(&configured, &pull("12", &[], false, &["src/a.rs"])).admitted);
-        assert!(!eligible(&configured, &pull("12", &[], false, &["lib/a.rs"])).admitted);
+        assert!(!eligible(&configured, &pull("12", &[], true, &["src/a.rs"])).admitted);
+        assert!(eligible(&configured, &pull("13", &[], true, &[])).admitted);
+        assert!(!eligible(&configured, &pull("13", &[], false, &["src/a.rs"])).admitted);
+    }
+
+    #[test]
+    fn path_globs_reach_the_ticket_and_only_a_gate_changes_the_key() {
+        let mut configured = settings(serde_json::json!({"mode": "all", "rules": []}));
+        let before = ticket_for(&configured);
+        assert_eq!(before.paths, PathTicket::default());
+        configured.repositories[0].paths = vec!["src/".into(), "!src/gen/".into()];
+        let gated = ticket_for(&configured);
+        assert_eq!(gated.paths.gate, ["src/", "!src/gen/"]);
+        assert_ne!(gated.trigger_policy, before.trigger_policy);
+        let mut assignment: crate::storage::Assignment = serde_json::from_value(
+            serde_json::json!({"id": "a1", "agent_id": "x", "comment": false}),
+        )
+        .unwrap();
+        configured.repositories[0].paths.clear();
+        let mut secondary = assignment.clone();
+        secondary.id = "a2".into();
+        secondary.paths = vec!["docs/".into()];
+        assignment.paths.clear();
+        configured.repositories[0].assignments = vec![assignment, secondary];
+        configured.repositories[0].primary_assignment_id = Some("a1".into());
+        let ticket = ticket_for(&configured);
+        assert_eq!(ticket.trigger_policy, before.trigger_policy);
+        assert_eq!(
+            ticket.paths.secondaries,
+            [("a2".to_string(), vec!["docs/".to_string()])]
+        );
+        let mut paths = ticket.paths;
+        paths
+            .reviewed
+            .insert("1".into(), [("a2".to_string(), "h1".to_string())].into());
+        assert_eq!(paths.plan("1").secondaries[0].since.as_deref(), Some("h1"));
+        assert_eq!(paths.plan("2").secondaries[0].since, None);
     }
 
     fn ticket_for(settings: &Settings) -> PollTicket {
         let configuration = configured_schedules(settings).remove(0);
+        let paths = configuration.path_ticket();
         PollTicket {
             provider: configuration.provider,
             health_key: configuration.health_key,
@@ -4901,29 +5196,20 @@ mod admission_tests {
             tracked: Vec::new(),
             prepared_at: 0,
             sequence: 0,
+            paths,
         }
     }
 
     #[test]
-    fn scan_admission_and_file_hydration_follow_the_ticket() {
+    fn scan_admission_follows_the_ticket() {
         let configured = settings(serde_json::json!({"mode": "filtered", "rules": [
-            {"kind": "assigned", "enabled": true},
-            {"kind": "include_paths", "enabled": true, "paths": ["src/"]}
+            {"kind": "assigned", "enabled": true}
         ]}));
         let ticket = ticket_for(&configured);
-        let reviewed = pull("12", &[ACCOUNT], false, &[]);
-        assert!(scan_admits(&ticket, &reviewed));
-        assert!(!needs_changed_files(&ticket, &reviewed));
-        let unknown = pull("12", &[], false, &[]);
-        assert!(needs_changed_files(&ticket, &unknown));
-        assert!(!scan_admits(&ticket, &unknown));
-        let loaded = pull("12", &[], false, &["src/a.rs"]);
-        assert!(!needs_changed_files(&ticket, &loaded));
-        assert!(scan_admits(&ticket, &loaded));
-        // Legacy tickets never fetch files.
-        assert!(!needs_changed_files(
-            &ticket_for(&settings(serde_json::Value::Null)),
-            &unknown
+        assert!(scan_admits(&ticket, &pull("12", &[ACCOUNT], false, &[])));
+        assert!(!scan_admits(
+            &ticket,
+            &pull("12", &[], false, &["src/a.rs"])
         ));
     }
 

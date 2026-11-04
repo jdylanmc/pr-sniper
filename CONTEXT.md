@@ -141,8 +141,17 @@ _Avoid_: Scope prompt, trust prompt
 ### Admission and scheduling
 
 **Admission rule**:
-Per-repository decision of which open PRs become tracked **Iterations**. Modes: **All pull requests**, or **Filtered pull requests**: ordered, reorderable on/off rules; first enabled matching rule decides; no match rejects. Rules: Assigned to me, Mentioning me, Include users, Exclude users, Include paths (any changed file matches), Exclude paths (all changed files match). Paths are prefix or glob. Admission is sticky: an admitted PR stays tracked after rule edits. Still gated by account, pause, capacity and grants. Existing repositories migrated with monitoring off until reviewed.
+Per-repository decision of which open PRs become tracked **Iterations**. Modes: **All pull requests**, or **Filtered pull requests**: ordered, reorderable on/off rules; first enabled matching rule decides; no match rejects. Rules: Assigned to me, Mentioning me, Include users, Exclude users. Path scoping is the separate **Path gate**. Admission is sticky: an admitted PR stays tracked after rule edits. Still gated by account, pause, capacity and grants. Existing repositories migrated with monitoring off until reviewed.
 _Avoid_: Reviewer requests, People you watch, watch filter
+
+**Path gate**:
+Repository `paths`: include globs and `!` excludes, last match wins. ANDed with admission and explicit intake, per revision. Empty: no gate. See [ADR 0027](docs/adr/0027-path-globs.md).
+
+**Secondary trigger**:
+A teammate's `paths`: it reviews a revision only when a file changed since its own last completed review matches; otherwise its entry is retired as **Skipped: no matching files**. The primary has none.
+
+**Complete changed-file list**:
+Path and parking decisions use only a complete list: listing, then tree diff, then scoped tree diff (globs only). None complete: parked for a human (`incomplete_files`). Transient read failures retry, never decide.
 
 **Explicit PR Intake**:
 PR URL entered at **+ URL** resolves its repository and that exact PR. After a valid repository Save the PR is admitted at once, outside admission rules, with no schedule wait. Same URL and same Iteration reuse existing work. Normal gates still apply. A plain repository URL creates no PR work. Failed intake never undoes a committed Save.

@@ -5,8 +5,8 @@
 
 use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
-    ChangedFile, ConnectionError, Lifecycle, Person, PullRequest, PullRequestReader,
-    RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, TreeEntry,
+    ChangedFile, ConnectionError, Lifecycle, Listing, Person, PullRequest, PullRequestReader,
+    RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -16,8 +16,6 @@ const PAGE_SIZE: u64 = 100;
 /// Active pull requests read per repository before the listing is cut off.
 const MAX_PULL_REQUESTS: u64 = 5_000;
 const CHANGES_PAGE_SIZE: u64 = 1_000;
-/// Same file bound as GitHub reads.
-const MAX_FILES: usize = 3_000;
 /// Files diffed for review; later files get no patch, like GitHub's.
 const MAX_PATCH_FILES: usize = 300;
 
@@ -346,6 +344,19 @@ impl Client {
         number: u64,
         iteration: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError> {
+        self.iteration_changes_since(key, number, iteration, 0)
+            .await
+    }
+
+    /// Files changed from iteration `compare_to` (0: the base) to `iteration`,
+    /// paged to the end. No file-count limit.
+    pub async fn iteration_changes_since(
+        &self,
+        key: &RepositoryKey,
+        number: u64,
+        iteration: u64,
+        compare_to: u64,
+    ) -> Result<Vec<ChangedFile>, ConnectionError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawItem {
@@ -373,6 +384,7 @@ impl Client {
         }
         self.owns(key)?;
         let (number, iteration) = (number.to_string(), iteration.to_string());
+        let compare_to = compare_to.to_string();
         let top = CHANGES_PAGE_SIZE.to_string();
         let mut files = Vec::new();
         let mut paths = BTreeSet::new();
@@ -382,7 +394,11 @@ impl Client {
             let url = self.git_url(
                 key,
                 &["pullRequests", &number, "iterations", &iteration, "changes"],
-                &[("$top", &top), ("$skip", &skip_text), ("$compareTo", "0")],
+                &[
+                    ("$top", &top),
+                    ("$skip", &skip_text),
+                    ("$compareTo", &compare_to),
+                ],
             );
             let (raw, _): (Raw, _) = self.get(url).await?;
             for change in raw.change_entries {
@@ -430,12 +446,12 @@ impl Client {
                     changes: 0,
                     sha: commit(&sha.ok_or(ConnectionError::InvalidResponse)?)?,
                 });
-                if files.len() > MAX_FILES {
-                    return Err(ConnectionError::LimitExceeded);
-                }
             }
-            match raw.next_skip.filter(|next| *next > skip) {
-                Some(next) => skip = next,
+            // `nextSkip` absent or 0 ends the listing; one that does not
+            // advance would end it short.
+            match raw.next_skip.filter(|next| *next != 0) {
+                Some(next) if next > skip => skip = next,
+                Some(_) => return Err(ConnectionError::IncompleteRead),
                 None => return Ok(files),
             }
         }
@@ -658,6 +674,90 @@ impl PullRequestReader for Reader {
             .runtime
             .block_on(self.client.pull_request(&key, number))?;
         self.files(&key, &pull)
+    }
+
+    /// Azure DevOps reports no total change count: the listing paged to the
+    /// end is complete. Without `list` nothing is read.
+    fn changed_file_listing(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        list: bool,
+    ) -> Result<Listing, ConnectionError> {
+        if !list {
+            return Ok(Listing::Visible);
+        }
+        let key = self.key(repository)?;
+        self.files(&key, pull).map(Listing::Complete)
+    }
+
+    /// The latest iteration's merge base (`commonRefCommit`), else its target.
+    fn merge_base(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+    ) -> Result<String, ConnectionError> {
+        let key = self.key(repository)?;
+        let iteration = self.runtime.block_on(self.client.latest_iteration(
+            &key,
+            pull.number,
+            &pull.head_sha,
+        ))?;
+        iteration
+            .common
+            .or(iteration.target)
+            .ok_or(ConnectionError::InvalidResponse)
+    }
+
+    /// Both full trees (`items?recursionLevel=Full`); an oversize tree is cut
+    /// off. Azure DevOps change listings are never capped, so no scoped walk.
+    fn tree_diff(
+        &self,
+        repository: &RemoteRepository,
+        from: &str,
+        to: &str,
+        scope: &[String],
+    ) -> Result<TreeDiff, ConnectionError> {
+        if !scope.is_empty() {
+            return Ok(TreeDiff::Truncated);
+        }
+        let key = self.key(repository)?;
+        let tree = |commit: &str| match self.runtime.block_on(self.client.tree(&key, commit)) {
+            Err(ConnectionError::LimitExceeded) => Ok(None),
+            other => other.map(Some),
+        };
+        Ok(match (tree(from)?, tree(to)?) {
+            (Some(old), Some(new)) => TreeDiff::Complete(crate::provider::tree_changes(&old, &new)),
+            _ => TreeDiff::Truncated,
+        })
+    }
+
+    /// Iteration changes `$compareTo` the newest iteration whose source is
+    /// `old_head`; none: the whole pull request.
+    fn changed_files_since(
+        &self,
+        repository: &RemoteRepository,
+        pull: &PullRequest,
+        old_head: &str,
+    ) -> Result<Since, ConnectionError> {
+        let key = self.key(repository)?;
+        self.runtime.block_on(async {
+            let iterations = self.client.iterations(&key, pull.number).await?;
+            let latest = iterations.last().ok_or(ConnectionError::InvalidResponse)?;
+            if latest.source != pull.head_sha {
+                return Err(ConnectionError::RevisionChanged);
+            }
+            let Some(old) = iterations.iter().rev().find(|i| i.source == old_head) else {
+                return Ok(Since::WholePullRequest);
+            };
+            if old.id == latest.id {
+                return Ok(Since::Files(Vec::new()));
+            }
+            self.client
+                .iteration_changes_since(&key, pull.number, latest.id, old.id)
+                .await
+                .map(Since::Files)
+        })
     }
 
     /// Changed files, each diffed locally from merge base to head (Azure
