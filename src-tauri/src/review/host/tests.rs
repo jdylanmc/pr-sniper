@@ -317,6 +317,20 @@ fn an_attempt_stalled_by_sleep_retries_without_the_sleep_spending_its_window() {
 }
 
 #[test]
+fn a_transient_failure_after_a_short_sleep_keeps_the_slept_window() {
+    // 6 min awake, 10 min asleep, 3 min awake, then a session error: past the
+    // 15-minute wall-clock window only because of the sleep.
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    let mut failure = Failure::provider("Session error.");
+    failure.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(failure), 100 + 19 * 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, run.operation.retry_deadline + 10 * 60);
+}
+
+#[test]
 fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
     let (_root, store, template) = fixture();
     let run = running_packet(&store, &template, 100);

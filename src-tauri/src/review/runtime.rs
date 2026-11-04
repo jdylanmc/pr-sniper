@@ -1228,6 +1228,7 @@ async fn execute<K: Task>(
             error = &mut monitor => Err(error),
             result = Client::start(options) => result.map_err(Failure::sdk),
         }
+        .map_err(|error| progress.stamp(error))
     })
     .await;
     let client = match client {
@@ -1564,6 +1565,7 @@ async fn execute<K: Task>(
     };
     let result = decide(failure_commit.as_ref(), async {
         tokio::select! { biased; error = &mut monitor => Err(error), result = run => result }
+            .map_err(|error| progress.stamp(error))
     })
     .await;
     progress.retire();

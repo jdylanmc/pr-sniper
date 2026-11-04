@@ -10,7 +10,7 @@ use tokio::time::Instant;
 pub(super) struct Watchdog {
     clock: Clock,
     started: Stamp,
-    total_deadline: Instant,
+    total: Duration,
     inactivity: Duration,
     state: Mutex<State>,
 }
@@ -51,7 +51,7 @@ impl Watchdog {
         Self {
             clock,
             started,
-            total_deadline,
+            total: total_deadline.saturating_duration_since(Instant::now()),
             inactivity,
             state: Mutex::new(State {
                 last_progress: started,
@@ -62,14 +62,14 @@ impl Watchdog {
 
     fn expired(&self, state: &State, now: Stamp) -> Option<Expiry> {
         let idle = now.since(state.last_progress);
-        let kind = if now.monotonic() >= self.total_deadline {
+        let total = now.since(self.started);
+        let kind = if total.awake >= self.total {
             FailureKind::TotalDurationTimeout
         } else if idle.total >= self.inactivity {
             FailureKind::InactivityTimeout
         } else {
             return None;
         };
-        let total = now.since(self.started);
         Some(Expiry {
             kind,
             idle_ms: idle.total.as_millis() as u64,
@@ -128,15 +128,31 @@ impl Watchdog {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).retired = true;
     }
 
-    /// At most 100 ms of awake time away, so a wake is noticed promptly.
+    /// Sleep since the attempt started.
+    pub fn slept(&self) -> Duration {
+        self.clock.now().since(self.started).slept()
+    }
+
+    /// Any failure of an attempt that slept carries the sleep, whatever ended it,
+    /// so the retry window never spends it.
+    pub fn stamp(&self, mut failure: Failure) -> Failure {
+        let slept = u32::try_from(self.slept().as_secs()).unwrap_or(u32::MAX);
+        failure.slept_seconds = failure.slept_seconds.max(slept);
+        failure
+    }
+
+    /// At most 100 ms away, so a wake is noticed promptly.
     pub fn next_check(&self) -> Instant {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.clock.now();
         let idle = now.since(state.last_progress).total;
-        let awake = now.monotonic();
-        (awake + self.inactivity.saturating_sub(idle))
-            .min(self.total_deadline)
-            .min(awake + Duration::from_millis(100))
+        let total = now.since(self.started).awake;
+        Instant::now()
+            + self
+                .inactivity
+                .saturating_sub(idle)
+                .min(self.total.saturating_sub(total))
+                .min(Duration::from_millis(100))
     }
 }
 
@@ -148,7 +164,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn independent_timer_expires_without_events_or_hung_tool_completion() {
-        let clock = Watchdog::new(
+        let clock = paused(
             Instant::now() + Duration::from_secs(60),
             Duration::from_secs(10),
         );
@@ -173,7 +189,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn cancellation_wins_without_waiting_for_inactivity() {
-        let clock = Watchdog::new(
+        let clock = paused(
             Instant::now() + Duration::from_secs(60),
             Duration::from_secs(30),
         );
@@ -196,7 +212,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn meaningful_progress_but_not_heartbeats_resets_idle_without_extending_total() {
-        let clock = Watchdog::new(
+        let clock = paused(
             Instant::now() + Duration::from_secs(30),
             Duration::from_secs(10),
         );
@@ -220,7 +236,7 @@ mod tests {
         );
         assert!(clock.progress().is_err());
 
-        let clock = Watchdog::new(
+        let clock = paused(
             Instant::now() + Duration::from_secs(15),
             Duration::from_secs(10),
         );
@@ -236,14 +252,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn retired_and_expired_attempts_reject_late_work_replacement_has_fresh_clock() {
-        let old = Watchdog::new(
+        let old = paused(
             Instant::now() + Duration::from_secs(60),
             Duration::from_secs(10),
         );
         old.retire();
         assert!(old.check().is_err());
         assert!(old.progress().is_err());
-        let fresh = Watchdog::new(
+        let fresh = paused(
             Instant::now() + Duration::from_secs(60),
             Duration::from_secs(10),
         );
@@ -252,6 +268,11 @@ mod tests {
         assert!(fresh.check().is_ok());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(fresh.check().is_err());
+    }
+
+    /// Follows tokio's paused clock on every platform.
+    fn paused(total_deadline: Instant, inactivity: Duration) -> Watchdog {
+        Watchdog::with_clock(Clock::with(Simulated::new()), total_deadline, inactivity)
     }
 
     fn sleeping(inactivity: Duration) -> (Arc<Simulated>, Watchdog) {
@@ -309,5 +330,23 @@ mod tests {
         let failure = expiry.failure();
         assert_eq!(failure.kind, crate::monitoring::OperationFailure::Timeout);
         assert_eq!(failure.slept_seconds, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn any_failure_after_a_sleep_carries_the_sleep_whatever_ended_the_attempt() {
+        let (source, clock) = sleeping(Duration::from_secs(15 * 60));
+        tokio::time::advance(Duration::from_secs(4 * 60)).await;
+        source.sleep(Duration::from_secs(10 * 60));
+        clock.progress().unwrap();
+        tokio::time::advance(Duration::from_secs(3 * 60)).await;
+        let failure = clock.stamp(Failure::provider("Session error."));
+        assert_eq!(failure.kind, crate::monitoring::OperationFailure::Provider);
+        assert_eq!(failure.slept_seconds, 10 * 60);
+        assert_eq!(
+            clock
+                .stamp(Failure::slept(Duration::from_secs(7200)))
+                .slept_seconds,
+            7200
+        );
     }
 }

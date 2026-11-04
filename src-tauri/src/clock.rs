@@ -1,28 +1,44 @@
 //! Elapsed time that keeps counting while the computer sleeps.
 //!
-//! `std::time::Instant` and tokio time pause during macOS sleep
-//! (`mach_absolute_time`), so a deadline measured on them alone never expires
-//! for work whose connection died while the machine slept. A [`Stamp`] pairs
-//! monotonic time with wall-clock time: elapsed time is the larger of the two,
-//! so sleep counts, and a wall clock set backwards never shortens it.
+//! A [`Stamp`] pairs awake time (pauses during sleep) with wall-clock time.
+//! Elapsed time is the larger of the two, so sleep counts, and a wall clock set
+//! backwards never shortens it; their difference is the sleep. `Instant` alone
+//! is not portable for either: it pauses during macOS and Linux sleep
+//! (`mach_absolute_time`, `CLOCK_MONOTONIC`) but keeps counting on Windows
+//! (`QueryPerformanceCounter`), so Windows reads unbiased interrupt time.
 
 use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
-use tokio::time::Instant;
 
 pub(crate) trait Source: Send + Sync {
-    fn monotonic(&self) -> Instant;
+    /// Awake time since an arbitrary fixed origin.
+    fn awake(&self) -> Duration;
     fn wall(&self) -> SystemTime;
 }
 
-struct System;
+struct System {
+    #[cfg(not(windows))]
+    origin: tokio::time::Instant,
+}
 
 impl Source for System {
-    fn monotonic(&self) -> Instant {
-        Instant::now()
+    #[cfg(not(windows))]
+    fn awake(&self) -> Duration {
+        self.origin.elapsed()
     }
+
+    #[cfg(windows)]
+    fn awake(&self) -> Duration {
+        let mut ticks = 0u64;
+        // SAFETY: writes one u64 through a valid pointer; cannot fail on Windows 7+.
+        unsafe {
+            windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut ticks)
+        };
+        Duration::from_nanos(ticks.saturating_mul(100))
+    }
+
     fn wall(&self) -> SystemTime {
         SystemTime::now()
     }
@@ -34,7 +50,10 @@ pub(crate) struct Clock(Arc<dyn Source>);
 
 impl Default for Clock {
     fn default() -> Self {
-        Self(Arc::new(System))
+        Self(Arc::new(System {
+            #[cfg(not(windows))]
+            origin: tokio::time::Instant::now(),
+        }))
     }
 }
 
@@ -46,7 +65,7 @@ impl Clock {
 
     pub(crate) fn now(&self) -> Stamp {
         Stamp {
-            monotonic: self.0.monotonic(),
+            awake: self.0.awake(),
             wall: self.0.wall(),
         }
     }
@@ -54,17 +73,13 @@ impl Clock {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Stamp {
-    monotonic: Instant,
+    awake: Duration,
     wall: SystemTime,
 }
 
 impl Stamp {
-    pub(crate) fn monotonic(&self) -> Instant {
-        self.monotonic
-    }
-
     pub(crate) fn since(&self, earlier: Stamp) -> Elapsed {
-        let awake = self.monotonic.saturating_duration_since(earlier.monotonic);
+        let awake = self.awake.saturating_sub(earlier.awake);
         let wall = self.wall.duration_since(earlier.wall).unwrap_or_default();
         Elapsed {
             awake,
@@ -75,7 +90,7 @@ impl Stamp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Elapsed {
-    /// Time the process could run; pauses while the computer sleeps.
+    /// Time the computer was awake.
     pub awake: Duration,
     /// Time including sleep.
     pub total: Duration,
@@ -87,21 +102,21 @@ impl Elapsed {
     }
 }
 
-/// Test source: monotonic time follows tokio's (paused) clock, and [`Self::sleep`]
+/// Test source: awake time follows tokio's (paused) clock, and [`Self::sleep`]
 /// advances only the wall clock, as a suspended computer does.
 #[cfg(test)]
 pub(crate) struct Simulated {
-    base_monotonic: Instant,
+    base: tokio::time::Instant,
     base_wall: SystemTime,
     slept: std::sync::Mutex<Duration>,
-    wall_offset: std::sync::Mutex<Option<Duration>>,
+    wall_offset: std::sync::Mutex<Duration>,
 }
 
 #[cfg(test)]
 impl Simulated {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            base_monotonic: Instant::now(),
+            base: tokio::time::Instant::now(),
             base_wall: SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
             slept: Default::default(),
             wall_offset: Default::default(),
@@ -114,20 +129,18 @@ impl Simulated {
 
     /// Sets the wall clock back by `duration` (a manual or NTP correction).
     pub(crate) fn set_back(&self, duration: Duration) {
-        *self.wall_offset.lock().unwrap() = Some(duration);
+        *self.wall_offset.lock().unwrap() = duration;
     }
 }
 
 #[cfg(test)]
 impl Source for Simulated {
-    fn monotonic(&self) -> Instant {
-        Instant::now()
+    fn awake(&self) -> Duration {
+        self.base.elapsed()
     }
     fn wall(&self) -> SystemTime {
-        let wall = self.base_wall
-            + Instant::now().saturating_duration_since(self.base_monotonic)
-            + *self.slept.lock().unwrap();
-        wall - self.wall_offset.lock().unwrap().unwrap_or_default()
+        self.base_wall + self.base.elapsed() + *self.slept.lock().unwrap()
+            - *self.wall_offset.lock().unwrap()
     }
 }
 
@@ -152,5 +165,15 @@ mod tests {
         let elapsed = clock.now().since(start);
         assert_eq!(elapsed.total, Duration::from_secs(7));
         assert_eq!(elapsed.slept(), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_system_source_advances_awake_and_wall_time() {
+        let clock = Clock::default();
+        let start = clock.now();
+        std::thread::sleep(Duration::from_millis(50));
+        let elapsed = clock.now().since(start);
+        assert!(elapsed.awake >= Duration::from_millis(20), "{elapsed:?}");
+        assert!(elapsed.total >= elapsed.awake);
     }
 }
