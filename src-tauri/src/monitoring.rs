@@ -3585,6 +3585,11 @@ impl JobOperation {
         }
     }
 
+    /// Sleep, like offline time, is not part of the retry window.
+    pub fn credit_sleep(&mut self, seconds: u32) {
+        self.retry_deadline = self.retry_deadline.saturating_add(i64::from(seconds));
+    }
+
     pub fn suspend_offline(&mut self, now: i64) {
         self.freeze_offline(now);
         let since = self.offline_since.unwrap_or(now);

@@ -288,6 +288,35 @@ fn superseded_never_spends_the_retry_budget_or_parks() {
 }
 
 #[test]
+fn an_attempt_stalled_by_sleep_retries_without_the_sleep_spending_its_window() {
+    let slept = std::time::Duration::from_secs(4 * 3600);
+    let woke = 100 + 300 + 4 * 3600;
+    // Control: an awake timeout this late has no window left and parks.
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::timeout()), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::ManualRetry);
+
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::slept(slept)), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(
+        op.failure,
+        Some(crate::monitoring::OperationFailure::Network)
+    );
+    assert_eq!(op.attempt_count, 1);
+    assert_eq!(op.retry_deadline, run.operation.retry_deadline + 4 * 3600);
+    let next = op.next_attempt_at.unwrap();
+    assert!(next > woke && next < op.retry_deadline);
+    let retried = running_packet(&store, &template, next);
+    assert_eq!(retried.operation.state, OperationState::Running);
+    assert_eq!(retried.operation.attempt_count, 2);
+}
+
+#[test]
 fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
     let (_root, store, template) = fixture();
     let run = running_packet(&store, &template, 100);

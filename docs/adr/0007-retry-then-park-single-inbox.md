@@ -56,6 +56,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
   Legacy follow-ups and other permanent failures stay unchanged; no provider
   effects are replayed by this migration.
 - Sleep/wake and network changes use the same bounded wall-clock checks: no catch-up burst and no OS network changes. Endpoint reachability is not a guarantee that every model route is healthy; a reachable endpoint leaves genuine request failures under the existing retry policy.
+- A review attempt that slept past its inactivity window fails on wake as a retryable Network failure (issue #308); the sleep is credited to its retry window, as offline time is, so sleep alone never parks it.
 - Disabled or unassigned repositories with eligible tracked PRs retain reachability checks for their connected, exact account/repository binding. Recovery restores terminal lifecycle observation only; it never enables monitoring or admits reviews. Removed, unbound, mismatched and disconnected bindings add no lifecycle probe scope.
 - AI cost is bounded: at most 3 attempts x 6 windows per failing work item before a human is needed.
 - Cooldown state persists (serde-default `resume_cycle`, `resume_at`); old data loads.

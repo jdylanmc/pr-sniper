@@ -1641,16 +1641,18 @@ async fn monitor_attempt(
             }
             return failure;
         }
-        if let Some((failure, idle_ms, total_ms)) = progress.expiry() {
+        if let Some(expiry) = progress.expiry() {
             if let Some(trace) = diagnostics {
-                trace.fail(failure);
+                trace.fail(expiry.kind);
                 trace.emit(DiagnosticEvent::Watchdog {
-                    failure,
-                    idle_ms: (failure == FailureKind::InactivityTimeout).then_some(idle_ms),
-                    total_ms,
+                    failure: expiry.kind,
+                    idle_ms: (expiry.kind == FailureKind::InactivityTimeout)
+                        .then_some(expiry.idle_ms),
+                    total_ms: expiry.total_ms,
+                    slept_ms: (expiry.slept_ms > 0).then_some(expiry.slept_ms),
                 });
             }
-            return Failure::timeout();
+            return expiry.failure();
         }
         if let Err(error) = operation.check() {
             return Failure::operation(error);

@@ -1633,6 +1633,7 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        slept_seconds: 0,
         model: None,
         resume: Default::default(),
     };
@@ -1681,6 +1682,7 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         retry_after_seconds: Some(60),
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
+        slept_seconds: 0,
         model: None,
         resume: Default::default(),
     };

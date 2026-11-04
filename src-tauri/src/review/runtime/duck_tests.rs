@@ -1179,3 +1179,19 @@ async fn a_host_panic_in_a_duck_exit_ends_the_primary_now_and_reaches_the_host_l
     assert!(logged[0].file.ends_with("duck_tool.rs") && logged[0].line > 0);
     stopped(root.path());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_duck_call_window_counts_sleep() {
+    use crate::clock::{Clock, Simulated};
+    let source = Simulated::new();
+    let clock = Clock::with(source.clone());
+    let window = super::duck_tool::CallWindow {
+        started: clock.now(),
+        limit: Duration::from_secs(180),
+    };
+    tokio::time::advance(Duration::from_secs(30)).await;
+    source.sleep(Duration::from_secs(60));
+    assert!(!window.over(clock.now()));
+    source.sleep(Duration::from_secs(90));
+    assert!(window.over(clock.now()));
+}

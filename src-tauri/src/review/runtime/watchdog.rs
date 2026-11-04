@@ -1,26 +1,55 @@
 use super::{Failure, FailureKind};
+use crate::clock::{Clock, Stamp};
 use serde_json::Value;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::Instant;
 
 /// Attempt-local clock. Late callbacks cannot revive it or affect a replacement.
+/// Inactivity counts sleep ([`Clock`]); the total budget counts awake time only.
 pub(super) struct Watchdog {
-    started: Instant,
+    clock: Clock,
+    started: Stamp,
     total_deadline: Instant,
     inactivity: Duration,
     state: Mutex<State>,
 }
 
 struct State {
-    last_progress: Instant,
+    last_progress: Stamp,
     retired: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Expiry {
+    pub kind: FailureKind,
+    pub idle_ms: u64,
+    pub total_ms: u64,
+    /// Sleep since the attempt started.
+    pub slept_ms: u64,
+    /// Inactivity expired only because sleep counted: awake idle time was shorter.
+    by_sleep: bool,
+}
+
+impl Expiry {
+    pub fn failure(&self) -> Failure {
+        if self.by_sleep {
+            Failure::slept(Duration::from_millis(self.slept_ms))
+        } else {
+            Failure::timeout()
+        }
+    }
 }
 
 impl Watchdog {
     pub fn new(total_deadline: Instant, inactivity: Duration) -> Self {
-        let started = Instant::now();
+        Self::with_clock(Clock::default(), total_deadline, inactivity)
+    }
+
+    pub fn with_clock(clock: Clock, total_deadline: Instant, inactivity: Duration) -> Self {
+        let started = clock.now();
         Self {
+            clock,
             started,
             total_deadline,
             inactivity,
@@ -31,34 +60,36 @@ impl Watchdog {
         }
     }
 
-    fn expired(&self, state: &State, now: Instant) -> Option<FailureKind> {
-        if now >= self.total_deadline {
-            Some(FailureKind::TotalDurationTimeout)
-        } else if now.duration_since(state.last_progress) >= self.inactivity {
-            Some(FailureKind::InactivityTimeout)
+    fn expired(&self, state: &State, now: Stamp) -> Option<Expiry> {
+        let idle = now.since(state.last_progress);
+        let kind = if now.monotonic() >= self.total_deadline {
+            FailureKind::TotalDurationTimeout
+        } else if idle.total >= self.inactivity {
+            FailureKind::InactivityTimeout
         } else {
-            None
-        }
+            return None;
+        };
+        let total = now.since(self.started);
+        Some(Expiry {
+            kind,
+            idle_ms: idle.total.as_millis() as u64,
+            total_ms: total.total.as_millis() as u64,
+            slept_ms: total.slept().as_millis() as u64,
+            by_sleep: kind == FailureKind::InactivityTimeout && idle.awake < self.inactivity,
+        })
     }
 
-    pub fn expiry(&self) -> Option<(FailureKind, u64, u64)> {
+    pub fn expiry(&self) -> Option<Expiry> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        self.expired(&state, now).map(|kind| {
-            (
-                kind,
-                now.duration_since(state.last_progress).as_millis() as u64,
-                now.duration_since(self.started).as_millis() as u64,
-            )
-        })
+        self.expired(&state, self.clock.now())
     }
 
     pub fn check(&self) -> Result<(), Failure> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.retired {
             Err(Failure::cancelled())
-        } else if self.expired(&state, Instant::now()).is_some() {
-            Err(Failure::timeout())
+        } else if let Some(expiry) = self.expired(&state, self.clock.now()) {
+            Err(expiry.failure())
         } else {
             Ok(())
         }
@@ -66,12 +97,12 @@ impl Watchdog {
 
     pub fn progress(&self) -> Result<(), Failure> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
+        let now = self.clock.now();
         if state.retired {
             return Err(Failure::cancelled());
         }
-        if self.expired(&state, now).is_some() {
-            return Err(Failure::timeout());
+        if let Some(expiry) = self.expired(&state, now) {
+            return Err(expiry.failure());
         }
         state.last_progress = now;
         Ok(())
@@ -97,17 +128,23 @@ impl Watchdog {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).retired = true;
     }
 
+    /// At most 100 ms of awake time away, so a wake is noticed promptly.
     pub fn next_check(&self) -> Instant {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        (state.last_progress + self.inactivity)
+        let now = self.clock.now();
+        let idle = now.since(state.last_progress).total;
+        let awake = now.monotonic();
+        (awake + self.inactivity.saturating_sub(idle))
             .min(self.total_deadline)
-            .min(Instant::now() + Duration::from_millis(100))
+            .min(awake + Duration::from_millis(100))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Simulated;
+    use std::sync::Arc;
 
     #[tokio::test(start_paused = true)]
     async fn independent_timer_expires_without_events_or_hung_tool_completion() {
@@ -122,10 +159,16 @@ mod tests {
             super::super::monitor_attempt(&clock, &operation, &gate, None, &Default::default())
                 .await;
         assert_eq!(failure.kind, crate::monitoring::OperationFailure::Timeout);
-        assert!(matches!(
-            clock.expiry(),
-            Some((FailureKind::InactivityTimeout, 10000, 10000))
-        ));
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(
+            (
+                expiry.kind,
+                expiry.idle_ms,
+                expiry.total_ms,
+                expiry.slept_ms
+            ),
+            (FailureKind::InactivityTimeout, 10000, 10000, 0)
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -170,10 +213,11 @@ mod tests {
             &serde_json::json!({"content":"alive"}),
         );
         tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(matches!(
-            clock.expiry(),
-            Some((FailureKind::InactivityTimeout, 10000, 18000))
-        ));
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(
+            (expiry.kind, expiry.idle_ms, expiry.total_ms),
+            (FailureKind::InactivityTimeout, 10000, 18000)
+        );
         assert!(clock.progress().is_err());
 
         let clock = Watchdog::new(
@@ -183,10 +227,11 @@ mod tests {
         tokio::time::advance(Duration::from_secs(9)).await;
         clock.progress().unwrap();
         tokio::time::advance(Duration::from_secs(6)).await;
-        assert!(matches!(
-            clock.expiry(),
-            Some((FailureKind::TotalDurationTimeout, 6000, 15000))
-        ));
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(
+            (expiry.kind, expiry.idle_ms, expiry.total_ms),
+            (FailureKind::TotalDurationTimeout, 6000, 15000)
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -207,5 +252,62 @@ mod tests {
         assert!(fresh.check().is_ok());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(fresh.check().is_err());
+    }
+
+    fn sleeping(inactivity: Duration) -> (Arc<Simulated>, Watchdog) {
+        let source = Simulated::new();
+        let clock = Watchdog::with_clock(
+            Clock::with(source.clone()),
+            Instant::now() + Duration::from_secs(60 * 60),
+            inactivity,
+        );
+        (source, clock)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sleep_longer_than_inactivity_fails_a_silent_attempt_as_retryable_network_on_wake() {
+        let (source, clock) = sleeping(Duration::from_secs(15 * 60));
+        tokio::time::advance(Duration::from_secs(60)).await;
+        clock.progress().unwrap();
+        tokio::time::advance(Duration::from_secs(30)).await;
+        // Asleep for 4h: awake time stands still, the session's connection dies.
+        source.sleep(Duration::from_secs(4 * 3600));
+        let operation = super::super::tests::operation(60);
+        let gate: super::super::Gate = Arc::new(|| Ok(()));
+        let failure = tokio::time::timeout(
+            Duration::from_secs(1),
+            super::super::monitor_attempt(&clock, &operation, &gate, None, &Default::default()),
+        )
+        .await
+        .expect("noticed within 100 ms of awake time");
+        assert_eq!(failure.kind, crate::monitoring::OperationFailure::Network);
+        assert!(failure.kind.transient() && !failure.cancelled);
+        assert_eq!(failure.slept_seconds, 4 * 3600);
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(expiry.kind, FailureKind::InactivityTimeout);
+        assert_eq!(expiry.slept_ms, 4 * 3600 * 1000);
+        // The gate a tool call checks agrees with the monitor.
+        assert_eq!(
+            clock.check().unwrap_err().kind,
+            crate::monitoring::OperationFailure::Network
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn short_sleep_keeps_an_active_attempt_and_awake_inactivity_stays_a_timeout() {
+        let (source, clock) = sleeping(Duration::from_secs(15 * 60));
+        tokio::time::advance(Duration::from_secs(60)).await;
+        source.sleep(Duration::from_secs(10 * 60));
+        assert!(clock.check().is_ok());
+        clock.progress().unwrap();
+        tokio::time::advance(Duration::from_secs(14 * 60)).await;
+        assert!(clock.check().is_ok());
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(expiry.kind, FailureKind::InactivityTimeout);
+        assert_eq!(expiry.slept_ms, 10 * 60 * 1000);
+        let failure = expiry.failure();
+        assert_eq!(failure.kind, crate::monitoring::OperationFailure::Timeout);
+        assert_eq!(failure.slept_seconds, 0);
     }
 }
