@@ -543,3 +543,49 @@ fn a_push_racing_the_path_read_requeues_the_poll_without_a_failure() {
     assert!(operation.next_attempt_at.is_some());
     assert!(waiting(&store, 'a').is_empty() && waiting(&store, 'b').is_empty());
 }
+
+#[test]
+fn a_replaced_secondary_agent_reviews_the_head_its_predecessor_reviewed() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    // The teammate assignment now runs another Agent.
+    let replacement = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003";
+    let mut settings = store.load_settings().unwrap();
+    let mut agent = serde_json::to_value(&settings.agents[1]).unwrap();
+    agent["id"] = json!(replacement);
+    agent["name"] = json!("Docs Reviewer 2");
+    settings.agents.push(serde_json::from_value(agent).unwrap());
+    settings.repositories[0].assignments[1].agent_id = replacement.into();
+    store.save_settings(&settings).unwrap();
+    monitor
+        .synchronize_configuration(&store, &Default::default(), NOW + 5)
+        .unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    let replaced = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.work.as_ref().is_some_and(|w| w.agent_id == replacement))
+        .expect("the new Agent has work");
+    assert_eq!(replaced.waiting, WAITING_AI_CAPACITY);
+    assert!(primary_blocked(&store, NOW + 20));
+}
+
+#[test]
+fn turning_on_review_drafts_mid_poll_never_bypasses_the_gate() {
+    let (_root, store, mut monitor) = configured(&["src/"], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    let mut draft = pull('a');
+    draft.draft = true;
+    let (ticket, result) = read(&mut monitor, &store, &wire, draft, NOW);
+    assert!(result.as_ref().unwrap().facts.is_empty(), "drafts unread");
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].review_drafts = true;
+    store.save_settings(&settings).unwrap();
+    let _ = monitor.finish(&store, ticket, result, NOW + 1);
+    assert!(waiting(&store, 'a').is_empty());
+}

@@ -894,9 +894,11 @@ impl PathTicket {
 }
 
 /// Head of each assignment's newest completed review per pull request of
-/// one repository binding.
+/// one repository binding. Only runs by the assignment's current Agent count:
+/// a replaced Agent's review is no baseline for the new one.
 pub(crate) fn reviewed_heads(
     reviews: &[crate::review::ReviewRun],
+    assignments: &[ScanAssignment],
     configuration_id: &str,
     account_id: &str,
     repository_id: &str,
@@ -908,6 +910,16 @@ pub(crate) fn reviewed_heads(
         let Some(assignment) = job.assignment_id.as_ref() else {
             continue;
         };
+        let agent = job
+            .work
+            .as_ref()
+            .map_or(run.selection.agent.id.as_str(), |w| w.agent_id.as_str());
+        if !assignments
+            .iter()
+            .any(|a| &a.assignment_id == assignment && a.agent_id == agent)
+        {
+            continue;
+        }
         if run.operation.state != OperationState::Completed
             || job.configuration_id != configuration_id
             || job.account_id != account_id
@@ -1631,6 +1643,7 @@ impl Monitor {
                         if !ticket.paths.secondaries.is_empty() {
                             ticket.paths.reviewed = reviewed_heads(
                                 &reviews,
+                                &ticket.assignments,
                                 &ticket.repository_id,
                                 &ticket.provider_account_id,
                                 &ticket.provider_repository_id,
@@ -1705,6 +1718,7 @@ impl Monitor {
         {
             ticket.reviewed = reviewed_heads(
                 &store.review_evidence()?,
+                &configuration.assignments,
                 &repository.id,
                 &binding.account.account_id,
                 &binding.repository.repository_id,
@@ -2942,6 +2956,7 @@ impl Monitor {
         } else {
             reviewed_heads(
                 &reviews,
+                &configuration.assignments,
                 &ticket.repository_id,
                 &ticket.provider_account_id,
                 &ticket.provider_repository_id,
@@ -3696,6 +3711,8 @@ fn configuration_matches_ticket(configuration: &ConfiguredSchedule, ticket: &Pol
         && configuration.provider_repository_id.as_deref() == Some(&ticket.provider_repository_id)
         && configuration.policy == ticket.policy
         && configuration.trigger_policy.as_deref() == Some(&ticket.trigger_policy)
+        // Which drafts had path facts read depends on it (ADR 0027).
+        && configuration.review_drafts == ticket.paths.review_drafts
 }
 
 fn awaits_scheduled_run(health: &ScheduleHealth) -> bool {
