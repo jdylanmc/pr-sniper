@@ -98,7 +98,7 @@ impl DuckEngine {
         self.setup
             .account
             .as_ref()
-            .is_none_or(|operation| operation.check().is_ok())
+            .is_none_or(|operation| operation.check_live().is_ok())
     }
 
     pub async fn start(mut setup: DuckSetup, operation: &Operation) -> Result<Self, Failure> {
@@ -120,7 +120,7 @@ impl DuckEngine {
             return Err(Failure::permanent("Rubber duck runtime was not prepared.").duck_setup());
         };
         let client = operation
-            .wait(Client::start(*options))
+            .wait_live(Client::start(*options))
             .await
             .map_err(Failure::operation)
             .and_then(|result| result.map_err(Failure::sdk))
@@ -180,12 +180,11 @@ pub(super) struct DuckTool {
     pub repository_name: String,
     pub facts: Arc<ToolFacts>,
     pub primary_exit: Arc<ExitState>,
-    /// The primary attempt's deadline; duck time counts against it.
-    pub deadline: Instant,
     pub operation: Operation,
     pub local_gate: Gate,
     pub diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-    progress: Option<Arc<super::Watchdog>>,
+    /// The primary attempt's watchdog: its awake total budget bounds duck time.
+    progress: Arc<super::Watchdog>,
     /// The primary attempt's host-panic latch: a panic in a duck call ends the run.
     host_failure: Arc<HostFailure>,
     started: AtomicU32,
@@ -198,6 +197,29 @@ pub(super) struct DuckTool {
     /// Calls run as their own task so dropping the primary's handler cannot drop a
     /// call mid-turn: it still aborts its turn and records itself.
     me: std::sync::Weak<Self>,
+}
+
+/// One duck call's time limit. Sleep counts: a call whose session slept past its
+/// limit is presumed dead and times out on wake.
+#[derive(Clone)]
+pub(super) struct CallWindow {
+    clock: crate::clock::Clock,
+    started: crate::clock::Stamp,
+    limit: Duration,
+}
+
+impl CallWindow {
+    pub fn new(clock: crate::clock::Clock, limit: Duration) -> Self {
+        Self {
+            started: clock.now(),
+            clock,
+            limit,
+        }
+    }
+
+    pub fn over(&self) -> bool {
+        self.clock.now().since(self.started).total >= self.limit
+    }
 }
 
 /// Whether the primary was served one evidence ref in this attempt.
@@ -216,7 +238,7 @@ impl DuckTool {
         operation: Operation,
         local_gate: Gate,
         diagnostics: Option<Arc<crate::review::diagnostics::Trace>>,
-        progress: Option<Arc<super::Watchdog>>,
+        progress: Arc<super::Watchdog>,
         host_failure: Arc<HostFailure>,
         claim_evidence: Option<ClaimEvidence>,
     ) -> Arc<Self> {
@@ -227,7 +249,6 @@ impl DuckTool {
             repository_name,
             facts,
             primary_exit,
-            deadline: operation.deadline,
             operation,
             local_gate,
             diagnostics,
@@ -354,16 +375,17 @@ impl DuckTool {
         if self.started.load(Ordering::SeqCst) >= setup.limits.max_calls {
             return refuse(DuckFailure::LimitReached, input);
         }
-        let now = Instant::now();
+        // Awake time, as the watchdog counts it: an `Instant` deadline counts
+        // Windows sleep.
         let available = self
-            .deadline
-            .checked_sub(Duration::from_secs(duck::EXIT_RESERVE_SECONDS))
-            .map_or(Duration::ZERO, |end| end.saturating_duration_since(now));
+            .progress
+            .remaining()
+            .saturating_sub(Duration::from_secs(duck::EXIT_RESERVE_SECONDS));
         let timeout = Duration::from_secs(u64::from(self.call_timeout_seconds()));
         if available < timeout.min(Duration::from_secs(duck::MIN_CALL_SECONDS)) {
             return refuse(DuckFailure::BudgetExhausted, input);
         }
-        let call_end = now + timeout.min(available);
+        let window = CallWindow::new(crate::clock::Clock::default(), timeout.min(available));
         if (setup.gated)() {
             return refuse(DuckFailure::RateLimited, input);
         }
@@ -385,7 +407,7 @@ impl DuckTool {
         });
         call.packet = Some(packet.record.clone());
         let started = Instant::now();
-        let outcome = self.session(packet.text, call_end, &mut call, inline).await;
+        let outcome = self.session(packet.text, window, &mut call, inline).await;
         call.duration_ms = started.elapsed().as_millis() as u64;
         let result = match outcome {
             Ok(verdict) => {
@@ -434,9 +456,9 @@ impl DuckTool {
     }
 
     /// Ends a call that outlives its window or its primary.
-    async fn watch(&self, call_end: Instant) -> DuckFailure {
+    async fn watch(&self, window: &CallWindow) -> DuckFailure {
         loop {
-            if Instant::now() >= call_end {
+            if window.over() {
                 return DuckFailure::TimedOut;
             }
             if self.primary_exit.taken() {
@@ -445,7 +467,7 @@ impl DuckTool {
             if self.engine.ending.load(Ordering::SeqCst) {
                 return DuckFailure::Unavailable;
             }
-            if self.operation.check().is_err()
+            if self.operation.check_live().is_err()
                 || (self.local_gate)().is_err()
                 || !self.engine.account_ok()
             {
@@ -461,7 +483,7 @@ impl DuckTool {
     async fn session(
         &self,
         packet_text: String,
-        call_end: Instant,
+        window: CallWindow,
         call: &mut DuckCall,
         inline: Option<(String, String)>,
     ) -> Result<Verdict, Fail> {
@@ -483,7 +505,7 @@ impl DuckTool {
                 self.local_gate.clone(),
             )
             .with_facts(self.facts.clone())
-            .with_progress(self.progress.clone())
+            .with_progress(Some(self.progress.clone()))
             .with_host_failure(self.host_failure.clone()),
         );
         if let Some((id, text)) = &inline {
@@ -539,7 +561,7 @@ impl DuckTool {
         let session = tokio::select! {
             biased;
             created = create => created.map_err(|_| (DuckFailure::Failed, Some(DuckReason::SessionCreate)))?,
-            failure = self.watch(call_end) => return Err((failure, None)),
+            failure = self.watch(&window) => return Err((failure, None)),
         };
         call.session_id = Some(session.id().to_string());
         if let Some(trace) = &diagnostics {
@@ -555,7 +577,7 @@ impl DuckTool {
         let result = tokio::select! {
             biased;
             result = self.converse(&session, packet_text, &names, &reads, &exits, diagnostics.as_ref(), &usage) => result,
-            failure = self.watch(call_end) => Err((failure, None)),
+            failure = self.watch(&window) => Err((failure, None)),
         };
         if let Ok(usage) = usage.lock() {
             (call.input_tokens, call.output_tokens, call.tool_calls) = *usage;
@@ -643,9 +665,7 @@ impl DuckTool {
             if let Some(trace) = diagnostics {
                 trace.event(&event.event_type, &event.data);
             }
-            if let Some(progress) = &self.progress {
-                progress.event(&event.event_type, &event.data);
-            }
+            self.progress.event(&event.event_type, &event.data);
             let pushed = events.push(&event.event_type, &event.data);
             if let Ok(mut usage) = usage.lock() {
                 *usage = events.usage();

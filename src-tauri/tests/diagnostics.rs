@@ -183,11 +183,13 @@ fn lifecycle_and_publication_seams_store_only_typed_decisions() {
             failure: FailureKind::InactivityTimeout,
             idle_ms: Some(900_000),
             total_ms: 1_000_000,
+            slept_ms: None,
         },
         Event::Watchdog {
             failure: FailureKind::TotalDurationTimeout,
             idle_ms: Some(100),
             total_ms: 7_200_001,
+            slept_ms: Some(3_600_000),
         },
         Event::Cancelled,
         Event::Connectivity {
@@ -230,6 +232,8 @@ fn lifecycle_and_publication_seams_store_only_typed_decisions() {
         "inactivity_timeout"
     );
     assert_eq!(records[1]["attempt"]["event"]["total_ms"], 7_200_001_u64);
+    assert_eq!(records[1]["attempt"]["event"]["slept_ms"], 3_600_000_u64);
+    assert!(records[0]["attempt"]["event"].get("slept_ms").is_none());
     assert_eq!(records[3]["attempt"]["event"]["state"], "suspended");
     assert_eq!(records[4]["attempt"]["event"]["state"], "resumed");
     assert_eq!(

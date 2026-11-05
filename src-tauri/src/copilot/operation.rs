@@ -78,6 +78,18 @@ impl Operation {
         Ok(())
     }
 
+    /// Cancellation, quit and account changes only, not the deadline: for work
+    /// whose time budget another clock owns (a review attempt's watchdog).
+    pub fn check_live(&self) -> Result<(), String> {
+        self.check_current(
+            *self
+                .account
+                .generation
+                .lock()
+                .map_err(|_| "Copilot account state is unavailable.")?,
+        )
+    }
+
     pub fn check(&self) -> Result<(), String> {
         self.check_generation(
             *self
@@ -146,6 +158,28 @@ impl Operation {
             }
         }
     }
+    /// [`Self::wait`] without the deadline: for work whose time budget another
+    /// clock owns (a review attempt's watchdog).
+    pub async fn wait_live<T>(&self, work: impl Future<Output = T>) -> Result<T, String> {
+        self.check_live()?;
+        let stopped = async {
+            loop {
+                if let Err(error) = self.check_live() {
+                    return error;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::select! {
+            biased;
+            reason = stopped => Err(reason),
+            value = work => {
+                self.check_live()?;
+                Ok(value)
+            }
+        }
+    }
+
     pub async fn wait_result<T, E>(
         &self,
         work: impl Future<Output = Result<T, E>>,

@@ -2781,7 +2781,7 @@ impl Monitor {
                         // A rate limit is a wait: no failure, no attempt spent.
                         let until = paced_until.unwrap_or(now);
                         if let Some(operation) = health.operation.as_mut() {
-                            operation.defer_until(until, now);
+                            operation.defer_until(until, now, 0);
                         }
                         health.next_run = until;
                         health.schedule_available = true;
@@ -3842,6 +3842,19 @@ impl JobOperation {
         }
     }
 
+    /// Sleep, like offline time, is not part of the retry window. Sleep inside a
+    /// recorded offline interval is left to `resume_online`, never credited twice;
+    /// the sleep is taken to end at `now`, so the credit errs low.
+    pub fn credit_sleep(&mut self, seconds: u32, now: i64) {
+        let slept = i64::from(seconds);
+        let credit = self.offline_since.map_or(slept, |since| {
+            since
+                .saturating_sub(now.saturating_sub(slept))
+                .clamp(0, slept)
+        });
+        self.retry_deadline = self.retry_deadline.saturating_add(credit);
+    }
+
     pub fn suspend_offline(&mut self, now: i64) {
         self.freeze_offline(now);
         let since = self.offline_since.unwrap_or(now);
@@ -3901,13 +3914,15 @@ impl JobOperation {
     }
 
     /// A rate limit is a wait, not a failure: the attempt is handed back, no
-    /// failure is recorded and the retry window moves past the wait.
-    pub fn defer_until(&mut self, until: i64, now: i64) {
+    /// failure is recorded and the retry window moves past the wait. `slept`
+    /// is the attempt's sleep, credited to the restored window.
+    pub fn defer_until(&mut self, until: i64, now: i64, slept: u32) {
         if self.ai_attempt.is_some() {
             self.restore_budget();
         } else if self.state == OperationState::Running {
             self.attempt_count = self.attempt_count.saturating_sub(1);
         }
+        self.credit_sleep(slept, now);
         self.interruption = None;
         self.state = OperationState::Queued;
         let until = until.max(now);
@@ -3928,7 +3943,7 @@ impl JobOperation {
         } = error
         {
             let delay = crate::backpressure::delay_seconds(&self.id, 0, *retry_after_seconds);
-            self.defer_until(now.saturating_add(delay), now);
+            self.defer_until(now.saturating_add(delay), now, 0);
             return;
         }
         self.fail_attempt(error, now);
@@ -4993,6 +5008,31 @@ mod read_diagnostic_tests {
             "{delays:?}"
         );
         assert!(delays.iter().any(|delay| *delay < 5), "{delays:?}");
+    }
+
+    #[test]
+    fn sleep_inside_a_recorded_outage_is_credited_once() {
+        let mut operation = running_operation();
+        operation.attempt_count = 2;
+        let deadline = operation.retry_deadline;
+        let woke = 5 * 3600;
+        // Wi-Fi dropped, then the lid closed for 4h: the outage covers the sleep.
+        operation.freeze_offline(woke - 4 * 3600 - 60);
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline);
+        operation.state = OperationState::Queued;
+        operation.resume_online(woke + 60);
+        assert_eq!(operation.retry_deadline, deadline + 4 * 3600 + 120);
+
+        // An outage that began 1h into a 4h sleep covers 3h of it.
+        let mut operation = running_operation();
+        operation.freeze_offline(woke - 3 * 3600);
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline + 3600);
+
+        let mut operation = running_operation();
+        operation.credit_sleep(4 * 3600, woke);
+        assert_eq!(operation.retry_deadline, deadline + 4 * 3600);
     }
 
     fn running_operation() -> JobOperation {

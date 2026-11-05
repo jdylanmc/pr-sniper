@@ -231,6 +231,7 @@ fn durable_review_uses_shared_retry_budget_and_restores_without_new_identity() {
         retry_after_seconds: Some(900),
         origin: pr_sniper_lib::backpressure::Origin::Copilot,
         duck_setup: false,
+        slept_seconds: 0,
         model: None,
         resume: Default::default(),
     };

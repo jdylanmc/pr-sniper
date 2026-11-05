@@ -270,18 +270,26 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 .lock()
                 .map_err(|_| "Review storage is unavailable.")?;
             let outcome = outcome.and_then(|(result, generation)| {
-                if generations.get(&run.job.account_id).copied().unwrap_or(0) != generation {
-                    return Err(Failure::permanent(
-                        "Review cancelled or GitHub account connection changed.",
-                    ));
-                }
-                if host.quitting.load(Ordering::SeqCst) {
-                    return Err(Failure::cancelled());
-                }
-                auth.account_session_allowed(&run.job.account_id)
-                    .map_err(Failure::from)?;
-                super::validate_execution_selection(&store, &run)?;
-                Ok(result)
+                let checked = (|| {
+                    if generations.get(&run.job.account_id).copied().unwrap_or(0) != generation {
+                        return Err(Failure::permanent(
+                            "Review cancelled or GitHub account connection changed.",
+                        ));
+                    }
+                    if host.quitting.load(Ordering::SeqCst) {
+                        return Err(Failure::cancelled());
+                    }
+                    auth.account_session_allowed(&run.job.account_id)
+                        .map_err(Failure::from)?;
+                    super::validate_execution_selection(&store, &run)?;
+                    Ok(())
+                })();
+                // A rejected result keeps the sleep of the attempt that produced it.
+                let slept = result.slept_seconds;
+                checked.map(|()| result).map_err(|mut error| {
+                    error.slept_seconds = error.slept_seconds.max(slept);
+                    error
+                })
             });
             // A moved state keeps no duck evidence: its verdicts are gone with it.
             if outcome.as_ref().is_err_and(|error| !moved(error)) {
@@ -335,6 +343,10 @@ pub(crate) fn complete(
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
+    // Every settlement that restores or checks the window credits this once.
+    let slept = outcome
+        .as_ref()
+        .map_or_else(|error| error.slept_seconds, |result| result.slept_seconds);
     let connectivity = store.load_connectivity()?;
     let offline = connectivity
         .offline(&crate::connectivity::scopes(current))
@@ -370,11 +382,13 @@ pub(crate) fn complete(
             .unwrap_or(now);
         crate::connectivity::sync_operation(store, &mut current.operation, Some(since), now);
         current.operation.suspend_offline(now);
+        current.operation.credit_sleep(slept, now);
         current.result = None;
         current.attempt_ducks.clear();
         current.phase = "Offline".into();
         current.error = None;
     } else if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
+        current.operation.credit_sleep(slept, now);
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
@@ -391,6 +405,7 @@ pub(crate) fn complete(
             now,
             wait.map(|base| monitoring::Supersession { at: now, base }),
         );
+        current.operation.credit_sleep(slept, now);
         current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
@@ -474,6 +489,7 @@ pub(crate) fn complete(
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
+                current.operation.credit_sleep(slept, now);
                 current.operation.fail(&error.monitoring(), now);
                 current.operation.credentials_origin = (current.operation.failure
                     == Some(monitoring::OperationFailure::Credentials))
@@ -658,12 +674,13 @@ async fn execute_attempt(
         return Err(Failure::timeout());
     }
     let started_at = now_seconds().map_err(Failure::permanent)?;
-    let started = Instant::now();
+    // Awake time, like the runtime watchdog's total budget: sleep never spends it.
+    let clock = crate::clock::Clock::default();
+    let started = clock.now();
     // Preparation may extend the window once the PR size is known (Rubber Duck only).
-    let deadline_at = Arc::new(std::sync::Mutex::new(
-        started + Duration::from_secs(remaining as u64),
-    ));
-    let gate_deadline = deadline_at.clone();
+    let budget = Arc::new(std::sync::Mutex::new(Duration::from_secs(remaining as u64)));
+    let gate_budget = budget.clone();
+    let gate_clock = clock.clone();
     let generation = app
         .state::<Host>()
         .github_generations
@@ -679,10 +696,9 @@ async fn execute_attempt(
     // only after its inputs were rewritten, not hundreds of times per attempt.
     let validated = super::ValidatedSelection::default();
     let gate: runtime::Gate = Arc::new(move || {
-        if gate_deadline
-            .lock()
-            .map_or(true, |deadline| Instant::now() >= *deadline)
-        {
+        if gate_budget.lock().map_or(true, |budget| {
+            gate_clock.now().since(started).awake >= *budget
+        }) {
             return Err(Failure::timeout());
         }
         if gate_cancelled.load(Ordering::SeqCst) {
@@ -879,8 +895,8 @@ async fn execute_attempt(
                 let end = started_at.saturating_add(window);
                 if end > current.operation.retry_deadline {
                     current.operation.retry_deadline = end;
-                    if let Ok(mut deadline) = deadline_at.lock() {
-                        *deadline = started + Duration::from_secs(window.max(0) as u64);
+                    if let Ok(mut budget) = budget.lock() {
+                        *budget = Duration::from_secs(window.max(0) as u64);
                     }
                 }
             }
@@ -926,9 +942,11 @@ async fn execute_attempt(
             failure_commit: Some(attempt.committer()),
             duck,
         };
-        let deadline = *deadline_at
-            .lock()
-            .map_err(|_| Failure::permanent("Review deadline unavailable."))?;
+        let deadline = Instant::now()
+            + budget
+                .lock()
+                .map_err(|_| Failure::permanent("Review deadline unavailable."))?
+                .saturating_sub(clock.now().since(started).awake);
         let mut result = integration.review(request, cancelled, deadline).await?;
         diagnostics.emit(crate::storage::diagnostics::Event::Phase {
             phase: crate::storage::diagnostics::Phase::CheckingFinalEligibility,
@@ -973,7 +991,19 @@ async fn execute_attempt(
         Ok((result, generation))
     }
     .await;
-    attempt.finish(outcome)
+    // Covers failures outside the runtime too (setup, credentials, final checks),
+    // and a result, which may still be tossed or suspended at settlement.
+    let slept = u32::try_from(clock.now().since(started).slept().as_secs()).unwrap_or(u32::MAX);
+    attempt
+        .finish(outcome)
+        .map(|(mut result, generation)| {
+            result.slept_seconds = slept;
+            (result, generation)
+        })
+        .map_err(|mut error| {
+            error.slept_seconds = error.slept_seconds.max(slept);
+            error
+        })
 }
 
 /// The provider transport speaks ConnectionError; keep a rejected local gate's
@@ -1075,7 +1105,12 @@ impl AttemptGuard {
 
     fn commit(&self, error: Failure) -> Failure {
         match self.rejected.lock() {
-            Ok(mut rejected) => rejected.get_or_insert(error).clone(),
+            Ok(mut rejected) => {
+                let slept = error.slept_seconds;
+                let latched = rejected.get_or_insert(error);
+                latched.slept_seconds = latched.slept_seconds.max(slept);
+                latched.clone()
+            }
             Err(_) => Failure::permanent("Review attempt gate unavailable."),
         }
     }

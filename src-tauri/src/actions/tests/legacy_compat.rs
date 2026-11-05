@@ -88,6 +88,7 @@ fn old_legacy_records_load_and_unfinished_legacy_work_is_retired_not_run() {
     analyzed.result = Some(ReviewResult::<ReplyOutput> {
         carried_findings: Vec::new(),
         wait_snapshot: None,
+        slept_seconds: 0,
         reviewed_base_sha: Some("b".repeat(40)),
         output: serde_json::from_value(json!({"decision":"reply","body":"Because.",
             "new_information":"n","reason":"r","evidence":[]}))

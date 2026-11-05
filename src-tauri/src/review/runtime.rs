@@ -1186,9 +1186,21 @@ async fn execute<K: Task>(
     operation: &Operation,
     request: Request<K>,
 ) -> Result<ReviewResult<K::Output>, Failure> {
+    let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
+    execute_with(options, identity, operation, request, progress).await
+}
+
+/// From here the watchdog alone owns the attempt's time budget, on the awake
+/// axis; `operation` contributes cancellation, quit and account changes only.
+async fn execute_with<K: Task>(
+    options: ClientOptions,
+    identity: &Identity,
+    operation: &Operation,
+    request: Request<K>,
+    progress: Arc<Watchdog>,
+) -> Result<ReviewResult<K::Output>, Failure> {
     let diagnostics = request.diagnostics.clone();
     let failure_commit = request.failure_commit.clone();
-    let progress = Arc::new(Watchdog::new(operation.deadline.into(), request.inactivity));
     let original_gate = request.local_gate.clone();
     let gate_progress = progress.clone();
     let mut request = request;
@@ -1228,6 +1240,7 @@ async fn execute<K: Task>(
             error = &mut monitor => Err(error),
             result = Client::start(options) => result.map_err(Failure::sdk),
         }
+        .map_err(|error| progress.stamp(error))
     })
     .await;
     let client = match client {
@@ -1342,7 +1355,7 @@ async fn execute<K: Task>(
                 request.client,
                 request.repository_name,
                 Arc::new(move || {
-                    tool_operation.check().map_err(Failure::operation)?;
+                    tool_operation.check_live().map_err(Failure::operation)?;
                     tool_gate()
                 }),
             )
@@ -1402,11 +1415,11 @@ async fn execute<K: Task>(
                 exit_tools.state.clone(),
                 operation.clone(),
                 Arc::new(move || {
-                    duck_operation.check().map_err(Failure::operation)?;
+                    duck_operation.check_live().map_err(Failure::operation)?;
                     local()
                 }),
                 diagnostics.clone(),
-                Some(progress.clone()),
+                progress.clone(),
                 host_failure.clone(),
                 finding_primary.then(|| {
                     let reads = tools.clone();
@@ -1442,7 +1455,7 @@ async fn execute<K: Task>(
             tokio::task::spawn_blocking(move || Failure::caught(gate_trace.as_deref(), || gate()))
                 .await
                 .map_err(|_| Failure::permanent("Pre-invocation eligibility check failed."))??;
-            operation.check().map_err(Failure::operation)?;
+            operation.check_live().map_err(Failure::operation)?;
             (request.local_gate)()?;
             let mut subscription = session.subscribe();
             session.send(prompt).await.map_err(Failure::sdk)?;
@@ -1556,7 +1569,7 @@ async fn execute<K: Task>(
                 read: u32::try_from(read).unwrap_or(u32::MAX),
                 changed: u32::try_from(paths.len()).unwrap_or(u32::MAX),
             });
-            operation.check().map_err(Failure::operation)?;
+            operation.check_live().map_err(Failure::operation)?;
             (request.local_gate)()?;
             Ok(result)
         }
@@ -1564,6 +1577,7 @@ async fn execute<K: Task>(
     };
     let result = decide(failure_commit.as_ref(), async {
         tokio::select! { biased; error = &mut monitor => Err(error), result = run => result }
+            .map_err(|error| progress.stamp(error))
     })
     .await;
     progress.retire();
@@ -1641,18 +1655,22 @@ async fn monitor_attempt(
             }
             return failure;
         }
-        if let Some((failure, idle_ms, total_ms)) = progress.expiry() {
+        if let Some(expiry) = progress.expiry() {
             if let Some(trace) = diagnostics {
-                trace.fail(failure);
+                trace.fail(expiry.kind);
                 trace.emit(DiagnosticEvent::Watchdog {
-                    failure,
-                    idle_ms: (failure == FailureKind::InactivityTimeout).then_some(idle_ms),
-                    total_ms,
+                    failure: expiry.kind,
+                    idle_ms: (expiry.kind == FailureKind::InactivityTimeout)
+                        .then_some(expiry.idle_ms),
+                    total_ms: expiry.total_ms,
+                    slept_ms: (expiry.slept_ms > 0).then_some(expiry.slept_ms),
                 });
             }
-            return Failure::timeout();
+            return expiry.failure();
         }
-        if let Err(error) = operation.check() {
+        // The watchdog owns the time budget on the awake axis; `Instant` counts
+        // Windows sleep.
+        if let Err(error) = operation.check_live() {
             return Failure::operation(error);
         }
         if let Err(error) = gate() {

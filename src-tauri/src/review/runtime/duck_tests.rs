@@ -648,6 +648,40 @@ fn records(root: &Path, method: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn duck_admission_and_startup_use_the_awake_budget_not_an_expired_instant_deadline() {
+    // Windows `Instant` counts sleep: the operation deadline has passed while the
+    // watchdog's awake budget still has 10 minutes.
+    let root = tempfile::tempdir().unwrap();
+    let duck = duck(
+        &root.path().join("duck"),
+        "verdict-ok",
+        limits(8, 180),
+        false,
+    );
+    let mut expired = operation(600);
+    expired.deadline = Instant::now();
+    let request = primary_request(duck.setup);
+    let progress = Arc::new(Watchdog::new(
+        (Instant::now() + Duration::from_secs(600)).into(),
+        request.inactivity,
+    ));
+    let result = execute_with(
+        options(root.path(), "duck-call"),
+        &identity(),
+        &expired,
+        request,
+        progress,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result.ducks[0].outcome,
+        DuckOutcome::Verdict { .. }
+    ));
+    assert_eq!(methods(&root.path().join("duck"), "session.create"), 1);
+}
+
+#[tokio::test]
 async fn a_slow_duck_times_out_is_aborted_and_closed_and_the_primary_still_exits() {
     let (root, result, _) = review("duck-call", "verdict-slow", limits(8, 1), 600).await;
     let result = result.unwrap();
@@ -1178,4 +1212,30 @@ async fn a_host_panic_in_a_duck_exit_ends_the_primary_now_and_reaches_the_host_l
     assert_eq!(logged[0].attempt, "primary-attempt");
     assert!(logged[0].file.ends_with("duck_tool.rs") && logged[0].line > 0);
     stopped(root.path());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_duck_call_window_counts_sleep() {
+    use crate::clock::{Clock, Simulated};
+    let source = Simulated::new();
+    let window =
+        super::duck_tool::CallWindow::new(Clock::with(source.clone()), Duration::from_secs(180));
+    tokio::time::advance(Duration::from_secs(30)).await;
+    source.sleep(Duration::from_secs(60));
+    assert!(!window.over());
+    source.sleep(Duration::from_secs(90));
+    assert!(window.over());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_duck_call_window_keeps_awake_time_when_the_wall_clock_is_set_back() {
+    use crate::clock::{Clock, Simulated};
+    let source = Simulated::new();
+    let window =
+        super::duck_tool::CallWindow::new(Clock::with(source.clone()), Duration::from_secs(180));
+    tokio::time::advance(Duration::from_secs(120)).await;
+    source.set_back(Duration::from_secs(3600));
+    assert!(!window.over());
+    tokio::time::advance(Duration::from_secs(60)).await;
+    assert!(window.over());
 }

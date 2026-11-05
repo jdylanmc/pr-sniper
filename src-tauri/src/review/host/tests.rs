@@ -288,6 +288,180 @@ fn superseded_never_spends_the_retry_budget_or_parks() {
 }
 
 #[test]
+fn an_attempt_stalled_by_sleep_retries_without_the_sleep_spending_its_window() {
+    let slept = std::time::Duration::from_secs(4 * 3600);
+    let woke = 100 + 300 + 4 * 3600;
+    // Control: an awake timeout this late has no window left and parks.
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::timeout()), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::ManualRetry);
+
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::slept(slept)), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(
+        op.failure,
+        Some(crate::monitoring::OperationFailure::Network)
+    );
+    assert_eq!(op.attempt_count, 1);
+    assert_eq!(op.retry_deadline, run.operation.retry_deadline + 4 * 3600);
+    let next = op.next_attempt_at.unwrap();
+    assert!(next > woke && next < op.retry_deadline);
+    let retried = running_packet(&store, &template, next);
+    assert_eq!(retried.operation.state, OperationState::Running);
+    assert_eq!(retried.operation.attempt_count, 2);
+}
+
+#[test]
+fn a_transient_failure_after_a_short_sleep_keeps_the_slept_window() {
+    // 6 min awake, 10 min asleep, 3 min awake, then a session error: past the
+    // 15-minute wall-clock window only because of the sleep.
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    let mut failure = Failure::provider("Session error.");
+    failure.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(failure), 100 + 19 * 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, run.operation.retry_deadline + 10 * 60);
+}
+
+#[test]
+fn a_pause_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::provider("Flaky.")),
+        101,
+    )
+    .unwrap();
+    let next = store.load_reviews().unwrap()[0]
+        .operation
+        .next_attempt_at
+        .unwrap();
+    let run = running_packet(&store, &template, next);
+    assert_eq!(run.operation.attempt_count, 2);
+    let deadline = run.operation.retry_deadline;
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.interruption = Some(crate::capacity::Interruption::Pause);
+    store.save_reviews(&reviews).unwrap();
+    let mut paused = Failure::cancelled();
+    paused.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(paused), deadline + 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+}
+
+#[test]
+fn a_supersession_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::provider("Flaky.")),
+        101,
+    )
+    .unwrap();
+    let next = store.load_reviews().unwrap()[0]
+        .operation
+        .next_attempt_at
+        .unwrap();
+    let run = running_packet(&store, &template, next);
+    assert_eq!(run.operation.attempt_count, 2);
+    let deadline = run.operation.retry_deadline;
+    // 5 minutes left, 10 minutes asleep, then the base moved under the run.
+    let woke = deadline - 5 * 60 + 10 * 60;
+    let mut moved = Failure::superseded("The base moved.");
+    moved.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(moved), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+    let retried = running_packet(&store, &template, op.next_attempt_at.unwrap());
+    assert_eq!(retried.operation.state, OperationState::Running);
+}
+
+#[test]
+fn a_result_tossed_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let mut states = store.load_pr_states().unwrap();
+    bump_state(&mut states, &template.job);
+    store.save_pr_states(&states).unwrap();
+    let run = running_packet(&store, &template, 100);
+    let deadline = run.operation.retry_deadline;
+    // 6 minutes awake, 10 asleep, 3 awake; the state moved during the run.
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Stale."}));
+    result.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Ok(result), 100 + 19 * 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(
+        op.failure,
+        Some(crate::monitoring::OperationFailure::Tossed)
+    );
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+}
+
+#[test]
+fn a_result_set_aside_after_a_short_sleep_keeps_the_slept_window() {
+    for interruption in [
+        crate::capacity::Interruption::Offline,
+        crate::capacity::Interruption::Pause,
+    ] {
+        let (_root, store, template) = fixture();
+        let run = running_packet(&store, &template, 100);
+        complete(
+            &store,
+            &run.operation.id,
+            Err(Failure::provider("Flaky.")),
+            101,
+        )
+        .unwrap();
+        let next = store.load_reviews().unwrap()[0]
+            .operation
+            .next_attempt_at
+            .unwrap();
+        let run = running_packet(&store, &template, next);
+        assert_eq!(run.operation.attempt_count, 2);
+        let deadline = run.operation.retry_deadline;
+        let mut reviews = store.load_reviews().unwrap();
+        reviews[0].operation.interruption = Some(interruption);
+        store.save_reviews(&reviews).unwrap();
+        let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Done."}));
+        result.slept_seconds = 10 * 60;
+        complete(&store, &run.operation.id, Ok(result), deadline + 60).unwrap();
+        let op = store.load_reviews().unwrap().remove(0).operation;
+        assert_eq!(op.state, OperationState::Queued, "{interruption:?}");
+        assert_eq!(op.retry_deadline, deadline + 10 * 60, "{interruption:?}");
+    }
+}
+
+#[test]
+fn a_latched_gate_failure_keeps_the_sleep_of_the_committed_one() {
+    let attempt = AttemptGuard::new(Arc::new(|| Err(Failure::timeout())));
+    assert!(attempt.gate()().is_err());
+    let mut stamped = Failure::timeout();
+    stamped.slept_seconds = 600;
+    let committed = attempt.commit(stamped);
+    assert_eq!(committed.slept_seconds, 600);
+    assert_eq!(
+        attempt
+            .finish::<()>(Err(Failure::timeout()))
+            .unwrap_err()
+            .slept_seconds,
+        600
+    );
+}
+
+#[test]
 fn ready_for_human_consumes_the_state_it_read_and_keeps_the_summary_local() {
     let (_root, store, template) = fixture();
     let run = running_packet(&store, &template, 100);

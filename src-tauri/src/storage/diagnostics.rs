@@ -574,6 +574,9 @@ pub enum Event {
         failure: FailureKind,
         idle_ms: Option<u64>,
         total_ms: u64,
+        /// Sleep since the attempt started; inactivity counts it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slept_ms: Option<u64>,
     },
     Cancelled,
     Teardown {

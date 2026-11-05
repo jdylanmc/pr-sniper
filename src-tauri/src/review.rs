@@ -845,6 +845,10 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// CI wake); packet evidence stays immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
+    /// Sleep during this attempt, credited to the retry window at settlement.
+    /// Runtime only: never persisted.
+    #[serde(skip)]
+    pub slept_seconds: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -864,6 +868,9 @@ pub struct Failure {
     pub origin: crate::backpressure::Origin,
     /// The primary's Rubber Duck could not be set up: typed provenance, never text.
     pub duck_setup: bool,
+    /// Sleep observed during the attempt; credited to the retry window so a
+    /// sleeping computer never spends it.
+    pub slept_seconds: u32,
     /// When a `Superseded` attempt may run again; `None` retries shortly (a local
     /// race such as a teammate report landing). Boxed to keep `Failure` small.
     pub resume: Option<Box<Resume>>,
@@ -966,6 +973,7 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Github,
             duck_setup: false,
+            slept_seconds: 0,
             model: None,
             resume: None,
         }
@@ -985,8 +993,19 @@ impl Failure {
             retry_after_seconds: None,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            slept_seconds: 0,
             model: None,
             resume: None,
+        }
+    }
+    /// The session made no progress for the inactivity window only because the
+    /// computer slept: its connection is presumed dead. Retryable.
+    pub fn slept(slept: std::time::Duration) -> Self {
+        Self {
+            kind: OperationFailure::Network,
+            message: "Copilot review stalled while the computer slept.".into(),
+            slept_seconds: u32::try_from(slept.as_secs()).unwrap_or(u32::MAX),
+            ..Self::timeout()
         }
     }
     pub fn schema() -> Self {
@@ -1098,6 +1117,7 @@ impl Failure {
                 retry_after_seconds: None,
                 origin: crate::backpressure::Origin::Copilot,
                 duck_setup: false,
+                slept_seconds: 0,
                 model: None,
                 resume: Default::default(),
             }
@@ -1115,7 +1135,7 @@ impl Failure {
             }
             _ => OperationFailure::Permanent,
         };
-        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, model: None, resume: None }
+        Self { cancelled: false, kind, message: "Copilot runtime request failed; check account, model, and runtime availability before retrying.".into(), retry_after_seconds: None, origin: crate::backpressure::Origin::Copilot, duck_setup: false, slept_seconds: 0, model: None, resume: None }
     }
     fn event(data: &Value) -> Self {
         let model = ModelFault::of(data);
@@ -1141,6 +1161,7 @@ impl Failure {
             retry_after_seconds,
             origin: crate::backpressure::Origin::Copilot,
             duck_setup: false,
+            slept_seconds: 0,
             model,
             resume: None,
         }
@@ -1177,6 +1198,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin: crate::backpressure::Origin::Github,
                 duck_setup: false,
+                slept_seconds: 0,
                 model: None,
                 resume: None,
             },
@@ -1191,6 +1213,7 @@ impl From<ConnectionError> for Failure {
                 retry_after_seconds,
                 origin,
                 duck_setup: false,
+                slept_seconds: 0,
                 model: None,
                 resume: None,
             },
@@ -1280,6 +1303,7 @@ impl Events {
             finding_dispositions: Vec::new(),
             carried_findings: Vec::new(),
             wait_snapshot: None,
+            slept_seconds: 0,
         })
     }
 }

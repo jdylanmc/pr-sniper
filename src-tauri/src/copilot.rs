@@ -98,7 +98,7 @@ impl Integration {
         })
         .await;
         result.and_then(|value| {
-            final_operation.check().map_err(Failure::operation)?;
+            final_operation.check_live().map_err(Failure::operation)?;
             Ok(value)
         })
     }
