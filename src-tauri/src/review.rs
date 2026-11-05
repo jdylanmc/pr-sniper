@@ -701,7 +701,8 @@ fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> 
 /// window; retired or missing work ends quietly. No
 /// provider effect was attempted, so nothing is replayed.
 fn recover_parked_transient_check(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
-    if run.operation.state != OperationState::Failed
+    if run.mode != RunMode::Packet
+        || run.operation.state != OperationState::Failed
         || run.operation.failure != Some(OperationFailure::Permanent)
         || run.operation.operation_type != "copilot_review"
         || run.result.is_some()

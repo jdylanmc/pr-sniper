@@ -52,6 +52,8 @@ fn ambiguous(error: ConnectionError) -> bool {
             | ConnectionError::InvalidResponse
             | ConnectionError::MalformedResponse(_)
             | ConnectionError::IncompleteRead
+            // A gateway timeout may follow a write that landed.
+            | ConnectionError::ProviderRejectedStatus(408)
     )
 }
 
@@ -882,6 +884,7 @@ mod write_uncertainty_tests {
             ConnectionError::IncompleteRead,
             ConnectionError::ProviderFailure,
             ConnectionError::ProviderFailureAfter(30),
+            ConnectionError::ProviderRejectedStatus(408),
         ] {
             let failure = write_failure(error);
             assert!(failure.uncertain, "{error:?} must reconcile before retry");

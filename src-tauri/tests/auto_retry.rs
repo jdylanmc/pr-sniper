@@ -516,6 +516,33 @@ fn cooldown_resume_requeues_a_parked_review_and_exposes_the_hint() {
 }
 
 #[test]
+fn a_connectivity_park_an_older_build_left_human_only_resumes_after_upgrade() {
+    let mut run = parked_review(OperationFailure::Timeout, OperationState::ManualRetry);
+    run.operation.resume_cycle = RESUME_COOLDOWNS_SECONDS.len() as u8;
+    run.operation.resume_at = None;
+    let (_root, store) = store_with(&run);
+    let mut monitor = Monitor::default();
+    assert!(monitor
+        .auto_resume_due(&store, &accounts(true), 1_000)
+        .unwrap());
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 1_000).unwrap(),
+        0
+    );
+    let last = *RESUME_COOLDOWNS_SECONDS.last().unwrap();
+    let armed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(armed.operation.resume_at, Some(1_000 + last));
+    assert_eq!(
+        monitor
+            .auto_resume(&store, &accounts(true), 1_000 + last)
+            .unwrap(),
+        1
+    );
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+}
+
+#[test]
 fn a_new_head_supersedes_a_parked_failure_on_the_old_head() {
     let mut run = parked_review(OperationFailure::Network, OperationState::ManualRetry);
     run.operation.resume_at = Some(5_000);
