@@ -24,6 +24,10 @@ struct Fixture {
     /// Path facts the next resolve reports.
     facts: Mutex<Option<crate::paths::PathFacts>>,
     azure: Option<crate::azure_devops::setup::Report>,
+    /// URLs passed to `resolve`.
+    resolved: Mutex<Vec<String>>,
+    /// The repository an Azure DevOps resolve reports.
+    azure_repository: Mutex<String>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -67,7 +71,102 @@ impl Fixture {
             head: Mutex::new("a".repeat(40)),
             facts: Mutex::new(None),
             azure: None,
+            resolved: Mutex::new(vec![]),
+            azure_repository: Mutex::new(ADO_REPOSITORY.into()),
         }
+    }
+    /// Rebinds the saved repository to the signed-in Azure DevOps identity.
+    fn bind_azure_devops(&mut self) -> crate::storage::Repository {
+        self.azure = Some(azure_report(true));
+        self.auth.lock().unwrap().set_azure_devops_account(
+            Some(Identity {
+                id: AVERY.into(),
+                login: "Avery Example".into(),
+            }),
+            Some(true),
+        );
+        {
+            let store = self.store.lock().unwrap();
+            let old = store.load_settings().unwrap().repositories.remove(0);
+            let mut repository = old.clone();
+            repository.provider = crate::storage::ProviderId::AzureDevops;
+            repository.name = "contoso/project/repo".into();
+            repository.provider_account_id = Some(AVERY.into());
+            repository.provider_repository_id = Some(ADO_REPOSITORY.into());
+            repository.watched_authors = serde_json::from_value(json!([
+                {"id":"00000000-0000-0000-0000-000000000002","login":"Blake Example"}
+            ]))
+            .unwrap();
+            repository.assignments[0].actions = None;
+            store
+                .save_resource(crate::storage::ResourceEdit::Repository {
+                    id: repository.id.clone(),
+                    expected: Some(Box::new(old)),
+                    value: Some(Box::new(repository)),
+                })
+                .unwrap();
+            store.save_queue(&[]).unwrap();
+        }
+        self.restart();
+        self.store
+            .lock()
+            .unwrap()
+            .load_settings()
+            .unwrap()
+            .repositories[0]
+            .clone()
+    }
+    fn azure_watch(&self, url: &str, again: bool) -> Value {
+        json!({"operation":"watch","expected":self.store.lock().unwrap().load_settings().unwrap().repositories[0],
+            "url":url,"account_generation":0,"review_again":again})
+    }
+    fn azure_target(&self, account: &str, url: &str) -> super::Resolved {
+        assert_eq!(account, AVERY);
+        assert_eq!(
+            crate::provider::intake::parse(url).unwrap().provider,
+            crate::storage::ProviderId::AzureDevops
+        );
+        let repository = self.azure_repository.lock().unwrap().clone();
+        (
+            crate::provider::ResolvedTarget {
+                connection: Connection {
+                    identity: Identity {
+                        id: AVERY.into(),
+                        login: "Avery Example".into(),
+                    },
+                    repository: RemoteRepository {
+                        id: repository.clone(),
+                        name: "contoso/project/repo".into(),
+                    },
+                    capabilities: Capabilities {
+                        read: true,
+                        comment: CommentCapability::Unknown,
+                    },
+                },
+                pull_request: Some(PullRequest {
+                    mentioned: false,
+                    id: "1".into(),
+                    number: 1,
+                    title: "Fixture PR".into(),
+                    author: Some(Identity {
+                        id: "00000000-0000-0000-0000-000000000002".into(),
+                        login: "Blake Example".into(),
+                    }),
+                    requested_reviewers: vec![],
+                    requested_teams: vec![],
+                    state: Lifecycle::Open,
+                    draft: false,
+                    head_sha: self.head.lock().unwrap().clone(),
+                    base_sha: "b".repeat(40),
+                    head_repository_id: Some(repository.clone()),
+                    base_repository_id: repository,
+                    updated_at: "2026-10-20T00:00:00Z".into(),
+                    files: vec![],
+                }),
+            },
+            0,
+            self.facts.lock().unwrap().clone(),
+        )
     }
     fn watch(&self, again: bool) -> Value {
         json!({"operation":"watch","expected":self.store.lock().unwrap().load_settings().unwrap().repositories[0],
@@ -188,10 +287,15 @@ impl Runtime for Fixture {
     }
     fn resolve(
         &self,
+        provider: &crate::storage::ProviderId,
         account: &str,
-        _: &str,
+        url: &str,
         _: &crate::monitoring::PathTicket,
     ) -> Result<super::Resolved, Error> {
+        self.resolved.lock().unwrap().push(url.into());
+        if *provider == crate::storage::ProviderId::AzureDevops {
+            return Ok(self.azure_target(account, url));
+        }
         assert_eq!(account, "101");
         Ok((
             crate::provider::ResolvedTarget {
@@ -275,6 +379,9 @@ impl Runtime for Fixture {
 }
 
 const AVERY: &str = "00000000-0000-0000-0000-000000000001";
+const ADO_REPOSITORY: &str =
+    "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1";
+const ADO_PR: &str = "https://dev.azure.com/contoso/project/_git/repo/pullrequest/1";
 
 fn azure_report(connected: bool) -> crate::azure_devops::setup::Report {
     use crate::azure_devops::{connection::Identity, setup::*};
@@ -474,6 +581,145 @@ fn azure_devops_repositories_refuse_approve_and_merge_with_a_typed_error() {
         .unwrap()
         .iter()
         .all(|r| r["id"] != json!(id)));
+}
+
+#[test]
+fn watch_admits_and_reviews_an_explicit_azure_devops_pull_request() {
+    let mut fixture = Fixture::new();
+    fixture.bind_azure_devops();
+    let reply = fixture.call(fixture.azure_watch(ADO_PR, false));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let queue = fixture.store.lock().unwrap().load_queue().unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].repository_id, ADO_REPOSITORY);
+    assert_eq!(queue[0].account_id, AVERY);
+    // A completed pass reruns only on explicit review_again.
+    fixture.complete();
+    fixture
+        .store
+        .lock()
+        .unwrap()
+        .save_automation(&crate::capacity::Automation { paused: false })
+        .unwrap();
+    fixture.restart();
+    let again = fixture.azure_watch(
+        "https://contoso.visualstudio.com/DefaultCollection/project/_git/repo/pullrequest/1/?_a=files",
+        true,
+    );
+    let reply = fixture.call(again);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(fixture.store.lock().unwrap().load_queue().unwrap().len(), 2);
+    assert_eq!(fixture.launched.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn azure_devops_watch_rejects_other_repositories_with_target_mismatch() {
+    let mut fixture = Fixture::new();
+    fixture.bind_azure_devops();
+    for url in [
+        "https://dev.azure.com/fabrikam/project/_git/repo/pullrequest/1",
+        "https://github.com/contoso/repo/pull/1",
+    ] {
+        let reply = fixture.call(fixture.azure_watch(url, false));
+        assert_eq!(reply["error"]["code"], "target_mismatch", "{url}: {reply}");
+    }
+    assert!(fixture.resolved.lock().unwrap().is_empty());
+    let reply =
+        fixture.call(fixture.azure_watch("https://dev.azure.com/contoso/project/_git/repo", false));
+    assert_eq!(reply["error"]["code"], "pr_url_required", "{reply}");
+    // Same organization, but the URL resolves to a different repository.
+    *fixture.azure_repository.lock().unwrap() =
+        "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c2".into();
+    let reply = fixture.call(fixture.azure_watch(
+        "https://dev.azure.com/contoso/project/_git/other/pullrequest/1",
+        false,
+    ));
+    assert_eq!(reply["error"]["code"], "target_mismatch", "{reply}");
+    assert!(fixture
+        .store
+        .lock()
+        .unwrap()
+        .load_queue()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn azure_devops_watch_keeps_the_enabled_account_and_paths_gates() {
+    let mut fixture = Fixture::new();
+    let mut repository = fixture.bind_azure_devops();
+    *fixture.facts.lock().unwrap() = Some(
+        serde_json::from_value(json!({
+            "head_sha": "a".repeat(40), "base_sha": "b".repeat(40),
+            "gate": ["docs/"], "admitted": false
+        }))
+        .unwrap(),
+    );
+    {
+        let store = fixture.store.lock().unwrap();
+        let mut settings = store.load_settings().unwrap();
+        settings.repositories[0].paths = vec!["docs/".into()];
+        store.save_settings(&settings).unwrap();
+    }
+    let reply = fixture.call(fixture.azure_watch(ADO_PR, false));
+    assert_eq!(reply["error"]["code"], "paths_gate", "{reply}");
+    assert!(fixture
+        .store
+        .lock()
+        .unwrap()
+        .load_queue()
+        .unwrap()
+        .is_empty());
+    *fixture.facts.lock().unwrap() = None;
+    fixture.auth.lock().unwrap().set_azure_devops_account(
+        Some(Identity {
+            id: AVERY.into(),
+            login: "Avery Example".into(),
+        }),
+        Some(false),
+    );
+    let reply = fixture.call(fixture.azure_watch(ADO_PR, false));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(fixture
+        .store
+        .lock()
+        .unwrap()
+        .load_queue()
+        .unwrap()
+        .is_empty());
+    repository.enabled = false;
+    let reply = fixture.call(json!({"operation":"watch","expected":repository,
+        "url":ADO_PR,"account_generation":0}));
+    assert_eq!(reply["error"]["code"], "repository_disabled", "{reply}");
+}
+
+#[test]
+fn inspect_target_parses_both_providers() {
+    let mut fixture = Fixture::new();
+    let github = fixture
+        .call(json!({"operation":"target","url":"https://github.com/fixture/repo-1/pull/1"}));
+    assert_eq!(
+        github["result"]["target"],
+        json!({"provider":"github","name":"fixture/repo-1","pull_request_number":1})
+    );
+    let id = fixture.bind_azure_devops().id;
+    assert_eq!(
+        fixture
+            .call(json!({"operation":"target","url":"https://github.com/fixture/repo-1/pull/1"}))
+            ["result"]["repository_ids"],
+        json!([])
+    );
+    let azure = fixture.call(json!({"operation":"target",
+        "url":"https://contoso.visualstudio.com/DefaultCollection/Project/_git/Repo/pullrequest/7?_a=files"}));
+    assert_eq!(azure["ok"], true, "{azure}");
+    assert_eq!(
+        azure["result"]["target"],
+        json!({"provider":"azure_devops","name":"contoso/Project/Repo","pull_request_number":7})
+    );
+    assert_eq!(azure["result"]["repository_ids"], json!([id]));
+    let foreign = fixture.call(json!({"operation":"target",
+        "url":"https://example.com/contoso/project/_git/repo/pullrequest/7"}));
+    assert_eq!(foreign["ok"], false);
 }
 
 #[test]

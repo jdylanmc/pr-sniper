@@ -48,6 +48,15 @@ const azureAccounts = {
     checking: false,
   },
 };
+const azureTarget = {
+  target: {
+    provider: "azure_devops",
+    name: "contoso/Web/app",
+    pull_request_number: 7,
+  },
+  repository_ids: ["00000000-0000-4000-8000-000000000001"],
+  revision: "a".repeat(64),
+};
 const azureResolution = {
   identity: { id: AVERY, login: "Avery Example" },
   repository: { id: AZURE_REPOSITORY, name: "contoso/Web/app" },
@@ -82,23 +91,25 @@ async function fixture(mode, { queue = [queueItem] } = {}) {
             ? azureAccounts
             : request.operation === "resolve"
               ? azureResolution
-              : request.operation === "retry_all"
-                ? {
-                    state: "requested",
-                    retried: 2,
-                    skipped: 1,
-                    replayed: false,
-                  }
-                : request.operation === "watch"
+              : request.operation === "target"
+                ? azureTarget
+                : request.operation === "retry_all"
                   ? {
-                      state: "waiting",
-                      reason: "paused",
-                      paused: true,
-                      prioritized: 0,
-                      item_id: null,
+                      state: "requested",
+                      retried: 2,
+                      skipped: 1,
                       replayed: false,
                     }
-                  : null;
+                  : request.operation === "watch"
+                    ? {
+                        state: "waiting",
+                        reason: "paused",
+                        paused: true,
+                        prioritized: 0,
+                        item_id: null,
+                        replayed: false,
+                      }
+                    : null;
     return result
       ? { protocol, ok: true, result }
       : {
@@ -326,6 +337,44 @@ test("MCP watch preserves exact scope, pause, override and explicit rerun intent
       1,
       "Unsupported grant expansion never reaches native watch",
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("MCP inspects and watches explicit Azure DevOps pull requests", async () => {
+  const f = await fixture("modern");
+  try {
+    const url =
+      "https://contoso.visualstudio.com/DefaultCollection/Web/_git/app/pullrequest/7?_a=files";
+    const inspected = await f.client.callTool({
+      name: "inspect_target",
+      arguments: { url },
+    });
+    assert.equal(inspected.isError, false, JSON.stringify(inspected));
+    assert.deepEqual(inspected.structuredContent.result, azureTarget);
+    assert.equal(f.calls.at(-1).operation, "target");
+    assert.equal(f.calls.at(-1).url, url);
+    const expected = {
+      id: azureTarget.repository_ids[0],
+      provider: "azure_devops",
+      name: "contoso/Web/app",
+      enabled: true,
+      provider_account_id: AVERY,
+      provider_repository_id: AZURE_REPOSITORY,
+      admission: { mode: "explicit", rules: [] },
+      assignments: [],
+    };
+    const identity = (
+      await f.client.callTool({ name: "prepare_request", arguments: {} })
+    ).structuredContent;
+    const args = { ...identity, expected, url, account_generation: 0 };
+    const watched = await f.client.callTool({
+      name: "watch_pull_request",
+      arguments: args,
+    });
+    assert.equal(watched.isError, false, JSON.stringify(watched));
+    assert.deepEqual(f.calls.at(-1), { operation: "watch", ...args });
   } finally {
     await f.close();
   }
