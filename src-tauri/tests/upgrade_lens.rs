@@ -176,6 +176,7 @@ fn follow_up(review: ReviewRun) -> FollowUp {
     run.result = Some(ReviewResult {
         carried_findings: Vec::new(),
         wait_snapshot: None,
+        slept_seconds: 0,
         reviewed_base_sha: Some("b".repeat(40)),
         output: ReplyOutput {
             feedback_assessments: Vec::new(),

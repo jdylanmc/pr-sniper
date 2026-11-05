@@ -270,18 +270,26 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                 .lock()
                 .map_err(|_| "Review storage is unavailable.")?;
             let outcome = outcome.and_then(|(result, generation)| {
-                if generations.get(&run.job.account_id).copied().unwrap_or(0) != generation {
-                    return Err(Failure::permanent(
-                        "Review cancelled or GitHub account connection changed.",
-                    ));
-                }
-                if host.quitting.load(Ordering::SeqCst) {
-                    return Err(Failure::cancelled());
-                }
-                auth.account_session_allowed(&run.job.account_id)
-                    .map_err(Failure::from)?;
-                super::validate_execution_selection(&store, &run)?;
-                Ok(result)
+                let checked = (|| {
+                    if generations.get(&run.job.account_id).copied().unwrap_or(0) != generation {
+                        return Err(Failure::permanent(
+                            "Review cancelled or GitHub account connection changed.",
+                        ));
+                    }
+                    if host.quitting.load(Ordering::SeqCst) {
+                        return Err(Failure::cancelled());
+                    }
+                    auth.account_session_allowed(&run.job.account_id)
+                        .map_err(Failure::from)?;
+                    super::validate_execution_selection(&store, &run)?;
+                    Ok(())
+                })();
+                // A rejected result keeps the sleep of the attempt that produced it.
+                let slept = result.slept_seconds;
+                checked.map(|()| result).map_err(|mut error| {
+                    error.slept_seconds = error.slept_seconds.max(slept);
+                    error
+                })
             });
             // A moved state keeps no duck evidence: its verdicts are gone with it.
             if outcome.as_ref().is_err_and(|error| !moved(error)) {
@@ -335,6 +343,10 @@ pub(crate) fn complete(
     if current.operation.state != OperationState::Running {
         return Ok(());
     }
+    // Every settlement that restores or checks the window credits this once.
+    let slept = outcome
+        .as_ref()
+        .map_or_else(|error| error.slept_seconds, |result| result.slept_seconds);
     let connectivity = store.load_connectivity()?;
     let offline = connectivity
         .offline(&crate::connectivity::scopes(current))
@@ -370,17 +382,13 @@ pub(crate) fn complete(
             .unwrap_or(now);
         crate::connectivity::sync_operation(store, &mut current.operation, Some(since), now);
         current.operation.suspend_offline(now);
-        if let Some(error) = outcome.as_ref().err() {
-            current.operation.credit_sleep(error.slept_seconds, now);
-        }
+        current.operation.credit_sleep(slept, now);
         current.result = None;
         current.attempt_ducks.clear();
         current.phase = "Offline".into();
         current.error = None;
     } else if crate::capacity::interrupted(&mut current.operation, outcome.as_ref().err(), now) {
-        if let Some(error) = outcome.as_ref().err() {
-            current.operation.credit_sleep(error.slept_seconds, now);
-        }
+        current.operation.credit_sleep(slept, now);
         current.result = None;
         current.phase = "Waiting after intentional interruption".into();
         current.error = None;
@@ -397,7 +405,7 @@ pub(crate) fn complete(
             now,
             wait.map(|base| monitoring::Supersession { at: now, base }),
         );
-        current.operation.credit_sleep(error.slept_seconds, now);
+        current.operation.credit_sleep(slept, now);
         current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
@@ -481,7 +489,7 @@ pub(crate) fn complete(
                 if error.kind == monitoring::OperationFailure::Tossed {
                     crate::pr_state::toss(store, &crate::retention::Binding::job(&current.job))?;
                 }
-                current.operation.credit_sleep(error.slept_seconds, now);
+                current.operation.credit_sleep(slept, now);
                 current.operation.fail(&error.monitoring(), now);
                 current.operation.credentials_origin = (current.operation.failure
                     == Some(monitoring::OperationFailure::Credentials))
@@ -983,14 +991,19 @@ async fn execute_attempt(
         Ok((result, generation))
     }
     .await;
-    // Covers failures outside the runtime too (setup, credentials, final checks).
-    attempt.finish(outcome).map_err(|mut error| {
-        let slept = clock.now().since(started).slept().as_secs();
-        error.slept_seconds = error
-            .slept_seconds
-            .max(u32::try_from(slept).unwrap_or(u32::MAX));
-        error
-    })
+    // Covers failures outside the runtime too (setup, credentials, final checks),
+    // and a result, which may still be tossed or suspended at settlement.
+    let slept = u32::try_from(clock.now().since(started).slept().as_secs()).unwrap_or(u32::MAX);
+    attempt
+        .finish(outcome)
+        .map(|(mut result, generation)| {
+            result.slept_seconds = slept;
+            (result, generation)
+        })
+        .map_err(|mut error| {
+            error.slept_seconds = error.slept_seconds.max(slept);
+            error
+        })
 }
 
 /// The provider transport speaks ConnectionError; keep a rejected local gate's

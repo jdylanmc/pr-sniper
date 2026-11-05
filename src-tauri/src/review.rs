@@ -845,6 +845,10 @@ pub struct ReviewResult<O = ReviewOutput> {
     /// CI wake); packet evidence stays immutable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_snapshot: Option<crate::github::state::NormalizedSnapshot>,
+    /// Sleep during this attempt, credited to the retry window at settlement.
+    /// Runtime only: never persisted.
+    #[serde(skip)]
+    pub slept_seconds: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1299,6 +1303,7 @@ impl Events {
             finding_dispositions: Vec::new(),
             carried_findings: Vec::new(),
             wait_snapshot: None,
+            slept_seconds: 0,
         })
     }
 }

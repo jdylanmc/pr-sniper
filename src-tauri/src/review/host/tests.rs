@@ -390,6 +390,61 @@ fn a_supersession_after_a_short_sleep_keeps_the_slept_window() {
 }
 
 #[test]
+fn a_result_tossed_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let mut states = store.load_pr_states().unwrap();
+    bump_state(&mut states, &template.job);
+    store.save_pr_states(&states).unwrap();
+    let run = running_packet(&store, &template, 100);
+    let deadline = run.operation.retry_deadline;
+    // 6 minutes awake, 10 asleep, 3 awake; the state moved during the run.
+    let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Stale."}));
+    result.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Ok(result), 100 + 19 * 60).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(
+        op.failure,
+        Some(crate::monitoring::OperationFailure::Tossed)
+    );
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+}
+
+#[test]
+fn a_result_set_aside_after_a_short_sleep_keeps_the_slept_window() {
+    for interruption in [
+        crate::capacity::Interruption::Offline,
+        crate::capacity::Interruption::Pause,
+    ] {
+        let (_root, store, template) = fixture();
+        let run = running_packet(&store, &template, 100);
+        complete(
+            &store,
+            &run.operation.id,
+            Err(Failure::provider("Flaky.")),
+            101,
+        )
+        .unwrap();
+        let next = store.load_reviews().unwrap()[0]
+            .operation
+            .next_attempt_at
+            .unwrap();
+        let run = running_packet(&store, &template, next);
+        assert_eq!(run.operation.attempt_count, 2);
+        let deadline = run.operation.retry_deadline;
+        let mut reviews = store.load_reviews().unwrap();
+        reviews[0].operation.interruption = Some(interruption);
+        store.save_reviews(&reviews).unwrap();
+        let mut result = packet_result(json!({"exit":"ready_for_human","summary":"Done."}));
+        result.slept_seconds = 10 * 60;
+        complete(&store, &run.operation.id, Ok(result), deadline + 60).unwrap();
+        let op = store.load_reviews().unwrap().remove(0).operation;
+        assert_eq!(op.state, OperationState::Queued, "{interruption:?}");
+        assert_eq!(op.retry_deadline, deadline + 10 * 60, "{interruption:?}");
+    }
+}
+
+#[test]
 fn a_latched_gate_failure_keeps_the_sleep_of_the_committed_one() {
     let attempt = AttemptGuard::new(Arc::new(|| Err(Failure::timeout())));
     assert!(attempt.gate()().is_err());
