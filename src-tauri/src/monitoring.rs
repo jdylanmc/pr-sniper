@@ -1588,10 +1588,14 @@ impl Monitor {
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
         let connectivity = store.load_connectivity()?;
-        for health in self.state.health.values_mut() {
+        for (key, health) in self.state.health.iter_mut() {
+            let provider = configured
+                .iter()
+                .find(|c| &c.health_key == key)
+                .map_or(ProviderId::Github, |c| c.provider.clone());
             let offline = health.provider_account_id.as_ref().and_then(|account| {
                 connectivity
-                    .offline(&[crate::backpressure::Scope::github(account)])
+                    .offline(&[crate::connectivity::repository_scope(&provider, account)])
                     .and_then(|s| s.offline_since)
             });
             if let Some(operation) = health.operation.as_mut() {
@@ -2545,7 +2549,10 @@ impl Monitor {
                 continue;
             };
             if connectivity
-                .offline(&[crate::backpressure::Scope::github(account_id)])
+                .offline(&[crate::connectivity::repository_scope(
+                    &configuration.provider,
+                    account_id,
+                )])
                 .is_some()
             {
                 continue;
@@ -2718,7 +2725,10 @@ impl Monitor {
         let offline = store
             .load_connectivity()
             .map_err(MonitoringError::Storage)?
-            .offline(std::slice::from_ref(&github))
+            .offline(&[crate::connectivity::repository_scope(
+                &ticket.provider,
+                &ticket.provider_account_id,
+            )])
             .is_some();
         let mut paced_until = None;
         match &outcome {

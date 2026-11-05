@@ -357,9 +357,9 @@ pub(crate) fn complete(
         && outcome.as_ref().err().is_none_or(|e| {
             e.cancelled
                 || (connectivity
-                    .offline(&[crate::backpressure::Scope::of(
+                    .offline(&[crate::connectivity::failure_scope(
+                        &current.job,
                         e.origin,
-                        &current.job.account_id,
                         current
                             .selection
                             .agent
