@@ -5087,6 +5087,7 @@ pub fn run() {
                 mutations: actions::host::MutationOwner::default(),
                 notifications,
             });
+            copilot::runtime::warm_up();
             let azure_devops_setup =
                 azure_devops::host::create(app.handle().clone(), azure_devops_binding)?;
             azure_devops::host::sync_account(

@@ -27,6 +27,12 @@ pub(crate) fn options(
         ("COPILOT_AUTO_UPDATE".into(), "false".into()),
         ("COPILOT_TELEMETRY".into(), "false".into()),
     ];
+    // The CLI unpacks its package (~150 MB) on first launch beneath its cache
+    // home. Keep that code-only cache beside the extracted runtime, once per
+    // version, instead of re-unpacking it into every private HOME.
+    if let Some(cache) = program.parent() {
+        environment.push(("COPILOT_PKG_CACHE_HOME".into(), cache.into()));
+    }
     #[cfg(not(windows))]
     environment.push(("PATH".into(), "/usr/bin:/bin".into()));
     #[cfg(windows)]
@@ -168,7 +174,89 @@ pub(crate) async fn shutdown(client: &Client) -> crate::storage::diagnostics::Ou
     crate::storage::diagnostics::Outcome::Success
 }
 
+/// Bounds waiting for runtime preparation; separate from the startup window.
+pub(crate) const PREPARATION_LIMIT: Duration = Duration::from_secs(300);
+const WARM_LAUNCH_LIMIT: Duration = Duration::from_secs(600);
+pub(crate) const PREPARATION_TIMEOUT: &str =
+    "The Copilot runtime is still being prepared. Retry shortly.";
+
+/// First use of a version extracts the bundled runtime and unpacks its package.
+/// Preparation runs once per process (on disk, once per runtime version),
+/// ahead of time when warmed up, and never inside an operation's budget.
+pub(crate) struct Preparation {
+    program: std::sync::OnceLock<Result<PathBuf, String>>,
+    install: fn() -> Result<PathBuf, String>,
+}
+
+impl Preparation {
+    pub(crate) const fn new(install: fn() -> Result<PathBuf, String>) -> Self {
+        Self {
+            program: std::sync::OnceLock::new(),
+            install,
+        }
+    }
+
+    fn program(&self) -> Result<PathBuf, String> {
+        self.program.get_or_init(self.install).clone()
+    }
+
+    fn warm_up(&'static self) {
+        if self.program.get().is_none() {
+            let _ = std::thread::Builder::new()
+                .name("copilot-runtime-preparation".into())
+                .spawn(move || {
+                    let _ = self.program();
+                });
+        }
+    }
+
+    /// Moves `deadline` past the time spent waiting for preparation.
+    async fn deadline(
+        &'static self,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+        limit: Duration,
+    ) -> Result<Instant, String> {
+        let started = Instant::now();
+        if self.program.get().is_none() {
+            let preparing = tokio::task::spawn_blocking(move || self.program());
+            tokio::select! {
+                _ = cancellation(cancelled) => return Err("Copilot model lookup cancelled.".into()),
+                result = tokio::time::timeout(limit, preparing) => {
+                    // The outcome itself is read below from the shared cell.
+                    let _ = result
+                        .map_err(|_| PREPARATION_TIMEOUT)?
+                        .map_err(|_| "Cannot start the Copilot runtime. Retry.")?;
+                }
+            }
+        }
+        self.program()?;
+        Ok(deadline + started.elapsed())
+    }
+}
+
+static RUNTIME: Preparation = Preparation::new(install_runtime);
+
+/// Prepares the bundled runtime in the background, off the UI thread.
+pub(crate) fn warm_up() {
+    RUNTIME.warm_up();
+}
+
+/// The operation deadline, started after the bundled runtime is prepared.
+pub(crate) async fn prepared_deadline(
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<Instant, String> {
+    RUNTIME
+        .deadline(cancelled, deadline, PREPARATION_LIMIT)
+        .await
+}
+
 pub(crate) fn runtime_program() -> Result<PathBuf, String> {
+    RUNTIME.program()
+}
+
+fn install_runtime() -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
         let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
@@ -178,9 +266,57 @@ pub(crate) fn runtime_program() -> Result<PathBuf, String> {
     }
     // Windows eligibility is established by the actual pinned native runtime,
     // not a fabricated macOS version or an ambient CLI fallback.
-    github_copilot_sdk::install_bundled_cli().ok_or_else(|| {
-        "The bundled Copilot runtime is unavailable. Reinstall PR Sniper and retry.".into()
-    })
+    let program = github_copilot_sdk::install_bundled_cli().ok_or_else(|| {
+        "The bundled Copilot runtime is unavailable. Reinstall PR Sniper and retry.".to_string()
+    })?;
+    warm_launch(&program);
+    Ok(program)
+}
+
+/// One credential-free `--version` launch unpacks the CLI package and passes
+/// first-launch OS checks. Best effort: a failure leaves startup to retry it.
+fn warm_launch(program: &Path) {
+    let Ok(home) = private_directory("pr-sniper-copilot-warm-") else {
+        return;
+    };
+    let Ok(config) = options(program.to_path_buf(), home.path(), "", std::iter::empty()) else {
+        return;
+    };
+    let mut command = std::process::Command::new(program);
+    command
+        .arg("--version")
+        .current_dir(home.path())
+        .env_clear()
+        .envs(config.env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(mut child) = command.spawn() else {
+        eprintln!("[copilot] stage=runtime_preparation outcome=launch_failed");
+        return;
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < WARM_LAUNCH_LIMIT => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("[copilot] stage=runtime_preparation outcome=timed_out");
+                break;
+            }
+        }
+    }
+    let _ = home.close();
 }
 
 pub(crate) fn models(
@@ -564,6 +700,10 @@ mod tests {
             .iter()
             .any(|(key, value)| key == "HOME" && value == "/private/account-a"));
         assert!(config
+            .env
+            .iter()
+            .any(|(key, value)| key == "COPILOT_PKG_CACHE_HOME" && value == "/explicit"));
+        assert!(config
             .env_remove
             .contains(&OsString::from("OTEL_EXPORTER_OTLP_ENDPOINT")));
         assert!(config.builtin_plugin_directories.is_empty());
@@ -703,6 +843,95 @@ mod tests {
         if let Some(pid) = events[0]["childPid"].as_u64() {
             assert_process_stopped(pid as u32);
         }
+    }
+
+    static SLOW_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static SLOW: Preparation = Preparation::new(|| {
+        SLOW_INSTALLS.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(2500));
+        Ok(fixture_program("copilot-runtime.mjs").0)
+    });
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slow_preparation_does_not_consume_the_startup_window() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let budget = Instant::now() + Duration::from_secs(2);
+        let deadline = SLOW
+            .deadline(&cancel, budget, PREPARATION_LIMIT)
+            .await
+            .unwrap();
+        assert!(Instant::now() >= budget);
+        assert!(deadline >= Instant::now() + Duration::from_millis(1500));
+        // Charged to the original budget, the same startup would have expired.
+        assert_eq!(
+            query_with_deadline(
+                fixture_options(root.path(), "account-a"),
+                "account-a",
+                &cancel,
+                budget,
+            )
+            .await
+            .unwrap_err(),
+            "Copilot operation timed out. Retry."
+        );
+        let models = query_with_deadline(
+            fixture_options(root.path(), "account-a"),
+            "account-a",
+            &cancel,
+            deadline,
+        )
+        .await;
+        assert_eq!(models.unwrap()[0].id, "model-account-a");
+    }
+
+    static WARM_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static WARM: Preparation = Preparation::new(|| {
+        WARM_INSTALLS.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        Ok(PathBuf::from("/runtime/1.0.0/copilot"))
+    });
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn warm_up_prepares_once_and_operations_wait_for_it() {
+        for _ in 0..3 {
+            WARM.warm_up();
+        }
+        let cancel = AtomicBool::new(false);
+        let budget = Instant::now();
+        let (a, b) = tokio::join!(
+            WARM.deadline(&cancel, budget, PREPARATION_LIMIT),
+            WARM.deadline(&cancel, budget, PREPARATION_LIMIT),
+        );
+        assert!(a.unwrap() > budget && b.unwrap() > budget);
+        WARM.warm_up();
+        assert_eq!(
+            WARM.program().unwrap(),
+            PathBuf::from("/runtime/1.0.0/copilot")
+        );
+        assert_eq!(WARM_INSTALLS.load(Ordering::SeqCst), 1);
+    }
+
+    static STALLED: Preparation = Preparation::new(|| {
+        std::thread::sleep(Duration::from_millis(500));
+        Err("unreachable".into())
+    });
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stalled_preparation_is_distinct_from_startup_and_cancellable() {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            STALLED
+                .deadline(&AtomicBool::new(false), deadline, Duration::from_millis(50))
+                .await
+                .unwrap_err(),
+            PREPARATION_TIMEOUT
+        );
+        assert!(STALLED
+            .deadline(&AtomicBool::new(true), deadline, PREPARATION_LIMIT)
+            .await
+            .unwrap_err()
+            .contains("cancelled"));
     }
 
     #[tokio::test]

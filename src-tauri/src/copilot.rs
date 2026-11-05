@@ -764,7 +764,13 @@ pub(super) async fn list_copilot_models(
         }
         lookups.insert(key.clone(), operation.clone());
     }
-    let result = integration.models(&account_id, &operation).await;
+    let result = async {
+        let mut operation = operation;
+        operation.deadline =
+            runtime::prepared_deadline(&operation.cancelled, operation.deadline).await?;
+        integration.models(&account_id, &operation).await
+    }
+    .await;
     integration
         .lookups
         .lock()
