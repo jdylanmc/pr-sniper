@@ -266,6 +266,36 @@ pub struct RepositoryPath {
 /// URL (any trailing path, such as a pull request, is ignored), or
 /// `{org}/{project}/{repo}`.
 pub fn parse_repository_url(input: &str) -> Option<RepositoryPath> {
+    locate(input).map(|(path, _)| path)
+}
+
+/// Parses a pasted pull request URL,
+/// `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}` or
+/// `https://{org}.visualstudio.com/[DefaultCollection/]{project}/_git/{repo}/pullrequest/{id}`:
+/// its repository path and pull request number. Query and trailing slash are
+/// ignored.
+pub fn parse_pull_request_url(input: &str) -> Option<(RepositoryPath, u64)> {
+    if !input.contains("://") {
+        return None;
+    }
+    let (path, rest) = locate(input)?;
+    match rest.as_slice() {
+        [kind, id]
+            if kind.eq_ignore_ascii_case("pullrequest")
+                && !id.is_empty()
+                && id.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            id.parse::<u64>()
+                .ok()
+                .filter(|number| *number > 0)
+                .map(|number| (path, number))
+        }
+        _ => None,
+    }
+}
+
+/// The repository path and the decoded path segments after the repository.
+fn locate(input: &str) -> Option<(RepositoryPath, Vec<String>)> {
     let input = input.trim();
     if input.is_empty() || input.len() > 2048 || input.chars().any(char::is_control) {
         return None;
@@ -273,7 +303,9 @@ pub fn parse_repository_url(input: &str) -> Option<RepositoryPath> {
     if !input.contains("://") {
         let parts: Vec<_> = input.split('/').collect();
         return match parts.as_slice() {
-            [organization, project, repository] => path(organization, project, repository),
+            [organization, project, repository] => {
+                path(organization, project, repository).map(|path| (path, Vec::new()))
+            }
             _ => None,
         };
     }
@@ -304,12 +336,13 @@ pub fn parse_repository_url(input: &str) -> Option<RepositoryPath> {
     };
     let git = segments.iter().position(|segment| segment == "_git")?;
     let repository = segments.get(git + 1)?;
-    match git {
+    let found = match git {
         // `{org}/_git/{repo}`: the project shares the repository's name.
         0 => path(&organization, repository, repository),
         1 => path(&organization, &segments[0], repository),
         _ => None,
-    }
+    }?;
+    Some((found, segments.split_off(git + 2)))
 }
 
 fn percent_decode(segment: &str) -> Option<String> {
@@ -1104,15 +1137,26 @@ impl RepositoryReader for Reader {
         Ok(self.connection(&repository))
     }
 
-    /// A pull request URL resolves its repository only.
+    /// A pull request URL also reads that pull request of the resolved
+    /// repository.
     fn resolve_repository_target(
         &self,
         input: &str,
         account_id: &str,
     ) -> Result<ResolvedTarget, ConnectionError> {
+        let connection = self.connect(input, Some(account_id))?;
+        let pull_request = parse_pull_request_url(input)
+            .map(|(_, number)| {
+                crate::provider::PullRequestReader::pull_request(
+                    self,
+                    &connection.repository,
+                    number,
+                )
+            })
+            .transpose()?;
         Ok(ResolvedTarget {
-            connection: self.connect(input, Some(account_id))?,
-            pull_request: None,
+            connection,
+            pull_request,
         })
     }
 }

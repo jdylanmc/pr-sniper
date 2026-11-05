@@ -191,6 +191,46 @@ fn parses_pasted_repository_urls() {
 }
 
 #[test]
+fn parses_pasted_pull_request_urls() {
+    let parsed = |input: &str| {
+        parse_pull_request_url(input)
+            .map(|(path, number)| (path.organization, path.project, path.repository, number))
+    };
+    let expected = Some(("contoso".into(), "Web".into(), "app".into(), 7));
+    for input in [
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/7",
+        "https://dev.azure.com/Contoso/Web/_git/app/pullrequest/7/",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/7?_a=files&path=/a",
+        "https://dev.azure.com/contoso/Web/_git/app/pullRequest/7#discussion",
+        "https://contoso.visualstudio.com/Web/_git/app/pullrequest/7",
+        "https://contoso.visualstudio.com/DefaultCollection/Web/_git/app/pullrequest/7/",
+    ] {
+        assert_eq!(parsed(input), expected, "{input}");
+    }
+    assert_eq!(
+        parsed("https://dev.azure.com/contoso/Fabrikam%20Web/_git/My%20App/pullrequest/12"),
+        Some(("contoso".into(), "Fabrikam Web".into(), "My App".into(), 12))
+    );
+    for input in [
+        "https://dev.azure.com/contoso/Web/_git/app",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequests",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/0",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/-1",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/7x",
+        "https://dev.azure.com/contoso/Web/_git/app/pullrequest/7/files",
+        "https://dev.azure.com/contoso/Web/_git/app/commit/7",
+        "http://dev.azure.com/contoso/Web/_git/app/pullrequest/7",
+        "https://example.com/contoso/Web/_git/app/pullrequest/7",
+        "https://contoso.visualstudio.com.example.com/Web/_git/app/pullrequest/7",
+        "https://github.com/contoso/app/pull/7",
+        "contoso/Web/app",
+    ] {
+        assert_eq!(parsed(input), None, "{input}");
+    }
+}
+
+#[test]
 fn repository_keys_are_stable_lowercase_guids() {
     let id = key().id();
     assert_eq!(id, format!("contoso/{PROJECT}/{REPO}"));
@@ -783,6 +823,21 @@ fn the_reader_implements_the_provider_read_interfaces() {
         &format!("{ORG}/Web/_apis/git/repositories/app?"),
         raw_repository(REPO, "app", "Web"),
     )
+    .json(
+        &format!("{ORG}/{PROJECT}/_apis/git/repositories/{REPO}/pullrequests/4?"),
+        json!({
+            "pullRequestId": 4, "status": "active", "title": "Change 4",
+            "creationDate": "2026-10-20T10:00:00Z", "isDraft": false,
+            "repository": {"id": REPO, "project": {"id": PROJECT}},
+            "lastMergeSourceCommit": {"commitId": "a".repeat(40)},
+            "lastMergeTargetCommit": {"commitId": "b".repeat(40)},
+            "reviewers": []
+        }),
+    )
+    .json(
+        &format!("{ORG}/Web/_apis/git/repositories/app?"),
+        raw_repository(REPO, "app", "Web"),
+    )
     .json(&picker(), directory.clone())
     .json(&picker(), directory);
     let reader = reader(&wire, &runtime).unwrap();
@@ -809,7 +864,13 @@ fn the_reader_implements_the_provider_read_interfaces() {
         .unwrap();
     assert_eq!(target.connection.repository, remote);
     assert_eq!(target.connection.identity, identity);
-    assert!(target.pull_request.is_none());
+    let pull = target.pull_request.unwrap();
+    assert_eq!((pull.number, pull.base_repository_id), (4, key().id()));
+    let repository_only = reader
+        .resolve_repository_target("https://dev.azure.com/contoso/Web/_git/app", AVERY)
+        .unwrap();
+    assert_eq!(repository_only.connection.repository, remote);
+    assert!(repository_only.pull_request.is_none());
     assert_eq!(
         reader.resolve_person("blake@contoso.example").unwrap(),
         Person {
