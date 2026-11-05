@@ -170,12 +170,16 @@ fn admits_picked_teammates_ignores_drafts_and_takes_each_iteration_as_a_revision
     assert_eq!(work.len(), 1);
     assert_eq!(work[0].reason, None);
     // GitHub reachability is never probed for, or holds, Azure DevOps work;
-    // only its AI account is.
+    // its own host and its AI account are.
     let accounts = monitor_accounts();
-    assert!(crate::connectivity::wanted_scopes(&store, &accounts)
-        .unwrap()
-        .iter()
-        .all(|scope| matches!(scope, crate::backpressure::Scope::Copilot { .. })));
+    let wanted = crate::connectivity::wanted_scopes(&store, &accounts).unwrap();
+    assert!(wanted.iter().all(|scope| matches!(
+        scope,
+        crate::backpressure::Scope::Copilot { .. } | crate::backpressure::Scope::AzureDevops { .. }
+    )));
+    assert!(wanted.contains(&crate::backpressure::Scope::azure_devops(
+        &jobs[0].account_id
+    )));
 
     // A push makes a new iteration: a new revision supersedes the old work.
     let ticket = next_ticket(&mut monitor, &store, NOW + 900);
@@ -321,6 +325,53 @@ fn failures_park_with_the_mapped_cause() {
         parked_class(None, Some(status(403, None))),
         Some(Permission)
     );
+}
+
+#[test]
+fn an_azure_devops_outage_suspends_polls_without_spending_attempts_then_resumes() {
+    use crate::backpressure::Scope;
+    use crate::connectivity::{record, Observation};
+    let (_root, store, mut monitor) = monitored();
+    let ado = Scope::azure_devops(AVERY);
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    // The poll loses its connection; the Azure DevOps host is confirmed down.
+    record(&store, ado.clone(), Observation::Unreachable, NOW + 1).unwrap();
+    let tokens = Arc::new(FakeTokens {
+        fail: Some(TokenError::Network),
+        ..FakeTokens::default()
+    });
+    let result = poll(tokens, &Arc::new(FakeWire::default()), &ticket);
+    assert_eq!(result.as_ref().err(), Some(&ConnectionError::Network));
+    let _ = monitor.finish(&store, ticket, result, NOW + 2);
+    let operation = |monitor: &Monitor| {
+        monitor
+            .snapshot()
+            .into_iter()
+            .find_map(|health| health.operation)
+            .unwrap()
+    };
+    let suspended = operation(&monitor);
+    assert!(!suspended.parked());
+    assert_eq!(suspended.attempt_count, 0);
+    assert!(suspended.offline_since.is_some());
+    // GitHub reachability neither holds nor frees it.
+    record(
+        &store,
+        Scope::github(AVERY),
+        Observation::Reachable,
+        NOW + 30,
+    )
+    .unwrap();
+    assert!(monitor
+        .prepare_checks(&store, NOW + 600, true)
+        .unwrap()
+        .is_empty());
+    // Recovery: the next check after a reachable probe polls again.
+    record(&store, ado, Observation::Reachable, NOW + 700).unwrap();
+    let ticket = next_ticket(&mut monitor, &store, NOW + 701);
+    assert_eq!(ticket.provider, crate::storage::ProviderId::AzureDevops);
+    assert_eq!(operation(&monitor).offline_since, None);
+    assert!(!operation(&monitor).parked());
 }
 
 #[test]

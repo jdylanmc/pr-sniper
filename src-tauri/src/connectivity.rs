@@ -72,16 +72,42 @@ pub fn scopes(run: &ReviewRun) -> Vec<Scope> {
     selection_scopes(&run.job, Some(&run.selection))
 }
 
-/// Services a job's review needs: its GitHub account (an Azure DevOps job
-/// never waits on GitHub reachability) and the selected AI accounts.
+/// The reachability scope of a repository provider account.
+pub fn repository_scope(provider: &crate::storage::ProviderId, account_id: &str) -> Scope {
+    match provider {
+        crate::storage::ProviderId::Github => Scope::github(account_id),
+        crate::storage::ProviderId::AzureDevops => Scope::azure_devops(account_id),
+    }
+}
+
+/// The reachability scope of a job's repository provider account.
+pub fn job_scope(job: &crate::monitoring::QueueJob) -> Scope {
+    if job.provider == crate::monitoring::provider_key(&crate::storage::ProviderId::AzureDevops) {
+        Scope::azure_devops(&job.account_id)
+    } else {
+        Scope::github(&job.account_id)
+    }
+}
+
+/// The service a failure came from: the job's repository provider, or its AI account.
+pub fn failure_scope(
+    job: &crate::monitoring::QueueJob,
+    origin: Origin,
+    ai_account: Option<&str>,
+) -> Scope {
+    match origin {
+        Origin::Github => job_scope(job),
+        Origin::Copilot => Scope::copilot(ai_account.unwrap_or_default()),
+    }
+}
+
+/// Services a job's review needs: its repository provider account (GitHub or
+/// Azure DevOps, each probed at its own host) and the selected AI accounts.
 pub fn selection_scopes(
     job: &crate::monitoring::QueueJob,
     selection: Option<&crate::review::Selection>,
 ) -> Vec<Scope> {
-    let mut scopes = Vec::new();
-    if job.provider != crate::monitoring::provider_key(&crate::storage::ProviderId::AzureDevops) {
-        scopes.push(Scope::github(&job.account_id));
-    }
+    let mut scopes = vec![job_scope(job)];
     if let Some(account) = selection.and_then(|s| s.agent.ai_account.as_ref()) {
         scopes.push(Scope::copilot(&account.account_id));
     }
@@ -97,12 +123,16 @@ pub fn selection_scopes(
 
 /// Any HTTP response proves reachability, including 401/403/429/5xx. No
 /// credentials, response bodies, redirects, or mutable provider requests.
-pub(crate) fn probe(origin: Origin) -> Observation {
-    let endpoint = match origin {
-        Origin::Github => "https://api.github.com/",
-        Origin::Copilot => "https://api.githubcopilot.com/",
-    };
-    probe_endpoint(endpoint)
+pub(crate) fn probe(scope: &Scope) -> Observation {
+    probe_endpoint(endpoint(scope))
+}
+
+fn endpoint(scope: &Scope) -> &'static str {
+    match scope {
+        Scope::Github { .. } => "https://api.github.com/",
+        Scope::Copilot { .. } => "https://api.githubcopilot.com/",
+        Scope::AzureDevops { .. } => "https://dev.azure.com/",
+    }
 }
 
 fn probe_endpoint(endpoint: &str) -> Observation {
@@ -182,19 +212,19 @@ pub(crate) async fn confirm_failure(
     {
         return Ok(());
     }
-    let origin = error.origin;
-    let observation = tauri::async_runtime::spawn_blocking(move || probe(origin))
-        .await
-        .map_err(|_| "Reachability check did not finish.")?;
-    let scope = Scope::of(
-        origin,
-        &run.job.account_id,
+    let scope = failure_scope(
+        &run.job,
+        error.origin,
         run.selection
             .agent
             .ai_account
             .as_ref()
             .map(|a| a.account_id.as_str()),
     );
+    let target = scope.clone();
+    let observation = tauri::async_runtime::spawn_blocking(move || probe(&target))
+        .await
+        .map_err(|_| "Reachability check did not finish.")?;
     let host = app.state::<crate::Host>();
     let store = host.store.lock().map_err(|_| "Storage unavailable.")?;
     record(&store, scope, observation, crate::now_seconds()?)
@@ -215,22 +245,14 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
             .monitoring_accounts();
         WANTED.scopes(&host.store, accounts, now)?
     };
-    for origin in [Origin::Github, Origin::Copilot] {
+    let endpoints: std::collections::BTreeSet<_> = scopes.iter().map(endpoint).collect();
+    for host in endpoints {
         let selected: Vec<_> = scopes
             .iter()
-            .filter(|s| {
-                matches!(
-                    (origin, s),
-                    (Origin::Github, Scope::Github { .. })
-                        | (Origin::Copilot, Scope::Copilot { .. })
-                )
-            })
+            .filter(|s| endpoint(s) == host)
             .cloned()
             .collect();
-        if selected.is_empty() {
-            continue;
-        }
-        let observation = tauri::async_runtime::spawn_blocking(move || probe(origin))
+        let observation = tauri::async_runtime::spawn_blocking(move || probe_endpoint(host))
             .await
             .map_err(|_| "Reachability check did not finish.")?;
         let host = app.state::<crate::Host>();
@@ -268,8 +290,8 @@ fn due(state: &Connectivity, wanted: Vec<Scope>, now: i64) -> Vec<Scope> {
 }
 
 /// Services saved work needs reachable, whether or not a probe is due.
-/// Repository-provider scopes are GitHub's: Azure DevOps accounts are never
-/// probed against GitHub, so GitHub reachability cannot hold their polls.
+/// Each repository provider is probed at its own host: GitHub reachability
+/// never holds Azure DevOps polls, nor the reverse.
 pub(crate) fn wanted_scopes(
     store: &Store,
     accounts: &std::collections::BTreeMap<String, crate::monitoring::AccountAvailability>,
@@ -279,20 +301,16 @@ pub(crate) fn wanted_scopes(
     }
     let settings = store.load_settings()?;
     let mut scopes = std::collections::BTreeSet::new();
-    let github = crate::storage::ProviderId::Github;
-    for repository in settings
-        .repositories
-        .iter()
-        .filter(|r| r.enabled && r.provider == github)
-    {
+    for repository in settings.repositories.iter().filter(|r| r.enabled) {
         if let Some(account) = &repository.provider_account_id {
-            scopes.insert(Scope::github(account));
+            scopes.insert(repository_scope(&repository.provider, account));
         }
     }
     for ticket in crate::monitoring::Monitor::lifecycle_candidates(store, accounts, 0)? {
-        if ticket.provider == github {
-            scopes.insert(Scope::github(&ticket.provider_account_id));
-        }
+        scopes.insert(repository_scope(
+            &ticket.provider,
+            &ticket.provider_account_id,
+        ));
     }
     // Planned work must clear the offline gate before its first run can exist.
     for candidate in crate::review::host::candidates(store)?
@@ -417,6 +435,51 @@ mod tests {
         drop(listener);
         assert_eq!(probe_endpoint(&endpoint), Observation::Unreachable);
         assert_eq!(probe_endpoint("not a URL"), Observation::Unknown);
+    }
+
+    #[test]
+    fn each_repository_provider_is_probed_at_its_own_host() {
+        let job = |provider: &str| -> crate::monitoring::QueueJob {
+            serde_json::from_value(serde_json::json!({
+                "provider":provider,"account_id":"a1","account_login":"a","repository_id":"r",
+                "repository_name":"o/r","pull_request_id":"9","number":1,"title":"t",
+                "head_sha":"h","trigger_policy":"all","author_id":null,"author_login":null,
+                "watched_author":false,"requested_reviewer":false,"waiting":"ready",
+                "detected_at":0
+            }))
+            .unwrap()
+        };
+        let (github, ado) = (job("github"), job("azure_devops"));
+        assert_eq!(selection_scopes(&github, None), [Scope::github("a1")]);
+        assert_eq!(selection_scopes(&ado, None), [Scope::azure_devops("a1")]);
+        assert_eq!(
+            failure_scope(&ado, Origin::Github, Some("c1")),
+            Scope::azure_devops("a1")
+        );
+        assert_eq!(
+            failure_scope(&ado, Origin::Copilot, Some("c1")),
+            Scope::copilot("c1")
+        );
+        assert_eq!(
+            [
+                Scope::github("a1"),
+                Scope::copilot("c1"),
+                Scope::azure_devops("a1")
+            ]
+            .iter()
+            .map(endpoint)
+            .collect::<Vec<_>>(),
+            [
+                "https://api.github.com/",
+                "https://api.githubcopilot.com/",
+                "https://dev.azure.com/"
+            ]
+        );
+        // One outage never stands in for another service's.
+        let mut state = Connectivity::default();
+        state.observe(Scope::azure_devops("a1"), Observation::Unreachable, 10);
+        assert!(state.offline(&selection_scopes(&ado, None)).is_some());
+        assert!(state.offline(&selection_scopes(&github, None)).is_none());
     }
 
     #[test]
