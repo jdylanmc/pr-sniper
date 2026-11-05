@@ -199,13 +199,14 @@ does not need the user's Node installation or global Copilot CLI. Runtime
 extraction uses the SDK-managed versioned cache; the app explicitly selects
 the bundled executable, not `COPILOT_CLI_PATH`.
 
-| Runtime preparation | Rule                                                                                                 |
-| ------------------- | ---------------------------------------------------------------------------------------------------- |
-| When                | App start, background thread; once per process, on disk once per runtime version                     |
-| Work                | SDK extraction + one credential-free `--version` launch (CLI package unpack, OS first-launch checks) |
-| Package cache       | `COPILOT_PKG_CACHE_HOME` = extracted runtime directory; code only, never per-account state           |
-| Model lookup        | Waits for preparation (cancellable, 5 min cap); its 90 s budget and 30 s startup window start after  |
-| Errors              | Preparation: "still being prepared"; handshake: "startup timed out"                                  |
+| Runtime preparation | Rule                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------- |
+| When                | App start, background thread; reused after success, retried after failure; on disk once per runtime version |
+| Work                | SDK extraction + one credential-free `--version` launch (CLI package unpack, OS first-launch checks)        |
+| Package cache       | `COPILOT_PKG_CACHE_HOME` = extracted runtime directory; code only, never per-account state                  |
+| Model lookup        | Waits for preparation (cancellable, 5 min cap); its 90 s budget and 30 s startup window start after         |
+| Review              | Waits for preparation under its own cancellation and deadline                                               |
+| Errors              | Preparation: "still being prepared"; handshake: "startup timed out"                                         |
 
 **System requirement:** PR Sniper requires **macOS 13.5 or later**, matching the
 bundled CLI **1.0.85** minimum (`LC_BUILD_VERSION`). The bundle declares the same

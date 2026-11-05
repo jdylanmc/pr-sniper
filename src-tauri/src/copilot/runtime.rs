@@ -181,33 +181,61 @@ pub(crate) const PREPARATION_TIMEOUT: &str =
     "The Copilot runtime is still being prepared. Retry shortly.";
 
 /// First use of a version extracts the bundled runtime and unpacks its package.
-/// Preparation runs once per process (on disk, once per runtime version),
-/// ahead of time when warmed up, and never inside an operation's budget.
+/// Preparation runs ahead of time when warmed up and never inside an
+/// operation's budget. Callers share one in-flight attempt; only success is
+/// kept, so a failed attempt is retried by the next caller.
 pub(crate) struct Preparation {
-    program: std::sync::OnceLock<Result<PathBuf, String>>,
+    program: std::sync::Mutex<Option<PathBuf>>,
     install: fn() -> Result<PathBuf, String>,
 }
 
 impl Preparation {
     pub(crate) const fn new(install: fn() -> Result<PathBuf, String>) -> Self {
         Self {
-            program: std::sync::OnceLock::new(),
+            program: std::sync::Mutex::new(None),
             install,
         }
     }
 
     fn program(&self) -> Result<PathBuf, String> {
-        self.program.get_or_init(self.install).clone()
+        let mut program = self
+            .program
+            .lock()
+            .map_err(|_| "Cannot start the Copilot runtime. Retry.")?;
+        if let Some(program) = program.as_ref() {
+            return Ok(program.clone());
+        }
+        let installed = (self.install)()?;
+        *program = Some(installed.clone());
+        Ok(installed)
+    }
+
+    /// Never blocks: an attempt in flight holds the lock.
+    fn ready(&self) -> bool {
+        self.program
+            .try_lock()
+            .is_ok_and(|program| program.is_some())
     }
 
     fn warm_up(&'static self) {
-        if self.program.get().is_none() {
+        if !self.ready() {
             let _ = std::thread::Builder::new()
                 .name("copilot-runtime-preparation".into())
                 .spawn(move || {
                     let _ = self.program();
                 });
         }
+    }
+
+    /// Off-thread wait; dropping it abandons only the wait, not the attempt.
+    async fn wait(&'static self) -> Result<(), String> {
+        if self.ready() {
+            return Ok(());
+        }
+        tokio::task::spawn_blocking(move || self.program())
+            .await
+            .map_err(|_| "Cannot start the Copilot runtime. Retry.")?
+            .map(|_| ())
     }
 
     /// Moves `deadline` past the time spent waiting for preparation.
@@ -218,19 +246,10 @@ impl Preparation {
         limit: Duration,
     ) -> Result<Instant, String> {
         let started = Instant::now();
-        if self.program.get().is_none() {
-            let preparing = tokio::task::spawn_blocking(move || self.program());
-            tokio::select! {
-                _ = cancellation(cancelled) => return Err("Copilot model lookup cancelled.".into()),
-                result = tokio::time::timeout(limit, preparing) => {
-                    // The outcome itself is read below from the shared cell.
-                    let _ = result
-                        .map_err(|_| PREPARATION_TIMEOUT)?
-                        .map_err(|_| "Cannot start the Copilot runtime. Retry.")?;
-                }
-            }
+        tokio::select! {
+            _ = cancellation(cancelled) => return Err("Copilot model lookup cancelled.".into()),
+            result = tokio::time::timeout(limit, self.wait()) => result.map_err(|_| PREPARATION_TIMEOUT)??,
         }
-        self.program()?;
         Ok(deadline + started.elapsed())
     }
 }
@@ -250,6 +269,12 @@ pub(crate) async fn prepared_deadline(
     RUNTIME
         .deadline(cancelled, deadline, PREPARATION_LIMIT)
         .await
+}
+
+/// Waits for preparation; callers bound it with their own cancellation and
+/// deadline (a review keeps its budget, see `Operation::wait_result`).
+pub(crate) async fn prepared() -> Result<(), String> {
+    RUNTIME.wait().await
 }
 
 pub(crate) fn runtime_program() -> Result<PathBuf, String> {
@@ -932,6 +957,66 @@ mod tests {
             .await
             .unwrap_err()
             .contains("cancelled"));
+    }
+
+    static FLAKY_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static FLAKY: Preparation = Preparation::new(|| {
+        if FLAKY_INSTALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err("Disk full.".into());
+        }
+        Ok(PathBuf::from("/runtime/1.0.0/copilot"))
+    });
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_preparation_is_retried_and_only_success_is_kept() {
+        FLAKY.warm_up();
+        while FLAKY_INSTALLS.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        FLAKY.wait().await.unwrap();
+        FLAKY.wait().await.unwrap();
+        assert_eq!(
+            FLAKY.program().unwrap(),
+            PathBuf::from("/runtime/1.0.0/copilot")
+        );
+        assert_eq!(FLAKY_INSTALLS.load(Ordering::SeqCst), 2);
+    }
+
+    static HELD: Preparation = Preparation::new(|| {
+        std::thread::sleep(Duration::from_secs(3));
+        Ok(PathBuf::from("/runtime/1.0.0/copilot"))
+    });
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_review_waiting_on_preparation_settles_promptly_on_cancel_or_deadline() {
+        use super::super::operation::{AccountWork, Operation};
+        use std::sync::Arc;
+        let operation = |deadline| {
+            Operation::new(
+                Arc::new(AccountWork::default()),
+                Arc::new(AtomicBool::new(false)),
+                deadline,
+            )
+            .unwrap()
+        };
+        let cancelled = operation(Instant::now() + Duration::from_secs(60));
+        let flag = cancelled.cancelled.clone();
+        let started = Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        assert!(cancelled
+            .wait_result(HELD.wait())
+            .await
+            .unwrap_err()
+            .contains("cancelled"));
+        let expiring = operation(Instant::now() + Duration::from_millis(200));
+        assert_eq!(
+            expiring.wait_result(HELD.wait()).await.unwrap_err(),
+            "Copilot operation timed out. Retry."
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

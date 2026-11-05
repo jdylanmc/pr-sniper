@@ -86,6 +86,13 @@ impl Integration {
             duck.launch = launch;
             duck.account = Some(account);
         }
+        // Cold preparation stays under this review's cancellation and deadline;
+        // the blocking run below then finds the runtime ready.
+        operation
+            .wait_result(runtime::prepared())
+            .await
+            .map_err(Failure::operation)?
+            .map_err(Failure::permanent)?;
         let final_operation = operation.clone();
         let trace = request.diagnostics.clone();
         let result = Failure::blocking(trace, "Review worker could not finish.", move || {
