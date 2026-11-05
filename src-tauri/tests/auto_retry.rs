@@ -329,30 +329,39 @@ fn park(operation: &mut JobOperation, kind: OperationFailure) -> i64 {
 }
 
 #[test]
-fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human() {
+fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human_unless_connectivity() {
     assert_eq!(
         RESUME_COOLDOWNS_SECONDS,
         [1_800, 3_600, 7_200, 14_400, 28_800]
     );
-    let mut operation = JobOperation::review(&job(), 1_000);
-    for (cycle, cooldown) in RESUME_COOLDOWNS_SECONDS.into_iter().enumerate() {
-        let parked_at = park(&mut operation, OperationFailure::Network);
+    for kind in [OperationFailure::Provider, OperationFailure::Network] {
+        let mut operation = JobOperation::review(&job(), 1_000);
+        for (cycle, cooldown) in RESUME_COOLDOWNS_SECONDS.into_iter().enumerate() {
+            let parked_at = park(&mut operation, kind.clone());
+            assert!(operation.parked());
+            assert_eq!(operation.resume_cycle as usize, cycle);
+            assert_eq!(operation.resume_at, Some(parked_at + cooldown));
+            assert!(!operation.auto_resume(false, parked_at + cooldown - 1));
+            assert!(operation.auto_resume(false, parked_at + cooldown));
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.attempt_count, 0);
+            assert_eq!(operation.failure, None);
+            assert_eq!(operation.resume_at, None);
+            assert_eq!(operation.resume_cycle as usize, cycle + 1);
+        }
+        // The fifth resumed budget also fails.
+        let parked_at = park(&mut operation, kind.clone());
         assert!(operation.parked());
-        assert_eq!(operation.resume_cycle as usize, cycle);
-        assert_eq!(operation.resume_at, Some(parked_at + cooldown));
-        assert!(!operation.auto_resume(false, parked_at + cooldown - 1));
-        assert!(operation.auto_resume(false, parked_at + cooldown));
-        assert_eq!(operation.state, OperationState::Queued);
-        assert_eq!(operation.attempt_count, 0);
-        assert_eq!(operation.failure, None);
-        assert_eq!(operation.resume_at, None);
-        assert_eq!(operation.resume_cycle as usize, cycle + 1);
+        if kind == OperationFailure::Provider {
+            // Now only a human can continue.
+            assert_eq!(operation.resume_at, None);
+            assert!(!operation.auto_resume(true, i64::MAX));
+        } else {
+            // Connectivity alone never needs a human: the 8h cooldown repeats.
+            assert_eq!(operation.resume_at, Some(parked_at + 28_800));
+            assert!(operation.auto_resume(false, parked_at + 28_800));
+        }
     }
-    // The fifth resumed budget also fails: now only a human can continue.
-    park(&mut operation, OperationFailure::Network);
-    assert!(operation.parked());
-    assert_eq!(operation.resume_at, None);
-    assert!(!operation.auto_resume(true, i64::MAX));
 }
 
 #[test]
