@@ -867,7 +867,9 @@ fn failure_from_connection_error(error: ConnectionError) -> GithubAuthFailure {
         | ConnectionError::RateLimitedAfter(_)
         | ConnectionError::RateLimitedWithContext { .. } => GithubAuthFailure::RateLimited,
         ConnectionError::Timeout => GithubAuthFailure::Timeout,
-        ConnectionError::InvalidResponse => GithubAuthFailure::InvalidResponse,
+        ConnectionError::InvalidResponse | ConnectionError::MalformedResponse(_) => {
+            GithubAuthFailure::InvalidResponse
+        }
         ConnectionError::SignedOut => GithubAuthFailure::Expired,
         ConnectionError::WrongIdentity => GithubAuthFailure::WrongIdentity,
         ConnectionError::MissingScope
@@ -908,6 +910,7 @@ fn apply_account_connection_failure<T>(
                 | ConnectionError::ProviderFailure
                 | ConnectionError::ProviderFailureAfter(_)
                 | ConnectionError::InvalidResponse
+                | ConnectionError::MalformedResponse(_)
         ) {
             if let Ok(mut auth) = host.github_auth.lock() {
                 auth.publish_session_failure(account_id, *error);

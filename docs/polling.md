@@ -102,19 +102,20 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 
 Same schedule, admission, retry and parking as GitHub, through the provider read interfaces (`azure_devops/read/pulls.rs`). Auth: Azure CLI token source ([ADR-0026](adr/0026-azure-devops-auth-via-azure-cli.md)).
 
-| Step          | Rule                                                                                                                                                                                                       |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List          | `GET {org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status=active`, `$top`=100 / `$skip` pages; a PR seen twice = `IncompleteRead` (retries). Over 5,000 = `LimitExceeded`.     |
-| Tracked       | Missing from the active listing: read on its own (`completed` → Merged, `abandoned` → Closed).                                                                                                             |
-| Revision      | Head = `lastMergeSourceCommit` (latest iteration's source commit): each push is a new Iteration. Base = `lastMergeTargetCommit`.                                                                           |
-| Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                                   |
-| Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams). No mention scan. [Paths](#paths) read iteration changes.                                              |
-| Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages to the end (no file limit; a `nextSkip` that does not advance = `IncompleteRead`). |
-| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                      |
-| Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                               |
-| Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401 drops the token and retries once; `Retry-After` reaches the shared retry policy.                                                                      |
-| Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                        |
-| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                     |
+| Step          | Rule                                                                                                                                                                                                                                      |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List          | `GET {org}/{project}/_apis/git/repositories/{repo}/pullrequests?searchCriteria.status=active`, `$top`=100 / `$skip` pages; a PR seen twice = `IncompleteRead` (retries). Over 5,000 = `LimitExceeded`.                                    |
+| Tracked       | Missing from the active listing: read on its own (`completed` → Merged, `abandoned` → Closed).                                                                                                                                            |
+| Revision      | Head = `lastMergeSourceCommit` (latest iteration's source commit): each push is a new Iteration. Base = `lastMergeTargetCommit`.                                                                                                          |
+| Drafts        | `isDraft`: skipped unless Review drafts.                                                                                                                                                                                                  |
+| Admission     | Author, include/exclude users by identity GUID; Assigned = PR reviewer (groups are requested teams). No mention scan. [Paths](#paths) read iteration changes.                                                                             |
+| Changed files | Latest iteration (must equal head, else `RevisionChanged`), `.../iterations/{n}/changes?$compareTo=0`, `nextSkip` pages to the end (no file limit; a `nextSkip` that does not advance = `IncompleteRead`).                                |
+| Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                                                     |
+| Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                                                              |
+| Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401, 203, 3xx or a sign-in page (`X-TFS-FedAuth*`) drops the token and retries once; any other HTML page = Network. [Throttling](#azure-devops-throttling).                              |
+| Responses     | Omitted enum defaults read as their default (status `state` = `notSet`, policy `status` = `queued`, change type `none`). A body that still does not parse = `MalformedResponse(<response>)`: typed provenance, shown as Invalid response. |
+| Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                                                       |
+| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                                                    |
 
 Parked causes (Queue › **Needs attention**):
 
@@ -126,6 +127,16 @@ Parked causes (Queue › **Needs attention**):
 | Failed      | Other, MalformedOutput                                                                                                   |
 
 A credential failure marks the bound identity disconnected: no further poll or Azure CLI run until Settings › Azure DevOps sees it connected again, which resumes the parked poll once.
+
+### Azure DevOps throttling
+
+| Signal                                                          | Effect                                                                                         |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 429; 503 with a stated wait                                     | Rate limit: shared backpressure gate, no attempt spent, never parked as a failure              |
+| `Retry-After`                                                   | Delta-seconds or HTTP-date                                                                     |
+| `X-RateLimit-Remaining` ≤ 0                                     | Wait until `X-RateLimit-Reset`                                                                 |
+| 2xx with `Retry-After`, `X-RateLimit-Delay` or exhausted budget | Next request of the organization held; ≤ 30s pauses inline, longer = rate limit with that wait |
+| Stated wait                                                     | Wins over jitter (`retry::BACKPRESSURE` otherwise), capped at 24h                              |
 
 ## Lifecycle reads
 

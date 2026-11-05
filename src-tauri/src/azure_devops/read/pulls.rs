@@ -5,8 +5,9 @@
 
 use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
-    ChangedFile, ConnectionError, Lifecycle, Listing, Person, PullRequest, PullRequestReader,
-    RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
+    ChangedFile, ConnectionError, Lifecycle, Listing, Person, ProviderResponse, PullRequest,
+    PullRequestReader, RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff,
+    TreeEntry,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -246,10 +247,13 @@ impl Client {
                     ("$skip", &skip_text),
                 ],
             );
-            let (list, _): (List<RawPullRequest>, _) = self.get(url).await?;
+            let (list, _): (List<RawPullRequest>, _) =
+                self.get(ProviderResponse::PullRequests, url).await?;
             let count = list.value.len() as u64;
             for raw in list.value {
-                let pull = raw.into_pull_request(key)?;
+                let pull = raw
+                    .into_pull_request(key)
+                    .map_err(|error| error.from_response(ProviderResponse::PullRequests))?;
                 if pull.state != Lifecycle::Open || !seen.insert(pull.number) {
                     return Err(ConnectionError::IncompleteRead);
                 }
@@ -270,8 +274,10 @@ impl Client {
     ) -> Result<PullRequest, ConnectionError> {
         self.owns(key)?;
         let url = self.git_url(key, &["pullrequests", &number.to_string()], &[]);
-        let (raw, _): (RawPullRequest, _) = self.get(url).await?;
-        let pull = raw.into_pull_request(key)?;
+        let (raw, _): (RawPullRequest, _) = self.get(ProviderResponse::PullRequest, url).await?;
+        let pull = raw
+            .into_pull_request(key)
+            .map_err(|error| error.from_response(ProviderResponse::PullRequest))?;
         if pull.number != number {
             return Err(ConnectionError::RepositoryChanged);
         }
@@ -298,7 +304,7 @@ impl Client {
             &["pullRequests", &number.to_string(), "iterations"],
             &[],
         );
-        let (list, _): (List<Raw>, _) = self.get(url).await?;
+        let (list, _): (List<Raw>, _) = self.get(ProviderResponse::Iterations, url).await?;
         let optional = |raw: Option<RawCommit>| raw.map(|raw| commit(&raw.commit_id)).transpose();
         let mut iterations = list
             .value
@@ -311,7 +317,8 @@ impl Client {
                     common: optional(raw.common_ref_commit)?,
                 })
             })
-            .collect::<Result<Vec<_>, ConnectionError>>()?;
+            .collect::<Result<Vec<_>, ConnectionError>>()
+            .map_err(|error| error.from_response(ProviderResponse::Iterations))?;
         iterations.sort_by_key(|iteration| iteration.id);
         if iterations.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(ConnectionError::IncompleteRead);
@@ -326,11 +333,13 @@ impl Client {
         number: u64,
         head: &str,
     ) -> Result<Iteration, ConnectionError> {
-        let latest = self
-            .iterations(key, number)
-            .await?
-            .pop()
-            .ok_or(ConnectionError::InvalidResponse)?;
+        let latest =
+            self.iterations(key, number)
+                .await?
+                .pop()
+                .ok_or(ConnectionError::MalformedResponse(
+                    ProviderResponse::Iterations,
+                ))?;
         if latest.source != head {
             return Err(ConnectionError::RevisionChanged);
         }
@@ -371,6 +380,8 @@ impl Client {
         #[serde(rename_all = "camelCase")]
         struct RawChange {
             item: RawItem,
+            /// `none`, the enum default, may be omitted.
+            #[serde(default)]
             change_type: String,
             original_path: Option<String>,
             source_server_item: Option<String>,
@@ -400,17 +411,15 @@ impl Client {
                     ("$compareTo", &compare_to),
                 ],
             );
-            let (raw, _): (Raw, _) = self.get(url).await?;
+            let (raw, _): (Raw, _) = self.get(ProviderResponse::IterationChanges, url).await?;
+            let malformed = ConnectionError::MalformedResponse(ProviderResponse::IterationChanges);
             for change in raw.change_entries {
                 let item = change.item;
                 if item.is_folder || item.git_object_type.as_deref() == Some("tree") {
                     continue;
                 }
-                let path = relative(
-                    item.path
-                        .as_deref()
-                        .ok_or(ConnectionError::InvalidResponse)?,
-                )?;
+                let path = relative(item.path.as_deref().ok_or(malformed)?)
+                    .map_err(|error| error.from_response(ProviderResponse::IterationChanges))?;
                 if !paths.insert(path.clone()) {
                     return Err(ConnectionError::IncompleteRead);
                 }
@@ -428,7 +437,8 @@ impl Client {
                     .then(|| change.original_path.or(change.source_server_item))
                     .flatten()
                     .map(|path| relative(&path))
-                    .transpose()?;
+                    .transpose()
+                    .map_err(|error| error.from_response(ProviderResponse::IterationChanges))?;
                 if status == "renamed" && previous_path.is_none() {
                     return Err(ConnectionError::IncompleteRead);
                 }
@@ -444,7 +454,7 @@ impl Client {
                     additions: 0,
                     deletions: 0,
                     changes: 0,
-                    sha: commit(&sha.ok_or(ConnectionError::InvalidResponse)?)?,
+                    sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
                 });
             }
             // `nextSkip` absent or 0 ends the listing; one that does not
@@ -485,8 +495,8 @@ impl Client {
         if response.oversize {
             return Err(ConnectionError::LimitExceeded);
         }
-        let list: List<RawItem> =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let list: List<RawItem> = super::parse(ProviderResponse::Tree, &response.body)?;
+        let malformed = ConnectionError::MalformedResponse(ProviderResponse::Tree);
         let mut tree = BTreeMap::new();
         for item in list.value {
             if item.path == "/" {
@@ -496,13 +506,13 @@ impl Client {
                 "blob" => "100644",
                 "tree" => "040000",
                 "commit" => "160000",
-                _ => return Err(ConnectionError::InvalidResponse),
+                _ => return Err(malformed),
             };
-            let path = relative(&item.path)?;
+            let path = relative(&item.path).map_err(|_| malformed)?;
             let entry = TreeEntry {
                 path: path.clone(),
                 mode: mode.into(),
-                sha: commit(&item.object_id)?,
+                sha: commit(&item.object_id).map_err(|_| malformed)?,
                 kind: item.git_object_type,
             };
             if tree.insert(path, entry).is_some() {
@@ -593,7 +603,9 @@ impl PullRequestReader for Reader {
             &["pullrequests"],
             &[("searchCriteria.status", "all"), ("$top", "1")],
         );
-        let (list, _): (List<RawPullRequest>, _) = self.runtime.block_on(self.client.get(url))?;
+        let (list, _): (List<RawPullRequest>, _) = self
+            .runtime
+            .block_on(self.client.get(ProviderResponse::PullRequests, url))?;
         match list.value.as_slice() {
             [] => Ok(0),
             [_] => Ok(list
@@ -601,9 +613,12 @@ impl PullRequestReader for Reader {
                 .into_iter()
                 .next()
                 .map(|raw| raw.into_pull_request(&key))
-                .transpose()?
+                .transpose()
+                .map_err(|error| error.from_response(ProviderResponse::PullRequests))?
                 .map_or(0, |pull| pull.number)),
-            _ => Err(ConnectionError::InvalidResponse),
+            _ => Err(ConnectionError::MalformedResponse(
+                ProviderResponse::PullRequests,
+            )),
         }
     }
 
@@ -706,7 +721,9 @@ impl PullRequestReader for Reader {
         iteration
             .common
             .or(iteration.target)
-            .ok_or(ConnectionError::InvalidResponse)
+            .ok_or(ConnectionError::MalformedResponse(
+                ProviderResponse::Iterations,
+            ))
     }
 
     /// Both full trees (`items?recursionLevel=Full`); an oversize tree is cut
@@ -743,7 +760,9 @@ impl PullRequestReader for Reader {
         let key = self.key(repository)?;
         self.runtime.block_on(async {
             let iterations = self.client.iterations(&key, pull.number).await?;
-            let latest = iterations.last().ok_or(ConnectionError::InvalidResponse)?;
+            let latest = iterations.last().ok_or(ConnectionError::MalformedResponse(
+                ProviderResponse::Iterations,
+            ))?;
             if latest.source != pull.head_sha {
                 return Err(ConnectionError::RevisionChanged);
             }
@@ -779,7 +798,9 @@ impl PullRequestReader for Reader {
                 .common
                 .clone()
                 .or(iteration.target.clone())
-                .ok_or(ConnectionError::InvalidResponse)?;
+                .ok_or(ConnectionError::MalformedResponse(
+                    ProviderResponse::Iterations,
+                ))?;
             let changes = self
                 .client
                 .iteration_changes(&key, number, iteration.id)

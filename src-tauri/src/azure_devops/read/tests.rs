@@ -369,11 +369,144 @@ fn a_401_drops_the_token_and_retries_once() {
     assert_eq!(block(client.projects()), Err(ConnectionError::SignedOut));
     assert_eq!(tokens.invalidated.lock().unwrap().len(), 1);
     assert_eq!(wire.urls().len(), 2);
+
+    let (tokens, wire, client) = fakes();
+    let sign_in = || Response {
+        content_type: Some("text/html".into()),
+        sign_in: true,
+        body: b"<html>Sign in</html>".to_vec(),
+        ..status(200, None)
+    };
+    wire.on(&projects, Ok(sign_in()))
+        .on(&projects, Ok(sign_in()));
+    assert_eq!(block(client.projects()), Err(ConnectionError::SignedOut));
+    assert_eq!(tokens.invalidated.lock().unwrap().len(), 1);
+}
+
+/// A client of its own organization, so its throttling holds touch no other test.
+fn paced(organization: &str) -> (Arc<FakeWire>, Client, String) {
+    let wire = Arc::new(FakeWire::default());
+    let client = Client::new(
+        Arc::new(FakeTokens::default()),
+        wire.clone(),
+        TenantId::parse(TENANT).unwrap(),
+        organization,
+    );
+    let identity = format!("https://dev.azure.com/{organization}/_apis/connectionData");
+    (wire, client, identity)
+}
+
+fn timed<T>(future: impl std::future::Future<Output = T>) -> (T, Duration) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let value = runtime.block_on(future);
+    (value, started.elapsed())
+}
+
+fn connection_data() -> Value {
+    json!({"authenticatedUser": {"id": AVERY, "providerDisplayName": "Avery"}})
+}
+
+#[test]
+fn a_throttling_delay_on_a_success_holds_the_next_request() {
+    let (wire, client, identity) = paced("pacing-delay");
+    wire.on(
+        &identity,
+        Ok(Response {
+            rate_limit_delay: Some("0.25".into()),
+            ..ok(connection_data())
+        }),
+    )
+    .json(&identity, connection_data());
+
+    let (first, waited) = timed(client.identity());
+    assert!(first.is_ok());
+    assert!(
+        waited < Duration::from_millis(250),
+        "the response is not held"
+    );
+    let (second, waited) = timed(client.identity());
+    assert!(second.is_ok());
+    assert!(waited >= Duration::from_millis(240), "held {waited:?}");
+}
+
+#[test]
+fn a_retry_after_on_a_success_holds_the_next_request_through_the_retry_policy() {
+    let (wire, client, identity) = paced("pacing-retry-after");
+    wire.on(
+        &identity,
+        Ok(Response {
+            retry_after: Some("120".into()),
+            ..ok(connection_data())
+        }),
+    );
+
+    assert!(timed(client.identity()).0.is_ok());
+    let (held, waited) = timed(client.identity());
+    assert!(
+        matches!(held, Err(ConnectionError::RateLimitedAfter(119..=120))),
+        "{held:?}"
+    );
+    assert!(
+        waited < Duration::from_secs(1),
+        "never slept past the pause"
+    );
+    assert_eq!(wire.urls().len(), 1, "the held request is never sent");
+}
+
+#[test]
+fn an_exhausted_throttling_budget_holds_until_its_reset() {
+    let (wire, client, identity) = paced("pacing-reset");
+    wire.on(
+        &identity,
+        Ok(Response {
+            rate_limit_remaining: Some("0".into()),
+            rate_limit_reset: Some((unix_now() + 300).to_string()),
+            ..ok(connection_data())
+        }),
+    );
+
+    assert!(timed(client.identity()).0.is_ok());
+    assert!(matches!(
+        timed(client.identity()).0,
+        Err(ConnectionError::RateLimitedAfter(299..=300))
+    ));
+}
+
+#[test]
+fn retry_after_reads_delta_seconds_and_http_dates() {
+    let now = chrono::DateTime::parse_from_rfc2822("Wed, 21 Oct 2026 07:28:00 GMT")
+        .unwrap()
+        .timestamp();
+    assert_eq!(retry_after_seconds(" 17 ", now), Some(17));
+    assert_eq!(
+        retry_after_seconds("Wed, 21 Oct 2026 07:30:00 GMT", now),
+        Some(120)
+    );
+    assert_eq!(
+        retry_after_seconds("Wed, 21 Oct 2026 07:00:00 GMT", now),
+        Some(0)
+    );
+    assert_eq!(retry_after_seconds("-1", now), None);
+    assert_eq!(retry_after_seconds("soon", now), None);
 }
 
 #[test]
 fn failures_are_typed_and_retry_after_reaches_the_retry_policy() {
     let projects = format!("{ORG}/_apis/projects");
+    let html = |content_type: Option<&str>| Response {
+        content_type: content_type.map(str::to_owned),
+        body: b"\n<!DOCTYPE html><html><body>Proxy</body></html>".to_vec(),
+        ..status(200, None)
+    };
+    let reset_in_90s = Response {
+        rate_limit_remaining: Some("0".into()),
+        rate_limit_reset: Some((unix_now() + 90).to_string()),
+        ..status(429, None)
+    };
     for (response, expected) in [
         (
             Ok(status(403, None)),
@@ -388,16 +521,23 @@ fn failures_are_typed_and_retry_after_reaches_the_retry_policy() {
             ConnectionError::RateLimitedAfter(17),
         ),
         (
-            Ok(status(429, Some("Wed, 21 Oct 2026 07:28:00 GMT"))),
-            ConnectionError::RateLimited,
+            Ok(status(429, Some("Wed, 21 Oct 2015 07:28:00 GMT"))),
+            ConnectionError::RateLimitedAfter(0),
         ),
+        (Ok(reset_in_90s), ConnectionError::RateLimitedAfter(90)),
         (Ok(status(429, None)), ConnectionError::RateLimited),
         (
             Ok(status(429, Some("999999999"))),
             ConnectionError::RateLimitedAfter(crate::retry::PROVIDER_CAP_SECONDS),
         ),
+        // A 503 with a stated wait is throttling: a rate limit, not a failure.
         (
             Ok(status(503, Some("30"))),
+            ConnectionError::RateLimitedAfter(30),
+        ),
+        (Ok(status(503, None)), ConnectionError::ProviderFailure),
+        (
+            Ok(status(500, Some("30"))),
             ConnectionError::ProviderFailureAfter(30),
         ),
         (Ok(status(500, None)), ConnectionError::ProviderFailure),
@@ -407,9 +547,18 @@ fn failures_are_typed_and_retry_after_reaches_the_retry_policy() {
         ),
         (
             Ok(ok(json!("not a list"))),
-            ConnectionError::InvalidResponse,
+            ConnectionError::MalformedResponse(ProviderResponse::Projects),
         ),
-        (Ok(status(200, None)), ConnectionError::InvalidResponse),
+        (
+            Ok(status(200, None)),
+            ConnectionError::MalformedResponse(ProviderResponse::Projects),
+        ),
+        // A page where JSON belongs is never a malformed response.
+        (
+            Ok(html(Some("text/html; charset=utf-8"))),
+            ConnectionError::Network,
+        ),
+        (Ok(html(None)), ConnectionError::Network),
         (Err(NetworkError), ConnectionError::Network),
     ] {
         let (tokens, wire, client) = fakes();

@@ -4304,7 +4304,9 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
 fn connection_error_code(error: ConnectionError) -> &'static str {
     match error {
         ConnectionError::WrongIdentity => "WrongIdentity",
-        ConnectionError::InvalidResponse => "InvalidResponse",
+        ConnectionError::InvalidResponse | ConnectionError::MalformedResponse(_) => {
+            "InvalidResponse"
+        }
         ConnectionError::MissingCli => "MissingCli",
         ConnectionError::BrokenCli => "BrokenCli",
         ConnectionError::SignedOut => "SignedOut",
