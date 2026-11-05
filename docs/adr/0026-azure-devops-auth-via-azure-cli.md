@@ -61,12 +61,13 @@
 
 ## Addendum: throttling and response provenance
 
-- Throttling is backpressure, never failure: 429 and 503 with a stated wait
-  map to `RateLimited`/`RateLimitedAfter`; `Retry-After` (seconds or
+- Throttling is backpressure, never failure: 429 and a read's 503 with a
+  stated wait map to `RateLimited`/`RateLimitedAfter`; `Retry-After` (seconds or
   HTTP-date) and an exhausted `X-RateLimit-Remaining`/`X-RateLimit-Reset`
   state the wait. 2xx throttling warnings hold the organization's next
   request ([polling](../polling.md#azure-devops-throttling)).
-- An HTML body on a 2xx is a sign-in challenge (`X-TFS-FedAuth*`: token
+- A write's 503 stays an uncertain provider failure: it may have landed.
+- A `text/html` 2xx answer to a JSON request is a sign-in challenge (`X-TFS-FedAuth*`: token
   dropped, `SignedOut` after one retry) or `Network`; never a malformed
   response.
 - A body that does not parse is `MalformedResponse(ProviderResponse)`, naming

@@ -57,6 +57,8 @@ pub struct Request {
     pub method: Method,
     pub url: String,
     pub body: Option<Value>,
+    /// Raw bytes, not JSON: never read as a page.
+    pub raw: bool,
 }
 
 impl Request {
@@ -65,6 +67,15 @@ impl Request {
             method: Method::Get,
             url,
             body: None,
+            raw: false,
+        }
+    }
+
+    /// A GET whose body is returned unchanged (`$format=octetstream`).
+    pub fn bytes(url: String) -> Self {
+        Self {
+            raw: true,
+            ..Self::get(url)
         }
     }
 
@@ -73,6 +84,7 @@ impl Request {
             method: Method::Post,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -81,6 +93,7 @@ impl Request {
             method: Method::Patch,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -89,6 +102,7 @@ impl Request {
             method: Method::Put,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -97,6 +111,7 @@ impl Request {
             method: Method::Delete,
             url,
             body: None,
+            raw: false,
         }
     }
 }
@@ -454,24 +469,21 @@ fn whole_seconds(ms: u64) -> i64 {
     ms.div_ceil(1_000) as i64
 }
 
-/// A successful status whose body is a page, not JSON: a sign-in page or an
-/// intercepting proxy.
-fn html(response: &Response) -> bool {
-    response
-        .content_type
-        .as_deref()
-        .is_some_and(|kind| kind.to_ascii_lowercase().contains("text/html"))
-        || response
-            .body
-            .iter()
-            .find(|byte| !byte.is_ascii_whitespace())
-            == Some(&b'<')
+/// A page where JSON belongs: a sign-in page or an intercepting proxy. Raw
+/// content (blobs) is never a page, whatever it holds.
+fn page(request: &Request, response: &Response) -> bool {
+    !request.raw
+        && response
+            .content_type
+            .as_deref()
+            .is_some_and(|kind| kind.to_ascii_lowercase().contains("text/html"))
 }
 
 /// A refused or failed response, with any stated wait for the shared retry
-/// policy. A throttled request (429, or 503 with a stated wait) is a rate
-/// limit, never a failure.
-fn status_error(response: &Response) -> ConnectionError {
+/// policy. A throttled request (429, or a read's 503 with a stated wait) is a
+/// rate limit, never a failure. A write's 503 may have landed, so it stays a
+/// provider failure: writes reconcile before any retry.
+fn status_error(method: Method, response: &Response) -> ConnectionError {
     let wait = stated_wait_ms(response, unix_now()).map(whole_seconds);
     match response.status {
         403 => ConnectionError::MissingReadPermission,
@@ -480,7 +492,9 @@ fn status_error(response: &Response) -> ConnectionError {
             ConnectionError::RateLimited,
             ConnectionError::RateLimitedAfter,
         ),
-        503 if wait.is_some() => ConnectionError::RateLimitedAfter(wait.unwrap_or_default()),
+        503 if method == Method::Get && wait.is_some() => {
+            ConnectionError::RateLimitedAfter(wait.unwrap_or_default())
+        }
         500..=599 => wait.map_or(
             ConnectionError::ProviderFailure,
             ConnectionError::ProviderFailureAfter,
@@ -598,8 +612,9 @@ impl Client {
 
     async fn call(&self, request: Request) -> Result<Response, ConnectionError> {
         // A throttling hold longer than an inline pause goes to the shared
-        // retry policy as a rate limit.
-        if let Some(wait) = self.pacer.remaining() {
+        // retry policy as a rate limit. Rechecked after each pause: another
+        // response may have extended it.
+        while let Some(wait) = self.pacer.remaining() {
             if wait > MAX_PAUSE {
                 return Err(ConnectionError::RateLimitedAfter(whole_seconds(
                     wait.as_millis() as u64,
@@ -635,7 +650,7 @@ impl Client {
                 match response.status {
                     // A page where JSON belongs: a sign-in challenge, else an
                     // intercepting proxy. Never a malformed response.
-                    200 | 201 | 204 if html(&response) => Err(if response.sign_in {
+                    200 | 201 | 204 if page(request, &response) => Err(if response.sign_in {
                         Rejection::Unauthorized
                     } else {
                         Rejection::Failed(ConnectionError::Network)
@@ -644,7 +659,7 @@ impl Client {
                     // A suppressed FedAuth redirect is a 401; a 203 sign-in page or
                     // a redirect is the same refusal.
                     401 | 203 | 300..=399 => Err(Rejection::Unauthorized),
-                    _ => Err(Rejection::Failed(status_error(&response))),
+                    _ => Err(Rejection::Failed(status_error(request.method, &response))),
                 }
             },
         )

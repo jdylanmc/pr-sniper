@@ -531,7 +531,7 @@ impl Client {
         self.owns(key)?;
         let object_id = commit(object_id)?;
         let url = self.git_url(key, &["blobs", &object_id], &[("$format", "octetstream")]);
-        let response = self.call(Request::get(url)).await?;
+        let response = self.call(Request::bytes(url)).await?;
         if response.oversize {
             return Err(ConnectionError::LimitExceeded);
         }

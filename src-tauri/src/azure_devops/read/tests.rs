@@ -598,7 +598,10 @@ fn failures_are_typed_and_retry_after_reaches_the_retry_policy() {
             Ok(html(Some("text/html; charset=utf-8"))),
             ConnectionError::Network,
         ),
-        (Ok(html(None)), ConnectionError::Network),
+        (
+            Ok(html(None)),
+            ConnectionError::MalformedResponse(ProviderResponse::Projects),
+        ),
         (Err(NetworkError), ConnectionError::Network),
     ] {
         let (tokens, wire, client) = fakes();
@@ -888,3 +891,45 @@ mod approve;
 mod polling;
 mod publish;
 mod pulls;
+
+#[test]
+fn a_hold_extended_during_a_pause_is_honored_on_waking() {
+    let (wire, client, _) = paced("pacing-extended");
+    client.pacer.hold(100);
+    let extend = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        client.pacer.hold(120_000);
+    };
+
+    let ((held, ()), _) = timed(async { tokio::join!(client.identity(), extend) });
+
+    assert!(
+        matches!(held, Err(ConnectionError::RateLimitedAfter(119..=120))),
+        "{held:?}"
+    );
+    assert!(wire.urls().is_empty(), "the held request is never sent");
+}
+
+#[test]
+fn blob_bytes_are_returned_unchanged_whatever_they_hold() {
+    let (_, wire, client) = fakes();
+    let object = "0".repeat(40);
+    let url = format!("{ORG}/{PROJECT}/_apis/git/repositories/{REPO}/blobs/{object}?");
+    for (content_type, body) in [
+        (
+            "application/octet-stream",
+            &b"<?xml version=\"1.0\"?><Project/>"[..],
+        ),
+        ("text/html", &b"<!DOCTYPE html><html></html>"[..]),
+    ] {
+        wire.on(
+            &url,
+            Ok(Response {
+                content_type: Some(content_type.into()),
+                body: body.to_vec(),
+                ..status(200, None)
+            }),
+        );
+        assert_eq!(block(client.blob(&key(), &object)), Ok(body.to_vec()));
+    }
+}

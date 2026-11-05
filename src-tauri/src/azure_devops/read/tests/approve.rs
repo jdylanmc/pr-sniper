@@ -135,6 +135,8 @@ fn a_lost_or_unconfirmed_vote_is_uncertain() {
     let session = session(&wire, &runtime);
     for reply in [
         Ok(status(500, None)),
+        // A sent write's 503 may have landed, whatever wait it states.
+        Ok(status(503, Some("30"))),
         Err(NetworkError),
         Ok(ok(json!({"id": AVERY, "vote": 0}))),
         Ok(ok(json!({"id": CASEY, "vote": 10}))),
