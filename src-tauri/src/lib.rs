@@ -1995,31 +1995,6 @@ fn path_facts(
     Ok(facts)
 }
 
-/// One Azure DevOps repository poll as its bound identity: admission and
-/// revisions from the pull requests, and the review-state heartbeat (threads,
-/// votes, policies and statuses) of tracked open ones. Mentions are not read.
-fn poll_azure_devops(
-    app: &tauri::AppHandle,
-    ticket: &monitoring::PollTicket,
-) -> Result<(monitoring::PollResult, follow_up::host::Scan), ConnectionError> {
-    let (identity, session) = azure_devops::host::session(app, &ticket.provider_account_id)?;
-    if identity.id != ticket.provider_account_id {
-        return Err(ConnectionError::WrongIdentity);
-    }
-    let (connection, pull_requests) = poll_repository(&session, ticket)?;
-    let facts = path_facts(&session, &connection, &pull_requests, ticket)?;
-    let states = tracked_states(&session, &connection, &pull_requests, ticket)?;
-    Ok((
-        monitoring::PollResult {
-            connection,
-            pull_requests,
-            states,
-            facts,
-        },
-        follow_up::host::Scan::default(),
-    ))
-}
-
 /// One batched state read for every tracked open pull request: the heartbeat
 /// diff compares these, so comments and CI count, not just head.
 fn tracked_states(
@@ -2056,11 +2031,15 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             let account_id = ticket.provider_account_id.clone();
             let provider = ticket.provider.clone();
             let result = (|| {
-                if provider == storage::ProviderId::AzureDevops {
-                    return poll_azure_devops(&app, &ticket_for_poll);
-                }
-                let host = app.state::<Host>();
-                let (identity, client) = provider_session(&host, &account_id)?;
+                // One path for every provider: skipping the owned-feedback scan
+                // leaves prior feedback unobserved and holds the next revision.
+                let (identity, client): (provider::Person, Session) =
+                    if provider == storage::ProviderId::AzureDevops {
+                        let (identity, session) = azure_devops::host::session(&app, &account_id)?;
+                        (identity, Box::new(session))
+                    } else {
+                        provider_session(&app.state::<Host>(), &account_id)?
+                    };
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
                 }

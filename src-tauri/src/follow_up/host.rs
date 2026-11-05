@@ -257,7 +257,12 @@ pub(crate) fn admit_scan(
         {
             return Err("Owned feedback provenance changed during the scan.".into());
         }
-        crate::feedback::observed_pr(&queue.tracked, &proof, &observation.head)?;
+        crate::feedback::observed_pr(
+            &queue.tracked,
+            &observation.origin.review.job.provider,
+            &proof,
+            &observation.head,
+        )?;
         ledger.observe(&observation.origin, &observation.head, &observation.threads)?;
     }
     store.save_feedback(&ledger)?;

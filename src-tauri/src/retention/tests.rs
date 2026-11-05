@@ -727,6 +727,7 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
         id: review.key.clone(),
     };
     let work = crate::capacity::Work {
+        gate: None,
         offline: None,
         key: key.clone(),
         enqueue_order: 1,
@@ -907,6 +908,7 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         id: review.key.clone(),
     };
     let work = crate::capacity::Work {
+        gate: None,
         offline: None,
         key: key.clone(),
         enqueue_order: 2,

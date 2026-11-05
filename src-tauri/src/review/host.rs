@@ -22,6 +22,8 @@ pub(crate) struct Candidate {
     pub agent_name: String,
     pub job: QueueJob,
     pub blocked: Option<String>,
+    /// Typed cause of `blocked`; meaningful only while it is set.
+    pub gate: crate::capacity::Gate,
     pub planned_selection: Option<Selection>,
     pub run: Option<ReviewRun>,
 }
@@ -76,6 +78,11 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 run,
                 key,
                 assignment_id: assignment.id.clone(),
+                gate: if selection.is_err() {
+                    crate::capacity::Gate::Selection
+                } else {
+                    crate::capacity::Gate::ExternalPrerequisite
+                },
                 blocked: selection.err().or_else(|| {
                     states
                         .get(&crate::retention::Binding::job(job))
@@ -101,6 +108,7 @@ pub(crate) fn candidates(store: &crate::storage::Store) -> Result<Vec<Candidate>
                 blocked: Some(
                     "Historical review; assignment or repository is no longer available.".into(),
                 ),
+                gate: crate::capacity::Gate::Historical,
                 run: Some(run.clone()),
                 planned_selection: None,
             });

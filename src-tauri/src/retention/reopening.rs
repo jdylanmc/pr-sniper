@@ -100,8 +100,12 @@ pub(crate) fn admit_observations(
                     .map(|origin| (&r.scope, origin))
             })
             .ok_or("Retained feedback provenance changed during the scan.")?;
-        let tracked =
-            crate::feedback::observed_pr(&queue.tracked, &origin.proof, &observation.head)?;
+        let tracked = crate::feedback::observed_pr(
+            &queue.tracked,
+            &scope.provider,
+            &origin.proof,
+            &observation.head,
+        )?;
         if Binding::tracked(tracked) != Binding::tracked(scope) {
             return Err("Retained feedback binding changed; no observation accepted.".into());
         }

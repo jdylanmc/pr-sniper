@@ -1359,6 +1359,8 @@ fn queue_and_detail_name_the_agent_model_a_parked_run_was_refused_by() {
     assert!(item["failed_model"]["agent_name"].is_string());
     assert_eq!(item["failed_operation"], "review");
     assert_eq!(item["remedy"], "change_model");
+    // The typed gate holding the candidate, not an opaque waiting state.
+    assert_eq!(item["reviews"][0]["wait"], "failed");
     let detail = fixture.call(json!({"operation":"detail","item_id":item["id"]}));
     let detail: Value = serde_json::from_str(detail["result"]["text"].as_str().unwrap()).unwrap();
     assert_eq!(detail["item"]["failed_model"], item["failed_model"]);

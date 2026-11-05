@@ -323,6 +323,21 @@ export const disposition = z.enum([
   "no_longer_applies",
   "carried_forward",
 ]);
+export const waitGate = z.enum([
+  "selection",
+  "external_prerequisite",
+  "historical",
+  "provider_support",
+  "pending_configuration",
+  "feedback_observation",
+  "feedback",
+  "failed",
+  "poll",
+  "retry_backoff",
+  "teammates",
+  "backpressure",
+  "offline",
+]);
 export const queueItem = z
   .object({
     id,
@@ -390,6 +405,8 @@ export const queueItem = z
             reason: z.string().nullable(),
           }),
         ),
+        // Typed gate holding a queued candidate; null when it may start.
+        wait: waitGate.nullable(),
       }),
     ),
   })
