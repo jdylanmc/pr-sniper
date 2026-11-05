@@ -66,5 +66,5 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.
 - Code = 3 attempts total. Old prose said "three retries".
 - Transport classes (`OperationFailure::transport`): DNS, connect, TLS, reset and truncated-body errors are `Network`; client/read timeouts and HTTP 408 are `Timeout`; 5xx and `IncompleteRead` (a page set that moved or a short provider read) are `Provider`. All are transient. A write lost to any of them is uncertain and reconciles before retry ([provider writes](../provider-writes.md)).
-- Provider action observations: Network/Timeout keep backing off (capped at 5m) and never park; a scheduled retry is not Needs attention.
+- Provider action observations: Network/Timeout keep backing off (capped at 5m) and never stop; no manual retry is needed. Missing evidence still shows on the item (no readiness asserted) until a read succeeds.
 - Builds before 2026-10-25 parked a review whose repository check ended in `IncompleteRead` as permanent. Startup identifies them by that exact check message (no typed cause was stored), requeues live work with a fresh window and ends retired work quietly; it also resumes action observations stopped after 3 `Network`/`Timeout` failures. No provider effect is replayed.

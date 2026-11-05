@@ -1695,10 +1695,8 @@ fn connectivity_failures_keep_observing_with_capped_jittered_backoff() {
         assert!(retry_at - now <= policy.cap_seconds);
         now = retry_at;
     }
-    assert_ne!(
-        queue::snapshot(&store, vec![]).unwrap().items[0].state,
-        State::Failed
-    );
+    // Still observed automatically: the item never waits on a manual retry.
+    assert!(host::next_target(&store, now).unwrap().is_some());
 }
 
 #[test]

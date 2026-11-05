@@ -373,12 +373,17 @@ mod tests {
         let closed = TcpListener::bind("127.0.0.1:0").unwrap();
         let refused = format!("http://{}/", closed.local_addr().unwrap());
         drop(closed);
-        assert_eq!(fail(&refused), ConnectionError::Network);
-        // DNS failure: `.invalid` never resolves; a slow resolver may time out instead.
-        assert!(matches!(
-            fail("http://pr-sniper-fixture.invalid/"),
-            ConnectionError::Network | ConnectionError::Timeout
-        ));
+        // Windows retries a refused connect until the client timeout; a slow
+        // resolver may time out on `.invalid` too. Either way: transport class.
+        for url in [refused.as_str(), "http://pr-sniper-fixture.invalid/"] {
+            assert!(
+                matches!(
+                    fail(url),
+                    ConnectionError::Network | ConnectionError::Timeout
+                ),
+                "{url}"
+            );
+        }
         for (name, reply, hold, error) in [
             (
                 "truncated body",

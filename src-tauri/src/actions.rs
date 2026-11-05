@@ -751,9 +751,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         let observed = ledger.observations.iter().find(|o| o.item_id == item.id);
         if let Some(error) = observed.and_then(|o| o.error.clone()) {
             blockers.push(error);
-            // Parked only once retries stop: a scheduled retry is still automatic.
             if item.state == State::MachineSignedOff
-                && observed.is_some_and(|o| o.retry_at.is_none())
                 && (permissions.approve
                     || permissions.merge
                     || ledger.effects.iter().any(|e| {
