@@ -655,7 +655,17 @@ fn post_cleanup_human_closure_is_verified_and_never_resurrected_on_reopen() {
         NOW + 10,
     );
     let job = store.load_queue().unwrap().last().unwrap().clone();
-    assert!(crate::feedback::contexts(&store, &job, AGENT).is_err());
+    // Unobserved retained roots wait for the next poll, not as unavailable feedback.
+    assert!(matches!(
+        crate::feedback::contexts_checked(&store, &job, AGENT),
+        Err(crate::publication::GateError::Unobserved(_))
+    ));
+    let gate = crate::capacity::candidates(&store, NOW + 10)
+        .unwrap()
+        .into_iter()
+        .find(|work| work.key.id == crate::review::key(&job, ASSIGNMENT))
+        .and_then(|work| work.gate);
+    assert_eq!(gate, Some(crate::capacity::Gate::FeedbackObservation));
     let origin = load(&store).unwrap().receipts[0].owned[0].clone();
     let mut closed = thread();
     closed.resolved = true;

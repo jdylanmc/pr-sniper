@@ -1426,6 +1426,8 @@ fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries
             &crate::review::Failure::tossed(crate::feedback::OBSERVATION_FAILED).monitoring(),
             now,
         );
+        // Keep the retry pending however long the suite takes (golden `wait`).
+        run.operation.next_attempt_at = Some(now + 3_600);
         run.error = Some(crate::feedback::OBSERVATION_FAILED.into());
         run.attempt_ducks = vec![serde_json::from_value(duck(2, "failed", "stream_lost")).unwrap()];
         run.result = Some(
