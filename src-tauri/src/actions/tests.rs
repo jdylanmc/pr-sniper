@@ -1627,10 +1627,10 @@ fn wrong_provider_identity_cannot_create_a_final_or_mark_another_pr_merged() {
 #[test]
 fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budget() {
     let (_root, store, item) = fixture(1, true, false);
-    let network = Failure {
+    let provider_failure = Failure {
         cancelled: false,
-        kind: monitoring::OperationFailure::Network,
-        message: "Provider read unreachable.".into(),
+        kind: monitoring::OperationFailure::Provider,
+        message: "Provider read failed.".into(),
         retry_after_seconds: None,
         origin: crate::backpressure::Origin::Github,
         duck_setup: false,
@@ -1641,14 +1641,14 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
     let policy = crate::retry::TRANSIENT;
     let mut now = NOW + 21;
     for retry in 0..u32::from(policy.max_attempts) - 1 {
-        synchronize(&store, &item, Err(network.clone()), now).unwrap();
+        synchronize(&store, &item, Err(provider_failure.clone()), now).unwrap();
         let retry_at = store.load_actions().unwrap().observations[0]
             .retry_at
             .unwrap();
         assert!((1..=policy.ceiling(retry)).contains(&(retry_at - now)));
         now = retry_at;
     }
-    synchronize(&store, &item, Err(network), now).unwrap();
+    synchronize(&store, &item, Err(provider_failure), now).unwrap();
     let observed = store.load_actions().unwrap().observations.remove(0);
     assert_eq!(observed.failures, policy.max_attempts);
     assert_eq!(observed.retry_at, None);
@@ -1671,6 +1671,71 @@ fn failed_observations_back_off_then_wait_for_a_manual_retry_at_the_shared_budge
 }
 
 #[test]
+fn connectivity_failures_keep_observing_with_capped_jittered_backoff() {
+    let (_root, store, item) = fixture(1, true, false);
+    let policy = crate::retry::TRANSIENT;
+    let mut now = NOW + 21;
+    for (retry, kind) in (0..12).zip(
+        [
+            monitoring::OperationFailure::Network,
+            monitoring::OperationFailure::Timeout,
+        ]
+        .into_iter()
+        .cycle(),
+    ) {
+        let failure = Failure {
+            kind,
+            message: "Provider read unreachable.".into(),
+            ..Failure::permanent("")
+        };
+        synchronize(&store, &item, Err(failure), now).unwrap();
+        let observed = store.load_actions().unwrap().observations.remove(0);
+        let retry_at = observed.retry_at.expect("connectivity never parks");
+        assert!((1..=policy.ceiling(retry)).contains(&(retry_at - now)));
+        assert!(retry_at - now <= policy.cap_seconds);
+        now = retry_at;
+    }
+    assert_ne!(
+        queue::snapshot(&store, vec![]).unwrap().items[0].state,
+        State::Failed
+    );
+}
+
+#[test]
+fn a_legacy_stopped_connectivity_observation_resumes_at_startup() {
+    let (_root, store, item) = fixture(1, true, false);
+    let provider = Failure {
+        kind: monitoring::OperationFailure::Provider,
+        ..Failure::permanent("")
+    };
+    synchronize(&store, &item, Err(provider), NOW + 21).unwrap();
+    let mut ledger = store.load_actions().unwrap();
+    let stopped = ledger.observations[0].clone();
+    ledger.observations = ["Network", "Timeout", "ProviderFailure"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, cause)| Observed {
+            item_id: format!("{item}-{index}"),
+            failures: 3,
+            retry_at: None,
+            error: Some(format!("Repository check failed: {cause}")),
+            ..stopped.clone()
+        })
+        .collect();
+    store.save_actions(&ledger).unwrap();
+
+    restore(&store).unwrap();
+
+    let restored = store.load_actions().unwrap().observations;
+    for observed in &restored[..2] {
+        assert_eq!(observed.failures, 0, "{:?}", observed.error);
+        assert!(observed.retry_at.is_some(), "{:?}", observed.error);
+    }
+    // A bounded provider failure keeps waiting for a human.
+    assert_eq!((restored[2].failures, restored[2].retry_at), (3, None));
+}
+
+#[test]
 fn observation_retry_after_and_original_mutation_ownership_survive_retry_requests() {
     let (_root, store, item) = fixture(1, true, false);
     let run = completed_final(&store, &item);
@@ -1687,9 +1752,9 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
         model: None,
         resume: Default::default(),
     };
-    let network = Failure {
-        kind: monitoring::OperationFailure::Network,
-        message: "Provider read unreachable.".into(),
+    let provider_failure = Failure {
+        kind: monitoring::OperationFailure::Provider,
+        message: "Provider read failed.".into(),
         ..error.clone()
     };
     synchronize(&store, &item, Err(error.clone()), NOW + 21).unwrap();
@@ -1700,7 +1765,7 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
     assert!(request_observation_retry(&store, &item, NOW + 22).is_err());
     // Rate limits never spend the budget; real failures still do.
     for i in 1..=4 {
-        synchronize(&store, &item, Err(network.clone()), NOW + 21 + i * 60).unwrap();
+        synchronize(&store, &item, Err(provider_failure.clone()), NOW + 21 + i * 60).unwrap();
     }
     assert_eq!(store.load_actions().unwrap().observations[0].retry_at, None);
     request_observation_retry(&store, &item, NOW + 300).unwrap();

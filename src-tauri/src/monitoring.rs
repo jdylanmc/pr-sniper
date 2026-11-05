@@ -4992,6 +4992,78 @@ mod read_diagnostic_tests {
     }
 
     #[test]
+    fn transport_failures_classify_as_network_class_and_a_408_is_a_timeout() {
+        for (error, failure) in [
+            (ConnectionError::Network, OperationFailure::Network),
+            (ConnectionError::Timeout, OperationFailure::Timeout),
+            (
+                ConnectionError::ProviderRejectedStatus(408),
+                OperationFailure::Timeout,
+            ),
+            (ConnectionError::ProviderFailure, OperationFailure::Provider),
+        ] {
+            let MonitoringError::Recoverable { failure: got, .. } = check_error(error) else {
+                panic!("{error:?} must be recoverable");
+            };
+            assert_eq!(got, failure, "{error:?}");
+            assert!(got.transient(), "{error:?}");
+        }
+        assert!(OperationFailure::Network.transport());
+        assert!(OperationFailure::Timeout.transport());
+        assert!(!OperationFailure::Provider.transport());
+    }
+
+    #[test]
+    fn connectivity_parks_keep_resuming_after_every_cooldown_cycle() {
+        let cycles = RESUME_COOLDOWNS_SECONDS.len() as u8;
+        let park = |error: ConnectionError| {
+            let mut operation = running_operation();
+            operation.attempt_count = MAX_FAILED_ATTEMPTS;
+            operation.resume_cycle = cycles;
+            operation.fail(&check_error(error), 10);
+            assert_eq!(operation.state, OperationState::ManualRetry);
+            operation
+        };
+        for error in [ConnectionError::Network, ConnectionError::Timeout] {
+            let mut operation = park(error);
+            let last = *RESUME_COOLDOWNS_SECONDS.last().unwrap();
+            assert_eq!(operation.resume_at, Some(10 + last), "{error:?}");
+            assert!(operation.auto_resume(false, 10 + last));
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.resume_cycle, cycles + 1);
+        }
+        // Other transient causes keep their bounded cycles.
+        assert_eq!(park(ConnectionError::ProviderFailure).resume_at, None);
+    }
+
+    #[test]
+    fn legacy_transient_check_messages_map_to_their_typed_causes() {
+        let message = |error| match check_error(error) {
+            MonitoringError::Recoverable { message, .. } => message,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::IncompleteRead)),
+            Some(OperationFailure::Provider)
+        );
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::Network)),
+            Some(OperationFailure::Network)
+        );
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::Timeout)),
+            Some(OperationFailure::Timeout)
+        );
+        for permanent in [
+            message(ConnectionError::InvalidResponse),
+            message(ConnectionError::LimitExceeded),
+            "Repository check failed: IncompleteRead ".into(),
+        ] {
+            assert_eq!(legacy_transient_check(&permanent), None, "{permanent}");
+        }
+    }
+
+    #[test]
     fn missing_scope_rate_limit_stays_a_credential_failure() {
         let error = check_error(ConnectionError::RateLimitedWithContext {
             retry_after_seconds: Some(60),
