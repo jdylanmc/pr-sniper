@@ -111,11 +111,12 @@ repository polling succeeded. Use `health` even for a first-poll failure.
 that saw failure cannot rerun work that has since completed. Explicit
 `watch.review_again` is the separate fresh-pass operation.
 New resources require UUID IDs, `expected:null`. `value:null` deletes.
-New repositories are disabled, bound to a `resolve` result, and have no
-assignments. Azure DevOps repositories: `provider:"azure_devops"`,
+New repositories are disabled and bound to a `resolve` result; the same save
+may carry assignments, admission and grants, validated like an update (an
+enabled add fails). Azure DevOps repositories: `provider:"azure_devops"`,
 `provider_repository_id` `{organization}/{project ID}/{repository ID}`, people
-by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote; approve-and-merge is refused (`unsupported_provider_action`). Then save explicit assignments and enable the human-requested
-scope. Repository schedules are five-field cron in the saved IANA time zone.
+by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote; approve-and-merge is refused (`unsupported_provider_action`). Then enable the human-requested
+scope in a later save. Repository schedules are five-field cron in the saved IANA time zone.
 Path globs (ADR 0027): repository
 `paths` gate admission (AND); a secondary assignment's `paths` decide whether
 it reviews a revision (files changed since its last review). Include patterns
