@@ -107,6 +107,7 @@ pub(super) trait Runtime {
     /// The target and, for an open pull request, its path facts.
     fn resolve(
         &self,
+        provider: &crate::storage::ProviderId,
         account: &str,
         url: &str,
         paths: &crate::monitoring::PathTicket,
@@ -146,22 +147,12 @@ impl Runtime for Native<'_> {
     }
     fn resolve(
         &self,
+        provider: &crate::storage::ProviderId,
         account: &str,
         url: &str,
         paths: &crate::monitoring::PathTicket,
     ) -> Result<Resolved, Error> {
-        crate::repository_read(
-            self.generations(),
-            self.auth(),
-            account,
-            || crate::acquire_read_session(self.host, account),
-            |identity, client, generation| {
-                let target = client.resolve_repository_target(url, &identity.id)?;
-                let facts = crate::explicit_facts(&*client, &target, paths)?;
-                Ok((target, generation, facts))
-            },
-        )
-        .map_err(operation)
+        crate::explicit_read(self.host, provider, account, url, paths).map_err(operation)
     }
     fn launch(&self, batch: Batch) {
         crate::capacity::launch_batch(self.app, batch);
@@ -410,12 +401,12 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             Ok(result)
         }
         Command::Target { url } => {
-            let target = crate::github::intake::repository_target(&url).map_err(operation)?;
+            let target = crate::provider::intake::parse(&url).map_err(operation)?;
             let store = runtime.store().lock().map_err(|_| storage(()))?;
             let settings = store.load_settings().map_err(storage)?;
             Ok(
                 json!({"target":target,"repository_ids":settings.repositories.iter()
-                .filter(|r|r.name==target.name).map(|r|&r.id).take(100).collect::<Vec<_>>(),
+                .filter(|r|target.names(r)).map(|r|&r.id).take(100).collect::<Vec<_>>(),
                 "revision":revision(&settings)}),
             )
         }
@@ -564,11 +555,11 @@ fn watch(
     review_again: bool,
     overrides: BTreeMap<String, super::RequestOverride>,
 ) -> Result<Value, Error> {
-    let target = crate::github::intake::repository_target(&url).map_err(operation)?;
+    let target = crate::provider::intake::parse(&url).map_err(operation)?;
     let number = target
         .pull_request_number
         .ok_or_else(|| Error::new("pr_url_required", ()))?;
-    if expected.name != target.name {
+    if !target.may_be(&expected) {
         return Err(Error::new("target_mismatch", ()));
     }
     if !expected.enabled {
@@ -584,7 +575,11 @@ fn watch(
         let monitor = runtime.monitor().lock().map_err(|_| storage(()))?;
         monitor.path_ticket(&store, &expected).map_err(storage)?
     };
-    let (resolved, observed, facts) = runtime.resolve(account, &url, &paths)?;
+    let (resolved, observed, facts) = runtime.resolve(&expected.provider, account, &url, &paths)?;
+    // The saved snapshot binds the stable repository identity, not a name.
+    if expected.provider_repository_id.as_deref() != Some(&resolved.connection.repository.id) {
+        return Err(Error::new("target_mismatch", ()));
+    }
     let generations = runtime.generations().lock().map_err(|_| storage(()))?;
     let auth = runtime.auth().lock().map_err(|_| storage(()))?;
     crate::validate_explicit_intake_generation(

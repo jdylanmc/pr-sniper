@@ -4,6 +4,7 @@
 //! only through these traits; each provider supplies one implementation.
 
 mod capability;
+pub mod intake;
 mod readiness;
 mod threads;
 mod types;

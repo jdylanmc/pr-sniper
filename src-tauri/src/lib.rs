@@ -2673,6 +2673,52 @@ async fn search_provider_people(
     .map_err(|_| RepositoryReadError::Connection(ConnectionError::ProviderFailure))?
 }
 
+/// Resolves an explicitly requested pull request `url` as the repository
+/// account of `provider`, with its path facts and the account generation the
+/// read ran under. Azure DevOps reads are fenced by the bound identity: its
+/// generation stays 0.
+pub(crate) fn explicit_read(
+    host: &Host,
+    provider: &storage::ProviderId,
+    account_id: &str,
+    url: &str,
+    paths: &monitoring::PathTicket,
+) -> Result<(provider::ResolvedTarget, u64, Option<paths::PathFacts>), RepositoryReadError> {
+    match provider {
+        storage::ProviderId::Github => repository_read(
+            &host.github_generations,
+            &host.github_auth,
+            account_id,
+            || acquire_read_session(host, account_id),
+            |identity, client, generation| {
+                let target = client.resolve_repository_target(url, &identity.id)?;
+                let facts = explicit_facts(&*client, &target, paths)?;
+                Ok((target, generation, facts))
+            },
+        ),
+        storage::ProviderId::AzureDevops => {
+            let generation = {
+                let generations = host.github_generations.lock().map_err(|_| {
+                    RepositoryReadError::session(account_id, ConnectionError::Configuration)
+                })?;
+                host.github_auth
+                    .lock()
+                    .map_err(|_| {
+                        RepositoryReadError::session(account_id, ConnectionError::Configuration)
+                    })?
+                    .account_session_allowed(account_id)
+                    .map_err(|error| RepositoryReadError::session(account_id, error))?;
+                generations.get(account_id).copied().unwrap_or(0)
+            };
+            azure_devops_read(&host.app, account_id, |identity, reader| {
+                let target = reader.resolve_repository_target(url, &identity.id)?;
+                let facts = explicit_facts(reader, &target, paths)?;
+                Ok((target, generation, facts))
+            })
+        }
+    }
+}
+
 /// One Azure DevOps read as the bound identity `account_id`.
 fn azure_devops_read<T>(
     app: &tauri::AppHandle,
@@ -2696,10 +2742,9 @@ async fn admit_explicit_pull_request(
         let account_id = expected
             .provider_account_id
             .as_deref()
-            .ok_or("Choose a connected GitHub repository account.")?;
-        if expected.provider != storage::ProviderId::Github || number == 0 {
-            return Err("Use a supported GitHub pull request URL.".into());
-        }
+            .ok_or("Choose a connected repository account.")?;
+        let url = provider::intake::pull_request_url(&expected, number)
+            .ok_or("Use a supported pull request URL.")?;
         let read_at = now_seconds()?;
         let path_ticket = {
             let store = host.store.lock().map_err(|_| "Storage is unavailable.")?;
@@ -2709,20 +2754,8 @@ async fn admit_explicit_pull_request(
                 .map_err(|_| "Monitoring is unavailable.")?;
             monitor.path_ticket(&store, &expected)?
         };
-        let (resolved, facts, read_generation) = repository_read(
-            &host.github_generations,
-            &host.github_auth,
-            account_id,
-            || acquire_read_session(&host, account_id),
-            |identity, client, generation| {
-                let target = client.resolve_repository_target(
-                    &format!("https://github.com/{}/pull/{number}", expected.name),
-                    &identity.id,
-                )?;
-                let facts = explicit_facts(&*client, &target, &path_ticket)?;
-                Ok((target, facts, generation))
-            },
-        )?;
+        let (resolved, read_generation, facts) =
+            explicit_read(&host, &expected.provider, account_id, &url, &path_ticket)?;
         let generations = host
             .github_generations
             .lock()
