@@ -52,6 +52,8 @@ fn ambiguous(error: ConnectionError) -> bool {
             | ConnectionError::InvalidResponse
             | ConnectionError::MalformedResponse(_)
             | ConnectionError::IncompleteRead
+            // A gateway timeout may follow a write that landed.
+            | ConnectionError::ProviderRejectedStatus(408)
     )
 }
 
@@ -867,5 +869,37 @@ impl PullRequestReader for Session {
 
     fn file_content(&self, repository: &str, entry: &TreeEntry) -> Result<Value, ConnectionError> {
         self.0.file_content(repository, entry)
+    }
+}
+
+#[cfg(test)]
+mod write_uncertainty_tests {
+    use super::*;
+
+    #[test]
+    fn a_write_lost_to_connectivity_may_have_landed_and_stays_retryable() {
+        for error in [
+            ConnectionError::Network,
+            ConnectionError::Timeout,
+            ConnectionError::IncompleteRead,
+            ConnectionError::ProviderFailure,
+            ConnectionError::ProviderFailureAfter(30),
+            ConnectionError::ProviderRejectedStatus(408),
+        ] {
+            let failure = write_failure(error);
+            assert!(failure.uncertain, "{error:?} must reconcile before retry");
+            assert!(failure.failure.kind.transient(), "{error:?}");
+        }
+        for error in [
+            ConnectionError::Network,
+            ConnectionError::Timeout,
+            ConnectionError::ProviderRejectedStatus(408),
+        ] {
+            assert!(write_failure(error).failure.kind.transport(), "{error:?}");
+        }
+        // A refusal never landed: no reconciliation, no connectivity retry.
+        let refused = write_failure(ConnectionError::MissingReadPermission);
+        assert!(!refused.uncertain);
+        assert!(!refused.failure.kind.transport());
     }
 }
