@@ -492,6 +492,74 @@ fn a_legacy_parked_revision_change_recovers_at_startup() {
 }
 
 #[test]
+fn a_legacy_parked_incomplete_read_recovers_at_startup() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let primary = dispatch(&store, PRIMARY, NOW + 2);
+    let mut reviews = store.load_reviews().unwrap();
+    // Older builds stored a truncated read as a permanent failure.
+    for (review, message) in reviews.iter_mut().zip([
+        "Repository check failed: IncompleteRead",
+        "Repository check failed: InvalidResponse",
+    ]) {
+        review
+            .operation
+            .fail(&Failure::permanent(message).monitoring(), NOW + 3);
+        review.phase = "Review stopped".into();
+        review.error = Some(message.into());
+    }
+    store.save_reviews(&reviews).unwrap();
+
+    crate::review::restore(&store).unwrap();
+    // Idempotent: a second start changes nothing.
+    let saved = serde_json::to_value(store.load_reviews().unwrap()).unwrap();
+    crate::review::restore(&store).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load_reviews().unwrap()).unwrap(),
+        saved
+    );
+
+    let recovered = stored(&store, &run.operation.id);
+    assert_eq!(recovered.operation.state, OperationState::Queued);
+    assert_eq!(recovered.operation.attempt_count, 0);
+    assert_eq!(recovered.operation.failure, None);
+    assert_eq!(recovered.error, None);
+    let untouched = stored(&store, &primary.operation.id);
+    assert_eq!(
+        untouched.operation.failure,
+        Some(OperationFailure::Permanent)
+    );
+    let next = prepare_dispatch(&store, &run.key, NOW + 10)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.operation.id, run.operation.id);
+    assert_eq!(next.operation.attempt_count, 1);
+}
+
+#[test]
+fn a_legacy_parked_incomplete_read_on_a_merged_pr_ends_quietly() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let mut reviews = store.load_reviews().unwrap();
+    let message = "Repository check failed: IncompleteRead";
+    reviews[0]
+        .operation
+        .fail(&Failure::permanent(message).monitoring(), NOW + 3);
+    reviews[0].error = Some(message.into());
+    store.save_reviews(&reviews).unwrap();
+    merge(&mut monitor, &store, NOW + 100);
+
+    crate::review::restore(&store).unwrap();
+
+    let ended = stored(&store, &run.operation.id);
+    assert!(ended.operation.ended_superseded());
+    assert!(ended.error.is_none());
+    assert!(running_for_pr(&store, NOW + 200).is_empty());
+}
+
+#[test]
 fn a_poll_fetched_before_supersession_never_releases_the_run() {
     let (_root, store, mut monitor) = configured(false);
     scan(&mut monitor, &store, vec![pull('a')], NOW);

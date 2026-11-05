@@ -342,6 +342,101 @@ mod tests {
     }
 
     #[test]
+    fn transport_failures_are_network_or_timeout_never_permanent() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        let transport = HttpTransport {
+            client: Client::builder()
+                .redirect(Policy::none())
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(1))
+                .build()
+                .unwrap(),
+            blob: Client::new(),
+            credential: Credential(Zeroizing::new("fixture-secret".into())),
+        };
+        let get = |url: &str| transport.execute(transport.client.get(url).build().unwrap());
+        let fail = |url: &str| get(url).err().expect("a transport failure");
+        // Serves one connection with `reply`, then closes it.
+        let serve = |reply: &'static [u8], hold: Duration| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request);
+                let _ = socket.write_all(reply);
+                std::thread::sleep(hold);
+            });
+            (address, server)
+        };
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused = format!("http://{}/", closed.local_addr().unwrap());
+        drop(closed);
+        // Windows retries a refused connect until the client timeout; a slow
+        // resolver may time out on `.invalid` too. Either way: transport class.
+        for url in [refused.as_str(), "http://pr-sniper-fixture.invalid/"] {
+            assert!(
+                matches!(
+                    fail(url),
+                    ConnectionError::Network | ConnectionError::Timeout
+                ),
+                "{url}"
+            );
+        }
+        for (name, reply, hold, error) in [
+            (
+                "truncated body",
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"id\":"[..],
+                Duration::ZERO,
+                ConnectionError::Network,
+            ),
+            (
+                "truncated chunk",
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"id\":",
+                Duration::ZERO,
+                ConnectionError::Network,
+            ),
+            (
+                "reset before headers",
+                b"",
+                Duration::ZERO,
+                ConnectionError::Network,
+            ),
+            (
+                "read timeout",
+                b"",
+                Duration::from_secs(3),
+                ConnectionError::Timeout,
+            ),
+        ] {
+            let (address, server) = serve(reply, hold);
+            assert_eq!(fail(&format!("http://{address}/")), error, "{name}");
+            server.join().unwrap();
+        }
+        // TLS handshake against a plain-text peer.
+        let (address, server) = serve(b"HTTP/1.1 200 OK\r\n\r\n", Duration::ZERO);
+        assert_eq!(
+            fail(&format!("https://{address}/")),
+            ConnectionError::Network
+        );
+        server.join().unwrap();
+        // A 5xx is a response: a transient provider failure, not a transport one.
+        let (address, server) = serve(
+            b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n",
+            Duration::ZERO,
+        );
+        let Ok(response) = get(&format!("http://{address}/")) else {
+            panic!("a 5xx is a response");
+        };
+        assert_eq!(
+            super::super::provider::parse_response(response).err(),
+            Some(ConnectionError::ProviderFailure)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
     fn credential_cannot_be_forwarded_to_an_external_url() {
         let transport =
             HttpTransport::new(Credential(Zeroizing::new("fixture-secret".into()))).unwrap();

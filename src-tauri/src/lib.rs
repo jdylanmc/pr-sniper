@@ -1894,7 +1894,10 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
         let mut tickets = monitor.lifecycle_tickets(&store, &accounts, now_seconds()?)?;
         tickets.retain(|ticket| {
             connectivity
-                .offline(&[backpressure::Scope::github(&ticket.provider_account_id)])
+                .offline(&[connectivity::repository_scope(
+                    &ticket.provider,
+                    &ticket.provider_account_id,
+                )])
                 .is_none()
         });
         Ok(tickets)
@@ -2066,20 +2069,14 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
             let connection_failure = result.as_ref().err().copied();
             let host = app.state::<Host>();
             let github = provider == storage::ProviderId::Github;
-            if github
-                && matches!(
-                    connection_failure,
-                    Some(ConnectionError::Network | ConnectionError::Timeout)
-                )
-            {
-                let observation = connectivity::probe(backpressure::Origin::Github);
+            if matches!(
+                connection_failure,
+                Some(ConnectionError::Network | ConnectionError::Timeout)
+            ) {
+                let scope = connectivity::repository_scope(&provider, &account_id);
+                let observation = connectivity::probe(&scope);
                 if let (Ok(store), Ok(now)) = (host.store.lock(), now_seconds()) {
-                    if let Err(error) = connectivity::record(
-                        &store,
-                        backpressure::Scope::github(&account_id),
-                        observation,
-                        now,
-                    ) {
+                    if let Err(error) = connectivity::record(&store, scope, observation, now) {
                         report(&app, error);
                     }
                 }
