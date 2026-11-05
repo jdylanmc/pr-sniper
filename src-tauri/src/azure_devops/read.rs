@@ -10,8 +10,8 @@ use super::token_source::{
 };
 use crate::provider::{
     AccountReader, Capabilities, CommentCapability, Connection, ConnectionError, People,
-    PeopleSearch, PeopleSource, Person, PersonMatch, RemoteRepository, RepositoryBrowseWarning,
-    RepositoryBrowser, RepositoryOwner, RepositoryReader, ResolvedTarget,
+    PeopleSearch, PeopleSource, Person, PersonMatch, ProviderResponse, RemoteRepository,
+    RepositoryBrowseWarning, RepositoryBrowser, RepositoryOwner, RepositoryReader, ResolvedTarget,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -30,6 +30,8 @@ const RECENT_PULL_REQUESTS: &str = "100";
 const MAX_PEOPLE: usize = 20;
 const MAX_QUERY: usize = 100;
 const MAX_TEXT: usize = 256;
+/// Longest throttling hold paused inline before a request.
+const MAX_PAUSE: Duration = Duration::from_secs(30);
 
 mod diff;
 mod pulls;
@@ -55,6 +57,8 @@ pub struct Request {
     pub method: Method,
     pub url: String,
     pub body: Option<Value>,
+    /// Raw bytes, not JSON: never read as a page.
+    pub raw: bool,
 }
 
 impl Request {
@@ -63,6 +67,15 @@ impl Request {
             method: Method::Get,
             url,
             body: None,
+            raw: false,
+        }
+    }
+
+    /// A GET whose body is returned unchanged (`$format=octetstream`).
+    pub fn bytes(url: String) -> Self {
+        Self {
+            raw: true,
+            ..Self::get(url)
         }
     }
 
@@ -71,6 +84,7 @@ impl Request {
             method: Method::Post,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -79,6 +93,7 @@ impl Request {
             method: Method::Patch,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -87,6 +102,7 @@ impl Request {
             method: Method::Put,
             url,
             body: Some(body),
+            raw: false,
         }
     }
 
@@ -95,6 +111,7 @@ impl Request {
             method: Method::Delete,
             url,
             body: None,
+            raw: false,
         }
     }
 }
@@ -104,6 +121,15 @@ pub struct Response {
     pub status: u16,
     pub retry_after: Option<String>,
     pub continuation: Option<String>,
+    /// `X-RateLimit-Delay`: seconds the request was slowed by throttling.
+    pub rate_limit_delay: Option<String>,
+    /// `X-RateLimit-Remaining`: throttling budget left before requests are held.
+    pub rate_limit_remaining: Option<String>,
+    /// `X-RateLimit-Reset`: Unix time the throttling budget refills.
+    pub rate_limit_reset: Option<String>,
+    pub content_type: Option<String>,
+    /// `X-TFS-FedAuthRealm` or `X-TFS-FedAuthIssuer`: a sign-in challenge.
+    pub sign_in: bool,
     pub body: Vec<u8>,
     /// The body exceeded the read limit and was dropped.
     pub oversize: bool,
@@ -161,12 +187,23 @@ impl Transport for HttpTransport {
         let status = response.status().as_u16();
         let retry_after = header("retry-after");
         let continuation = header("x-ms-continuationtoken");
+        let rate_limit_delay = header("x-ratelimit-delay");
+        let rate_limit_remaining = header("x-ratelimit-remaining");
+        let rate_limit_reset = header("x-ratelimit-reset");
+        let content_type = header("content-type");
+        let sign_in =
+            header("x-tfs-fedauthrealm").is_some() || header("x-tfs-fedauthissuer").is_some();
         let body = response.bytes().await.map_err(|_| NetworkError)?;
         let oversize = body.len() > BODY_LIMIT;
         Ok(Response {
             status,
             retry_after,
             continuation,
+            rate_limit_delay,
+            rate_limit_remaining,
+            rate_limit_reset,
+            content_type,
+            sign_in,
             body: if oversize { Vec::new() } else { body.to_vec() },
             oversize,
         })
@@ -373,15 +410,81 @@ fn token_error(error: TokenError) -> ConnectionError {
     }
 }
 
-/// A refused or failed response, with any stated wait for the shared retry
-/// policy.
-fn status_error(response: &Response) -> ConnectionError {
-    let wait = response
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+/// Seconds a `Retry-After` states: delta-seconds or an HTTP-date.
+fn retry_after_seconds(value: &str, now: i64) -> Option<i64> {
+    let value = value.trim();
+    match value.parse::<i64>() {
+        Ok(seconds) => (seconds >= 0).then_some(seconds),
+        Err(_) => chrono::DateTime::parse_from_rfc2822(value)
+            .ok()
+            .map(|date| date.timestamp().saturating_sub(now).max(0)),
+    }
+}
+
+/// The wait a response states, in milliseconds: `Retry-After`, the throttling
+/// delay just applied (`X-RateLimit-Delay`), or an exhausted budget's reset.
+/// Capped by `retry::PROVIDER_CAP_SECONDS`.
+fn stated_wait_ms(response: &Response, now: i64) -> Option<u64> {
+    let retry_after = response
         .retry_after
         .as_deref()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .filter(|seconds| *seconds >= 0)
-        .map(|seconds| seconds.min(crate::retry::PROVIDER_CAP_SECONDS));
+        .and_then(|value| retry_after_seconds(value, now))
+        .map(|seconds| seconds.saturating_mul(1_000) as u64);
+    let delay = response
+        .rate_limit_delay
+        .as_deref()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .map(|seconds| (seconds * 1_000.0).ceil() as u64);
+    let exhausted = response
+        .rate_limit_remaining
+        .as_deref()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .is_some_and(|remaining| remaining <= 0.0);
+    let reset = exhausted
+        .then(|| {
+            response
+                .rate_limit_reset
+                .as_deref()?
+                .trim()
+                .parse::<i64>()
+                .ok()
+        })
+        .flatten()
+        .map(|reset| reset.saturating_sub(now).max(0).saturating_mul(1_000) as u64);
+    [retry_after, delay, reset]
+        .into_iter()
+        .flatten()
+        .max()
+        .map(|ms| ms.min(crate::retry::PROVIDER_CAP_SECONDS as u64 * 1_000))
+}
+
+fn whole_seconds(ms: u64) -> i64 {
+    ms.div_ceil(1_000) as i64
+}
+
+/// A page where JSON belongs: a sign-in page or an intercepting proxy. Raw
+/// content (blobs) is never a page, whatever it holds.
+fn page(request: &Request, response: &Response) -> bool {
+    !request.raw
+        && response
+            .content_type
+            .as_deref()
+            .is_some_and(|kind| kind.to_ascii_lowercase().contains("text/html"))
+}
+
+/// A refused or failed response, with any stated wait for the shared retry
+/// policy. A throttled request (429, or a read's 503 with a stated wait) is a
+/// rate limit, never a failure. A write's 503 may have landed, so it stays a
+/// provider failure: writes reconcile before any retry.
+fn status_error(method: Method, response: &Response) -> ConnectionError {
+    let wait = stated_wait_ms(response, unix_now()).map(whole_seconds);
     match response.status {
         403 => ConnectionError::MissingReadPermission,
         404 => ConnectionError::RepositoryUnavailable,
@@ -389,12 +492,20 @@ fn status_error(response: &Response) -> ConnectionError {
             ConnectionError::RateLimited,
             ConnectionError::RateLimitedAfter,
         ),
+        503 if method == Method::Get && wait.is_some() => {
+            ConnectionError::RateLimitedAfter(wait.unwrap_or_default())
+        }
         500..=599 => wait.map_or(
             ConnectionError::ProviderFailure,
             ConnectionError::ProviderFailureAfter,
         ),
         status => ConnectionError::ProviderRejectedStatus(status),
     }
+}
+
+/// A JSON body; one that does not parse is a malformed `kind` response.
+fn parse<T: DeserializeOwned>(kind: ProviderResponse, body: &[u8]) -> Result<T, ConnectionError> {
+    serde_json::from_slice(body).map_err(|_| ConnectionError::MalformedResponse(kind))
 }
 
 fn bounded(text: Option<String>) -> Option<String> {
@@ -426,6 +537,34 @@ struct RawRepository {
     is_disabled: bool,
 }
 
+/// Throttling pacing for one organization, shared by every client of it: a
+/// stated wait on any response holds the next request.
+#[derive(Default)]
+struct Pacer(std::sync::Mutex<Option<std::time::Instant>>);
+
+impl Pacer {
+    fn of(organization: &str) -> Arc<Self> {
+        static PACERS: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::HashMap<String, Arc<Pacer>>>,
+        > = std::sync::LazyLock::new(Default::default);
+        let mut pacers = PACERS.lock().unwrap_or_else(|poison| poison.into_inner());
+        Arc::clone(pacers.entry(organization.to_owned()).or_default())
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        let until = (*self.0.lock().unwrap_or_else(|poison| poison.into_inner()))?;
+        until
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|wait| !wait.is_zero())
+    }
+
+    fn hold(&self, ms: u64) {
+        let until = std::time::Instant::now() + Duration::from_millis(ms);
+        let mut held = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        *held = Some(held.map_or(until, |known| known.max(until)));
+    }
+}
+
 /// Azure DevOps REST reads for one organization with the user's Azure CLI
 /// tokens for its tenant.
 pub struct Client {
@@ -433,6 +572,7 @@ pub struct Client {
     transport: Arc<dyn Transport>,
     tenant: TenantId,
     organization: String,
+    pacer: Arc<Pacer>,
     /// Checked before and after every request of a guarded session.
     guard: Option<crate::provider::ReadGuard>,
 }
@@ -444,11 +584,13 @@ impl Client {
         tenant: TenantId,
         organization: &str,
     ) -> Self {
+        let organization = organization.to_ascii_lowercase();
         Self {
             source,
             transport,
             tenant,
-            organization: organization.to_ascii_lowercase(),
+            pacer: Pacer::of(&organization),
+            organization,
             guard: None,
         }
     }
@@ -469,6 +611,17 @@ impl Client {
     }
 
     async fn call(&self, request: Request) -> Result<Response, ConnectionError> {
+        // A throttling hold longer than an inline pause goes to the shared
+        // retry policy as a rate limit. Rechecked after each pause: another
+        // response may have extended it.
+        while let Some(wait) = self.pacer.remaining() {
+            if wait > MAX_PAUSE {
+                return Err(ConnectionError::RateLimitedAfter(whole_seconds(
+                    wait.as_millis() as u64,
+                )));
+            }
+            tokio::time::sleep(wait).await;
+        }
         if let Some(guard) = &self.guard {
             guard()?;
         }
@@ -480,7 +633,7 @@ impl Client {
     }
 
     async fn send(&self, request: Request) -> Result<Response, ConnectionError> {
-        let (request, transport) = (&request, &self.transport);
+        let (request, transport, pacer) = (&request, &self.transport, &self.pacer);
         with_token(
             self.source.as_ref(),
             &self.tenant,
@@ -489,12 +642,24 @@ impl Client {
                     .send(request, &token)
                     .await
                     .map_err(|_| Rejection::Failed(ConnectionError::Network))?;
+                if let (200..=299, Some(ms)) =
+                    (response.status, stated_wait_ms(&response, unix_now()))
+                {
+                    pacer.hold(ms);
+                }
                 match response.status {
+                    // A page where JSON belongs: a sign-in challenge, else an
+                    // intercepting proxy. Never a malformed response.
+                    200 | 201 | 204 if page(request, &response) => Err(if response.sign_in {
+                        Rejection::Unauthorized
+                    } else {
+                        Rejection::Failed(ConnectionError::Network)
+                    }),
                     200 | 201 | 204 => Ok(response),
                     // A suppressed FedAuth redirect is a 401; a 203 sign-in page or
                     // a redirect is the same refusal.
                     401 | 203 | 300..=399 => Err(Rejection::Unauthorized),
-                    _ => Err(Rejection::Failed(status_error(&response))),
+                    _ => Err(Rejection::Failed(status_error(request.method, &response))),
                 }
             },
         )
@@ -506,13 +671,14 @@ impl Client {
         })
     }
 
+    /// A JSON read; a body that does not parse names `kind`.
     async fn get<T: DeserializeOwned>(
         &self,
+        kind: ProviderResponse,
         url: String,
     ) -> Result<(T, Response), ConnectionError> {
         let response = self.call(Request::get(url)).await?;
-        let value =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let value = parse(kind, &response.body)?;
         Ok((value, response))
     }
 
@@ -521,7 +687,7 @@ impl Client {
         let url = self.url(&["_apis", "connectionData"], &[]);
         let response = self.call(Request::get(url)).await?;
         connection::parse_identity(&response.body)
-            .map_err(|_| ConnectionError::InvalidResponse)?
+            .map_err(|_| ConnectionError::MalformedResponse(ProviderResponse::Identity))?
             .ok_or(ConnectionError::SignedOut)
     }
 
@@ -537,8 +703,12 @@ impl Client {
             if let Some(token) = continuation.as_deref() {
                 query.push(("continuationToken", token));
             }
-            let (list, response): (List<RawProject>, _) =
-                self.get(self.url(&["_apis", "projects"], &query)).await?;
+            let (list, response): (List<RawProject>, _) = self
+                .get(
+                    ProviderResponse::Projects,
+                    self.url(&["_apis", "projects"], &query),
+                )
+                .await?;
             projects.extend(list.value.into_iter().filter_map(|raw| {
                 let well_formed = raw
                     .state
@@ -593,7 +763,8 @@ impl Client {
             &[project, "_apis", "git", "repositories"],
             &[("api-version", API_VERSION)],
         );
-        let (list, _): (List<RawRepository>, _) = self.get(url).await?;
+        let (list, _): (List<RawRepository>, _) =
+            self.get(ProviderResponse::Repositories, url).await?;
         let mut repositories: Vec<_> = list
             .value
             .into_iter()
@@ -613,7 +784,7 @@ impl Client {
             &[project, "_apis", "git", "repositories", repository],
             &[("api-version", API_VERSION)],
         );
-        let (raw, _): (RawRepository, _) = self.get(url).await?;
+        let (raw, _): (RawRepository, _) = self.get(ProviderResponse::Repository, url).await?;
         self.repository(raw)
             .ok_or(ConnectionError::RepositoryUnavailable)
     }
@@ -679,8 +850,7 @@ impl Client {
                 }),
             ))
             .await?;
-        let raw: Raw =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let raw: Raw = parse(ProviderResponse::People, &response.body)?;
         let mut people = Vec::new();
         for identity in raw.results.into_iter().flat_map(|result| result.identities) {
             if !identity
@@ -749,7 +919,8 @@ impl Client {
                 ("$top", RECENT_PULL_REQUESTS),
             ],
         );
-        let (list, _): (List<RawPullRequest>, _) = self.get(url).await?;
+        let (list, _): (List<RawPullRequest>, _) =
+            self.get(ProviderResponse::PullRequests, url).await?;
         let query = query.to_lowercase();
         let mut people = Vec::new();
         for identity in list

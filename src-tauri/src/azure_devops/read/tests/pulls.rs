@@ -120,7 +120,9 @@ fn a_listing_that_moves_or_names_another_repository_is_refused() {
     wire.json(&git("pullrequests?"), json!({"value": [short]}));
     assert_eq!(
         block(client.active_pull_requests(&key())),
-        Err(ConnectionError::InvalidResponse)
+        Err(ConnectionError::MalformedResponse(
+            crate::provider::ProviderResponse::PullRequests
+        ))
     );
 
     let (_, wire, client) = fakes();

@@ -45,6 +45,43 @@ pub struct Revision {
     pub base: String,
 }
 
+/// The provider response a malformed read came from: typed provenance for
+/// `ConnectionError::MalformedResponse`, never its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderResponse {
+    Identity,
+    Projects,
+    Repositories,
+    Repository,
+    PullRequests,
+    PullRequest,
+    Iterations,
+    IterationChanges,
+    Tree,
+    Threads,
+    Thread,
+    Comment,
+    Statuses,
+    PolicyEvaluations,
+    Reviewers,
+    People,
+}
+
+/// Serialized as the plain `invalid_response` cause so the wire shape stays
+/// a string; the provenance lives in the typed value and its `Debug` form.
+impl Serialize for ProviderResponse {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str("invalid_response")
+    }
+}
+
+/// Never read back: a stored `invalid_response` is `InvalidResponse`.
+impl<'de> Deserialize<'de> for ProviderResponse {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom("provider response is not stored"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConnectionError {
@@ -81,6 +118,24 @@ pub enum ConnectionError {
     InvalidRepository,
     RepositoryChanged,
     Configuration,
+    /// An `InvalidResponse` that names the response it came from.
+    #[serde(untagged)]
+    MalformedResponse(ProviderResponse),
+}
+
+impl ConnectionError {
+    /// `InvalidResponse`, with or without provenance.
+    pub fn is_invalid_response(self) -> bool {
+        matches!(self, Self::InvalidResponse | Self::MalformedResponse(_))
+    }
+
+    /// Names `response` as the origin of an `InvalidResponse`; others pass.
+    pub fn from_response(self, response: ProviderResponse) -> Self {
+        match self {
+            Self::InvalidResponse => Self::MalformedResponse(response),
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

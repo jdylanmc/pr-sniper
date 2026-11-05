@@ -689,3 +689,61 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
     assert!(normalized.ci_green());
     assert!(!normalized.ci_pending());
 }
+
+#[test]
+fn statuses_and_policies_without_their_default_state_read_as_pending() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let fixture = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+    readiness_wire(
+        &wire,
+        fixture(include_str!("fixtures/policy-evaluations-status.json")),
+        fixture(include_str!("fixtures/statuses-omitted-state.json")),
+    );
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+
+    let observation = session.action_observation(&repository, 7).unwrap();
+
+    assert_eq!(observation.checks.as_deref(), Some("PENDING"));
+    assert_eq!(
+        observation.check_contexts,
+        [
+            json!({"__typename": "StatusContext", "context": "Owners", "state": "PENDING", "isRequired": true}),
+            json!({"__typename": "StatusContext", "context": "lint/style", "state": "PENDING", "isRequired": false}),
+            json!({"__typename": "StatusContext", "context": "governance/scan", "state": "SUCCESS", "isRequired": false}),
+        ]
+    );
+}
+
+#[test]
+fn a_malformed_response_names_the_response_it_came_from() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    readiness_wire(
+        &wire,
+        json!({"value": []}),
+        json!({"value": [{"id": "one", "state": "succeeded"}]}),
+    );
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+
+    let error = session.action_observation(&repository, 7).unwrap_err();
+
+    assert_eq!(
+        error,
+        ConnectionError::MalformedResponse(crate::provider::ProviderResponse::Statuses)
+    );
+    assert!(error.is_invalid_response());
+    assert_eq!(
+        serde_json::to_value(error).unwrap(),
+        json!("invalid_response"),
+        "the wire cause stays a plain string"
+    );
+}

@@ -1,0 +1,50 @@
+{
+  "count": 3,
+  "value": [
+    {
+      "context": { "genre": "", "name": "Owners" },
+      "createdBy": {
+        "displayName": "Owners Bot",
+        "id": "00000000-0000-0000-0000-0000000000e1",
+        "uniqueName": "bot@example.com",
+        "url": "https://example.com/identities/00000000-0000-0000-0000-0000000000e1"
+      },
+      "creationDate": "2026-11-01T10:00:00.0000000Z",
+      "description": "Owners: Processing",
+      "id": 1,
+      "iterationId": 2,
+      "state": "pending",
+      "targetUrl": "?_a=owners",
+      "updatedDate": "2026-11-01T10:00:00.0000000Z"
+    },
+    {
+      "context": { "genre": "", "name": "Owners" },
+      "createdBy": {
+        "displayName": "Owners Bot",
+        "id": "00000000-0000-0000-0000-0000000000e1",
+        "uniqueName": "bot@example.com",
+        "url": "https://example.com/identities/00000000-0000-0000-0000-0000000000e1"
+      },
+      "creationDate": "2026-11-01T10:00:01.0000000Z",
+      "description": "Owners: Missing Approvals",
+      "id": 2,
+      "iterationId": 2,
+      "targetUrl": "?_a=owners",
+      "updatedDate": "2026-11-01T10:00:01.0000000Z"
+    },
+    {
+      "context": { "genre": "governance", "name": "scan" },
+      "createdBy": {
+        "displayName": "Governance Bot",
+        "id": "00000000-0000-0000-0000-0000000000e2",
+        "uniqueName": "governance@example.com",
+        "url": "https://example.com/identities/00000000-0000-0000-0000-0000000000e2"
+      },
+      "creationDate": "2026-11-01T10:00:02.0000000Z",
+      "description": "Nothing detected.",
+      "id": 3,
+      "state": "succeeded",
+      "updatedDate": "2026-11-01T10:00:02.0000000Z"
+    }
+  ]
+}
