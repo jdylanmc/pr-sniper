@@ -231,8 +231,10 @@ pub fn synchronize(
         retry_at: paced.or_else(|| {
             observation.as_ref().err().and_then(|error| {
                 let policy = crate::retry::TRANSIENT;
+                // Connectivity alone never stops observation: it keeps backing off.
                 (error.kind != monitoring::OperationFailure::Permanent
-                    && !policy.exhausted(previous_failures.saturating_add(1)))
+                    && (error.kind.transport()
+                        || !policy.exhausted(previous_failures.saturating_add(1))))
                 .then(|| {
                     now.saturating_add(policy.wait(
                         item_id,
@@ -994,6 +996,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
 }
 
 pub fn restore(store: &Store) -> Result<(), String> {
+    let now = crate::now_seconds()?;
     let mut ledger = store.load_actions()?;
     let before = ledger.clone();
     for run in &mut ledger.finals {
@@ -1021,10 +1024,29 @@ pub fn restore(store: &Store) -> Result<(), String> {
             }
         }
     }
+    for observed in &mut ledger.observations {
+        resume_stopped_transport_observation(observed, now);
+    }
     if ledger != before {
         store.save_actions(&ledger)?;
     }
     Ok(())
+}
+
+/// Older builds stopped observing after three connectivity failures, leaving
+/// a manual refresh as the only way out. Their exact repository-check message
+/// identifies them; observation resumes now, with a fresh backoff.
+fn resume_stopped_transport_observation(observed: &mut Observed, now: i64) {
+    if observed.retry_at.is_none()
+        && observed
+            .error
+            .as_deref()
+            .and_then(monitoring::legacy_transient_check)
+            .is_some_and(|failure| failure.transport())
+    {
+        observed.failures = 0;
+        observed.retry_at = Some(now);
+    }
 }
 
 pub fn request_observation_retry(store: &Store, item_id: &str, now: i64) -> Result<(), String> {

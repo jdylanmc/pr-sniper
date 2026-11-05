@@ -111,6 +111,12 @@ impl OperationFailure {
     pub fn resumable(&self) -> bool {
         self.transient() || matches!(self, Self::Permission | Self::Panic)
     }
+
+    /// Local connectivity: DNS, connect, TLS, reset, truncated body, timeout.
+    /// Never a reason for a human to step in.
+    pub fn transport(&self) -> bool {
+        matches!(self, Self::Network | Self::Timeout)
+    }
 }
 
 fn is_zero(value: &u8) -> bool {
@@ -3985,7 +3991,17 @@ impl JobOperation {
             .failure
             .as_ref()
             .filter(|failure| failure.resumable())
-            .and_then(|_| RESUME_COOLDOWNS_SECONDS.get(usize::from(self.resume_cycle)))
+            .and_then(|failure| {
+                let cycle = usize::from(self.resume_cycle);
+                // Connectivity alone never hands work to a human: the last
+                // cooldown repeats.
+                RESUME_COOLDOWNS_SECONDS.get(cycle).or_else(|| {
+                    failure
+                        .transport()
+                        .then(|| RESUME_COOLDOWNS_SECONDS.last())
+                        .flatten()
+                })
+            })
             .map(|cooldown| now.saturating_add(*cooldown));
     }
 
@@ -4266,7 +4282,9 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         };
     }
     let (failure, retry_after_seconds) = match error {
-        ConnectionError::Timeout => (OperationFailure::Timeout, None),
+        ConnectionError::Timeout | ConnectionError::ProviderRejectedStatus(408) => {
+            (OperationFailure::Timeout, None)
+        }
         ConnectionError::SignedOut
         | ConnectionError::WrongIdentity
         // Azure CLI missing or too old: setup in Settings, like a sign-in.
@@ -4335,6 +4353,30 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::RepositoryChanged => "RepositoryChanged",
         ConnectionError::Configuration => "Configuration",
     }
+}
+
+/// Repository-check errors that are retried, never parked for a human.
+const TRANSIENT_CHECKS: [ConnectionError; 4] = [
+    ConnectionError::Network,
+    ConnectionError::Timeout,
+    ConnectionError::IncompleteRead,
+    ConnectionError::ProviderFailure,
+];
+
+/// Older builds stored some transient repository-check failures (a truncated
+/// read) as permanent with only their message. The exact message of a check
+/// error identifies it; its typed cause is today's classification.
+pub(crate) fn legacy_transient_check(message: &str) -> Option<OperationFailure> {
+    TRANSIENT_CHECKS
+        .into_iter()
+        .find_map(|error| match check_error(error) {
+            MonitoringError::Recoverable {
+                message: known,
+                failure,
+                ..
+            } if known == message => Some(failure),
+            _ => None,
+        })
 }
 
 fn configuration_changed() -> MonitoringError {

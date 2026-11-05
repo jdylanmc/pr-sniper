@@ -563,6 +563,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
             continue;
         }
+        if recover_parked_transient_check(review, &jobs, now) {
+            changed = true;
+            continue;
+        }
         if review.operation.state == OperationState::Running {
             if review.operation.interruption.is_some() {
                 review.operation.requeue_intentional(0);
@@ -689,6 +693,40 @@ fn recover_parked_feedback(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> 
     run.operation
         .fail(&Failure::tossed(&message).monitoring(), now);
     run.attempt_ducks.clear();
+    true
+}
+
+/// Older builds parked a review whose repository check hit a transient read
+/// failure (a truncated `IncompleteRead`) as permanent. Live work gets a fresh
+/// window; retired or missing work ends quietly. No
+/// provider effect was attempted, so nothing is replayed.
+fn recover_parked_transient_check(run: &mut ReviewRun, jobs: &[QueueJob], now: i64) -> bool {
+    if run.operation.state != OperationState::Failed
+        || run.operation.failure != Some(OperationFailure::Permanent)
+        || run.operation.operation_type != "copilot_review"
+        || run.result.is_some()
+        || run.operation.attempted_mutation.is_some()
+        || run.operation.confirmed_receipt.is_some()
+        || run
+            .error
+            .as_deref()
+            .and_then(monitoring::legacy_transient_check)
+            .is_none()
+    {
+        return false;
+    }
+    if jobs
+        .iter()
+        .find(|job| run.matches_job(job))
+        .is_none_or(monitoring::retired)
+    {
+        end_quietly(run);
+        return true;
+    }
+    run.operation.requeue_fresh(now);
+    run.result = None;
+    run.error = None;
+    run.phase = "Waiting for shared AI capacity".into();
     true
 }
 
