@@ -51,7 +51,10 @@ fn pruned(view: &Store, item_id: &str) -> Result<Value, Error> {
     )
 }
 
-fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
+fn review_summary(
+    candidate: &crate::review::host::Candidate,
+    gates: &BTreeMap<String, crate::capacity::Gate>,
+) -> Value {
     let run = candidate.run.as_ref();
     let mut dispositions = BTreeMap::<&str, usize>::new();
     let mut duck_failures = Vec::new();
@@ -86,7 +89,9 @@ fn review_summary(candidate: &crate::review::host::Candidate) -> Value {
         "exits_denied":run.and_then(|r|r.packet.as_ref()).map(|p|p.exits_denied.iter().take(16)
             .map(|d|json!({"exit":d.exit,"reason":d.reason.chars().take(256).collect::<String>()}))
             .collect::<Vec<_>>()).unwrap_or_default(),
-        "dispositions":dispositions,"duck_failures":duck_failures})
+        "dispositions":dispositions,"duck_failures":duck_failures,
+        "wait":candidate.blocked.as_ref().map(|_| candidate.gate)
+            .or_else(|| gates.get(&candidate.key).copied())})
 }
 
 /// Platform/provider collaborators only. Routing, receipts, validation and
@@ -414,6 +419,12 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
             // Parse a frozen copy outside the Store lock, like the Queue panel.
             let view = frozen(runtime)?;
             let snapshot = crate::queue::snapshot(&view, vec![]).map_err(storage)?;
+            let gates: BTreeMap<_, _> =
+                crate::capacity::candidates(&view, crate::now_seconds().map_err(storage)?)
+                    .map_err(storage)?
+                    .into_iter()
+                    .filter_map(|work| Some((work.key.id, work.gate?)))
+                    .collect();
             let summaries=snapshot.items.iter().map(|item|json!({
                 "id":item.id,"configuration_id":item.job.configuration_id,"number":item.job.number,
                 "title":item.job.title.chars().take(256).collect::<String>(), "state":item.state,
@@ -430,7 +441,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                     .and_then(|p|p.merge_pending),
                 "reviews":snapshot.reviews.iter().filter(|r|item.review_keys.contains(&r.key))
                     .take(25)
-                    .map(review_summary).collect::<Vec<_>>(),
+                    .map(|review|review_summary(review,&gates)).collect::<Vec<_>>(),
                 "review_count":item.review_keys.len()
             })).collect();
             page(summaries, offset, limit)

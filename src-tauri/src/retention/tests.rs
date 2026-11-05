@@ -655,7 +655,17 @@ fn post_cleanup_human_closure_is_verified_and_never_resurrected_on_reopen() {
         NOW + 10,
     );
     let job = store.load_queue().unwrap().last().unwrap().clone();
-    assert!(crate::feedback::contexts(&store, &job, AGENT).is_err());
+    // Unobserved retained roots wait for the next poll, not as unavailable feedback.
+    assert!(matches!(
+        crate::feedback::contexts_checked(&store, &job, AGENT),
+        Err(crate::publication::GateError::Unobserved(_))
+    ));
+    let gate = crate::capacity::candidates(&store, NOW + 10)
+        .unwrap()
+        .into_iter()
+        .find(|work| work.key.id == crate::review::key(&job, ASSIGNMENT))
+        .and_then(|work| work.gate);
+    assert_eq!(gate, Some(crate::capacity::Gate::FeedbackObservation));
     let origin = load(&store).unwrap().receipts[0].owned[0].clone();
     let mut closed = thread();
     closed.resolved = true;
@@ -727,6 +737,7 @@ fn live_reservation_fences_cleanup_even_after_a_completed_local_result() {
         id: review.key.clone(),
     };
     let work = crate::capacity::Work {
+        gate: None,
         offline: None,
         key: key.clone(),
         enqueue_order: 1,
@@ -907,6 +918,7 @@ fn a_new_local_attempt_cannot_hide_the_old_worker_reservation_from_cleanup() {
         id: review.key.clone(),
     };
     let work = crate::capacity::Work {
+        gate: None,
         offline: None,
         key: key.clone(),
         enqueue_order: 2,

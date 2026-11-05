@@ -134,7 +134,11 @@ configuration unless explicitly overridden again. Running work is unchanged.
 `waiting` means paused or prerequisite-gated; `running` means active;
 `completed` means unchanged completed work was reused. `waiting` reasons:
 `external_prerequisite`, `pending_configuration`, `paused`,
-`feedback_observation` (retries after the next clean poll), `execution_gates`. Errors after intake
+`feedback_observation` (retries after the next poll observes prior feedback),
+or the candidate's typed gate (`selection`, `historical`, `provider_support`,
+`feedback`, `failed`, `poll`, `retry_backoff`, `teammates`, `backpressure`,
+`offline`); `execution_gates` only when no gate is typed. `list_queue` reviews
+carry the same gate as `wait`. Errors after intake
 can include `admitted:true`; inspect before acting again.
 An interrupted watch keeps a persistent pending-configuration hold: never-started
 jobs do not run with unintended defaults. After inspecting, a new explicit

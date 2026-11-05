@@ -61,14 +61,17 @@ pub(crate) fn contexts_checked(
                 .iter()
                 .find(|r| r.context.id == id)
                 .ok_or_else(|| {
-                    GateError::Policy(
+                    GateError::Unobserved(
                         "Waiting for verified retained-root observations after reopening.".into(),
                     )
                 })?;
-            if record.observed_head != job.head_sha || record.context.unavailable.is_some() {
-                return Err(GateError::Policy(
-                    "Retained owned feedback is unavailable at this revision.".into(),
-                ));
+            const UNAVAILABLE: &str = "Retained owned feedback is unavailable at this revision.";
+            if record.context.unavailable.is_some() {
+                return Err(GateError::Policy(UNAVAILABLE.into()));
+            }
+            // Clears when the next poll observes the retained root at this head.
+            if record.observed_head != job.head_sha {
+                return Err(GateError::Unobserved(UNAVAILABLE.into()));
             }
             contexts.push(record.context.clone());
         }
@@ -100,8 +103,12 @@ pub(crate) fn admit_observations(
                     .map(|origin| (&r.scope, origin))
             })
             .ok_or("Retained feedback provenance changed during the scan.")?;
-        let tracked =
-            crate::feedback::observed_pr(&queue.tracked, &origin.proof, &observation.head)?;
+        let tracked = crate::feedback::observed_pr(
+            &queue.tracked,
+            &scope.provider,
+            &origin.proof,
+            &observation.head,
+        )?;
         if Binding::tracked(tracked) != Binding::tracked(scope) {
             return Err("Retained feedback binding changed; no observation accepted.".into());
         }

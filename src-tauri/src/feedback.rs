@@ -395,11 +395,12 @@ pub fn root_key(job: &QueueJob, root: &str) -> String {
 
 pub(crate) fn observed_pr<'a>(
     tracked: &'a [TrackedPullRequest],
+    provider: &str,
     proof: &crate::github::threads::Ownership,
     head: &str,
 ) -> Result<&'a TrackedPullRequest, String> {
     let mut matches = tracked.iter().filter(|pr| {
-        pr.provider == "github"
+        pr.provider == provider
             && (proof.configuration_id.is_empty() || proof.configuration_id == pr.configuration_id)
             && proof.account_id == pr.account_id
             && proof.repository_id == pr.repository_id
@@ -507,6 +508,15 @@ pub fn contexts(store: &Store, job: &QueueJob, agent: &str) -> Result<Vec<Contex
     contexts_excluding(store, job, agent, None, false)
 }
 
+/// `contexts` with its typed gate, for dispatch decisions.
+pub(crate) fn contexts_checked(
+    store: &Store,
+    job: &QueueJob,
+    agent: &str,
+) -> Result<Vec<Context>, crate::publication::GateError> {
+    contexts_excluding_checked(store, job, agent, None, false)
+}
+
 pub fn conversation_contexts(
     store: &Store,
     job: &QueueJob,
@@ -582,12 +592,15 @@ fn contexts_excluding_with(
                 continue;
             }
             let record = record.ok_or_else(|| {
-                GateError::Policy("Waiting for verified prior-feedback observations.".into())
+                GateError::Unobserved("Waiting for verified prior-feedback observations.".into())
             })?;
-            if record.observed_head != job.head_sha || record.context.unavailable.is_some() {
-                return Err(GateError::Policy(
-                    "Prior feedback is unavailable or not observed at this revision.".into(),
-                ));
+            const UNOBSERVED: &str =
+                "Prior feedback is unavailable or not observed at this revision.";
+            if record.context.unavailable.is_some() {
+                return Err(GateError::Policy(UNOBSERVED.into()));
+            }
+            if record.observed_head != job.head_sha {
+                return Err(GateError::Unobserved(UNOBSERVED.into()));
             }
             contexts.push(record.context.clone());
         }

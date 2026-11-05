@@ -1359,9 +1359,47 @@ fn queue_and_detail_name_the_agent_model_a_parked_run_was_refused_by() {
     assert!(item["failed_model"]["agent_name"].is_string());
     assert_eq!(item["failed_operation"], "review");
     assert_eq!(item["remedy"], "change_model");
+    // The typed gate holding the candidate, not an opaque waiting state.
+    assert_eq!(item["reviews"][0]["wait"], "failed");
     let detail = fixture.call(json!({"operation":"detail","item_id":item["id"]}));
     let detail: Value = serde_json::from_str(detail["result"]["text"].as_str().unwrap()).unwrap();
     assert_eq!(detail["item"]["failed_model"], item["failed_model"]);
+}
+
+#[test]
+fn queue_names_the_external_prerequisite_capacity_never_considers() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    {
+        let store = fixture.store.lock().unwrap();
+        let job = store.load_queue().unwrap().remove(0);
+        let mut states = store.load_pr_states().unwrap();
+        states.observe(
+            &crate::retention::Binding::job(&job),
+            crate::pr_state::Observation {
+                iteration_id: "i",
+                new_iteration: true,
+                snapshot: None,
+                already_reviewed: false,
+                now: 1,
+            },
+        );
+        let mut value = serde_json::to_value(&states).unwrap();
+        value["records"][0]["external_wait"] = json!({
+            "reason":"ci","state_seq":1000,"assignment_id":job.assignment_id,
+            "agent_id":job.work.unwrap().agent_id,
+            "snapshot":{"head":"h","base":"b","text_hash":"t","lifecycle":"open",
+                "mergeable":"MERGEABLE","review_decision":null,"approvals":[],"labels":[],
+                "checks":[],"check_total":0,"comments":[],"thread_total":0,"comment_total":0}});
+        store
+            .save_pr_states(&serde_json::from_value(value).unwrap())
+            .unwrap();
+    }
+    let queue = fixture.call(json!({"operation":"queue"}));
+    assert_eq!(
+        queue["result"]["values"][0]["reviews"][0]["wait"],
+        "external_prerequisite"
+    );
 }
 
 #[test]
@@ -1388,6 +1426,8 @@ fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries
             &crate::review::Failure::tossed(crate::feedback::OBSERVATION_FAILED).monitoring(),
             now,
         );
+        // Keep the retry pending however long the suite takes (golden `wait`).
+        run.operation.next_attempt_at = Some(now + 3_600);
         run.error = Some(crate::feedback::OBSERVATION_FAILED.into());
         run.attempt_ducks = vec![serde_json::from_value(duck(2, "failed", "stream_lost")).unwrap()];
         run.result = Some(
