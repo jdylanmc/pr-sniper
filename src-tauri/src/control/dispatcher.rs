@@ -90,7 +90,8 @@ fn review_summary(
             .map(|d|json!({"exit":d.exit,"reason":d.reason.chars().take(256).collect::<String>()}))
             .collect::<Vec<_>>()).unwrap_or_default(),
         "dispositions":dispositions,"duck_failures":duck_failures,
-        "wait":gates.get(&candidate.key)})
+        "wait":candidate.blocked.as_ref().map(|_| candidate.gate)
+            .or_else(|| gates.get(&candidate.key).copied())})
 }
 
 /// Platform/provider collaborators only. Routing, receipts, validation and

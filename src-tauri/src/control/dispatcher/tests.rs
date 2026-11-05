@@ -1367,6 +1367,42 @@ fn queue_and_detail_name_the_agent_model_a_parked_run_was_refused_by() {
 }
 
 #[test]
+fn queue_names_the_external_prerequisite_capacity_never_considers() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
+    {
+        let store = fixture.store.lock().unwrap();
+        let job = store.load_queue().unwrap().remove(0);
+        let mut states = store.load_pr_states().unwrap();
+        states.observe(
+            &crate::retention::Binding::job(&job),
+            crate::pr_state::Observation {
+                iteration_id: "i",
+                new_iteration: true,
+                snapshot: None,
+                already_reviewed: false,
+                now: 1,
+            },
+        );
+        let mut value = serde_json::to_value(&states).unwrap();
+        value["records"][0]["external_wait"] = json!({
+            "reason":"ci","state_seq":1000,"assignment_id":job.assignment_id,
+            "agent_id":job.work.unwrap().agent_id,
+            "snapshot":{"head":"h","base":"b","text_hash":"t","lifecycle":"open",
+                "mergeable":"MERGEABLE","review_decision":null,"approvals":[],"labels":[],
+                "checks":[],"check_total":0,"comments":[],"thread_total":0,"comment_total":0}});
+        store
+            .save_pr_states(&serde_json::from_value(value).unwrap())
+            .unwrap();
+    }
+    let queue = fixture.call(json!({"operation":"queue"}));
+    assert_eq!(
+        queue["result"]["values"][0]["reviews"][0]["wait"],
+        "external_prerequisite"
+    );
+}
+
+#[test]
 fn queue_summaries_surface_settled_findings_duck_reasons_and_observation_retries() {
     let fixture = Fixture::new();
     assert_eq!(fixture.call(fixture.watch(false))["ok"], true);
