@@ -329,30 +329,39 @@ fn park(operation: &mut JobOperation, kind: OperationFailure) -> i64 {
 }
 
 #[test]
-fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human() {
+fn cooldown_cycles_escalate_30m_1h_2h_4h_8h_then_wait_for_a_human_unless_connectivity() {
     assert_eq!(
         RESUME_COOLDOWNS_SECONDS,
         [1_800, 3_600, 7_200, 14_400, 28_800]
     );
-    let mut operation = JobOperation::review(&job(), 1_000);
-    for (cycle, cooldown) in RESUME_COOLDOWNS_SECONDS.into_iter().enumerate() {
-        let parked_at = park(&mut operation, OperationFailure::Network);
+    for kind in [OperationFailure::Provider, OperationFailure::Network] {
+        let mut operation = JobOperation::review(&job(), 1_000);
+        for (cycle, cooldown) in RESUME_COOLDOWNS_SECONDS.into_iter().enumerate() {
+            let parked_at = park(&mut operation, kind.clone());
+            assert!(operation.parked());
+            assert_eq!(operation.resume_cycle as usize, cycle);
+            assert_eq!(operation.resume_at, Some(parked_at + cooldown));
+            assert!(!operation.auto_resume(false, parked_at + cooldown - 1));
+            assert!(operation.auto_resume(false, parked_at + cooldown));
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.attempt_count, 0);
+            assert_eq!(operation.failure, None);
+            assert_eq!(operation.resume_at, None);
+            assert_eq!(operation.resume_cycle as usize, cycle + 1);
+        }
+        // The fifth resumed budget also fails.
+        let parked_at = park(&mut operation, kind.clone());
         assert!(operation.parked());
-        assert_eq!(operation.resume_cycle as usize, cycle);
-        assert_eq!(operation.resume_at, Some(parked_at + cooldown));
-        assert!(!operation.auto_resume(false, parked_at + cooldown - 1));
-        assert!(operation.auto_resume(false, parked_at + cooldown));
-        assert_eq!(operation.state, OperationState::Queued);
-        assert_eq!(operation.attempt_count, 0);
-        assert_eq!(operation.failure, None);
-        assert_eq!(operation.resume_at, None);
-        assert_eq!(operation.resume_cycle as usize, cycle + 1);
+        if kind == OperationFailure::Provider {
+            // Now only a human can continue.
+            assert_eq!(operation.resume_at, None);
+            assert!(!operation.auto_resume(true, i64::MAX));
+        } else {
+            // Connectivity alone never needs a human: the 8h cooldown repeats.
+            assert_eq!(operation.resume_at, Some(parked_at + 28_800));
+            assert!(operation.auto_resume(false, parked_at + 28_800));
+        }
     }
-    // The fifth resumed budget also fails: now only a human can continue.
-    park(&mut operation, OperationFailure::Network);
-    assert!(operation.parked());
-    assert_eq!(operation.resume_at, None);
-    assert!(!operation.auto_resume(true, i64::MAX));
 }
 
 #[test]
@@ -504,6 +513,33 @@ fn cooldown_resume_requeues_a_parked_review_and_exposes_the_hint() {
     assert_eq!(resumed.operation.state, OperationState::Queued);
     let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
     assert_eq!((item.failure_class, item.resume_at), (None, None));
+}
+
+#[test]
+fn a_connectivity_park_an_older_build_left_human_only_resumes_after_upgrade() {
+    let mut run = parked_review(OperationFailure::Timeout, OperationState::ManualRetry);
+    run.operation.resume_cycle = RESUME_COOLDOWNS_SECONDS.len() as u8;
+    run.operation.resume_at = None;
+    let (_root, store) = store_with(&run);
+    let mut monitor = Monitor::default();
+    assert!(monitor
+        .auto_resume_due(&store, &accounts(true), 1_000)
+        .unwrap());
+    assert_eq!(
+        monitor.auto_resume(&store, &accounts(true), 1_000).unwrap(),
+        0
+    );
+    let last = *RESUME_COOLDOWNS_SECONDS.last().unwrap();
+    let armed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(armed.operation.resume_at, Some(1_000 + last));
+    assert_eq!(
+        monitor
+            .auto_resume(&store, &accounts(true), 1_000 + last)
+            .unwrap(),
+        1
+    );
+    let resumed = store.load_reviews().unwrap().remove(0);
+    assert_eq!(resumed.operation.state, OperationState::Queued);
 }
 
 #[test]

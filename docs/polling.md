@@ -113,6 +113,7 @@ Same schedule, admission, retry and parking as GitHub, through the provider read
 | Content       | Trees: `items?recursionLevel=Full&versionDescriptor.version={sha}&versionDescriptor.versionType=commit`. Files: `blobs/{objectId}?$format=octetstream`. Over 8 MiB = `LimitExceeded`.                                                                                  |
 | Patches       | No provider patch text: merge base and head blobs diffed locally (3 context lines), first 300 files, ≤ 1 MiB text per side; others have no addressable line.                                                                                                           |
 | Requests      | `X-TFS-FedAuthRedirect: Suppress`, no redirects; 401, 203, 3xx or a sign-in page (`X-TFS-FedAuth*`) drops the token and retries once; any other `text/html` answer to a JSON request = Network (blobs are returned unchanged). [Throttling](#azure-devops-throttling). |
+| Offline       | A Network/Timeout failure probes `HEAD https://dev.azure.com/` (any response = reachable). Unreachable suspends the account's polls and reviews with no attempt spent; a reachable 30-second check resumes them. GitHub reachability never holds or frees them.        |
 | Responses     | Omitted enum defaults read as their default (status `state` = `notSet`, policy `status` = `queued`, change type `none`). A body that still does not parse = `MalformedResponse(<response>)`: typed provenance, shown as Invalid response.                              |
 | Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                                                                                    |
 | Explicit PRs  | `…/_git/{repo}/pullrequest/{id}` on `dev.azure.com` or `{org}.visualstudio.com` (optional `DefaultCollection`). Resolved to `{org}/{project ID}/{repository ID}`; must equal the saved repository, else `target_mismatch`. Same gates as GitHub.                       |
@@ -124,7 +125,7 @@ Parked causes (Queue › **Needs attention**):
 | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Credentials | NotLoggedIn, NoAccountInTenant, TenantNotFound, InteractionRequired, AzMissing/AzTooOld, 401 after retry, wrong identity |
 | Permission  | TenantAccessBlocked, 403, 404                                                                                            |
-| Network     | Network, Timeout (backoff, then park)                                                                                    |
+| Network     | Network, Timeout (backoff, then park; auto-resume never runs out)                                                        |
 | Failed      | Other, MalformedOutput                                                                                                   |
 
 A credential failure marks the bound identity disconnected: no further poll or Azure CLI run until Settings › Azure DevOps sees it connected again, which resumes the parked poll once.

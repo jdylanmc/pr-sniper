@@ -20,8 +20,17 @@ pub enum Origin {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
-    Github { account_id: String },
-    Copilot { account_id: String },
+    Github {
+        account_id: String,
+    },
+    Copilot {
+        account_id: String,
+    },
+    /// Reachability only: Azure DevOps rate limits keep their account's
+    /// `Github` gate.
+    AzureDevops {
+        account_id: String,
+    },
 }
 
 impl Scope {
@@ -33,6 +42,12 @@ impl Scope {
 
     pub fn copilot(account_id: &str) -> Self {
         Self::Copilot {
+            account_id: account_id.into(),
+        }
+    }
+
+    pub fn azure_devops(account_id: &str) -> Self {
+        Self::AzureDevops {
             account_id: account_id.into(),
         }
     }

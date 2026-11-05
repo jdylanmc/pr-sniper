@@ -111,6 +111,12 @@ impl OperationFailure {
     pub fn resumable(&self) -> bool {
         self.transient() || matches!(self, Self::Permission | Self::Panic)
     }
+
+    /// Local connectivity: DNS, connect, TLS, reset, truncated body, timeout.
+    /// Never a reason for a human to step in.
+    pub fn transport(&self) -> bool {
+        matches!(self, Self::Network | Self::Timeout)
+    }
 }
 
 fn is_zero(value: &u8) -> bool {
@@ -1588,10 +1594,14 @@ impl Monitor {
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
         let connectivity = store.load_connectivity()?;
-        for health in self.state.health.values_mut() {
+        for (key, health) in self.state.health.iter_mut() {
+            let provider = configured
+                .iter()
+                .find(|c| &c.health_key == key)
+                .map_or(ProviderId::Github, |c| c.provider.clone());
             let offline = health.provider_account_id.as_ref().and_then(|account| {
                 connectivity
-                    .offline(&[crate::backpressure::Scope::github(account)])
+                    .offline(&[crate::connectivity::repository_scope(&provider, account)])
                     .and_then(|s| s.offline_since)
             });
             if let Some(operation) = health.operation.as_mut() {
@@ -2545,7 +2555,10 @@ impl Monitor {
                 continue;
             };
             if connectivity
-                .offline(&[crate::backpressure::Scope::github(account_id)])
+                .offline(&[crate::connectivity::repository_scope(
+                    &configuration.provider,
+                    account_id,
+                )])
                 .is_some()
             {
                 continue;
@@ -2718,7 +2731,10 @@ impl Monitor {
         let offline = store
             .load_connectivity()
             .map_err(MonitoringError::Storage)?
-            .offline(std::slice::from_ref(&github))
+            .offline(&[crate::connectivity::repository_scope(
+                &ticket.provider,
+                &ticket.provider_account_id,
+            )])
             .is_some();
         let mut paced_until = None;
         match &outcome {
@@ -3985,7 +4001,17 @@ impl JobOperation {
             .failure
             .as_ref()
             .filter(|failure| failure.resumable())
-            .and_then(|_| RESUME_COOLDOWNS_SECONDS.get(usize::from(self.resume_cycle)))
+            .and_then(|failure| {
+                let cycle = usize::from(self.resume_cycle);
+                // Connectivity alone never hands work to a human: the last
+                // cooldown repeats.
+                RESUME_COOLDOWNS_SECONDS.get(cycle).or_else(|| {
+                    failure
+                        .transport()
+                        .then(|| RESUME_COOLDOWNS_SECONDS.last())
+                        .flatten()
+                })
+            })
             .map(|cooldown| now.saturating_add(*cooldown));
     }
 
@@ -4003,6 +4029,24 @@ impl JobOperation {
         self.resume_at = RESUME_COOLDOWNS_SECONDS
             .get(usize::from(self.resume_cycle))
             .map(|cooldown| now.saturating_add(*cooldown));
+        self.resume_at.is_some()
+    }
+
+    /// Older builds stopped resuming a connectivity park after the last cycle,
+    /// leaving it human-only. It earns the last cooldown again. Returns whether
+    /// a resume was scheduled.
+    pub fn rearm_transport(&mut self, now: i64) -> bool {
+        if self.offline_since.is_some()
+            || !self.parked()
+            || self.resume_at.is_some()
+            || !self
+                .failure
+                .as_ref()
+                .is_some_and(OperationFailure::transport)
+        {
+            return false;
+        }
+        self.schedule_resume(now);
         self.resume_at.is_some()
     }
 
@@ -4266,7 +4310,9 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
         };
     }
     let (failure, retry_after_seconds) = match error {
-        ConnectionError::Timeout => (OperationFailure::Timeout, None),
+        ConnectionError::Timeout | ConnectionError::ProviderRejectedStatus(408) => {
+            (OperationFailure::Timeout, None)
+        }
         ConnectionError::SignedOut
         | ConnectionError::WrongIdentity
         // Azure CLI missing or too old: setup in Settings, like a sign-in.
@@ -4335,6 +4381,31 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::RepositoryChanged => "RepositoryChanged",
         ConnectionError::Configuration => "Configuration",
     }
+}
+
+/// Repository-check errors that are retried, never parked for a human.
+const TRANSIENT_CHECKS: [ConnectionError; 5] = [
+    ConnectionError::Network,
+    ConnectionError::Timeout,
+    ConnectionError::ProviderRejectedStatus(408),
+    ConnectionError::IncompleteRead,
+    ConnectionError::ProviderFailure,
+];
+
+/// Older builds stored some transient repository-check failures (a truncated
+/// read) as permanent with only their message. The exact message of a check
+/// error identifies it; its typed cause is today's classification.
+pub(crate) fn legacy_transient_check(message: &str) -> Option<OperationFailure> {
+    TRANSIENT_CHECKS
+        .into_iter()
+        .find_map(|error| match check_error(error) {
+            MonitoringError::Recoverable {
+                message: known,
+                failure,
+                ..
+            } if known == message => Some(failure),
+            _ => None,
+        })
 }
 
 fn configuration_changed() -> MonitoringError {
@@ -4764,13 +4835,17 @@ impl Monitor {
             if run_accounts_connected(&run, &connected) && operation.rearm_stale_credentials(now) {
                 return Ok(true);
             }
+            if operation.rearm_transport(now) {
+                return Ok(true);
+            }
             if operation.auto_resume(account, now) {
                 return Ok(true);
             }
         }
         for publication in store.load_publications()? {
             let account = reconnected.contains(&publication.review.job.account_id);
-            if publication.operation.clone().auto_resume(account, now) {
+            let mut operation = publication.operation.clone();
+            if operation.rearm_transport(now) || operation.auto_resume(account, now) {
                 return Ok(true);
             }
         }
@@ -4781,7 +4856,8 @@ impl Monitor {
             .filter_map(|h| h.operation.as_ref())
         {
             let account = reconnected.contains(&operation.account_id);
-            if operation.clone().auto_resume(account, now) {
+            let mut operation = operation.clone();
+            if operation.rearm_transport(now) || operation.auto_resume(account, now) {
                 return Ok(true);
             }
         }
@@ -4827,6 +4903,7 @@ impl Monitor {
             {
                 changed = true;
             }
+            changed |= run.operation.rearm_transport(now);
             if run.operation.auto_resume(account, now) {
                 run.error = None;
                 run.phase = "Waiting for shared AI capacity".into();
@@ -4843,6 +4920,7 @@ impl Monitor {
         let mut publications_changed = false;
         for publication in &mut publications {
             let account = reconnected.contains(&publication.review.job.account_id);
+            publications_changed |= publication.operation.rearm_transport(now);
             if publication.operation.auto_resume(account, now) {
                 publication.error = None;
                 resumed += 1;
@@ -4878,6 +4956,7 @@ impl Monitor {
                 continue;
             };
             let account = reconnected.contains(&operation.account_id);
+            health_changed |= operation.rearm_transport(now);
             if operation.auto_resume(account, now) {
                 health.last_failure = None;
                 health.last_error = None;
@@ -4947,6 +5026,108 @@ mod read_diagnostic_tests {
         operation.fail(&check_error(ConnectionError::LimitExceeded), 10);
         assert_eq!(operation.state, OperationState::Failed);
         assert_eq!(operation.failure, Some(OperationFailure::Permanent));
+    }
+
+    #[test]
+    fn transport_failures_classify_as_network_class_and_a_408_is_a_timeout() {
+        for (error, failure) in [
+            (ConnectionError::Network, OperationFailure::Network),
+            (ConnectionError::Timeout, OperationFailure::Timeout),
+            (
+                ConnectionError::ProviderRejectedStatus(408),
+                OperationFailure::Timeout,
+            ),
+            (ConnectionError::ProviderFailure, OperationFailure::Provider),
+        ] {
+            let MonitoringError::Recoverable { failure: got, .. } = check_error(error) else {
+                panic!("{error:?} must be recoverable");
+            };
+            assert_eq!(got, failure, "{error:?}");
+            assert!(got.transient(), "{error:?}");
+        }
+        assert!(OperationFailure::Network.transport());
+        assert!(OperationFailure::Timeout.transport());
+        assert!(!OperationFailure::Provider.transport());
+    }
+
+    #[test]
+    fn connectivity_parks_keep_resuming_after_every_cooldown_cycle() {
+        let cycles = RESUME_COOLDOWNS_SECONDS.len() as u8;
+        let park = |error: ConnectionError| {
+            let mut operation = running_operation();
+            operation.attempt_count = MAX_FAILED_ATTEMPTS;
+            operation.resume_cycle = cycles;
+            operation.fail(&check_error(error), 10);
+            assert_eq!(operation.state, OperationState::ManualRetry);
+            operation
+        };
+        for error in [ConnectionError::Network, ConnectionError::Timeout] {
+            let mut operation = park(error);
+            let last = *RESUME_COOLDOWNS_SECONDS.last().unwrap();
+            assert_eq!(operation.resume_at, Some(10 + last), "{error:?}");
+            assert!(operation.auto_resume(false, 10 + last));
+            assert_eq!(operation.state, OperationState::Queued);
+            assert_eq!(operation.resume_cycle, cycles + 1);
+        }
+        // Other transient causes keep their bounded cycles.
+        assert_eq!(park(ConnectionError::ProviderFailure).resume_at, None);
+    }
+
+    #[test]
+    fn a_connectivity_park_older_builds_left_human_only_is_rearmed() {
+        let cycles = RESUME_COOLDOWNS_SECONDS.len() as u8;
+        let last = *RESUME_COOLDOWNS_SECONDS.last().unwrap();
+        let legacy = |failure: OperationFailure| {
+            let mut operation = running_operation();
+            operation.state = OperationState::ManualRetry;
+            operation.failure = Some(failure);
+            operation.resume_cycle = cycles;
+            operation.resume_at = None;
+            operation
+        };
+        let mut operation = legacy(OperationFailure::Network);
+        assert!(operation.rearm_transport(100));
+        assert_eq!(operation.resume_at, Some(100 + last));
+        // Idempotent: an armed park is left alone.
+        assert!(!operation.rearm_transport(200));
+        assert!(operation.auto_resume(false, 100 + last));
+        for other in [OperationFailure::Provider, OperationFailure::Permanent] {
+            assert!(!legacy(other).rearm_transport(100));
+        }
+        let mut offline = legacy(OperationFailure::Timeout);
+        offline.offline_since = Some(50);
+        assert!(!offline.rearm_transport(100));
+    }
+
+    #[test]
+    fn legacy_transient_check_messages_map_to_their_typed_causes() {
+        let message = |error| match check_error(error) {
+            MonitoringError::Recoverable { message, .. } => message,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::IncompleteRead)),
+            Some(OperationFailure::Provider)
+        );
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::Network)),
+            Some(OperationFailure::Network)
+        );
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::Timeout)),
+            Some(OperationFailure::Timeout)
+        );
+        assert_eq!(
+            legacy_transient_check(&message(ConnectionError::ProviderRejectedStatus(408))),
+            Some(OperationFailure::Timeout)
+        );
+        for permanent in [
+            message(ConnectionError::InvalidResponse),
+            message(ConnectionError::LimitExceeded),
+            "Repository check failed: IncompleteRead ".into(),
+        ] {
+            assert_eq!(legacy_transient_check(&permanent), None, "{permanent}");
+        }
     }
 
     #[test]
