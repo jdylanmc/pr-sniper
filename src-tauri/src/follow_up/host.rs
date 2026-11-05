@@ -116,7 +116,7 @@ pub(crate) fn scan(
             .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin.proof, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(provider::ConnectionError::InvalidResponse) => {
+            Err(error) if error.is_invalid_response() => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -135,7 +135,7 @@ pub(crate) fn scan(
             .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(provider::ConnectionError::InvalidResponse) => {
+            Err(error) if error.is_invalid_response() => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -189,7 +189,7 @@ pub(crate) fn scan(
             ) {
                 Ok(threads) => result.threads.push((binding.clone(), threads)),
                 // A malformed discussion on one PR must not fail the repository scan.
-                Err(provider::ConnectionError::InvalidResponse) => {
+                Err(error) if error.is_invalid_response() => {
                     crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 }
                 Err(error) => return Err(error),

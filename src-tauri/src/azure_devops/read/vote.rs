@@ -5,7 +5,7 @@
 
 use super::{Client, List, RepositoryKey, Request};
 use crate::azure_devops::tenant::TenantId;
-use crate::provider::ConnectionError;
+use crate::provider::{ConnectionError, ProviderResponse};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -42,7 +42,12 @@ impl Client {
         reviewer: &TenantId,
     ) -> Result<Option<i64>, ConnectionError> {
         self.owns(key)?;
-        let (list, _): (List<RawVote>, _) = self.get(self.reviewers_url(key, number, None)).await?;
+        let (list, _): (List<RawVote>, _) = self
+            .get(
+                ProviderResponse::Reviewers,
+                self.reviewers_url(key, number, None),
+            )
+            .await?;
         Ok(list.value.iter().find(|r| r.is(reviewer)).map(|r| r.vote))
     }
 
@@ -60,10 +65,11 @@ impl Client {
         let response = self
             .call(Request::put(url, json!({ "vote": vote })))
             .await?;
-        let raw: RawVote =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let raw: RawVote = super::parse(ProviderResponse::Reviewers, &response.body)?;
         if !raw.is(reviewer) {
-            return Err(ConnectionError::InvalidResponse);
+            return Err(ConnectionError::MalformedResponse(
+                ProviderResponse::Reviewers,
+            ));
         }
         Ok(raw.vote)
     }

@@ -9,8 +9,8 @@ use super::threads::AdoThread;
 use super::{Client, List, Reader, RepositoryKey, Request};
 use crate::azure_devops::tenant::TenantId;
 use crate::provider::{
-    ConnectionError, HumanThread, Lifecycle, Observation, PrSnapshot, ProviderReview, PullRequest,
-    SnapshotCheck, SnapshotComment, SnapshotReview, SnapshotThread,
+    ConnectionError, HumanThread, Lifecycle, Observation, PrSnapshot, ProviderResponse,
+    ProviderReview, PullRequest, SnapshotCheck, SnapshotComment, SnapshotReview, SnapshotThread,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -144,7 +144,8 @@ struct RawPolicyConfiguration {
 #[serde(rename_all = "camelCase")]
 struct RawEvaluation {
     evaluation_id: Option<String>,
-    status: String,
+    /// `queued`, the enum default, may be omitted.
+    status: Option<String>,
     configuration: RawPolicyConfiguration,
 }
 
@@ -159,7 +160,8 @@ struct RawStatusContext {
 #[serde(rename_all = "camelCase")]
 struct RawStatus {
     id: u64,
-    state: String,
+    /// `notSet`, the enum default, is omitted.
+    state: Option<String>,
     context: Option<RawStatusContext>,
     iteration_id: Option<u64>,
 }
@@ -208,7 +210,8 @@ impl Client {
                 ("api-version", POLICY_API_VERSION),
             ],
         );
-        let (list, _): (List<RawEvaluation>, _) = self.get(url).await?;
+        let (list, _): (List<RawEvaluation>, _) =
+            self.get(ProviderResponse::PolicyEvaluations, url).await?;
         Ok(list.value)
     }
 
@@ -219,7 +222,7 @@ impl Client {
     ) -> Result<Vec<RawStatus>, ConnectionError> {
         self.owns(key)?;
         let url = self.git_url(key, &["pullRequests", &number.to_string(), "statuses"], &[]);
-        let (list, _): (List<RawStatus>, _) = self.get(url).await?;
+        let (list, _): (List<RawStatus>, _) = self.get(ProviderResponse::Statuses, url).await?;
         Ok(list.value)
     }
 
@@ -231,16 +234,16 @@ impl Client {
         self.owns(key)?;
         let url = self.git_url(key, &["pullrequests", &number.to_string()], &[]);
         let response = self.call(Request::get(url)).await?;
-        let raw: Value =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let malformed = ConnectionError::MalformedResponse(ProviderResponse::PullRequest);
+        let raw: Value = super::parse(ProviderResponse::PullRequest, &response.body)?;
         let pull = serde_json::from_value::<RawPullRequest>(raw.clone())
-            .map_err(|_| ConnectionError::InvalidResponse)?
-            .into_pull_request(key)?;
+            .map_err(|_| malformed)?
+            .into_pull_request(key)
+            .map_err(|error| error.from_response(ProviderResponse::PullRequest))?;
         if pull.number != number {
             return Err(ConnectionError::RepositoryChanged);
         }
-        let detail: RawDetail =
-            serde_json::from_value(raw).map_err(|_| ConnectionError::InvalidResponse)?;
+        let detail: RawDetail = serde_json::from_value(raw).map_err(|_| malformed)?;
         let iterations = self.iterations(key, number).await?;
         let latest = iterations.last().map(|i| i.id);
         let mut checks = Vec::new();
@@ -251,7 +254,8 @@ impl Client {
                 continue;
             }
             let kind = configuration.kind.id.to_ascii_lowercase();
-            let Some(state) = CheckState::policy(&evaluation.status) else {
+            let status = evaluation.status.as_deref().unwrap_or("queued");
+            let Some(state) = CheckState::policy(status) else {
                 continue;
             };
             if kind == MINIMUM_REVIEWERS_POLICY || kind == REQUIRED_REVIEWERS_POLICY {
@@ -278,11 +282,12 @@ impl Client {
             } else {
                 continue;
             };
+            let malformed = ConnectionError::MalformedResponse(ProviderResponse::PolicyEvaluations);
             let name = name
                 .or_else(|| evaluation.evaluation_id.clone())
-                .ok_or(ConnectionError::InvalidResponse)?;
+                .ok_or(malformed)?;
             checks.push(Check {
-                name: super::bounded(Some(name)).ok_or(ConnectionError::InvalidResponse)?,
+                name: super::bounded(Some(name)).ok_or(malformed)?,
                 state,
                 required: configuration.is_blocking,
             });
@@ -304,7 +309,8 @@ impl Client {
                 continue;
             };
             if statuses.get(&name).is_none_or(|(id, _)| status.id > *id) {
-                statuses.insert(name, (status.id, CheckState::status(&status.state)));
+                let state = status.state.as_deref().unwrap_or("notSet");
+                statuses.insert(name, (status.id, CheckState::status(state)));
             }
         }
         for (name, (_, state)) in statuses {
