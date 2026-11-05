@@ -5,7 +5,7 @@
 
 use super::{Client, List, Reader, RepositoryKey, Request};
 use crate::azure_devops::tenant::TenantId;
-use crate::provider::{Comment, ConnectionError, Thread};
+use crate::provider::{Comment, ConnectionError, ProviderResponse, Thread};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -76,7 +76,7 @@ impl ThreadRef {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawPosition {
-    line: u64,
+    line: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -220,10 +220,10 @@ impl RawThread {
             .filter(|path| !path.is_empty())
             .map(str::to_owned);
         let line = context.as_ref().and_then(|c| {
-            c.right_file_start
-                .as_ref()
-                .map(|p| ("RIGHT", p.line))
-                .or(c.left_file_start.as_ref().map(|p| ("LEFT", p.line)))
+            let at = |side, p: &Option<RawPosition>| {
+                Some((side, p.as_ref()?.line.filter(|line| *line > 0)?))
+            };
+            at("RIGHT", &c.right_file_start).or_else(|| at("LEFT", &c.left_file_start))
         });
         Some(AdoThread {
             reference: ThreadRef {
@@ -302,7 +302,12 @@ impl Client {
         number: u64,
     ) -> Result<Vec<AdoThread>, ConnectionError> {
         self.owns(key)?;
-        let (list, _): (List<RawThread>, _) = self.get(self.threads_url(key, number, &[])).await?;
+        let (list, _): (List<RawThread>, _) = self
+            .get(
+                ProviderResponse::Threads,
+                self.threads_url(key, number, &[]),
+            )
+            .await?;
         if list.value.len() > MAX_THREADS {
             return Err(ConnectionError::LimitExceeded);
         }
@@ -328,10 +333,9 @@ impl Client {
         let response = self
             .call(Request::post(self.threads_url(key, number, &[]), body))
             .await?;
-        let raw: RawThread =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let raw: RawThread = super::parse(ProviderResponse::Thread, &response.body)?;
         raw.into_thread(key, number)
-            .ok_or(ConnectionError::InvalidResponse)
+            .ok_or(ConnectionError::MalformedResponse(ProviderResponse::Thread))
     }
 
     /// Replies under `parent`; returns the new comment's number.
@@ -357,11 +361,12 @@ impl Client {
                 json!({"parentCommentId": parent, "content": content, "commentType": 1}),
             ))
             .await?;
-        let raw: Raw =
-            serde_json::from_slice(&response.body).map_err(|_| ConnectionError::InvalidResponse)?;
+        let raw: Raw = super::parse(ProviderResponse::Comment, &response.body)?;
         (raw.id > 0)
             .then_some(raw.id)
-            .ok_or(ConnectionError::InvalidResponse)
+            .ok_or(ConnectionError::MalformedResponse(
+                ProviderResponse::Comment,
+            ))
     }
 
     /// Sets the thread status (`fixed`, `active`, ...) without a comment.
@@ -432,7 +437,7 @@ impl Client {
                     ("$compareTo", "0"),
                 ],
             );
-            let (raw, _): (Raw, _) = self.get(url).await?;
+            let (raw, _): (Raw, _) = self.get(ProviderResponse::IterationChanges, url).await?;
             for change in raw.change_entries {
                 let path = change
                     .item

@@ -50,6 +50,7 @@ fn ambiguous(error: ConnectionError) -> bool {
             | ConnectionError::ProviderFailure
             | ConnectionError::ProviderFailureAfter(_)
             | ConnectionError::InvalidResponse
+            | ConnectionError::MalformedResponse(_)
             | ConnectionError::IncompleteRead
     )
 }

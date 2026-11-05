@@ -1,0 +1,41 @@
+{
+  "count": 2,
+  "value": [
+    {
+      "artifactId": "vstfs:///CodeReview/CodeReviewId/00000000-0000-0000-0000-0000000000b1%2f7",
+      "configuration": {
+        "id": 11,
+        "isBlocking": true,
+        "isDeleted": false,
+        "isEnabled": true,
+        "settings": {
+          "authorId": "00000000-0000-0000-0000-0000000000e1",
+          "defaultDisplayName": null,
+          "invalidateOnSourceUpdate": true,
+          "policyApplicability": null,
+          "scope": [{ "matchKind": "Exact", "refName": "refs/heads/main", "repositoryId": "00000000-0000-0000-0000-0000000000c1" }],
+          "statusGenre": null,
+          "statusName": "Owners"
+        },
+        "type": { "displayName": "Status", "id": "cbdc66da-9728-4af8-aada-9a5a32e4a226" }
+      },
+      "context": { "latestStatusId": 2 },
+      "evaluationId": "00000000-0000-0000-0000-0000000000f1",
+      "startedDate": "2026-11-01T10:00:03.0000000Z",
+      "status": "queued"
+    },
+    {
+      "artifactId": "vstfs:///CodeReview/CodeReviewId/00000000-0000-0000-0000-0000000000b1%2f7",
+      "configuration": {
+        "id": 12,
+        "isBlocking": false,
+        "isDeleted": false,
+        "isEnabled": true,
+        "settings": { "statusGenre": "lint", "statusName": "style" },
+        "type": { "displayName": "Status", "id": "cbdc66da-9728-4af8-aada-9a5a32e4a226" }
+      },
+      "evaluationId": "00000000-0000-0000-0000-0000000000f2",
+      "startedDate": "2026-11-01T10:00:04.0000000Z"
+    }
+  ]
+}

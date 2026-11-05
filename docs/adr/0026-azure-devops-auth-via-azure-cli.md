@@ -58,3 +58,17 @@
   PATH is stale. cmd.exe re-parses batch command lines, so `cli_process` only
   passes a `.cmd`/`.bat` program arguments of `[A-Za-z0-9._/-]` (fixed literals
   and validated GUIDs), on top of Rust's batch argument escaping.
+
+## Addendum: throttling and response provenance
+
+- Throttling is backpressure, never failure: 429 and a read's 503 with a
+  stated wait map to `RateLimited`/`RateLimitedAfter`; `Retry-After` (seconds or
+  HTTP-date) and an exhausted `X-RateLimit-Remaining`/`X-RateLimit-Reset`
+  state the wait. 2xx throttling warnings hold the organization's next
+  request ([polling](../polling.md#azure-devops-throttling)).
+- A write's 503 stays an uncertain provider failure: it may have landed.
+- A `text/html` 2xx answer to a JSON request is a sign-in challenge (`X-TFS-FedAuth*`: token
+  dropped, `SignedOut` after one retry) or `Network`; never a malformed
+  response.
+- A body that does not parse is `MalformedResponse(ProviderResponse)`, naming
+  the response, never its content. The wire cause stays `invalid_response`.
