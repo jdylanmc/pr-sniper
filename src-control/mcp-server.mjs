@@ -171,10 +171,11 @@ export function createServer() {
   );
   register(
     "inspect_target",
-    "Parse a GitHub PR/repository URL and find saved repository IDs before choosing scope or an acting account.",
+    "Parse a GitHub or Azure DevOps (dev.azure.com/*.visualstudio.com) PR/repository URL and find saved repository IDs before choosing scope or an acting account.",
     { url: s.id },
     z.object({
       target: z.object({
+        provider: z.enum(["github", "azure_devops"]),
         name: s.id,
         pull_request_number: z.number().nullable(),
       }),
@@ -309,7 +310,7 @@ export function createServer() {
   );
   register(
     "watch_pull_request",
-    "Watch the exact PR using an existing enabled repository snapshot. Does not enable scope or grants. Reuses/prioritizes eligible work; never interrupts running work or bypasses Wait. Set review_again only on explicit human rerun intent.",
+    "Watch the exact GitHub or Azure DevOps PR using an existing enabled repository snapshot; the URL must resolve to that snapshot's stable repository ID (else target_mismatch). Does not enable scope or grants. Reuses/prioritizes eligible work; never interrupts running work or bypasses Wait. Set review_again only on explicit human rerun intent.",
     mutation({
       expected: s.repository,
       url: s.id,
