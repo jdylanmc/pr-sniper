@@ -360,6 +360,36 @@ fn a_pause_after_a_short_sleep_keeps_the_slept_window() {
 }
 
 #[test]
+fn a_supersession_after_a_short_sleep_keeps_the_slept_window() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(
+        &store,
+        &run.operation.id,
+        Err(Failure::provider("Flaky.")),
+        101,
+    )
+    .unwrap();
+    let next = store.load_reviews().unwrap()[0]
+        .operation
+        .next_attempt_at
+        .unwrap();
+    let run = running_packet(&store, &template, next);
+    assert_eq!(run.operation.attempt_count, 2);
+    let deadline = run.operation.retry_deadline;
+    // 5 minutes left, 10 minutes asleep, then the base moved under the run.
+    let woke = deadline - 5 * 60 + 10 * 60;
+    let mut moved = Failure::superseded("The base moved.");
+    moved.slept_seconds = 10 * 60;
+    complete(&store, &run.operation.id, Err(moved), woke).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Queued);
+    assert_eq!(op.retry_deadline, deadline + 10 * 60);
+    let retried = running_packet(&store, &template, op.next_attempt_at.unwrap());
+    assert_eq!(retried.operation.state, OperationState::Running);
+}
+
+#[test]
 fn a_latched_gate_failure_keeps_the_sleep_of_the_committed_one() {
     let attempt = AttemptGuard::new(Arc::new(|| Err(Failure::timeout())));
     assert!(attempt.gate()().is_err());

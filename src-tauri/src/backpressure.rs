@@ -167,7 +167,7 @@ pub fn defer(
     };
     let scope = Scope::of(error.origin, &operation.account_id, ai_account);
     let until = record(store, scope, error.retry_after_seconds, &operation.id, now)?;
-    operation.defer_until(until, now);
+    operation.defer_until(until, now, error.slept_seconds);
     Ok(true)
 }
 

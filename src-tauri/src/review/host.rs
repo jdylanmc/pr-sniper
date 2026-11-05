@@ -397,6 +397,7 @@ pub(crate) fn complete(
             now,
             wait.map(|base| monitoring::Supersession { at: now, base }),
         );
+        current.operation.credit_sleep(error.slept_seconds, now);
         current.attempt_ducks.clear();
         current.result = None;
         current.phase = "Waiting for current PR state".into();
