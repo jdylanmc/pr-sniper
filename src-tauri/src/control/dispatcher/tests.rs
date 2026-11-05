@@ -379,6 +379,49 @@ fn azure_devops_repositories_save_only_as_the_bound_identity() {
 }
 
 #[test]
+fn a_disabled_repository_adds_with_its_full_configuration_in_one_save() {
+    let fixture = Fixture::new();
+    let id = uuid::Uuid::new_v4().to_string();
+    let repository = |enabled: bool| {
+        json!({"id":id,"provider":"github","name":"fixture/added","enabled":enabled,
+            "provider_account_id":"101","provider_repository_id":"999",
+            "watched_authors":[{"id":"11","login":"author"}],
+            "admission":{"mode":"filtered","rules":[{"kind":"assigned","enabled":true}]},
+            "assignments":[{"id":"cccccccc-cccc-4ccc-8ccc-0000000000ad",
+                "agent_id":"aaaaaaaa-aaaa-4aaa-8aaa-000000000001","comment":true}]})
+    };
+    let save = |value: Value, allow_grants: bool| {
+        let revision = fixture.call(json!({"operation":"inspect"}))["result"]["revision"].clone();
+        fixture.call(
+            json!({"operation":"save","revision":revision,"account_generation":7,
+            "allow_grants":allow_grants,
+            "edit":{"kind":"repository","id":id,"expected":null,"value":value}}),
+        )
+    };
+    let enabled = save(repository(true), true);
+    assert_eq!(
+        enabled["error"]["detail"],
+        "Add this repository with monitoring disabled, then save its configuration.",
+        "{enabled}"
+    );
+    let ungranted = save(repository(false), false);
+    assert_eq!(
+        ungranted["error"]["code"], "explicit_grant_required",
+        "{ungranted}"
+    );
+    let saved = save(repository(false), true);
+    assert_eq!(saved["ok"], true, "{saved}");
+    let stored = fixture.store.lock().unwrap().load_settings().unwrap();
+    let stored = stored.repositories.iter().find(|r| r.id == id).unwrap();
+    assert!(!stored.enabled);
+    assert_eq!(stored.assignments.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&stored.admission).unwrap()["mode"],
+        "filtered"
+    );
+}
+
+#[test]
 fn azure_devops_repositories_refuse_approve_and_merge_with_a_typed_error() {
     let mut fixture = Fixture::new();
     fixture.azure = Some(azure_report(true));

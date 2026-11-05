@@ -2438,7 +2438,9 @@ fn validate_repository_save_account(
                 "Choose a connected account and resolve this repository before adding it.".into(),
             );
         }
-        if expected.is_none() && (repository.enabled || !repository.assignments.is_empty()) {
+        // A disabled add may carry its full configuration; storage validates it
+        // like an update. Monitoring is enabled by a later save.
+        if expected.is_none() && repository.enabled {
             return Err(
                 "Add this repository with monitoring disabled, then save its configuration.".into(),
             );

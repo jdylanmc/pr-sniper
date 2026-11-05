@@ -52,7 +52,7 @@ Use tool input schemas and current resource values; never invent identities.
 4. New repository: ask which **already connected** GitHub account, or use the
    connected Azure DevOps account (`list_repository_accounts` reports its setup
    state). `resolve_repository` verifies repository identity with that account. Save a disabled repository
-   first with `save_repository`, then guide assignments. Offer `apply_review_preset` (SOLID + Security teammates,
+   first with `save_repository` (it may already carry assignments, admission and grants), then guide assignments. Offer `apply_review_preset` (SOLID + Security teammates,
    Maintainer primary) with explicitly selected Copilot account and model.
    Use `list_models` to list that account's choices; never infer login or model.
    The preset preserves existing/customized components and adds only missing
