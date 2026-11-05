@@ -124,7 +124,7 @@ Parked causes (Queue › **Needs attention**):
 | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Credentials | NotLoggedIn, NoAccountInTenant, TenantNotFound, InteractionRequired, AzMissing/AzTooOld, 401 after retry, wrong identity |
 | Permission  | TenantAccessBlocked, 403, 404                                                                                            |
-| Network     | Network, Timeout (backoff, then park)                                                                                    |
+| Network     | Network, Timeout (backoff, then park; auto-resume never runs out)                                                        |
 | Failed      | Other, MalformedOutput                                                                                                   |
 
 A credential failure marks the bound identity disconnected: no further poll or Azure CLI run until Settings › Azure DevOps sees it connected again, which resumes the parked poll once.

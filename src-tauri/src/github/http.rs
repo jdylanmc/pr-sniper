@@ -406,11 +406,7 @@ mod tests {
             ),
         ] {
             let (address, server) = serve(reply, hold);
-            assert_eq!(
-                fail(&format!("http://{address}/")),
-                error,
-                "{name}"
-            );
+            assert_eq!(fail(&format!("http://{address}/")), error, "{name}");
             server.join().unwrap();
         }
         // TLS handshake against a plain-text peer.

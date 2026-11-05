@@ -35,7 +35,7 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Row action: **Fix** for credentials (opens Accounts), **Retry** otherwise. **Retry all** pill.
 - No user-facing "Blocked" state. Running tab shows active + queued only.
 - User Retry starts a new operation (cooldown cycle 0). History kept.
-- Auto-resume: resumable parked failures (transient, permission) requeue with a fresh 3-attempt budget after 30m, 1h, 2h, 4h, 8h; five cycles then human-only. Credentials resume when the GitHub or Copilot account connects again (a connect transition, or the first tick after start). Permanent never resumes. Superseded/closed/merged work is skipped.
+- Auto-resume: resumable parked failures (transient, permission) requeue with a fresh 3-attempt budget after 30m, 1h, 2h, 4h, 8h; five cycles then human-only, except connectivity (Network/Timeout): its last cooldown repeats, so connectivity alone never needs a human. Credentials resume when the GitHub or Copilot account connects again (a connect transition, or the first tick after start). Permanent never resumes. Superseded/closed/merged work is skipped.
 - Agent-quality rejections ("execution failure") are Provider-class, so they retry. Not reading every file is not a rejection ([ADR 0020](0020-constrained-host-owned-review-tools.md)).
 - Legacy parked `rate_limited` operations still load and resume through the cooldowns above; new code never produces one.
 - AI budget starts at worker start. Cancel refunds only intentional cancel or discarded successful output. Real failure racing pause stays failure.
@@ -65,3 +65,6 @@ Provider and AI failures are transient or permanent. Unbounded retry hides fault
 - Completed reviews stay Ready despite config drift or disabled repo.
 - Rust-internal `blocked` reason may linger in `capacity`. Not surfaced.
 - Code = 3 attempts total. Old prose said "three retries".
+- Transport classes (`OperationFailure::transport`): DNS, connect, TLS, reset and truncated-body errors are `Network`; client/read timeouts and HTTP 408 are `Timeout`; 5xx and `IncompleteRead` (a page set that moved or a short provider read) are `Provider`. All are transient. A write lost to any of them is uncertain and reconciles before retry ([provider writes](../provider-writes.md)).
+- Provider action observations: Network/Timeout keep backing off (capped at 5m) and never park; a scheduled retry is not Needs attention.
+- Builds before 2026-10-25 parked a review whose repository check ended in `IncompleteRead` as permanent. Startup identifies them by that exact check message (no typed cause was stored), requeues live work with a fresh window and ends retired work quietly; it also resumes action observations stopped after 3 `Network`/`Timeout` failures. No provider effect is replayed.

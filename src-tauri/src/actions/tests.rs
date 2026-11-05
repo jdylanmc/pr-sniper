@@ -1765,7 +1765,13 @@ fn observation_retry_after_and_original_mutation_ownership_survive_retry_request
     assert!(request_observation_retry(&store, &item, NOW + 22).is_err());
     // Rate limits never spend the budget; real failures still do.
     for i in 1..=4 {
-        synchronize(&store, &item, Err(provider_failure.clone()), NOW + 21 + i * 60).unwrap();
+        synchronize(
+            &store,
+            &item,
+            Err(provider_failure.clone()),
+            NOW + 21 + i * 60,
+        )
+        .unwrap();
     }
     assert_eq!(store.load_actions().unwrap().observations[0].retry_at, None);
     request_observation_retry(&store, &item, NOW + 300).unwrap();
