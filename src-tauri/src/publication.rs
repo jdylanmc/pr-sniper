@@ -13,12 +13,15 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum GateError {
     Storage(String),
     Policy(String),
+    /// Policy wait that clears once a poll observes prior owned feedback at
+    /// the current revision.
+    Unobserved(String),
 }
 
 impl GateError {
     pub(crate) fn message(self) -> String {
         match self {
-            Self::Storage(message) | Self::Policy(message) => message,
+            Self::Storage(message) | Self::Policy(message) | Self::Unobserved(message) => message,
         }
     }
 }

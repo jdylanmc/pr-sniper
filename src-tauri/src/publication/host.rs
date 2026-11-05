@@ -324,7 +324,9 @@ impl FailureRouting {
     fn gate_error(&self, error: GateError) -> Failure {
         match error {
             GateError::Storage(message) => self.infrastructure_error(message),
-            GateError::Policy(message) => Failure::permanent(message),
+            GateError::Policy(message) | GateError::Unobserved(message) => {
+                Failure::permanent(message)
+            }
         }
     }
 

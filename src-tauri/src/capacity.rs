@@ -46,8 +46,61 @@ pub struct Automation {
     pub paused: bool,
 }
 
+/// Typed cause holding queued work back; `reason` keeps the display text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gate {
+    /// The assignment's Agent selection cannot resolve.
+    Selection,
+    /// The pull request waits for an external prerequisite.
+    ExternalPrerequisite,
+    /// History whose assignment or repository is gone.
+    Historical,
+    /// The provider cannot run a review yet.
+    ProviderSupport,
+    /// An explicit watch request is still configuring.
+    PendingConfiguration,
+    /// Prior owned feedback awaits a clean observation at this revision.
+    FeedbackObservation,
+    /// Prior owned feedback is unavailable or too large to use.
+    Feedback,
+    /// The last attempt failed and needs a retry.
+    Failed,
+    /// Superseded work waits for the repository's next successful poll.
+    Poll,
+    RetryBackoff,
+    Teammates,
+    /// Provider or Copilot rate-limit backpressure.
+    Backpressure,
+    Offline,
+}
+
+impl Gate {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Selection => "selection",
+            Self::ExternalPrerequisite => "external_prerequisite",
+            Self::Historical => "historical",
+            Self::ProviderSupport => "provider_support",
+            Self::PendingConfiguration => "pending_configuration",
+            Self::FeedbackObservation => "feedback_observation",
+            Self::Feedback => "feedback",
+            Self::Failed => "failed",
+            Self::Poll => "poll",
+            Self::RetryBackoff => "retry_backoff",
+            Self::Teammates => "teammates",
+            Self::Backpressure => "backpressure",
+            Self::Offline => "offline",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Work {
+    /// Why the work cannot start now: the gate behind `reason`, else
+    /// backpressure, else offline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<Gate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offline: Option<crate::connectivity::Service>,
     pub key: WorkId,
@@ -200,6 +253,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             continue;
         }
         let mut blocked_by = None;
+        let mut gate = candidate.blocked.as_ref().map(|_| candidate.gate);
         let mut reason = candidate.blocked;
         if reason.is_none()
             && repositories
@@ -208,6 +262,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .is_some_and(|repository| !repository.capabilities().review().is_available())
         {
             reason = Some(WAITING_FOR_PROVIDER.into());
+            gate = Some(Gate::ProviderSupport);
         }
         if reason.is_none()
             && candidate
@@ -219,12 +274,19 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
             })
         {
             reason = Some("Pending explicit watch configuration.".into());
+            gate = Some(Gate::PendingConfiguration);
         }
         if reason.is_none() {
             if let Some(selection) = &candidate.planned_selection {
-                reason = match crate::feedback::contexts(store, &candidate.job, &selection.agent.id)
-                {
-                    Err(error) => Some(error.message),
+                (gate, reason) = match crate::feedback::contexts_checked(
+                    store,
+                    &candidate.job,
+                    &selection.agent.id,
+                ) {
+                    Err(crate::publication::GateError::Unobserved(message)) => {
+                        (Some(Gate::FeedbackObservation), Some(message))
+                    }
+                    Err(error) => (Some(Gate::Feedback), Some(error.message())),
                     // Never spend AI work a stale feedback observation would discard.
                     Ok(contexts)
                         if !contexts.is_empty()
@@ -233,24 +295,30 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                                 &candidate.job,
                             ) =>
                     {
-                        Some(crate::feedback::WAITING_FOR_OBSERVATION.into())
+                        (
+                            Some(Gate::FeedbackObservation),
+                            Some(crate::feedback::WAITING_FOR_OBSERVATION.into()),
+                        )
                     }
-                    Ok(_) => None,
+                    Ok(_) => (None, None),
                 };
             }
         }
         if reason.is_none() {
-            reason = match &candidate.run {
+            (gate, reason) = match &candidate.run {
                 Some(run)
                     if matches!(
                         run.operation.state,
                         OperationState::Failed | OperationState::ManualRetry
                     ) =>
                 {
-                    Some(
-                        run.error
-                            .clone()
-                            .unwrap_or_else(|| "Manual retry required.".into()),
+                    (
+                        Some(Gate::Failed),
+                        Some(
+                            run.error
+                                .clone()
+                                .unwrap_or_else(|| "Manual retry required.".into()),
+                        ),
                     )
                 }
                 Some(run)
@@ -261,16 +329,19 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                             .as_ref()
                             .is_some_and(|s| !s.cleared(&candidate.job, &tracked)) =>
                 {
-                    Some(WAITING_FOR_POLL.into())
+                    (Some(Gate::Poll), Some(WAITING_FOR_POLL.into()))
                 }
                 Some(run)
                     if run.operation.state != OperationState::Running
                         && run.operation.backpressure_until.is_none()
                         && !due(&run.operation, now) =>
                 {
-                    Some("Waiting for retry backoff.".into())
+                    (
+                        Some(Gate::RetryBackoff),
+                        Some("Waiting for retry backoff.".into()),
+                    )
                 }
-                _ => None,
+                _ => (None, None),
             };
         }
         if reason.is_none()
@@ -281,6 +352,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
         {
             if let Some(teammate) = barriers.get(&candidate.key) {
                 reason = Some(review::teammates::WAITING_FOR_TEAMMATES.into());
+                gate = Some(Gate::Teammates);
                 blocked_by = Some(review::teammates::BlockedBy::Teammate(teammate.clone()));
             }
         }
@@ -310,7 +382,12 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                     .or(candidate.planned_selection.as_ref()),
             ))
             .cloned();
+        let delayed_until = delayed_until.flatten();
+        let gate = gate
+            .or(delayed_until.map(|_| Gate::Backpressure))
+            .or(offline.as_ref().map(|_| Gate::Offline));
         result.push(Work {
+            gate,
             offline,
             key: WorkId {
                 kind: Kind::Normal,
@@ -332,7 +409,7 @@ pub fn candidates(store: &Store, now: i64) -> Result<Vec<Work>, String> {
                 .run
                 .as_ref()
                 .and_then(|run| run.operation.failure_class()),
-            delayed_until: delayed_until.flatten(),
+            delayed_until,
             blocked_by,
         });
     }
@@ -387,6 +464,7 @@ impl Coordinator {
         let active = self.active.lock().map_err(|_| "AI capacity unavailable.")?;
         for reservation in active.values() {
             let entry = Work {
+                gate: None,
                 offline: None,
                 key: reservation.key.clone(),
                 enqueue_order: reservation.enqueue_order,

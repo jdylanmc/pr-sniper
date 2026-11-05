@@ -1047,3 +1047,81 @@ fn old_permanent_observation_failures_recover_through_the_toss_budget() {
         run.operation.retry_deadline
     );
 }
+
+fn gate(store: &Store, key: &str) -> Option<crate::capacity::Gate> {
+    crate::capacity::candidates(store, 1_000)
+        .unwrap()
+        .into_iter()
+        .find(|work| work.key.id == key)
+        .and_then(|work| work.gate)
+}
+
+/// A new revision of a PR with published Azure DevOps feedback waits until a
+/// poll observes that feedback; the poll's observation must then release it.
+#[test]
+fn unobserved_prior_feedback_waits_typed_until_a_provider_poll_observes_it() {
+    let (_root, store, template) = feedback_fixture(false);
+    let mut queue = store.load_queue().unwrap();
+    queue[0].provider = "azure_devops".into();
+    store.save_queue(&queue).unwrap();
+    let job = queue[0].clone();
+    let mut publications = store.load_publications().unwrap();
+    let publication = &mut publications[0];
+    publication.review.job.provider = "azure_devops".into();
+    publication.review.job.account_id = "22".into();
+    publication.batch = Some(crate::publication::Batch {
+        commit_id: "b".repeat(40),
+        body: "Summary.".into(),
+        comments: vec![crate::publication::InlineComment {
+            diff_position: None,
+            path: "src/example.rs".into(),
+            line: 1,
+            side: "RIGHT".into(),
+            body: "Check this boundary.".into(),
+        }],
+        unmappable: Vec::new(),
+    });
+    store.save_publications(&publications).unwrap();
+    let mut ledger = store.load_feedback().unwrap();
+    let thread = ledger.records.remove(0).context.thread.unwrap();
+    store.save_feedback(&ledger).unwrap();
+    let key = key(&job, &template.assignment_id);
+
+    assert_eq!(
+        gate(&store, &key),
+        Some(crate::capacity::Gate::FeedbackObservation)
+    );
+    let watched =
+        crate::control::work::result(&store, &job.configuration_id, job.number, 0).unwrap();
+    assert_eq!(
+        (watched.state, watched.reason),
+        ("waiting", Some("feedback_observation"))
+    );
+
+    let origin = &publications[0];
+    let tracked: crate::monitoring::TrackedPullRequest = serde_json::from_value(json!({
+        "provider": "azure_devops", "configuration_id": job.configuration_id,
+        "account_id": job.account_id, "repository_id": job.repository_id,
+        "pull_request_id": job.pull_request_id, "number": job.number,
+        "head_sha": job.head_sha, "lifecycle": "open", "iteration_id": "i",
+        "item_id": "item-1", "iteration": 1,
+        "admission": {"watched_author":true,"all_authors":false,"requested_reviewer":false},
+        "admitted_at": 1, "observed_at": 1
+    }))
+    .unwrap();
+    let proof = crate::provider::Provenance::ownership(origin).unwrap();
+    crate::feedback::observed_pr(
+        std::slice::from_ref(&tracked),
+        &origin.review.job.provider,
+        &proof,
+        &job.head_sha,
+    )
+    .unwrap();
+    let mut ledger = store.load_feedback().unwrap();
+    ledger.observe(origin, &job.head_sha, &[thread]).unwrap();
+    store.save_feedback(&ledger).unwrap();
+    assert_eq!(gate(&store, &key), None);
+    let watched =
+        crate::control::work::result(&store, &job.configuration_id, job.number, 0).unwrap();
+    assert_eq!((watched.state, watched.reason), ("queued", None));
+}
