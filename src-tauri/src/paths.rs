@@ -297,7 +297,9 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
     previous: Option<&PathFacts>,
 ) -> Result<PathFacts, ConnectionError> {
     let head = pull.head_sha.as_str();
-    let previous = previous.filter(|p| p.at(pull));
+    // Only an admitted verdict proves the list was complete: a gate-out may
+    // rest on a scoped walk, so it never skips the completeness read.
+    let previous = previous.filter(|p| p.at(pull) && p.admitted);
     if let Some(previous) = previous.filter(|p| p.incomplete.is_some()) {
         return Ok(previous.clone());
     }

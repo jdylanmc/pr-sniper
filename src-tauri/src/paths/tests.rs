@@ -348,6 +348,21 @@ fn incomplete_listing_climbs_to_a_tree_diff_before_parking() {
         .tree(Ok(TreeDiff::Complete(files(&["docs/a.md"]))));
     let facts = read(&stub, &plan(&[], &[("s", &["docs/"], None)]), None).unwrap();
     assert_eq!(facts.incomplete_at(HEAD), Some(3_500));
+    // A scoped gate-out, then the gate is removed on the same revision: the
+    // earlier verdict never stands in for a complete list.
+    let stub = Stub::new(vec![])
+        .incomplete(3_500)
+        .tree(Ok(TreeDiff::Truncated))
+        .tree(Ok(TreeDiff::Complete(files(&["docs/a.md"]))));
+    let gated_out = read(&stub, &gate, None).unwrap();
+    assert!(gated_out.gated_out(&pull()));
+    let stub = Stub::new(vec![]).incomplete(3_500);
+    let facts = read(&stub, &Plan::default(), Some(&gated_out)).unwrap();
+    assert_eq!(facts.incomplete_at(HEAD), Some(3_500));
+    let stub = Stub::new(vec![]).incomplete(3_500);
+    let ungated = plan(&[], &[("s", &["docs/"], None)]);
+    let facts = read(&stub, &ungated, Some(&gated_out)).unwrap();
+    assert_eq!(facts.incomplete_at(HEAD), Some(3_500));
     // Step 5: only after every strategy failed.
     let stub = Stub::new(vec![]).incomplete(3_500);
     let facts = read(&stub, &gate, None).unwrap();
