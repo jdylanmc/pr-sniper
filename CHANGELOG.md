@@ -5,6 +5,31 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## [0.6.0] - 2026-11-06
+
+### Added
+
+- Path globs: a repository Paths gate decides which pull requests are queued, and secondary assignments review only revisions whose changed files match their own paths (skips shown as "Skipped: no matching files"); pull requests whose changed files cannot all be listed are parked for a human (#304).
+
+### Changed
+
+- Chocolatey package page now explains what PR Sniper does, with features, requirements, install notes and a short code-signing note.
+- Settings › Repositories groups repositories into one section per GitHub or Azure DevOps account, each with its own add action, and keeps **+ URL** clear of them.
+
+### Fixed
+
+- Azure DevOps new revisions after published feedback now dispatch, and MCP names the specific wait gate.
+- Read Azure DevOps pull request statuses and policy evaluations that omit their default state instead of failing the repository check.
+- Wait out Azure DevOps throttling (`Retry-After`, `X-RateLimit-*`, 503) as backpressure instead of failing reviews.
+- Pass the Chocolatey installer checksum on one line so package validation recognizes it, and link release notes from the package.
+- Queue explicitly requested Azure DevOps pull requests from MCP `watch_pull_request`, `inspect_target` and Settings **+ URL**, like GitHub ones (#311).
+- Add a disabled repository with its assignments, admission and grants in one MCP save (#314).
+- Keep retrying work that lost internet or DNS instead of parking it for a human, and resume reviews and action checks older builds stopped on a truncated read or connectivity failure.
+- Pause Azure DevOps polls and reviews while Azure DevOps is unreachable, without spending retries, and resume them once it answers again.
+- Show an LGTM parked on pending CI as Waiting on CI instead of Ready for you with a Merging chip, and send no Ready notification for it.
+- Prepare the bundled Copilot runtime at app start so the first model lookup after install no longer times out (#313).
+- Reviews that stall while the computer sleeps now fail on wake and retry instead of staying running forever (#308).
+
 ## [0.5.5] - 2026-10-30
 
 ### Changed
