@@ -185,16 +185,29 @@ fn signed_off(run: &FinalReview) -> bool {
 /// is a **Parked LGTM**: recorded for this revision, acted on once CI is green.
 /// Conflicts may leave CI unrun: the approval proceeds, the merge waits.
 /// Red CI revokes it only before its first effect; after that the action gates refuse.
-fn parked_ci(facts: &Facts, head: &str, untouched: bool) -> Result<(), String> {
+fn parked_ci(
+    facts: &Facts,
+    observation: &Observation,
+    head: &str,
+    untouched: bool,
+) -> Result<(), String> {
     match facts.ci {
         gates::Ci::Green => Ok(()),
         gates::Ci::Unknown if facts.conflicts => Ok(()),
         gates::Ci::Red if untouched => Err(LGTM_REVOKED_RED.into()),
         gates::Ci::Red => Ok(()),
-        gates::Ci::Pending | gates::Ci::Unknown => Err(format!(
-            "LGTM pending on revision {}: waiting for CI.",
-            head.chars().take(12).collect::<String>()
-        )),
+        gates::Ci::Pending | gates::Ci::Unknown => {
+            let head = head.chars().take(12).collect::<String>();
+            let pending = gates::pending_checks(observation);
+            Err(if pending.is_empty() {
+                format!("LGTM pending on revision {head}: waiting for CI.")
+            } else {
+                format!(
+                    "LGTM pending on revision {head}: waiting for CI ({}).",
+                    pending.join(", ")
+                )
+            })
+        }
     }
 }
 
@@ -566,7 +579,7 @@ pub fn ready(
     let facts = Facts::from_observation(observation);
     let signed_off = signed_off(run);
     if signed_off {
-        parked_ci(&facts, &job.head_sha, untouched)?;
+        parked_ci(&facts, observation, &job.head_sha, untouched)?;
     }
     let self_authored = facts.author_is_acting;
     let exit = match action {

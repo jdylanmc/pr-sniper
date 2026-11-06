@@ -209,6 +209,25 @@ pub fn ci_not_run(o: &Observation) -> bool {
     o.checks.is_none() && o.check_contexts.is_empty()
 }
 
+/// The checks CI waits for: unfinished check runs and pending statuses. A status
+/// marked `ci: false` (an Azure DevOps status, not a build) never holds the vote.
+pub fn pending_checks(o: &Observation) -> Vec<String> {
+    o.check_contexts
+        .iter()
+        .filter(|c| c["ci"] != false)
+        .filter_map(|c| match c["__typename"].as_str() {
+            Some("CheckRun") if c["status"] != "COMPLETED" => c["name"].as_str(),
+            Some("StatusContext")
+                if matches!(c["state"].as_str(), Some("PENDING" | "EXPECTED")) =>
+            {
+                c["context"].as_str()
+            }
+            _ => None,
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn ci(o: &Observation) -> Ci {
     let failed = |c: &serde_json::Value| match c["__typename"].as_str() {
         Some("CheckRun") => matches!(

@@ -1,8 +1,11 @@
 //! Azure DevOps merge readiness and check status (FR-34): policy evaluations
 //! and pull request statuses mapped onto the provider-neutral check
 //! vocabulary that gates sign-off and the ready-for-review notification.
-//! Build and status policies, and PR statuses, are checks; reviewer policies
-//! and votes are reviews. Nothing here can complete a pull request.
+//! Blocking build and status policies, and PR statuses, are checks; reviewer
+//! policies and votes are reviews. Only a build is CI that holds the vote while
+//! it runs: a pending status may be a human or governance gate that waits on
+//! the vote itself. Any red check still blocks; non-blocking policies never do.
+//! Nothing here can complete a pull request.
 
 use super::pulls::RawPullRequest;
 use super::threads::AdoThread;
@@ -61,25 +64,64 @@ impl CheckState {
     }
 }
 
-/// One CI signal: a build or status policy evaluation, or a PR status.
+/// One check: a blocking build or status policy evaluation, or a PR status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Check {
     pub name: String,
     pub state: CheckState,
     /// A blocking policy: completion needs it.
     pub required: bool,
+    /// A build validation policy: the only CI that holds the vote while pending.
+    pub build: bool,
 }
 
-/// Rollup in the shared vocabulary: any failure fails, any pending is pending.
+impl Check {
+    /// Pending CI the vote waits for: a build not finished yet.
+    fn holds(&self) -> bool {
+        self.build && self.state == CheckState::Pending
+    }
+
+    fn red(&self) -> bool {
+        matches!(self.state, CheckState::Failure | CheckState::Error)
+    }
+
+    fn context(&self) -> Value {
+        if self.build {
+            let conclusion = match self.state {
+                CheckState::Pending => Value::Null,
+                state => state.context().into(),
+            };
+            json!({
+                "__typename": "CheckRun",
+                "name": self.name,
+                "status": if self.holds() { "IN_PROGRESS" } else { "COMPLETED" },
+                "conclusion": conclusion,
+                "isRequired": self.required,
+            })
+        } else {
+            let mut context = json!({
+                "__typename": "StatusContext",
+                "context": self.name,
+                "state": self.state.context(),
+                "isRequired": self.required,
+            });
+            if self.state == CheckState::Pending {
+                // Pending, yet not CI: it never holds the vote.
+                context["ci"] = false.into();
+            }
+            context
+        }
+    }
+}
+
+/// Rollup in the shared vocabulary: any red check fails, a pending build is
+/// pending, anything else reported is green.
 pub(super) fn rollup(checks: &[Check]) -> Option<&'static str> {
     if checks.is_empty() {
         None
-    } else if checks
-        .iter()
-        .any(|c| matches!(c.state, CheckState::Failure | CheckState::Error))
-    {
+    } else if checks.iter().any(Check::red) {
         Some("FAILURE")
-    } else if checks.iter().any(|c| c.state == CheckState::Pending) {
+    } else if checks.iter().any(Check::holds) {
         Some("PENDING")
     } else {
         Some("SUCCESS")
@@ -247,6 +289,8 @@ impl Client {
         let iterations = self.iterations(key, number).await?;
         let latest = iterations.last().map(|i| i.id);
         let mut checks = Vec::new();
+        // Non-blocking build and status policies: never a check, nor their statuses.
+        let mut optional = Vec::new();
         let mut reviews_required = false;
         for evaluation in self.policy_evaluations(key, number).await? {
             let configuration = &evaluation.configuration;
@@ -263,7 +307,8 @@ impl Client {
                 continue;
             }
             let settings = &configuration.settings;
-            let name = if kind == BUILD_POLICY {
+            let build = kind == BUILD_POLICY;
+            let name = if build {
                 settings["displayName"]
                     .as_str()
                     .map(str::trim)
@@ -286,10 +331,16 @@ impl Client {
             let name = name
                 .or_else(|| evaluation.evaluation_id.clone())
                 .ok_or(malformed)?;
+            let name = super::bounded(Some(name)).ok_or(malformed)?;
+            if !configuration.is_blocking {
+                optional.push(name);
+                continue;
+            }
             checks.push(Check {
-                name: super::bounded(Some(name)).ok_or(malformed)?,
+                name,
                 state,
-                required: configuration.is_blocking,
+                required: true,
+                build,
             });
         }
         // The newest status per context on the latest iteration; one a status
@@ -317,11 +368,12 @@ impl Client {
             let Some(state) = state else {
                 continue;
             };
-            if !checks.iter().any(|c| c.name == name) {
+            if !checks.iter().any(|c| c.name == name) && !optional.contains(&name) {
                 checks.push(Check {
                     name,
                     state,
                     required: false,
+                    build: false,
                 });
             }
         }
@@ -464,18 +516,7 @@ impl Readiness {
             merge_state: merge_state.into(),
             review_decision: self.review_decision(),
             checks: rollup(&self.checks).map(str::to_owned),
-            check_contexts: self
-                .checks
-                .iter()
-                .map(|c| {
-                    json!({
-                        "__typename": "StatusContext",
-                        "context": c.name,
-                        "state": c.state.context(),
-                        "isRequired": c.required,
-                    })
-                })
-                .collect(),
+            check_contexts: self.checks.iter().map(Check::context).collect(),
             in_merge_queue: false,
             merge_queue: false,
             method: None,
@@ -559,7 +600,7 @@ impl Readiness {
                 .iter()
                 .map(|c| SnapshotCheck {
                     name: c.name.clone(),
-                    status: if c.state == CheckState::Pending {
+                    status: if c.holds() {
                         "IN_PROGRESS"
                     } else {
                         "COMPLETED"
@@ -569,6 +610,8 @@ impl Readiness {
                         CheckState::Success => "success",
                         CheckState::Failure => "failure",
                         CheckState::Error => "error",
+                        // A pending status is not CI: settled for the vote.
+                        CheckState::Pending if !c.holds() => "neutral",
                         CheckState::Pending => "",
                     }
                     .into(),
