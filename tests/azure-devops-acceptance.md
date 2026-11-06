@@ -33,6 +33,8 @@ assignments:
   marker; never open a second one.
 - A marker that is gone from the head = fixed: resolve your own thread for it.
 - No markers and no own open threads: sign off with no comment.
+- Secondary: report marker findings to the primary (`submit_report`); only
+  the primary publishes.
 
 ## Fixtures
 
@@ -48,7 +50,7 @@ check uses its own topic branch and PR unless stated.
 
 ## Setup over MCP
 
-1. `list_repository_accounts` (`kind: repository`): Azure DevOps setup state
+1. `list_repository_accounts({})`: Azure DevOps setup state
    ready; bound identity connected in `<org>`. The PR author for the probes is
    a second identity or the bound one; record which.
 2. `resolve_repository` with `https://dev.azure.com/<org>/<project>/_git/<repo>`:
@@ -66,7 +68,8 @@ check uses its own topic branch and PR unless stated.
    - Repository `paths`: `probe/**`, `!probe/README.md`.
    - Primary assignment: no `paths`; Publish Comment + Reply Comment; Approval
      off.
-   - Secondary assignment: `paths` `**/*.md`; Publish Comment.
+   - Secondary assignment: `paths` `**/*.md`; no grants (secondaries never
+     publish; their `submit_report` goes to the primary).
    - Grants need `allow_grants`, else `explicit_grant_required`.
    - Use `resources.result.values` for exact field shapes; `validate_repository`
      first.
@@ -75,18 +78,18 @@ check uses its own topic branch and PR unless stated.
 
 ## Checks
 
-| #   | Action                                                                                                                              | Required observation                                                                                                                                                                                  |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | PR 1 adds `probe/defect.md`. Wait for the scheduled poll.                                                                           | Queued and reviewed by primary and secondary. One active inline thread per assignment on the `PROBE-DEFECT-A` line (`threadContext.filePath` + right-side line), marker footer present. Nothing else. |
-| 2   | Minor revision: push a fix for the comment typo only.                                                                               | New revision reviewed. No new thread or comment; check 1 threads unchanged.                                                                                                                           |
-| 3   | Major revision: add a line with `PROBE-DEFECT-B`.                                                                                   | Exactly one new thread per assignment for `B`. No second thread for `A`.                                                                                                                              |
-| 4   | Remove both markers.                                                                                                                | Own threads for `A` and `B` read resolved (`status: fixed`). No new thread. Threads by others untouched.                                                                                              |
-| 5   | `inspect_target` with PR 1's URL, then `watch_pull_request` (`expected` = saved repository, `account_generation: 0`).               | `inspect_target`: `provider: azure_devops`, PR number and the saved repository ID. `watch_pull_request` reuses queued/completed work for the unchanged head; `review_again: true` runs fresh.         |
-| 6   | Repository gate: PR 2 adds only `outside/defect.md`.                                                                                | Not queued after a poll. `watch_pull_request` fails `paths_gate` and starts nothing, also with `review_again`.                                                                                        |
-| 7   | Excluded-only: PR 3 edits only `probe/README.md`.                                                                                   | Not queued; `watch_pull_request` fails `paths_gate`.                                                                                                                                                  |
-| 8   | On PR 1, push a change to `probe/data.txt` only.                                                                                    | Primary reviews the revision; secondary skipped (no `**/*.md` file changed since its last review). No new thread.                                                                                     |
-| 9   | Then push a change to `probe/notes.md`.                                                                                             | Secondary runs on that revision; no new thread (no markers).                                                                                                                                          |
-| 10  | Admission: a PR by an identity not in the include-users rule touching `probe/defect.md` (skip when only one identity is available). | Not queued. Record as unverified when skipped.                                                                                                                                                        |
+| #   | Action                                                                                                                              | Required observation                                                                                                                                                                                                                                  |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | PR 1 adds `probe/defect.md`. Wait for the scheduled poll.                                                                           | Queued; primary and secondary both run (secondary `submit_report` in `read_evidence`). Exactly one primary-owned active inline thread on the `PROBE-DEFECT-A` line (`threadContext.filePath` + right-side line), marker footer present. Nothing else. |
+| 2   | Minor revision: push a fix for the comment typo only.                                                                               | New revision reviewed. No new thread or comment; check 1 threads unchanged.                                                                                                                                                                           |
+| 3   | Major revision: add a line with `PROBE-DEFECT-B`.                                                                                   | Exactly one new primary-owned thread for `B`. No second thread for `A`.                                                                                                                                                                               |
+| 4   | Remove both markers.                                                                                                                | Own threads for `A` and `B` read resolved (`status: fixed`). No new thread. Threads by others untouched.                                                                                                                                              |
+| 5   | `inspect_target` with PR 1's URL, then `watch_pull_request` (`expected` = saved repository, `account_generation: 0`).               | `inspect_target`: `provider: azure_devops`, PR number and the saved repository ID. `watch_pull_request` reuses queued/completed work for the unchanged head; `review_again: true` runs fresh.                                                         |
+| 6   | Repository gate: PR 2 adds only `outside/defect.md`.                                                                                | Not queued after a poll. `watch_pull_request` fails `paths_gate` and starts nothing, also with `review_again`.                                                                                                                                        |
+| 7   | Excluded-only: PR 3 edits only `probe/README.md`.                                                                                   | Not queued; `watch_pull_request` fails `paths_gate`.                                                                                                                                                                                                  |
+| 8   | On PR 1, push a change to `probe/data.txt` only.                                                                                    | Primary reviews the revision; secondary skipped (no `**/*.md` file changed since its last review; no new `submit_report`). No new thread.                                                                                                             |
+| 9   | Then push a change to `probe/notes.md`.                                                                                             | Secondary runs on that revision (new `submit_report` in `read_evidence`); no new thread (no markers).                                                                                                                                                 |
+| 10  | Admission: a PR by an identity not in the include-users rule touching `probe/defect.md` (skip when only one identity is available). | Not queued. Record as unverified when skipped.                                                                                                                                                                                                        |
 
 ## Cleanup
 
