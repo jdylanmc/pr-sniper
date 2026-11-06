@@ -103,7 +103,7 @@ fn ready_sign_off(store: &Store, review_operation_id: &str) -> Result<bool, Stri
     }))
 }
 
-/// Comment ids and resolved thread ids the exit of `review_operation_id` wrote.
+/// Comment ids and resolved or reopened thread ids the exit of `review_operation_id` wrote.
 fn own_writes(store: &Store, review_operation_id: &str) -> Result<OwnWrites, String> {
     use crate::exit_writes::{StepKind, StepState};
     let mut own = OwnWrites::default();
@@ -128,7 +128,13 @@ fn own_writes(store: &Store, review_operation_id: &str) -> Result<OwnWrites, Str
                 (StepKind::Resolve, StepState::Attempted | StepState::Done) => {
                     own.resolved_threads.insert(step.thread_id.clone());
                 }
-                (StepKind::Resolve, StepState::Planned) => {}
+                // A no-op reopen (thread already open) wrote nothing.
+                (StepKind::Unresolve, StepState::Attempted | StepState::Done)
+                    if step.receipt.as_deref() != Some("already") =>
+                {
+                    own.reopened_threads.insert(step.thread_id.clone());
+                }
+                (StepKind::Resolve | StepKind::Unresolve, _) => {}
             }
         }
     }

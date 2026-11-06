@@ -468,12 +468,13 @@ pub struct StateMarks {
     pub resolved_threads: Vec<String>,
 }
 
-/// Ids the host itself wrote after the packet: comments (batch and replies) and
-/// threads it resolved.
+/// Ids the host itself wrote after the packet: comments (batch and replies),
+/// threads it resolved and threads it reopened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnWrites {
     pub comments: std::collections::BTreeSet<String>,
     pub resolved_threads: std::collections::BTreeSet<String>,
+    pub reopened_threads: std::collections::BTreeSet<String>,
 }
 
 impl StateMarks {
@@ -528,8 +529,16 @@ impl StateMarks {
             return true;
         }
         fresh.threads.iter().any(|t| {
-            t.resolved != self.resolved_threads.contains(&t.id)
-                && !own.resolved_threads.contains(&t.id)
+            // A thread the host wrote must hold the state that write set; others the
+            // packet state.
+            let expected = if own.reopened_threads.contains(&t.id) {
+                false
+            } else if own.resolved_threads.contains(&t.id) {
+                true
+            } else {
+                self.resolved_threads.contains(&t.id)
+            };
+            t.resolved != expected
         })
     }
 }

@@ -1096,6 +1096,9 @@ pub(crate) fn resolutions(
                         .filter(|a| step.state == StepState::Done && a.anchor.is_some());
                     latest.insert(step.thread_id.clone(), standing);
                 }
+                StepKind::Unresolve => {
+                    latest.insert(step.thread_id.clone(), None);
+                }
             }
         }
     }

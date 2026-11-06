@@ -626,6 +626,89 @@ fn an_already_resolved_own_thread_is_done_without_a_mutation() {
     assert_eq!(w.steps[0].receipt.as_deref(), Some("already"));
 }
 
+/// A re-review replying on T1 with `disposition` for T1.
+fn assessed_reply(disposition: &str) -> ExitWrite {
+    let mut review = fake::review(
+        json!([]),
+        json!([reply("T1", "Correction: this still applies.")]),
+        json!([]),
+        &fake::settings(),
+    );
+    review.result.as_mut().unwrap().finding_dispositions = vec![serde_json::from_value(json!({
+        "thread_id":"T1","disposition":disposition,"head_sha":HEAD,"base_sha":"b".repeat(40),
+        "rationale":"The invalid branch is still reachable.",
+        "evidence":[{"path":"src/lib.rs","side":"head","line":1}]
+    }))
+    .unwrap()];
+    exit_writes::plan(&review, 100).expect("reply planned")
+}
+
+#[test]
+fn a_still_applies_correction_on_a_resolved_own_thread_replies_then_reopens_it() {
+    let wire = wire_resolved();
+    let mut env = Env::new(&wire);
+    let mut w = assessed_reply("still_applies");
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["reply:100", "unresolve:T1"]);
+    assert!(!wire.thread("T1").resolved);
+    assert_eq!(w.steps[1].kind, exit_writes::StepKind::Unresolve);
+    assert_eq!(w.steps[1].receipt, Some(format!("exit-{}-1", w.id)));
+}
+
+#[test]
+fn a_still_applies_reply_on_an_open_thread_needs_no_reopen() {
+    let wire = wire();
+    let mut env = Env::new(&wire);
+    let mut w = assessed_reply("still_applies");
+    exit_writes::run(&mut env, &mut w).unwrap();
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["reply:100"]);
+    assert_eq!(w.steps[1].receipt.as_deref(), Some("already"));
+}
+
+#[test]
+fn fixed_or_withdrawn_replies_never_reopen_a_resolved_thread() {
+    for disposition in ["fixed", "withdrawn"] {
+        let wire = wire_resolved();
+        let mut env = Env::new(&wire);
+        let mut w = assessed_reply(disposition);
+        assert!(w
+            .steps
+            .iter()
+            .all(|s| s.kind != exit_writes::StepKind::Unresolve));
+        exit_writes::run(&mut env, &mut w).unwrap();
+        assert_eq!(wire.log(), ["reply:100"], "{disposition}");
+        assert!(wire.thread("T1").resolved);
+    }
+}
+
+#[test]
+fn a_reopen_is_only_for_own_threads_and_retries_an_unconfirmed_mutation() {
+    let wire = wire_resolved();
+    let mut env = Env::new(&wire);
+    env.proofs[0].assignment_id = "other-assignment".into();
+    let mut w = assessed_reply("still_applies");
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Tossed);
+    assert!(wire.log().is_empty());
+
+    let wire = wire_resolved();
+    wire.fault("unresolve", Fault::Before);
+    let mut env = Env::new(&wire);
+    let mut w = assessed_reply("still_applies");
+    drive(&mut env, &mut w);
+    assert_eq!(w.phase, Phase::Completed);
+    assert_eq!(wire.log(), ["reply:100", "unresolve:T1", "unresolve:T1"]);
+    assert!(!wire.thread("T1").resolved);
+}
+
+fn wire_resolved() -> Wire {
+    let wire = wire();
+    wire.0.lock().unwrap().threads[0].resolved = true;
+    wire
+}
+
 #[test]
 fn reconciled_landed_resolution_preserves_attempt_provenance_after_store_restart() {
     let wire = wire();
