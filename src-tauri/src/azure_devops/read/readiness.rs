@@ -368,14 +368,12 @@ impl Client {
             let Some(state) = state else {
                 continue;
             };
-            if optional.contains(&name) {
-                continue;
-            }
             let red = matches!(state, CheckState::Failure | CheckState::Error);
             match checks.iter_mut().find(|c| c.name == name) {
                 // A lagging policy evaluation never hides its red status.
                 Some(check) if red && !check.red() => check.state = state,
                 Some(_) => {}
+                None if optional.contains(&name) => {}
                 None => checks.push(Check {
                     name,
                     state,

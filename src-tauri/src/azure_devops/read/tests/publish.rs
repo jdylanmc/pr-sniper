@@ -772,6 +772,18 @@ fn a_red_status_blocks_while_a_pending_one_does_not() {
     };
     for (policies, statuses) in [
         (json!({"value": [owners("rejected")]}), json!({"value": []})),
+        // A non-blocking policy on the same context never hides it either.
+        (
+            json!({"value": [owners("queued"), policy(
+                STATUS,
+                "rejected",
+                false,
+                json!({"statusGenre": "owners", "statusName": "enforcer"}),
+            )]}),
+            json!({"value": [
+                {"id": 1, "state": "failed", "context": {"genre": "owners", "name": "enforcer"}, "iterationId": 2},
+            ]}),
+        ),
         // The policy evaluation lags its own red status.
         (
             json!({"value": [owners("queued")]}),
