@@ -849,3 +849,25 @@ fn azure_devops_approves_an_own_pr_only_with_include_self_and_github_never_does(
         Some(Offer::Denied(UNSUPPORTED.into()))
     );
 }
+
+#[test]
+fn include_self_approves_by_provider_and_grants_not_by_the_offered_exit() {
+    let mut input = base();
+    input.capabilities = ProviderCapabilities::of(&ProviderId::AzureDevops);
+    input.grants.include_self = true;
+    input.facts.author_is_acting = true;
+    // Neither a missing approve_pull_request tool nor conflicts change it.
+    input.tools.retain(|t| t != "approve_pull_request");
+    input.facts.conflicts = true;
+    assert!(self_approves(&input));
+    input.grants.include_self = false;
+    assert!(!self_approves(&input));
+    input.grants.include_self = true;
+    input.grants.approve = false;
+    input.grants.merge = false;
+    assert!(!self_approves(&input), "no approve grant: Ready");
+    let mut github = base();
+    github.grants.include_self = true;
+    github.grants.merge = false;
+    assert!(!self_approves(&github));
+}

@@ -467,6 +467,15 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     })
 }
 
+/// Include self casts the Approve vote on an own PR: the provider permits
+/// self-approval and the sign-off approves. Grants and provider decide it, never
+/// the tool list or this revision's gates.
+pub fn self_approves(input: &GateInput) -> bool {
+    input.grants.include_self
+        && input.capabilities.self_approval_denial.is_none()
+        && lgtm_action(input) == LgtmAction::Approve
+}
+
 /// The sign-off's action: the assignment's strongest granted authority. Grants alone
 /// decide it; the tool list only gates the legacy explicit approve exits.
 pub fn lgtm_action(input: &GateInput) -> LgtmAction {

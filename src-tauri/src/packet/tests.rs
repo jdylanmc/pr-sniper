@@ -9,6 +9,7 @@ fn input() -> PacketInput {
         admitted_by: Some("watched_author".into()),
         acting_login: "pr-sniper-bot".into(),
         include_self: false,
+        self_approves: false,
         role: Role::Primary,
         tools: [
             "read_changes",
@@ -181,6 +182,33 @@ fn teammate_packet_matches_the_golden_file() {
         (Exit::SubmitReport, Offer::Offered),
     ];
     golden("teammate.txt", &build(&teammate).text);
+}
+
+#[test]
+fn an_own_pr_whose_include_self_approves_names_the_vote_never_a_merge() {
+    let mut input = input();
+    input.include_self = true;
+    input.self_approves = true;
+    input.pr.author_relation = AuthorRelation::Owner;
+    // No approve_pull_request in the tools, or denied (conflicts): lgtm still votes.
+    for exits in [
+        vec![
+            (Exit::ReadyForHuman, Offer::Offered),
+            (Exit::Lgtm, Offer::Offered),
+        ],
+        vec![
+            (
+                Exit::ApprovePullRequest,
+                Offer::Denied("Merge conflicts. Do not approve.".into()),
+            ),
+            (Exit::Lgtm, Offer::Offered),
+        ],
+    ] {
+        input.exits = exits;
+        let text = build(&input).text;
+        assert!(text.contains("casts the approval vote on this own PR and never merges"));
+        assert!(!text.contains("host merges"));
+    }
 }
 
 #[test]
