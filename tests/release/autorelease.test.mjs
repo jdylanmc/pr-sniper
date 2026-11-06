@@ -172,12 +172,32 @@ function github(state = {}) {
         return pr;
       }
       if (p === "/graphql") {
+        // `s.queue`: main requires a merge queue; `queued`: the PR is in it.
+        if (body.query.includes("isMergeQueueEnabled"))
+          return {
+            repository: {
+              pullRequest: {
+                isMergeQueueEnabled: Boolean(s.queue),
+                isInMergeQueue: Boolean(s.queue?.queued),
+              },
+            },
+          };
+        if (body.query.includes("enqueuePullRequest")) {
+          assert.ok(s.queue, "enqueue only on a merge-queue base");
+          assert.equal(body.variables.head, s.pulls[0].head.sha);
+          s.queue.queued = true;
+          s.queue.enqueued = (s.queue.enqueued || 0) + 1;
+          return {};
+        }
+        if (s.queue) assert.doesNotMatch(body.query, /mergeMethod/);
         s.pulls.forEach((pr) => (pr.auto_merge = { enabled_by: "bot" }));
         return { data: {} };
       }
     }
-    if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(p))
+    if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(p)) {
+      assert.ok(!s.queue, "no direct merge on a merge-queue base");
       return { merged: true };
+    }
     throw new Error(`unrouted ${method} ${path}`);
   };
   const call = (method) => async (path, bodyOrOptions, options) => {
@@ -371,6 +391,59 @@ test("land opens the release PR, dispatches required CI on it, auto-merges and r
   assert.equal(mutations({ calls: gh.calls.slice(before) }).length, 0);
 });
 
+test("land enqueues on a merge-queue base, never regenerates while queued and lands the queue merge", async () => {
+  const gh = github({ queue: {} });
+  let regenerated = 0;
+  let queuedPolls = 0;
+  const { ctx } = context(gh, {
+    regenerate: () => regenerated++,
+    tick: (s) => {
+      for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
+        complete(run);
+      const pr = s.pulls[0];
+      if (!pr) return;
+      pr.mergeable_state = "clean";
+      if (!s.queue.queued) return;
+      // Main moves under the queued PR; the queue, not a regenerate, handles it.
+      s.behind = 1;
+      if (++queuedPolls === 3) {
+        s.queue.queued = false;
+        Object.assign(pr, {
+          merged_at: "now",
+          merge_commit_sha: MERGE,
+          state: "closed",
+        });
+      }
+    },
+  });
+  assert.equal(await land(ctx, "0.6.0"), MERGE);
+  assert.equal(regenerated, 1, "only the initial release branch");
+  assert.equal(gh.s.queue.enqueued, 1);
+  assert.ok(
+    !gh.calls.some(([method, path]) => method === "PUT" && /merge$/.test(path)),
+  );
+});
+
+test("land re-enqueues after a reconciled dequeue and stops after repeated queue failures", async () => {
+  const gh = github({ queue: { polls: 0 } });
+  const { ctx } = context(gh, {
+    tick: (s) => {
+      for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
+        complete(run);
+      if (s.pulls[0]) s.pulls[0].mergeable_state = "clean";
+      // Every merge group fails: the queue drops the PR a poll later.
+      if (s.queue.queued && ++s.queue.polls % 2 === 0) s.queue.queued = false;
+    },
+  });
+  await assert.rejects(land(ctx, "0.6.0"), (error) => {
+    assert.ok(error instanceof StageError);
+    assert.equal(error.stage, "land");
+    assert.match(error.message, /left the merge queue 3 times/);
+    return true;
+  });
+  assert.equal(gh.s.queue.enqueued, LIMITS.attempts);
+});
+
 test("land regenerates a behind branch, reruns runner loss and stops on real CI failure", async () => {
   const gh = github({ behind: 1 });
   let regenerated = 0;
@@ -539,6 +612,19 @@ test("verify dispatches main CI on a pin branch at the exact merge commit, once"
     });
   await verify(context(pushed).ctx, "0.6.0", MERGE);
   assert.equal(mutations(pushed).length, 0);
+  // The merge queue's merge_group run tested exactly the commit it put on main.
+  const grouped = github();
+  for (const workflow of ["macos.yml", "windows.yml"])
+    grouped.s.runs[workflow].push({
+      id: 1,
+      head_sha: MERGE,
+      head_branch: "gh-readonly-queue/main/pr-7-" + PARENT,
+      event: "merge_group",
+      status: "completed",
+      conclusion: "success",
+    });
+  await verify(context(grouped).ctx, "0.6.0", MERGE);
+  assert.equal(mutations(grouped).length, 0);
 });
 
 test("tag creates one annotated tag after green main CI and starts one signed release", async () => {

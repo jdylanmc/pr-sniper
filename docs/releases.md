@@ -159,13 +159,13 @@ credential or agent session is involved.
 gh workflow run changesets.yml -R jdylanmc/pr-sniper --ref main [-f version=X.Y.Z] [-f summary="..."]
 ```
 
-| Stage   | Job                   | Does                                                                                                                                                                                                                                       |
-| ------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| plan    | **Changesets** `plan` | Version: input, else the open release PR, else `main`'s unfinished version, else derived (table above)                                                                                                                                     |
-| land    | `land`                | `changesets/release-vX.Y.Z` from current `main` (fold, bump every version field, rebuild MCP asset, prettier); open the PR; approve its pending CI runs; enable auto-merge; regenerate when `main` moves (strict); return the merge commit |
-| verify  | `verify`              | Pin `changesets/ci-vX.Y.Z` at the exact merge commit; dispatch **macOS foundation** and **Windows native application** on it; wait green                                                                                                   |
-| tag     | `tag`                 | Annotated `vX.Y.Z` at that commit, then dispatch **Signed macOS release** on the tag                                                                                                                                                       |
-| release | `release`             | Wait for **Signed macOS release** (signing, notarization, publication, tap with ticket-lag retry, Windows assets, Chocolatey); confirm the cask version                                                                                    |
+| Stage   | Job                   | Does                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| plan    | **Changesets** `plan` | Version: input, else the open release PR, else `main`'s unfinished version, else derived (table above)                                                                                                                                                                                |
+| land    | `land`                | `changesets/release-vX.Y.Z` from current `main` (fold, bump every version field, rebuild MCP asset, prettier); open the PR; approve its pending CI runs; enable auto-merge (merge queue: enqueue); regenerate when `main` moves (strict; never while queued); return the merge commit |
+| verify  | `verify`              | Pin `changesets/ci-vX.Y.Z` at the exact merge commit; dispatch **macOS foundation** and **Windows native application** on it; wait green. A green `merge_group` run on that exact commit counts                                                                                       |
+| tag     | `tag`                 | Annotated `vX.Y.Z` at that commit, then dispatch **Signed macOS release** on the tag                                                                                                                                                                                                  |
+| release | `release`             | Wait for **Signed macOS release** (signing, notarization, publication, tap with ticket-lag retry, Windows assets, Chocolatey); confirm the cask version                                                                                                                               |
 
 The run summary links each stage's PR, CI runs, tag and release run. A failure
 names its stage and the safe recovery.
@@ -201,6 +201,13 @@ normal PR and re-dispatch; the release PR is regenerated on the new `main`.
   minutes of green CI without a merge. Approve pending runs in Actions, or use
   a GitHub App installation token (contents, pull requests and actions write)
   in place of `GITHUB_TOKEN`: its pushes start normal CI.
+- Merge queue (optional on `main`): every required workflow and **Changesets**
+  also run on `merge_group`; the changeset job passes there (each PR was
+  validated). With a queue, `land` enqueues the release PR once its checks are
+  green (`enqueuePullRequest`, else auto-merge without a method: the queue picks
+  it), never regenerates while queued, and fails after 3 dequeues. Without a
+  queue nothing changes. If `merge_group` runs never start for the
+  `GITHUB_TOKEN`-enqueued PR, use the GitHub App token below.
 - A tag created with `GITHUB_TOKEN` does not start **Signed macOS release**, so
   the creator dispatches it. A racing tagger only recovers a lost dispatch 5
   minutes after the tag was created, so one tag never starts two signings.

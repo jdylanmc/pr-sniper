@@ -409,6 +409,47 @@ async function approvePending(ctx, pr, state) {
   }
 }
 
+// Whether main requires a merge queue, and whether the PR sits in it now.
+async function mergeQueue(ctx, pr) {
+  const [owner, name] = (ctx.repository || REPOSITORY).split("/");
+  const data = await ctx.api.graphql(
+    "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isMergeQueueEnabled isInMergeQueue } } }",
+    { owner, name, number: pr.number },
+  );
+  const pull = data?.repository?.pullRequest;
+  return {
+    enabled: pull?.isMergeQueueEnabled === true,
+    queued: pull?.isInMergeQueue === true,
+  };
+}
+
+// With a merge queue: enqueue the exact head once checks are green, otherwise
+// auto-merge (GitHub enqueues it when ready). The queue picks the method.
+async function enqueue(ctx, pr) {
+  if (pr.mergeable_state === "clean") {
+    try {
+      await ctx.api.graphql(
+        "mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) { clientMutationId } }",
+        { id: pr.node_id, head: pr.head.sha },
+      );
+      ctx.log(`Enqueued #${pr.number} in the merge queue.`);
+      return;
+    } catch (error) {
+      ctx.log(`Enqueue of #${pr.number} not accepted yet (${error.message})`);
+    }
+  }
+  if (pr.auto_merge) return;
+  try {
+    await ctx.api.graphql(
+      "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }",
+      { id: pr.node_id },
+    );
+    ctx.log(`Enabled auto-merge (merge queue) on #${pr.number}.`);
+  } catch (error) {
+    ctx.log(`Auto-merge not enabled on #${pr.number} yet (${error.message})`);
+  }
+}
+
 async function mergeOrAutoMerge(ctx, pr) {
   if (pr.mergeable_state === "clean") {
     try {
@@ -435,7 +476,8 @@ async function mergeOrAutoMerge(ctx, pr) {
 }
 
 // Opens or resumes the release PR, keeps it current with main, runs its
-// required CI and lands it through auto-merge. Returns the merge commit.
+// required CI and lands it through auto-merge, or the merge queue when main
+// requires one. Returns the merge commit.
 export async function land(ctx, version, { summary = "" } = {}) {
   const branch = branchFor(version);
   const mainVersion = await versionAt(ctx, "main");
@@ -491,6 +533,37 @@ export async function land(ctx, version, { summary = "" } = {}) {
         `Release PR #${pr.number} was closed without merging.`,
         `Reopen #${pr.number} and re-dispatch.`,
       );
+    let queue;
+    try {
+      queue = await mergeQueue(ctx, pr);
+    } catch (error) {
+      ctx.log(
+        `Merge queue state of #${pr.number} unavailable (${error.message})`,
+      );
+      return undefined;
+    }
+    if (queue.queued) {
+      // The queue tests the PR on the latest main; regenerating would dequeue it.
+      state.queue = "queued";
+      green = null;
+      return undefined;
+    }
+    // Leaving the queue may be its merge: the next poll's fresh read decides.
+    if (state.queue === "queued") {
+      state.queue = "left";
+      return undefined;
+    }
+    if (state.queue === "left") {
+      state.queue = null;
+      state.dequeued = (state.dequeued || 0) + 1;
+      ctx.log(`#${pr.number} left the merge queue unmerged.`);
+      if (state.dequeued >= LIMITS.attempts)
+        throw new StageError(
+          "land",
+          `Release PR #${pr.number} left the merge queue ${state.dequeued} times without merging.`,
+          "Check the merge_group runs of the queue, fix main through a normal PR if needed, then re-dispatch Changesets with the same version.",
+        );
+    }
     const behind = await ctx.api.get(
       `${repo(ctx)}/compare/${pr.head.sha}...main`,
     );
@@ -516,7 +589,7 @@ export async function land(ctx, version, { summary = "" } = {}) {
       ref: grace ? branch : null,
       state,
     });
-    await mergeOrAutoMerge(ctx, pr);
+    await (queue.enabled ? enqueue : mergeOrAutoMerge)(ctx, pr);
     if (ci !== "success") {
       green = null;
       return undefined;
@@ -526,14 +599,16 @@ export async function land(ctx, version, { summary = "" } = {}) {
       throw new StageError(
         "land",
         `Required CI passed on ${pr.head.sha} but #${pr.number} did not merge.`,
-        "Check that the required checks appear on the PR (approve any pending runs in Actions) and that auto-merge is allowed. If they do not, configure a GitHub App token (docs/releases.md). Then re-dispatch.",
+        "Check that the required checks appear on the PR (approve any pending runs in Actions) and that auto-merge (or the merge queue) is allowed. If they do not, configure a GitHub App token (docs/releases.md). Then re-dispatch.",
       );
     return undefined;
   });
 }
 
+// A merge_group run tested exactly the commit the queue then put on main.
 const mainCi = (version) => (run) =>
   (run.event === "push" && run.head_branch === "main") ||
+  run.event === "merge_group" ||
   (run.event === "workflow_dispatch" &&
     ["main", pinFor(version)].includes(run.head_branch));
 

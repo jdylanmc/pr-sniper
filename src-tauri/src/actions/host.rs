@@ -385,11 +385,7 @@ pub(crate) fn prepare_next_effect(
         {
             continue;
         }
-        if ledger
-            .effects
-            .iter()
-            .any(|effect| effect.item_id == item_id && effect.action == action)
-        {
+        if crate::actions::action_taken(&ledger.effects, item_id, action) {
             continue;
         }
         if let Some(run) = ledger.finals.iter().rev().find(|run| {
