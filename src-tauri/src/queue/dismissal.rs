@@ -99,6 +99,7 @@ fn unsettled(item: &Item, snapshot: &Snapshot, actions: &crate::actions::Ledger)
                 && op.pull_request_id.as_deref() == Some(item.job.pull_request_id.as_str())
                 && (e.operation.state == OperationState::Running
                     || e.state == crate::actions::EffectState::Prepared
+                    || e.in_merge_queue()
                     || e.needs_reconciliation())
         })
         || actions.finals.iter().any(|f| {
