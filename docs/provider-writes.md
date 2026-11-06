@@ -71,6 +71,7 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
   | `queued`     | Enqueue receipt (queue entry ID). Each action observation follows it. Merged at the pinned head: `confirmed` with the merge commit.                              |
   | `dequeued`   | Left the queue unmerged. `dequeue.cause`: `removed` (failed group, conflict, person), `head_changed`, `closed`. Typed, non-parking: no toss, no Needs attention. |
   - Reconcile before retry: the dequeuing read never re-enqueues. The next fresh read sets `dequeue.reconciled` (or finds the merge, or the PR back in the queue). Only a reconciled `removed` re-enqueues, through the same gates, at most `MAX_ENQUEUES` (3) per revision; then the blocker stays until a new head.
+  - Queue switched on or off after an unsent merge intent: nothing is sent (`The base's merge queue requirement changed…`); the next pass re-pins that intent to the current route and re-runs every gate.
   - Lost enqueue response: reconcile finds the pinned head queued → `queued` without receipt; its merge is then `external_merge` (attribution unknown).
 
 - Provider limits (`src-tauri/src/github/actions.rs`): fail closed beyond 100 threads, 100 comments per thread, or 100 check contexts. No direct-merge fallback for hooks, unavailable merge rules, merge queue or missing green CI.

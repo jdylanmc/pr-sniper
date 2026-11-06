@@ -425,6 +425,7 @@ async function mergeQueue(ctx, pr) {
 
 // With a merge queue: enqueue the exact head once checks are green, otherwise
 // auto-merge (GitHub enqueues it when ready). The queue picks the method.
+// Returns whether an enqueue was accepted.
 async function enqueue(ctx, pr) {
   if (pr.mergeable_state === "clean") {
     try {
@@ -433,12 +434,12 @@ async function enqueue(ctx, pr) {
         { id: pr.node_id, head: pr.head.sha },
       );
       ctx.log(`Enqueued #${pr.number} in the merge queue.`);
-      return;
+      return true;
     } catch (error) {
       ctx.log(`Enqueue of #${pr.number} not accepted yet (${error.message})`);
     }
   }
-  if (pr.auto_merge) return;
+  if (pr.auto_merge) return false;
   try {
     await ctx.api.graphql(
       "mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }",
@@ -448,6 +449,7 @@ async function enqueue(ctx, pr) {
   } catch (error) {
     ctx.log(`Auto-merge not enabled on #${pr.number} yet (${error.message})`);
   }
+  return false;
 }
 
 async function mergeOrAutoMerge(ctx, pr) {
@@ -589,7 +591,13 @@ export async function land(ctx, version, { summary = "" } = {}) {
       ref: grace ? branch : null,
       state,
     });
-    await (queue.enabled ? enqueue : mergeOrAutoMerge)(ctx, pr);
+    if (!queue.enabled) await mergeOrAutoMerge(ctx, pr);
+    // An accepted entry counts even if the queue drops it before the next poll.
+    else if (await enqueue(ctx, pr)) {
+      state.queue = "queued";
+      green = null;
+      return undefined;
+    }
     if (ci !== "success") {
       green = null;
       return undefined;

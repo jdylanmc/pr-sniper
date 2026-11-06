@@ -257,3 +257,46 @@ fn merge_queue_readiness_skips_method_and_behind_but_keeps_every_other_gate() {
     direct.method = None;
     assert!(direct.blocker(Action::Merge).is_some());
 }
+
+#[test]
+fn a_queue_switched_on_or_off_after_preparation_sends_nothing_then_follows_the_new_route() {
+    for queue_now in [true, false] {
+        let (_root, store, item) = fixture(1, true, true);
+        approve_exits::exit_run(&store, approve_exits::approve_exit(true), false);
+        let mut before = observed();
+        before.merge_queue = !queue_now;
+        before.reviews.push(fixwave::peer_approval());
+        let run = approve_exits::adopted(&store, &item, before.clone());
+        let effect = prepare_effect(&store, &run.id, Action::Merge, &before, NOW + 20).unwrap();
+        let mut env = env(&store);
+        let mut after = before.clone();
+        after.merge_queue = queue_now;
+        env.wire.0.lock().unwrap().observation = after.clone();
+        let refused = host::execute_action(&mut env, &effect).unwrap_err();
+        assert_eq!(refused.message, host::MERGE_ROUTE_CHANGED);
+        assert!(env.wire.0.lock().unwrap().writes.is_empty(), "{queue_now}");
+        assert_eq!(merges(&store)[0].state, EffectState::Prepared);
+        synchronize(&store, &item, Ok(after.clone()), NOW + 21).unwrap();
+        let repinned = host::prepare_next_effect(&store, &item, NOW + 22)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repinned.id, effect.id, "the same unsent intent");
+        assert_eq!(repinned.observation.merge_queue, queue_now);
+        host::execute_action(&mut env, &repinned).unwrap();
+        let writes = env.wire.0.lock().unwrap().writes.clone();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].1["query"]
+                .as_str()
+                .unwrap()
+                .contains("enqueuePullRequest"),
+            queue_now
+        );
+        let expected = if queue_now {
+            EffectState::Queued
+        } else {
+            EffectState::Confirmed
+        };
+        assert_eq!(merges(&store)[0].state, expected);
+    }
+}

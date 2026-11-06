@@ -425,23 +425,29 @@ test("land enqueues on a merge-queue base, never regenerates while queued and la
 });
 
 test("land re-enqueues after a reconciled dequeue and stops after repeated queue failures", async () => {
-  const gh = github({ queue: { polls: 0 } });
-  const { ctx } = context(gh, {
-    tick: (s) => {
-      for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
-        complete(run);
-      if (s.pulls[0]) s.pulls[0].mergeable_state = "clean";
-      // Every merge group fails: the queue drops the PR a poll later.
-      if (s.queue.queued && ++s.queue.polls % 2 === 0) s.queue.queued = false;
-    },
-  });
-  await assert.rejects(land(ctx, "0.6.0"), (error) => {
-    assert.ok(error instanceof StageError);
-    assert.equal(error.stage, "land");
-    assert.match(error.message, /left the merge queue 3 times/);
-    return true;
-  });
-  assert.equal(gh.s.queue.enqueued, LIMITS.attempts);
+  // Every merge group fails: the queue drops the PR a poll later, or before
+  // any poll sees it queued.
+  for (const visiblePolls of [1, 0]) {
+    const gh = github({ queue: { polls: 0 } });
+    const { ctx } = context(gh, {
+      tick: (s) => {
+        for (const run of [...s.runs["macos.yml"], ...s.runs["windows.yml"]])
+          complete(run);
+        if (s.pulls[0]) s.pulls[0].mergeable_state = "clean";
+        if (s.queue.queued && s.queue.polls++ >= visiblePolls) {
+          s.queue.queued = false;
+          s.queue.polls = 0;
+        }
+      },
+    });
+    await assert.rejects(land(ctx, "0.6.0"), (error) => {
+      assert.ok(error instanceof StageError);
+      assert.equal(error.stage, "land");
+      assert.match(error.message, /left the merge queue 3 times/);
+      return true;
+    });
+    assert.equal(gh.s.queue.enqueued, LIMITS.attempts, `${visiblePolls}`);
+  }
 });
 
 test("land regenerates a behind branch, reruns runner loss and stops on real CI failure", async () => {
