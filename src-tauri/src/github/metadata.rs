@@ -40,6 +40,25 @@ impl<T: Transport> GithubClient<T> {
         first: &str,
         limit: usize,
     ) -> Result<Vec<Value>, ConnectionError> {
+        self.page_walk(first, limit, usize::MAX)
+    }
+
+    /// Pages to the end or until `stop` entries are read: a listing that
+    /// stops at a provider cap is not followed past it.
+    pub(super) fn pages_until(
+        &self,
+        first: &str,
+        stop: usize,
+    ) -> Result<Vec<Value>, ConnectionError> {
+        self.page_walk(first, stop, stop)
+    }
+
+    fn page_walk(
+        &self,
+        first: &str,
+        limit: usize,
+        stop: usize,
+    ) -> Result<Vec<Value>, ConnectionError> {
         let mut path = first.to_string();
         let mut seen = HashSet::new();
         let mut result = Vec::new();
@@ -64,6 +83,9 @@ impl<T: Transport> GithubClient<T> {
                 return Err(ConnectionError::LimitExceeded);
             }
             result.extend(page.iter().cloned());
+            if result.len() >= stop {
+                return Ok(result);
+            }
             match next {
                 Some(next) => path = next,
                 None => return Ok(result),

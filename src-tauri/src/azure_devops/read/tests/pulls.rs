@@ -384,6 +384,39 @@ fn a_head_that_is_not_yet_the_latest_iteration_has_changed() {
 }
 
 #[test]
+fn review_context_lists_every_change_without_a_file_cap() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    let page = |from: usize, to: usize| edits((from..to).map(|n| format!("src/f{n}.rs")));
+    let empty = json!({"value": [{"path": "/", "objectId": sha(500), "gitObjectType": "tree"}]});
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": page(0, 1000), "nextSkip": 1000, "nextTop": 1000}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": page(1000, 2000), "nextSkip": 2000, "nextTop": 1000}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": page(2000, 3001), "nextSkip": 0, "nextTop": 0}),
+        )
+        .json(&git("items?"), empty.clone())
+        .json(&git("items?"), empty);
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(context.files.len(), 3001);
+    assert_eq!(context.files[3000].path, "src/f3000.rs");
+    assert!(context.files.iter().all(|f| f.patch.is_none()));
+}
+
+#[test]
 fn review_context_reads_both_trees_and_content_at_commits() {
     let runtime = runtime();
     let wire = Arc::new(FakeWire::default());
