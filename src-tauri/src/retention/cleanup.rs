@@ -176,7 +176,8 @@ impl State {
                 || f.publication.as_ref().is_some_and(running)
                 || f.uncertain)
             || effects.iter().any(|e| running(&e.operation) || e.needs_reconciliation()
-                || e.state == EffectState::Prepared && e.operation.attempted_mutation.is_some())
+                || e.state == EffectState::Prepared && e.operation.attempted_mutation.is_some()
+                || e.in_merge_queue())
             || self.notifications.notices.iter().any(|n|
                 matches!(&n.event.destination, Destination::QueueItem { item_id } if items.contains(item_id))
                     && n.phase == NoticePhase::Submitting)

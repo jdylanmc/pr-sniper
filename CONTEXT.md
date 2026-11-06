@@ -351,7 +351,7 @@ One acting-account provider vote, not one per Agent. Cannot self-approve a GitHu
 _Avoid_: Agent vote
 
 **Merge Readiness**:
-Conditions for Approve & Merge: confirmed current-revision approval from an eligible reviewer, green current-head checks, satisfied provider rules, conflict-free CLEAN, no unresolved threads, no required merge queue, provider-selected enabled merge method. Admin bypass is neither queried nor used. Absent or partial evidence blocks. Merge pins `expectedHeadOid`.
+Conditions for Approve & Merge: confirmed current-revision approval from an eligible reviewer, green current-head checks, satisfied provider rules, conflict-free CLEAN, no unresolved threads, provider-selected enabled merge method. A base that requires a merge queue is merged by enqueueing the pinned head (no method, behind allowed); a dequeue is a typed, non-parking outcome reconciled by a fresh read before a bounded re-enqueue. Admin bypass is neither queried nor used. Absent or partial evidence blocks. Merge pins `expectedHeadOid`.
 _Avoid_: Mergeable
 
 **Unknown Publication Outcome**:

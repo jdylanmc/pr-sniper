@@ -78,6 +78,13 @@ pub trait ActionEnvironment {
     fn post_check(&mut self, effect: &Effect) -> Result<(), Failure>;
 }
 
+pub(crate) const MERGE_ROUTE_CHANGED: &str =
+    "The base's merge queue requirement changed before the request; nothing was sent.";
+
+fn route_changed(effect: &Effect, current: &Observation) -> bool {
+    effect.action == Action::Merge && current.merge_queue != effect.observation.merge_queue
+}
+
 pub fn execute_action(env: &mut impl ActionEnvironment, effect: &Effect) -> Result<(), Failure> {
     if effect.state != EffectState::Prepared {
         return Err(Failure::permanent(
@@ -85,6 +92,11 @@ pub fn execute_action(env: &mut impl ActionEnvironment, effect: &Effect) -> Resu
         ));
     }
     let current = env.observe(effect)?;
+    // The frozen route (direct merge or enqueue) must still be the base's rule;
+    // `prepare_next_effect` re-pins an unsent intent to the current one.
+    if route_changed(effect, &current) {
+        return Err(Failure::permanent(MERGE_ROUTE_CHANGED));
+    }
     env.authorize(effect, &current)?;
     let intent = env.intent(&effect.id)?;
     // Intent is durable before the final fresh read or any external request. That read
@@ -108,6 +120,7 @@ pub fn execute_action(env: &mut impl ActionEnvironment, effect: &Effect) -> Resu
     if current.head != intent.observation.head
         || current.base != intent.observation.base
         || intent.action == Action::Merge && current.method != intent.observation.method
+        || route_changed(&intent, &current)
     {
         return env.finish(
             &intent,
@@ -218,6 +231,9 @@ impl ActionEnvironment for Native {
             return Err(Failure::permanent(
                 "Provider-selected merge method changed before the request.",
             ));
+        }
+        if route_changed(effect, current) {
+            return Err(Failure::permanent(MERGE_ROUTE_CHANGED));
         }
         ready(&store, run, current, effect.action).map_err(Failure::permanent)
     }
@@ -367,12 +383,21 @@ pub(crate) fn prepare_next_effect(
     else {
         return Ok(None);
     };
-    if let Some(effect) = ledger
+    if let Some(index) = ledger
         .effects
         .iter()
-        .find(|effect| effect.item_id == item_id && effect.state == EffectState::Prepared)
+        .position(|effect| effect.item_id == item_id && effect.state == EffectState::Prepared)
     {
-        return Ok(Some(effect.clone()));
+        // Nothing was sent yet: follow a merge queue switched on or off since
+        // preparation. Every other gate re-runs on the fresh read before sending.
+        if route_changed(&ledger.effects[index], observation) {
+            let route = observation.merge_queue;
+            let mut ledger = ledger.clone();
+            ledger.effects[index].observation.merge_queue = route;
+            store.save_actions(&ledger)?;
+            return Ok(Some(ledger.effects[index].clone()));
+        }
+        return Ok(Some(ledger.effects[index].clone()));
     }
     for action in [Action::Approve, Action::Merge] {
         if action == Action::Approve
@@ -385,11 +410,7 @@ pub(crate) fn prepare_next_effect(
         {
             continue;
         }
-        if ledger
-            .effects
-            .iter()
-            .any(|effect| effect.item_id == item_id && effect.action == action)
-        {
+        if crate::actions::action_taken(&ledger.effects, item_id, action) {
             continue;
         }
         if let Some(run) = ledger.finals.iter().rev().find(|run| {

@@ -56,7 +56,36 @@ pub enum EffectState {
     Rejected,
     Stale,
     ExternalMerge,
+    /// Enqueued in the provider merge queue; the merge is observed, not sent.
+    Queued,
+    /// Left the merge queue unmerged. Typed and non-parking: see [`Dequeue`].
+    Dequeued,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DequeueCause {
+    /// Removed by the queue (failed merge-group checks, conflict) or by a person.
+    Removed,
+    /// A new head left the queue; the old head's merge cannot be retried.
+    HeadChanged,
+    Closed,
+}
+
+/// A merge queue exit. Retry needs a later fresh read (`reconciled`) that still
+/// shows the PR open, unmerged and out of the queue; never the dequeuing read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dequeue {
+    pub cause: DequeueCause,
+    pub at: i64,
+    #[serde(default)]
+    pub reconciled: bool,
+}
+
+/// Merge-queue enqueues per PR revision, including the first: a queue that keeps
+/// rejecting the PR stops being fed.
+pub const MAX_ENQUEUES: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +106,8 @@ pub struct Effect {
     pub state: EffectState,
     pub error: Option<String>,
     pub receipt: Option<Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dequeue: Option<Dequeue>,
 }
 
 impl Effect {
@@ -84,7 +115,6 @@ impl Effect {
         self.state == EffectState::Uncertain
             || self.state == EffectState::Confirmed && self.error.is_some()
     }
-
     /// Azure DevOps refused the vote (a branch policy, e.g. one forbidding the
     /// requester's own approval, or missing permission). Final: the review is
     /// not re-queued; it parks for a human.
@@ -93,6 +123,42 @@ impl Effect {
             && self.state == EffectState::Rejected
             && self.operation.failure == Some(monitoring::OperationFailure::Permission)
     }
+
+    /// A merge still owned by the provider merge queue, or a dequeue not yet
+    /// reconciled by a later read.
+    pub fn in_merge_queue(&self) -> bool {
+        self.state == EffectState::Queued
+            || self.state == EffectState::Dequeued
+                && self.dequeue.as_ref().is_none_or(|d| !d.reconciled)
+    }
+    fn retryable_dequeue(&self) -> bool {
+        self.state == EffectState::Dequeued
+            && !self.cancelled
+            && self
+                .dequeue
+                .as_ref()
+                .is_some_and(|d| d.reconciled && d.cause == DequeueCause::Removed)
+    }
+}
+
+/// Whether an earlier `action` effect on `item_id` forbids preparing another.
+/// Only a reconciled merge-queue removal permits a new enqueue, up to [`MAX_ENQUEUES`].
+pub(crate) fn action_taken(effects: &[Effect], item_id: &str, action: Action) -> bool {
+    let mut earlier = effects
+        .iter()
+        .filter(|e| e.item_id == item_id && e.action == action)
+        .peekable();
+    if earlier.peek().is_none() {
+        return false;
+    }
+    let mut count = 0;
+    for effect in earlier {
+        if !effect.retryable_dequeue() {
+            return true;
+        }
+        count += 1;
+    }
+    count >= MAX_ENQUEUES
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +350,13 @@ pub fn synchronize(
         {
             reconcile(effect, &observation)?;
         }
+        for effect in ledger
+            .effects
+            .iter_mut()
+            .filter(|e| e.item_id == item_id && e.in_merge_queue())
+        {
+            observe_queue(effect, &observation, now);
+        }
         for effect in ledger.effects.iter_mut().filter(|e| {
             e.item_id == item_id && e.state == EffectState::Confirmed && e.error.is_some()
         }) {
@@ -384,11 +457,7 @@ pub fn prepare_effect(
         .find(|f| f.id == final_id)
         .ok_or("Final review unavailable.")?;
     ready(store, run, current, action)?;
-    if ledger
-        .effects
-        .iter()
-        .any(|e| e.item_id == run.basis.item_id && e.action == action)
-    {
+    if action_taken(&ledger.effects, &run.basis.item_id, action) {
         return Err("This iteration/account already has an action intent. Reconcile the original effect; do not create another.".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
@@ -404,7 +473,7 @@ pub fn prepare_effect(
             Some(_) => packet::approval_body(&id, &run.basis.repository.provider),
             None => format!("Automated primary final review by PR Sniper.\n\nThis is the acting account's automated vote, not personal review.\n\n<!-- pr-sniper:action:{id} -->\n\n{}", crate::exit_writes::SIGNATURE),
         },
-        state:EffectState::Prepared,error:None,receipt:None};
+        state:EffectState::Prepared,error:None,receipt:None,dequeue:None};
     ledger.effects.push(effect.clone());
     store.save_actions(&ledger)?;
     Ok(effect)
@@ -445,7 +514,7 @@ pub fn cancel_effect(store: &Store, id: &str) -> Result<(), String> {
         .ok_or("Action unavailable.")?;
     if matches!(
         effect.state,
-        EffectState::Confirmed | EffectState::ExternalMerge
+        EffectState::Confirmed | EffectState::ExternalMerge | EffectState::Queued
     ) {
         return Err("A confirmed provider effect cannot be undone.".into());
     }
@@ -540,6 +609,17 @@ pub fn reconcile(effect: &mut Effect, observation: &Observation) -> Result<(), S
             effect.operation.state = OperationState::Completed;
             effect.operation.next_attempt_at = None;
         }
+        // Our pinned head is queued; who queued it is unknown, so no receipt.
+        Action::Merge
+            if effect.observation.merge_queue
+                && observation.in_merge_queue
+                && observation.head == effect.observation.head =>
+        {
+            effect.state = EffectState::Queued;
+            effect.error = None;
+            effect.operation.state = OperationState::Completed;
+            effect.operation.next_attempt_at = None;
+        }
         Action::Merge => {
             effect.error = Some(
                 "Merge outcome remains unresolved; no replacement request will be submitted."
@@ -548,6 +628,60 @@ pub fn reconcile(effect: &mut Effect, observation: &Observation) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// Follow a merge the provider queue owns. A merge of the pinned head confirms a
+/// receipted enqueue (else attribution is unknown); leaving the queue unmerged
+/// is a typed [`Dequeue`], reconciled by the next fresh read before any retry.
+pub fn observe_queue(effect: &mut Effect, observation: &Observation, now: i64) {
+    if effect.action != Action::Merge
+        || observation.account_id != effect.observation.account_id
+        || observation.pull_request_id != effect.observation.pull_request_id
+        || observation.repository_id != effect.observation.repository_id
+    {
+        return;
+    }
+    let head = observation.head == effect.observation.head;
+    if observation.state == "MERGED" && head {
+        effect.dequeue = None;
+        match effect.receipt.as_mut() {
+            Some(receipt) => {
+                receipt.merge_commit = observation.merge_commit.clone();
+                effect.state = EffectState::Confirmed;
+                effect.error = None;
+            }
+            None => {
+                effect.state = EffectState::ExternalMerge;
+                effect.error = Some("GitHub confirms merged; attribution to this unconfirmed request is unknown. No replacement merge is sent.".into());
+            }
+        }
+        return;
+    }
+    if effect.state == EffectState::Dequeued {
+        if observation.state == "OPEN" && head && observation.in_merge_queue {
+            effect.state = EffectState::Queued;
+            effect.dequeue = None;
+        } else if let Some(dequeue) = effect.dequeue.as_mut() {
+            dequeue.reconciled = true;
+        }
+        return;
+    }
+    let cause = if observation.state != "OPEN" {
+        DequeueCause::Closed
+    } else if !head {
+        DequeueCause::HeadChanged
+    } else if !observation.in_merge_queue {
+        DequeueCause::Removed
+    } else {
+        return;
+    };
+    effect.state = EffectState::Dequeued;
+    effect.error = None;
+    effect.dequeue = Some(Dequeue {
+        cause,
+        at: now,
+        reconciled: false,
+    });
 }
 
 pub fn accept(effect: &mut Effect, receipt: Receipt) {
@@ -583,6 +717,9 @@ pub fn finish_effect(
                 return Err("Provider receipt does not match this frozen action.".into());
             }
             accept(effect, receipt);
+            if effect.action == Action::Merge && effect.observation.merge_queue {
+                effect.state = EffectState::Queued;
+            }
         }
         Err(error) => {
             effect.state = if error.uncertain {
@@ -599,7 +736,7 @@ pub fn finish_effect(
     let merged = effect
         .receipt
         .as_ref()
-        .filter(|r| r.action == Action::Merge)
+        .filter(|r| r.action == Action::Merge && effect.state == EffectState::Confirmed)
         .map(|receipt| {
             let mut observation = effect.observation.clone();
             observation.state = "MERGED".into();
@@ -621,11 +758,12 @@ pub fn verify_after_effect(
     observed: Result<Observation, Failure>,
 ) -> Result<(), Failure> {
     let checked = observed.map_err(|e| e.message).and_then(|current| {
+        // A queued merge may land after other entries moved the base.
         if current.account_id != effect.observation.account_id
             || current.repository_id != effect.observation.repository_id
             || current.pull_request_id != effect.observation.pull_request_id
             || current.head != effect.observation.head
-            || current.base != effect.observation.base
+            || current.base != effect.observation.base && !effect.observation.merge_queue
         {
             return Err("Provider identity or revision changed after the confirmed action.".into());
         }
@@ -637,6 +775,13 @@ pub fn verify_after_effect(
                 .find(|f| f.id == effect.final_id)
                 .ok_or("Original final review unavailable.")?;
             ready(store, run, &current, Action::Approve)?;
+        } else if effect.observation.merge_queue {
+            if current.state != "MERGED" && !current.in_merge_queue {
+                return Err(
+                    "Provider merge queue entry could not be corroborated after the request."
+                        .into(),
+                );
+            }
         } else if current.state != "MERGED" {
             return Err(
                 "Provider merge receipt could not be corroborated after the request.".into(),
@@ -865,6 +1010,24 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     }
                 }
             }
+        }
+        if let Some(dequeue) = effects
+            .iter()
+            .rev()
+            .find(|e| e.action == Action::Merge)
+            .filter(|e| e.state == EffectState::Dequeued)
+            .and_then(|e| e.dequeue.as_ref())
+        {
+            blockers.push(
+                if dequeue.cause == DequeueCause::Removed
+                    && !action_taken(&ledger.effects, &item.id, Action::Merge)
+                {
+                    "Removed from the provider merge queue; it is re-enqueued once a fresh read confirms the removal."
+                } else {
+                    "Removed from the provider merge queue; no further enqueue is sent for this revision."
+                }
+                .into(),
+            );
         }
         if effects
             .iter()
@@ -1104,7 +1267,8 @@ fn observation_pending(
             && (e.state == EffectState::Prepared && now < e.operation.retry_deadline
                 || e.needs_reconciliation()
                     && (e.reconcile_requested
-                        || e.reconcile_attempts < 3 && now < e.operation.retry_deadline))
+                        || e.reconcile_attempts < 3 && now < e.operation.retry_deadline)
+                || e.in_merge_queue())
     }) || packet::open(ledger, &item.id)
         || item.state == State::MachineSignedOff
             && settings
@@ -1114,16 +1278,8 @@ fn observation_pending(
                 .is_some_and(|r| {
                     r.assignments.iter().any(|a| {
                         let p = r.assignment_authority(a);
-                        p.approve
-                            && !ledger
-                                .effects
-                                .iter()
-                                .any(|e| e.item_id == item.id && e.action == Action::Approve)
-                            || p.merge
-                                && !ledger
-                                    .effects
-                                    .iter()
-                                    .any(|e| e.item_id == item.id && e.action == Action::Merge)
+                        p.approve && !action_taken(&ledger.effects, &item.id, Action::Approve)
+                            || p.merge && !action_taken(&ledger.effects, &item.id, Action::Merge)
                     })
                 })
             && !ledger

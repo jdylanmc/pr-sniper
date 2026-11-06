@@ -69,6 +69,9 @@ pub struct Observation {
     pub checks: Option<String>,
     pub check_contexts: Vec<Value>,
     pub in_merge_queue: bool,
+    /// The base branch requires a merge queue: merge enqueues, never merges directly.
+    #[serde(default)]
+    pub merge_queue: bool,
     pub method: Option<MergeMethod>,
     pub protection: Value,
     pub threads: Vec<HumanThread>,
@@ -144,31 +147,29 @@ impl Observation {
             Action::Approve => None,
             Action::Merge if self.discussion_blocker().is_some() => self.discussion_blocker(),
             Action::Merge if self.in_merge_queue => {
-                Some("This PR is in a provider merge queue; direct merge is unavailable.".into())
+                Some("This PR is already in the provider merge queue.".into())
             }
             Action::Merge if self.merge_rules_error.is_some() => self.merge_rules_error.clone(),
             Action::Merge if self.merge_rules.is_none() => {
                 Some("Active repository rules could not be verified for direct merge.".into())
             }
-            Action::Merge
-                if self
-                    .merge_rules
-                    .as_ref()
-                    .is_some_and(|rules| rules.iter().any(|r| r["type"] == "merge_queue")) =>
-            {
-                Some(
-                    "Repository rules require a merge queue; direct merge is not permitted.".into(),
-                )
-            }
-            Action::Merge if self.method.is_none() => {
+            // A merge queue picks its own method; only a direct merge needs one.
+            Action::Merge if !self.merge_queue && self.method.is_none() => {
                 Some("No provider-selected supported merge method is available.".into())
             }
             Action::Merge if self.checks.as_deref() != Some("SUCCESS") => {
                 Some("Current-head CI has not been verified green.".into())
             }
-            // PR Sniper never updates a branch; only the author can.
-            Action::Merge if self.merge_state == "BEHIND" => Some(BEHIND_BASE.into()),
-            Action::Merge if self.mergeable != "MERGEABLE" || self.merge_state != "CLEAN" => {
+            // PR Sniper never updates a branch; only the author can. A merge queue
+            // tests the PR on the latest base, so behind is no blocker there.
+            Action::Merge if !self.merge_queue && self.merge_state == "BEHIND" => {
+                Some(BEHIND_BASE.into())
+            }
+            Action::Merge
+                if self.mergeable != "MERGEABLE"
+                    || !(self.merge_state == "CLEAN"
+                        || self.merge_queue && self.merge_state == "BEHIND") =>
+            {
                 Some(format!(
                     "Provider merge readiness is {}/{}; no bypass is permitted.",
                     self.mergeable, self.merge_state

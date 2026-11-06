@@ -71,7 +71,7 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
           repository(owner:$owner,name:$name) {
             databaseId viewerPermission viewerDefaultMergeMethod mergeCommitAllowed rebaseMergeAllowed squashMergeAllowed
             pullRequest(number:$number) {
-              id fullDatabaseId baseRefOid baseRefName headRefOid isDraft state mergeStateStatus mergeable reviewDecision isInMergeQueue
+              id fullDatabaseId baseRefOid baseRefName headRefOid isDraft state mergeStateStatus mergeable reviewDecision isInMergeQueue isMergeQueueEnabled
               author { ... on User { databaseId } ... on Bot { databaseId } }
               headRepository { databaseId }
               mergedBy { ... on User { databaseId } ... on Bot { databaseId } } mergedAt mergeCommit { oid }
@@ -223,6 +223,11 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
                 |ConnectionError::Timeout|ConnectionError::ProviderFailure|ConnectionError::ProviderFailureAfter(_)))=>return Err(error),
             Err(error)=>(None,Some(format!("Active repository merge rules are unavailable ({error:?}); approval eligibility remains separate."))),
         };
+        // Either source alone means a direct merge would be refused.
+        let merge_queue = boolean(&pull["isMergeQueueEnabled"])?
+            || merge_rules
+                .as_ref()
+                .is_some_and(|rules| rules.iter().any(|r| r["type"] == "merge_queue"));
         let observation = Observation {
             write_capability: false,
             node_id: text(&pull["id"])?,
@@ -247,6 +252,7 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
             merge_state: text(&pull["mergeStateStatus"])?,
             review_decision: pull["reviewDecision"].as_str().map(str::to_string),
             in_merge_queue: boolean(&pull["isInMergeQueue"])?,
+            merge_queue,
             method,
             checks,
             check_contexts,
@@ -397,6 +403,9 @@ impl<T: MutationTransport> ReviewerOutcome for GithubClient<T> {
         observation: &Observation,
         request_id: &str,
     ) -> Result<Receipt, WriteFailure> {
+        if observation.merge_queue {
+            return self.enqueue_exact(observation, request_id);
+        }
         let method = observation.method.as_ref().ok_or_else(|| WriteFailure {
             failure: Failure::permanent("Provider merge method unavailable."),
             uncertain: false,
@@ -433,6 +442,71 @@ impl<T: MutationTransport> ReviewerOutcome for GithubClient<T> {
                 head: observation.head.clone(),
                 action: Action::Merge,
                 merge_commit: Some(super::metadata::sha(&p["mergeCommit"]["oid"])?),
+            })
+        })();
+        parsed.map_err(|e: ConnectionError| WriteFailure {
+            failure: e.into(),
+            uncertain: true,
+        })
+    }
+}
+
+impl<T: MutationTransport> GithubClient<T> {
+    /// Merge on a merge-queue base: enqueue the pinned head. The receipt is the
+    /// queue entry; the merge itself is observed later (`EffectState::Queued`).
+    fn enqueue_exact(
+        &self,
+        observation: &Observation,
+        request_id: &str,
+    ) -> Result<Receipt, WriteFailure> {
+        let query = "mutation($input:EnqueuePullRequestInput!){enqueuePullRequest(input:$input){clientMutationId mergeQueueEntry{id state pullRequest{id headRefOid isInMergeQueue}}}}";
+        let response = self
+            .transport
+            .mutate(
+                "/graphql",
+                Request::Post(json!({"query":query,"variables":{"input":{
+                    "pullRequestId":observation.node_id,"expectedHeadOid":observation.head,"clientMutationId":request_id
+                }}})),
+            )
+            .map_err(|e| WriteFailure {
+                failure: e.into(),
+                uncertain: true,
+            })?;
+        let (value, _) = parse_response(response).map_err(|e| WriteFailure {
+            failure: e.into(),
+            uncertain: true,
+        })?;
+        if value
+            .get("errors")
+            .is_some_and(|e| !e.is_null() && e.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            return Err(WriteFailure {
+                failure: Failure::permanent(
+                    "GitHub rejected or could not confirm the exact-head enqueue; reconciliation is required.",
+                ),
+                uncertain: true,
+            });
+        }
+        let parsed = (|| {
+            let data = &value["data"]["enqueuePullRequest"];
+            let entry = &data["mergeQueueEntry"];
+            let p = &entry["pullRequest"];
+            if data["clientMutationId"].as_str() != Some(request_id)
+                || p["id"].as_str() != Some(&observation.node_id)
+                || p["headRefOid"].as_str() != Some(&observation.head)
+                || !matches!(
+                    entry["state"].as_str(),
+                    Some("QUEUED" | "AWAITING_CHECKS" | "MERGEABLE" | "LOCKED")
+                )
+            {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            Ok(Receipt {
+                id: text(&entry["id"])?,
+                actor_id: observation.account_id.clone(),
+                head: observation.head.clone(),
+                action: Action::Merge,
+                merge_commit: None,
             })
         })();
         parsed.map_err(|e: ConnectionError| WriteFailure {

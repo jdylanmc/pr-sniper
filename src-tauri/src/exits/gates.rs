@@ -132,7 +132,7 @@ impl Facts {
         let conflicts = o.mergeable == "CONFLICTING" || o.merge_state == "DIRTY";
         let merge_pending = if conflicts {
             Some(MergeBlock::Conflicts)
-        } else if o.merge_state == "BEHIND" {
+        } else if o.merge_state == "BEHIND" && !o.merge_queue {
             Some(MergeBlock::BehindBase)
         } else {
             None
