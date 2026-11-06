@@ -738,6 +738,28 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     let mut items = Vec::new();
     for (id, job) in groups {
         let mut reviews: Vec<_> = reviews_by_item.remove(&id).unwrap_or_default();
+        let skip = |r: &review::host::Candidate| {
+            r.run.is_none()
+                && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
+                    || r.job.work.as_ref().is_some_and(|w| w.skipped))
+        };
+        // A skip after a state move on the same head adds nothing: the
+        // assignment's completed report for that head still stands.
+        let reported: Vec<_> = reviews
+            .iter()
+            .filter(|r| {
+                r.run
+                    .as_ref()
+                    .is_some_and(|run| run.operation.state == OperationState::Completed)
+            })
+            .map(|r| (r.assignment_id.clone(), r.job.head_sha.clone()))
+            .collect();
+        reviews.retain(|r| {
+            !skip(r)
+                || !reported
+                    .iter()
+                    .any(|(a, head)| *a == r.assignment_id && *head == r.job.head_sha)
+        });
         // One entry per PR: an older state's result is history and must not
         // mask the newest state's wait.
         let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
@@ -759,11 +781,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let mut blocked_publication = false;
         let skipped: Vec<_> = reviews
             .iter()
-            .filter(|r| {
-                r.run.is_none()
-                    && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
-                        || r.job.work.as_ref().is_some_and(|w| w.skipped))
-            })
+            .filter(|r| skip(r))
             .map(|r| SkippedReview {
                 assignment_id: r.assignment_id.clone(),
                 agent_name: r.agent_name.clone(),

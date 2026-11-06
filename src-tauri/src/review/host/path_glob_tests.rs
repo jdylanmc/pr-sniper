@@ -386,6 +386,41 @@ fn a_stale_revision_keeps_its_skipped_secondary() {
 }
 
 #[test]
+fn a_same_head_state_move_keeps_the_secondary_report_on_the_item() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md", "src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let reported = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .map(|j| key(&j, TEAMMATE))
+        .unwrap();
+    // Discussion moves the PR state; the head stays.
+    let mut states = store.load_pr_states().unwrap();
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, NOW + 5).unwrap();
+    store.save_pr_states(&states).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES,
+        "no file changed since its review of this head"
+    );
+    // The item shows the report it gave for this head, not a skip.
+    let item = item(&store, &monitor);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(
+        item.review_keys.contains(&reported),
+        "{:?}",
+        item.review_keys
+    );
+}
+
+#[test]
 fn a_skip_saved_before_the_flag_existed_survives_a_new_revision() {
     let (_root, store, mut monitor) = configured(&[], &["docs/"]);
     let wire = Wire::default();
