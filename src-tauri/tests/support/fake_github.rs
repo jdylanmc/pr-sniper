@@ -278,6 +278,13 @@ impl MutationTransport for Wire {
                 .is_some_and(|q| q.contains("unresolveReviewThread"))
             {
                 server.log.push(format!("unresolve:{id}"));
+                if server
+                    .fault
+                    .take_if(|(kind, f)| *kind == "unresolve" && matches!(f, Fault::Before))
+                    .is_some()
+                {
+                    return Err(ConnectionError::Timeout);
+                }
                 if let Some(thread) = server.threads.iter_mut().find(|t| t.id == id) {
                     thread.resolved = false;
                 }

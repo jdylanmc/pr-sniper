@@ -39,6 +39,8 @@ const WAIT_SECONDS: i64 = 10;
 pub enum StepKind {
     Reply,
     Resolve,
+    /// Reopen an own resolved thread whose finding still applies, after its correction reply.
+    Unresolve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +179,28 @@ pub fn plan(review: &ReviewRun, now: i64) -> Option<ExitWrite> {
         .collect();
     let mut seen = std::collections::BTreeSet::new();
     let result = review.result.as_ref()?;
+    let mut reopened = std::collections::BTreeSet::new();
+    steps.extend(
+        reply_comments
+            .iter()
+            .filter_map(|reply| {
+                result.finding_dispositions.iter().find(|a| {
+                    a.thread_id == reply.thread_id
+                        && a.disposition == crate::review::findings::Disposition::StillApplies
+                })
+            })
+            .filter(|a| reopened.insert(a.thread_id.clone()))
+            .map(|a| Step {
+                kind: StepKind::Unresolve,
+                thread_id: a.thread_id.clone(),
+                body: String::new(),
+                root_id: None,
+                revision: None,
+                state: StepState::Planned,
+                receipt: None,
+                resolution_evidence: Some(a.clone()),
+            }),
+    );
     let duck_required = review
         .selection
         .configuration
@@ -546,7 +570,7 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
             "PR state moved. The exit was discarded.",
         ));
     }
-    let proofs = if write.steps.iter().any(|s| s.kind == StepKind::Resolve) {
+    let proofs = if write.steps.iter().any(|s| s.kind != StepKind::Reply) {
         own_proofs(env, write)?
     } else {
         Vec::new()
@@ -588,11 +612,36 @@ fn preflight(env: &mut impl Environment, write: &mut ExitWrite) -> Result<(), Fa
                 }
                 step.revision = Some(env.revision(write, root.original_commit.as_deref()));
             }
+            StepKind::Unresolve => {
+                reopen_proof(write, step)?;
+                if !thread.owned_by_any(&proofs) {
+                    return Err(Failure::permanent(
+                        "Only threads rooted in this agent's own comments can be reopened. The exit was discarded.",
+                    ));
+                }
+                step.revision = Some(env.revision(write, root.original_commit.as_deref()));
+            }
         }
         step.root_id = Some(root.id.clone());
     }
     write.steps = verified;
     Ok(())
+}
+
+/// A reopen needs this run's `still_applies` assessment of the same thread at this head.
+fn reopen_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
+    let valid = step.resolution_evidence.as_ref().is_some_and(|a| {
+        a.thread_id == step.thread_id
+            && a.disposition == crate::review::findings::Disposition::StillApplies
+            && a.head_sha == write.job.head_sha
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(Failure::permanent(
+            "A reopen lacks a current still_applies assessment. The exit was discarded.",
+        ))
+    }
 }
 
 fn resolution_proof(write: &ExitWrite, step: &Step) -> Result<(), Failure> {
@@ -745,6 +794,7 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
         ));
     }
     match step.kind {
+        StepKind::Unresolve => reopen(env, write, index, &thread),
         StepKind::Reply => {
             if let Some(receipt) = found_reply(write, &thread, index) {
                 done(write, index, receipt);
@@ -864,6 +914,60 @@ fn execute(env: &mut impl Environment, write: &mut ExitWrite, index: usize) -> R
                     Err(error.failure)
                 }
             }
+        }
+    }
+}
+
+/// Reopen an own resolved thread. Already open = done without a write; unresolving
+/// twice is a no-op, so an unconfirmed attempt is retried after a confirming read.
+fn reopen(
+    env: &mut impl Environment,
+    write: &mut ExitWrite,
+    index: usize,
+    thread: &Thread,
+) -> Result<(), Failure> {
+    let step = write.steps[index].clone();
+    if !thread.resolved {
+        let receipt = if step.state == StepState::Attempted {
+            write.request_id(index)
+        } else {
+            "already".into()
+        };
+        done(write, index, receipt);
+        return env.save(write);
+    }
+    reopen_proof(write, &step)?;
+    let proofs = own_proofs(env, write)?;
+    if !thread.owned_by_any(&proofs) {
+        return Err(Failure::permanent(
+            "Thread ownership could not be verified; nothing was reopened.",
+        ));
+    }
+    write.steps[index].state = StepState::Attempted;
+    write.uncertain = true;
+    env.save(write)?;
+    let request = write.request_id(index);
+    match env.unresolve(write, &step.thread_id, &request) {
+        Ok(()) => {
+            done(write, index, request);
+            env.save(write)
+        }
+        Err(error) => {
+            write.uncertain = error.uncertain || step.state == StepState::Attempted;
+            if env
+                .thread(write, &step.thread_id)
+                .is_ok_and(|t| t.is_some_and(|t| !t.resolved))
+            {
+                done(write, index, request);
+                return env.save(write);
+            }
+            write.steps[index].state = if write.uncertain {
+                StepState::Attempted
+            } else {
+                StepState::Planned
+            };
+            env.save(write)?;
+            Err(error.failure)
         }
     }
 }

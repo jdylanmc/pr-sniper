@@ -44,11 +44,12 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 
 ## Replies and resolutions (packet exit)
 
-- One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`) → replies → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
+- One exit = one ordered effect: **preflight** (read-only) → publication batch (`new_comments`) → replies → reopens → resolutions → confirmed. Publication is held until preflight passes (`exit_writes::holds_publication`).
 - Preflight verifies every item or tosses the whole exit before any effect: head unchanged, thread exists, repliable root, resolutions owned. Nothing partial. Toss = error +1, re-queue (ADR 0007, park at 3).
 - Ownership: root must verify against a saved publication proof (receipt, account, review, original commit, exact root body) of this PR. Others' threads: reply only. Already resolved own thread = done, no write.
 - Intent saved before each effect (`Attempted`). Reply body frozen at preflight: agent text, marker `<!-- pr-sniper:reply:exit-<id>-<n> -->`, revision stamp, `🔫 PR Sniper automated review`. Reconcile reads the thread: marker present = done. Attempted and absent = **never re-POST**; retries read only, then park `Failed`.
 - Resolve: GraphQL `resolveReviewThread` with `clientMutationId`; unconfirmed result re-reads the thread; idempotent retry.
+- Reopen: a reply on an own thread assessed `still_applies` (a correction of an earlier resolution) is followed by GraphQL `unresolveReviewThread` (Azure DevOps: status `active`), same ownership proof and retry rules as Resolve. Already open = done, no write. `fixed`, `withdrawn` and other dispositions never reopen.
 - Failure after the first effect = `Failed` (needs human), never silent replay. Before it = `Tossed`.
 - Revision stamp per comment: thread root `original_commit_id` mapped to a local iteration, else `unknown`.
 - Not `FollowUp`: own ledger, same rules. Legacy analyzed replies still drain.

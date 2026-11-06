@@ -464,7 +464,7 @@ pub struct StateMarks {
 }
 
 /// Ids the host itself wrote after the packet: comments (batch and replies) and
-/// threads it resolved.
+/// threads it resolved or reopened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnWrites {
     pub comments: std::collections::BTreeSet<String>,

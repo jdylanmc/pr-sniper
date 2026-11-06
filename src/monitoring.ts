@@ -113,7 +113,7 @@ export interface ExitWrite {
   review_operation_id: string;
   phase: "planned" | "verified" | "completed" | "tossed" | "failed";
   steps: {
-    kind: "reply" | "resolve";
+    kind: "reply" | "resolve" | "unresolve";
     state: "planned" | "attempted" | "done";
     receipt: string | null;
   }[];
