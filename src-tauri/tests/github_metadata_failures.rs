@@ -267,18 +267,72 @@ fn malformed_metadata_schema_never_becomes_partial_success() {
 
 #[test]
 fn untrusted_looping_skipped_or_filter_changing_links_are_rejected() {
+    // A link that can never be followed is a deterministic provider response.
     for link in [
         "<https://example.invalid/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+        "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=open&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+        "<https://api.github.com/repos/someone/else/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+        "<https://api.github.com/repositories/1376547672/issues?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+        "<https://api.github.com/repositories/not-an-id/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+        "not-a-valid-link",
+    ] {
+        let mut transport = ready_transport();
+        transport.reply(LIST, linked(json!([detail()]), link));
+
+        assert_eq!(read(transport), Err(ConnectionError::InvalidResponse), "{link}");
+    }
+    // A page sequence that loops or skips may have moved under the read.
+    for link in [
         "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=1>; rel=\"next\"",
         "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=3>; rel=\"next\"",
-        "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=open&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
-        "not-a-valid-link",
     ] {
         let mut transport = ready_transport();
         transport.reply(LIST, linked(json!([detail()]), link));
 
         assert_eq!(read(transport), Err(ConnectionError::IncompleteRead), "{link}");
     }
+}
+
+#[test]
+fn pages_linked_through_the_numeric_repository_alias_are_read_in_full() {
+    // GitHub links later pages as /repositories/{id}/...; the read stays on the named path.
+    let mut transport = ready_transport();
+    let mut second = detail();
+    second["id"] = json!(1002);
+    second["number"] = json!(32);
+    let mut pull = detail();
+    pull["changed_files"] = json!(2);
+    let mut other = file();
+    other["filename"] = json!("src/other.rs");
+    transport.reply(LIST, linked(
+        json!([detail()]),
+        "<https://api.github.com/repositories/1376547672/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\", <https://api.github.com/repositories/1376547672/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"last\"",
+    ));
+    transport.reply(LIST_NEXT, linked(
+        json!([second]),
+        "<https://api.github.com/repositories/1376547672/pulls?state=all&sort=created&direction=asc&per_page=100&page=1>; rel=\"prev\", <https://api.github.com/repositories/1376547672/pulls?state=all&sort=created&direction=asc&per_page=100&page=1>; rel=\"first\"",
+    ));
+    transport.reply(DETAIL, response(200, pull));
+    transport.reply(FILES, linked(
+        json!([file()]),
+        "<https://api.github.com/repositories/1376547672/pulls/31/files?per_page=100&page=2>; rel=\"next\", <https://api.github.com/repositories/1376547672/pulls/31/files?per_page=100&page=2>; rel=\"last\"",
+    ));
+    transport.reply(FILES_NEXT, response(200, json!([other])));
+    transport.reply("/repos/jdylanmc/pr-sniper/pulls/32", response(200, second));
+    transport.reply(
+        "/repos/jdylanmc/pr-sniper/pulls/32/files?per_page=100&page=1",
+        response(200, json!([file()])),
+    );
+    transport.reply(
+        "/repos/jdylanmc/pr-sniper/pulls/32/requested_reviewers",
+        response(200, json!({"users": [], "teams": []})),
+    );
+
+    let pulls = read(transport).unwrap();
+
+    assert_eq!(pulls.len(), 2);
+    assert_eq!(pulls[0].files.len(), 2);
+    assert_eq!(pulls[1].number, 32);
 }
 
 #[test]
@@ -293,7 +347,7 @@ fn duplicate_query_parameters_cannot_hide_a_dropped_pull_filter() {
         response(200, json!([])),
     );
 
-    assert_eq!(read(transport), Err(ConnectionError::IncompleteRead));
+    assert_eq!(read(transport), Err(ConnectionError::InvalidResponse));
 }
 
 #[test]

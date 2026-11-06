@@ -538,6 +538,52 @@ fn a_legacy_parked_incomplete_read_recovers_at_startup() {
 }
 
 #[test]
+fn a_parked_incomplete_read_resumes_at_startup_within_its_resume_budget() {
+    let (_root, store, mut monitor) = configured(false);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let run = dispatch(&store, TEAMMATE, NOW + 2);
+    let spent = dispatch(&store, PRIMARY, NOW + 2);
+    let mut reviews = store.load_reviews().unwrap();
+    let failure = Failure::from(crate::provider::ConnectionError::IncompleteRead);
+    for review in &mut reviews {
+        let deadline = review.operation.retry_deadline;
+        review.operation.fail(&failure.monitoring(), deadline);
+        review.phase = "Review stopped".into();
+        review.error = Some(failure.message.clone());
+    }
+    // A park whose cooldowns are spent stays for a human.
+    reviews[1].operation.resume_at = None;
+    store.save_reviews(&reviews).unwrap();
+    let parked = stored(&store, &run.operation.id);
+    assert_eq!(parked.operation.state, OperationState::ManualRetry);
+    assert!(parked.operation.resume_at.is_some_and(|at| at > NOW));
+
+    crate::review::restore(&store).unwrap();
+    let saved = serde_json::to_value(store.load_reviews().unwrap()).unwrap();
+    crate::review::restore(&store).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load_reviews().unwrap()).unwrap(),
+        saved
+    );
+
+    let mut resumed = stored(&store, &run.operation.id);
+    assert_eq!(resumed.operation.state, OperationState::ManualRetry);
+    assert_eq!(
+        resumed.operation.resume_cycle,
+        parked.operation.resume_cycle
+    );
+    assert!(resumed.operation.auto_resume(false, NOW));
+    assert_eq!(resumed.operation.state, OperationState::Queued);
+    assert_eq!(
+        resumed.operation.resume_cycle,
+        parked.operation.resume_cycle + 1
+    );
+    let untouched = stored(&store, &spent.operation.id);
+    assert_eq!(untouched.operation.state, OperationState::ManualRetry);
+    assert_eq!(untouched.operation.resume_at, None);
+}
+
+#[test]
 fn a_legacy_parked_incomplete_read_on_a_merged_pr_ends_quietly() {
     let (_root, store, mut monitor) = configured(false);
     scan(&mut monitor, &store, vec![pull('a')], NOW);
