@@ -325,18 +325,18 @@ fn signed_out_later_page_is_not_presented_as_usable_authorization() {
 
 #[test]
 fn unsafe_changed_or_disappearing_pagination_is_visible_and_retains_only_verified_records() {
-    for link in [
-        "<https://evil.example/user/repos?page=2>; rel=\"next\"".to_string(),
-        format!("<https://api.github.com{CATALOG}3>; rel=\"next\""),
-        "<https://api.github.com/user/repos?affiliation=owner&visibility=all&per_page=100&page=2>; rel=\"next\"".to_string(),
-        format!("<https://api.github.com{CATALOG}2>; rel=\"last\""),
+    for (link, error) in [
+        ("<https://evil.example/user/repos?page=2>; rel=\"next\"".to_string(), ConnectionError::InvalidResponse),
+        (format!("<https://api.github.com{CATALOG}3>; rel=\"next\""), ConnectionError::IncompleteRead),
+        ("<https://api.github.com/user/repos?affiliation=owner&visibility=all&per_page=100&page=2>; rel=\"next\"".to_string(), ConnectionError::InvalidResponse),
+        (format!("<https://api.github.com{CATALOG}2>; rel=\"last\""), ConnectionError::IncompleteRead),
     ] {
         let client = GithubClient::new(Fixture::new(vec![first(
             json!([repository(101, "orbit", "Organization")]), Some(&link)
         )]));
         let browser = client.repository_browser(&identity()).unwrap();
         assert_eq!(browser.repositories.len(), 1);
-        assert_eq!(browser.warnings[0].error, ConnectionError::IncompleteRead);
+        assert_eq!(browser.warnings[0].error, error, "{link}");
     }
     let link = format!("<https://api.github.com{CATALOG}2>; rel=\"next\", <https://api.github.com{CATALOG}3>; rel=\"last\"");
     let client = GithubClient::new(Fixture::new(vec![
