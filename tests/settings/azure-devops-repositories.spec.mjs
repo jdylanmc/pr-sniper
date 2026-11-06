@@ -419,7 +419,7 @@ test("Azure DevOps assignments offer Approve, with Include self, but never Appro
   await includeSelf.check();
   await approval.getByRole("radio", { name: "Neither", exact: true }).check();
   await expect(assignment.locator("[data-include-self]")).toBeHidden();
-  await expect(includeSelf).not.toBeChecked();
+  await expect(assignment.locator("[name=include_self]")).not.toBeChecked();
   await approval.getByRole("radio", { name: "Approve", exact: true }).check();
   await includeSelf.check();
   await assignmentBack(page, assignment);
