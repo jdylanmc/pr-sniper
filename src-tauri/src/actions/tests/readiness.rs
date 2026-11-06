@@ -1408,7 +1408,7 @@ fn published_comments_end_the_revision_so_ci_turning_green_never_reruns_it() {
 }
 
 #[test]
-fn an_own_reopen_is_not_an_external_change() {
+fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
     use crate::github::state::{SnapshotComment, SnapshotThread};
     let with = |resolved| PrSnapshot {
         threads: vec![SnapshotThread {
@@ -1425,42 +1425,55 @@ fn an_own_reopen_is_not_an_external_change() {
         thread_total: 1,
         ..snapshot(false, "SUCCESS")
     };
-    let (_root, store, _) = read_only_primary(false);
-    let read = with(true);
-    poll(&store, &read, NOW + 10);
-    let env = env(&store);
-    let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
-    let mut result = output();
-    result.output = ReviewOutput::from_exit(
-        crate::exits::ExitOutcome::Comments {
-            new_comments: vec![],
-            body: None,
-            reply_comments: vec![],
-            resolve_own_threads: vec!["own".into()],
-        },
-        None,
-    );
-    review_host::complete(&store, &run.operation.id, Ok(result), NOW + 13).unwrap();
-    assert_eq!(crate::exit_writes::admit(&store, NOW + 14).unwrap(), 1);
-    let mut ledger = store.load_feedback().unwrap();
-    let write = &mut ledger.exit_writes[0];
-    write.steps[0].kind = crate::exit_writes::StepKind::Unresolve;
-    write.steps[0].state = crate::exit_writes::StepState::Done;
-    write.phase = crate::exit_writes::Phase::Completed;
-    write.operation.state = OperationState::Completed;
-    write.consumed = true;
-    store.save_feedback(&ledger).unwrap();
-    let fresh = with(false);
-    crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
-    let baseline = store
-        .load_pr_states()
-        .unwrap()
-        .get(&Binding::job(&run.job))
-        .unwrap()
-        .baseline_hash
-        .clone()
-        .unwrap();
-    assert_eq!(baseline, fresh.normalize().hash());
+    // (packet read resolved, reopen receipt, fresh resolved, external change)
+    for (read_resolved, receipt, fresh_resolved, external) in [
+        (true, "exit-1-0", false, false),
+        // Already open: the no-op reopen wrote nothing; a later resolve is someone else's.
+        (false, "already", true, true),
+    ] {
+        let (_root, store, _) = read_only_primary(false);
+        let read = with(read_resolved);
+        poll(&store, &read, NOW + 10);
+        let env = env(&store);
+        let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
+        let mut result = output();
+        result.output = ReviewOutput::from_exit(
+            crate::exits::ExitOutcome::Comments {
+                new_comments: vec![],
+                body: None,
+                reply_comments: vec![],
+                resolve_own_threads: vec!["own".into()],
+            },
+            None,
+        );
+        review_host::complete(&store, &run.operation.id, Ok(result), NOW + 13).unwrap();
+        assert_eq!(crate::exit_writes::admit(&store, NOW + 14).unwrap(), 1);
+        let mut ledger = store.load_feedback().unwrap();
+        let write = &mut ledger.exit_writes[0];
+        write.steps[0].kind = crate::exit_writes::StepKind::Unresolve;
+        write.steps[0].state = crate::exit_writes::StepState::Done;
+        write.steps[0].receipt = Some(receipt.into());
+        write.phase = crate::exit_writes::Phase::Completed;
+        write.operation.state = OperationState::Completed;
+        write.consumed = true;
+        store.save_feedback(&ledger).unwrap();
+        let fresh = with(fresh_resolved);
+        crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
+        let baseline = store
+            .load_pr_states()
+            .unwrap()
+            .get(&Binding::job(&run.job))
+            .unwrap()
+            .baseline_hash
+            .clone()
+            .unwrap();
+        let expected = if external {
+            run.packet.as_ref().unwrap().state_hash.clone().unwrap()
+        } else {
+            fresh.normalize().hash()
+        };
+        assert_eq!(baseline, expected, "{receipt}");
+    }
 }
 
 struct SnapshotWire {

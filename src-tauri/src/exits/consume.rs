@@ -125,13 +125,16 @@ fn own_writes(store: &Store, review_operation_id: &str) -> Result<OwnWrites, Str
         for step in &write.steps {
             match (step.kind, step.state) {
                 (StepKind::Reply, _) => own.comments.extend(step.receipt.clone()),
-                (
-                    StepKind::Resolve | StepKind::Unresolve,
-                    StepState::Attempted | StepState::Done,
-                ) => {
+                (StepKind::Resolve, StepState::Attempted | StepState::Done) => {
                     own.resolved_threads.insert(step.thread_id.clone());
                 }
-                (StepKind::Resolve | StepKind::Unresolve, StepState::Planned) => {}
+                // A no-op reopen (thread already open) wrote nothing.
+                (StepKind::Unresolve, StepState::Attempted | StepState::Done)
+                    if step.receipt.as_deref() != Some("already") =>
+                {
+                    own.reopened_threads.insert(step.thread_id.clone());
+                }
+                (StepKind::Resolve | StepKind::Unresolve, _) => {}
             }
         }
     }

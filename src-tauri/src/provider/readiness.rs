@@ -463,12 +463,13 @@ pub struct StateMarks {
     pub resolved_threads: Vec<String>,
 }
 
-/// Ids the host itself wrote after the packet: comments (batch and replies) and
-/// threads it resolved or reopened.
+/// Ids the host itself wrote after the packet: comments (batch and replies),
+/// threads it resolved and threads it reopened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OwnWrites {
     pub comments: std::collections::BTreeSet<String>,
     pub resolved_threads: std::collections::BTreeSet<String>,
+    pub reopened_threads: std::collections::BTreeSet<String>,
 }
 
 impl StateMarks {
@@ -523,8 +524,13 @@ impl StateMarks {
             return true;
         }
         fresh.threads.iter().any(|t| {
-            t.resolved != self.resolved_threads.contains(&t.id)
-                && !own.resolved_threads.contains(&t.id)
+            // Own only in the direction the host wrote it.
+            let own = if t.resolved {
+                &own.resolved_threads
+            } else {
+                &own.reopened_threads
+            };
+            t.resolved != self.resolved_threads.contains(&t.id) && !own.contains(&t.id)
         })
     }
 }
