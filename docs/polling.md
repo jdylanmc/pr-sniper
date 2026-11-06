@@ -102,7 +102,7 @@ Persisted in `state/pr-state.json`. Own-write baseline and consume/toss calls: `
 
 ## Azure DevOps
 
-Same schedule, admission, retry and parking as GitHub, through the provider read interfaces (`azure_devops/read/pulls.rs`). Auth: Azure CLI token source ([ADR-0026](adr/0026-azure-devops-auth-via-azure-cli.md)).
+Same schedule, admission, retry and parking as GitHub, through the provider read interfaces (`azure_devops/read/pulls.rs`). Auth: Azure CLI token source ([ADR-0026](adr/0026-azure-devops-auth-via-azure-cli.md)). Live acceptance: [tests/azure-devops-acceptance.md](../tests/azure-devops-acceptance.md).
 
 | Step          | Rule                                                                                                                                                                                                                                                                   |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -119,7 +119,7 @@ Same schedule, admission, retry and parking as GitHub, through the provider read
 | Responses     | Omitted enum defaults read as their default (status `state` = `notSet`, policy `status` = `queued`, change type `none`). A body that still does not parse = `MalformedResponse(<response>)`: typed provenance, shown as Invalid response.                              |
 | Heartbeat     | Tracked open PRs: threads, reviewer votes, policy evaluations and PR statuses ([provider writes](provider-writes.md#azure-devops)).                                                                                                                                    |
 | Explicit PRs  | `…/_git/{repo}/pullrequest/{id}` on `dev.azure.com` or `{org}.visualstudio.com` (optional `DefaultCollection`). Resolved to `{org}/{project ID}/{repository ID}`; must equal the saved repository, else `target_mismatch`. Same gates as GitHub.                       |
-| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is not offered yet; approve-and-merge never.                                                                                                                                 |
+| Reviews       | Run and publish like GitHub ([provider writes](provider-writes.md#azure-devops)). Approve is a reviewer vote (approve-only); approve-and-merge never.                                                                                                                  |
 
 Parked causes (Queue › **Needs attention**):
 

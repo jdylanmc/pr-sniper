@@ -64,7 +64,7 @@ grants no approval, ready, or merge authority.
 - Domain terms and invariants: [`CONTEXT.md`](CONTEXT.md). Read before domain work.
 - Decisions: [`docs/adr/`](docs/adr/). Reference: [`docs/`](docs/) (`releases.md`, `windows-*.md`, `copilot-settings.md`).
 - Specs: `docs/agent/`. Agent workflow: `docs/agents/`.
-- Test notes: [`tests/settings/README.md`](tests/settings/README.md), `tests/macos-acceptance.md`, `tests/macos-notifications.md`.
+- Test notes: [`tests/settings/README.md`](tests/settings/README.md), `tests/macos-acceptance.md`, `tests/macos-notifications.md`, `tests/azure-devops-acceptance.md`.
 
 ### Layout
 

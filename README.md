@@ -4,7 +4,7 @@
 
 Site and live demo: [jdylanmc.github.io/pr-sniper](https://jdylanmc.github.io/pr-sniper/).
 
-Menu-bar macOS app. Watches your GitHub repos. Copilot agents review each pull request revision once, reply to new comments, and leave the final call to you. It prepares work. It never merges without an explicit grant.
+Menu-bar macOS app. Watches your GitHub and Azure DevOps repos. Copilot agents review each pull request revision once, reply to new comments, and leave the final call to you. It prepares work. It never merges without an explicit grant.
 
 ## Why
 
@@ -38,8 +38,12 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 **macOS** (Apple Silicon, macOS 13.5+):
 
 ```sh
+brew tap jdylanmc/pr-sniper
+brew trust --cask jdylanmc/pr-sniper/pr-sniper
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
+
+Homebrew 7 refuses casks from untrusted taps; older Homebrew has no `brew trust` and needs only the install command.
 
 Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanmc/pr-sniper/releases). Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater.
 
@@ -53,8 +57,8 @@ While the initial Chocolatey Community Repository submission is pending moderati
 
 ## Quick start
 
-1. Open **Settings > Accounts**. Connect a GitHub account (**Git Repository**) and a Copilot account (**AI Tooling**). Browser sign-in, no pasted tokens.
-2. Add a repository. Pick its GitHub account.
+1. Open **Settings > Accounts**. Connect a GitHub account or Azure DevOps via Azure CLI (**Git Repository**) and a Copilot account (**AI Tooling**). Browser sign-in, no pasted tokens.
+2. Add a repository. Pick its GitHub or Azure DevOps account.
 3. Pick admission: **All** or **Filtered**.
 4. Create an Agent (Copilot account + model). Assign it to the repo. Set **Permissions**. Mark one assignment **Primary** to let it reply.
 5. Enable the repo. Watch **Queue**.
@@ -64,7 +68,7 @@ While the initial Chocolatey Community Repository submission is pending moderati
 - Local results. Nothing posts unless a permission says so.
 - One review per revision. Publication revalidates the head SHA before and after.
 - GitHub and Copilot identities are separate. Connecting one never connects the other.
-- Approve and merge are opt-in, primary-agent-only, fail closed.
+- Approve and merge are opt-in, primary-agent-only, fail closed. Azure DevOps: Approve (reviewer vote) only, never merge.
 - Agents get host-owned review tools (reads plus one exit). That is a boundary, not a sandbox.
 
 ## Copilot CLI
