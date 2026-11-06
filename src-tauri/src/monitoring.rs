@@ -2411,6 +2411,7 @@ impl Monitor {
         let mut jobs = store.load_queue()?;
         let previous = jobs.clone();
         for job in &mut jobs {
+            keep_skip(job);
             if !actionable(job) && job.work.is_none()
                 || matches!(
                     job.waiting.as_str(),
@@ -3165,6 +3166,7 @@ impl Monitor {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
                     continue;
                 }
+                keep_skip(job);
                 if pull.state != Lifecycle::Open {
                     job.waiting = if pull.state == Lifecycle::Merged {
                         WAITING_MERGED
@@ -4263,6 +4265,16 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "repository_configuration_required"
         )
     )
+}
+
+/// Records a skip on its work before the waiting reason is overwritten, including
+/// entries saved before the flag existed.
+fn keep_skip(job: &mut QueueJob) {
+    if job.waiting == WAITING_SKIPPED_NO_MATCHING_FILES {
+        if let Some(work) = job.work.as_mut() {
+            work.skipped = true;
+        }
+    }
 }
 
 /// A scan retired this entry: its PR moved on, closed, merged, left review
