@@ -310,7 +310,10 @@ pub fn writing(store: &Store) -> Result<std::collections::BTreeSet<Binding>, Str
         actions
             .effects
             .iter()
-            .filter(|e| matches!(e.state, EffectState::Prepared | EffectState::Uncertain))
+            .filter(|e| {
+                matches!(e.state, EffectState::Prepared | EffectState::Uncertain)
+                    || e.in_merge_queue()
+            })
             .filter_map(|e| actions.finals.iter().find(|f| f.id == e.final_id))
             .filter(|f| f.packet.is_some())
             .map(|f| Binding::job(&f.basis.job)),

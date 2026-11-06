@@ -476,6 +476,7 @@ impl Readiness {
                 })
                 .collect(),
             in_merge_queue: false,
+            merge_queue: false,
             method: None,
             protection: json!({}),
             threads: self.threads.iter().map(|t| self.human_thread(t)).collect(),

@@ -263,6 +263,7 @@ fn an_uncertain_vote_reconciles_from_the_observed_reviewers_once() {
         state: EffectState::Uncertain,
         error: None,
         receipt: None,
+        dequeue: None,
     };
     assert!(effect.body.is_empty());
 

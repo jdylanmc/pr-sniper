@@ -348,6 +348,7 @@ test("Windows native application checks run on every PR and main push with read-
   assert.deepEqual(windows.on, {
     workflow_dispatch: null,
     pull_request: null,
+    merge_group: null,
     push: { branches: ["main"] },
   });
   assert.deepEqual(windows.permissions, { contents: "read" });
@@ -1230,6 +1231,7 @@ test("macOS browser shards run the full Chromium and WebKit suites read-only wit
   assert.deepEqual(ci.on, {
     workflow_dispatch: null,
     pull_request: null,
+    merge_group: null,
     push: { branches: ["main", "feat/macos-foundation"] },
   });
   assert.deepEqual(ci.permissions, { contents: "read" });
@@ -1831,6 +1833,7 @@ test("changesets validate PRs; one dispatch drives the release through CI-only s
   );
   assert.deepEqual(Object.keys(changesets.on), [
     "pull_request",
+    "merge_group",
     "workflow_dispatch",
   ]);
   const inputs = changesets.on.workflow_dispatch.inputs;
@@ -1847,13 +1850,19 @@ test("changesets validate PRs; one dispatch drives the release through CI-only s
   ]);
   assert.equal(
     changesets.jobs.changeset.if,
-    "${{ github.event_name == 'pull_request' }}",
+    "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
   );
   assert.equal(changesets.jobs.changeset.permissions, undefined);
   assert.match(
     changesets.jobs.changeset.steps.at(-1).run,
     /^node scripts\/changesets\.mjs validate /,
   );
+  // A merge group reports the check without checkout; each PR was validated.
+  const [group, ...pr] = changesets.jobs.changeset.steps;
+  assert.equal(group.if, "${{ github.event_name == 'merge_group' }}");
+  assert.doesNotMatch(group.run, /changesets\.mjs|git /);
+  for (const step of pr)
+    assert.equal(step.if, "${{ github.event_name == 'pull_request' }}");
   assert.equal(
     changesets.jobs.plan.if,
     "${{ github.event_name == 'workflow_dispatch' }}",
