@@ -745,9 +745,18 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
             {
                 return Err(ConnectionError::IncompleteRead);
             }
+            // A listed rename covers its source only when it left head; a copy
+            // source or a reused old path is its own change.
             let listed: BTreeSet<String> = files
                 .iter()
-                .flat_map(|f| std::iter::once(f.path.clone()).chain(f.previous_path.clone()))
+                .map(|f| f.path.clone())
+                .chain(
+                    files
+                        .iter()
+                        .filter(|f| f.status == "renamed")
+                        .filter_map(|f| f.previous_path.clone())
+                        .filter(|p| !head_tree.contains_key(p)),
+                )
                 .collect();
             // Unlisted files have no provider patch: no addressable line.
             files.extend(
