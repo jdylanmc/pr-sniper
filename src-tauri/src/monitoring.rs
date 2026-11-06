@@ -335,6 +335,10 @@ pub struct NormalWork {
     /// state when the entry is consumed, so a newer state only retargets it.
     #[serde(default)]
     pub state_seq: u64,
+    /// Retired as skipped by its path globs. Kept once a newer revision
+    /// supersedes the entry, so the revision's history still lists the skip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3319,9 +3323,11 @@ impl Monitor {
                 } else {
                     WAITING_AI_CAPACITY
                 };
+                let skipped = waiting == WAITING_SKIPPED_NO_MATCHING_FILES;
                 let work = if let Some(mut work) = existing.and_then(|i| queue.jobs[i].work.clone())
                 {
                     work.state_seq = work.state_seq.max(state_seq);
+                    work.skipped = skipped;
                     work
                 } else {
                     let prior: Vec<_> = queue
@@ -3374,6 +3380,7 @@ impl Monitor {
                         admission: tracked.admission.clone(),
                         legacy_item_id: legacy.map(crate::queue::item_id),
                         state_seq,
+                        skipped,
                     }
                 };
                 let job = QueueJob {

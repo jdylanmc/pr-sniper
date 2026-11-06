@@ -502,7 +502,10 @@ fn review_state(
                 }
             }
             ExitOutcome::Comments {
-                new_comments, body, ..
+                new_comments,
+                body,
+                reply_comments,
+                ..
             } => match context.write(run) {
                 Some(write) => match write.phase {
                     Phase::Failed => return State::Failed,
@@ -512,7 +515,17 @@ fn review_state(
                     Phase::Completed if write.consumed => {
                         // A legacy body never published now: its replies are the outcome.
                         if new_comments.is_empty() && (body.is_none() || publication.is_none()) {
-                            return State::WaitingForAuthor;
+                            // Only settled own threads resolved: nothing left for the author.
+                            let settled = reply_comments.is_empty()
+                                && crate::review::findings::action_clearance(
+                                    &result.finding_dispositions,
+                                )
+                                .is_ok();
+                            return if settled {
+                                State::MachineSignedOff
+                            } else {
+                                State::WaitingForAuthor
+                            };
                         }
                     }
                     _ => return State::AwaitingPublication,
@@ -760,7 +773,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let skipped: Vec<_> = reviews
             .iter()
             .filter(|r| {
-                r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES && r.run.is_none()
+                r.run.is_none()
+                    && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
+                        || r.job.work.as_ref().is_some_and(|w| w.skipped))
             })
             .map(|r| SkippedReview {
                 assignment_id: r.assignment_id.clone(),

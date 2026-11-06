@@ -441,6 +441,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                     },
                     legacy_item_id: None,
                     state_seq: 1,
+                    skipped: false,
                 });
                 let id = queue::item_id(&job);
                 queue::Item {
