@@ -3,6 +3,8 @@ name: Windows native application
 on:
   workflow_dispatch:
   pull_request:
+  # Required checks must report on merge queue groups too (#325).
+  merge_group:
   push:
     branches: [main]
 

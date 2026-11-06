@@ -13,6 +13,7 @@ Agents are reused across repos. Permissions must not travel with them. Approve a
 - One acting-account vote. Approve alone never merges.
 - Missing, partial, or unsupported evidence blocks. Limits fail closed: 100 threads/comments, 100 check contexts.
 - HAS_HOOKS, merge queue, unavailable rules, absent green CI: no direct-merge fallback. Admin bypass never used.
+- Amended (#325): a required merge queue is no longer a blocker. Merge enqueues the pinned head (`enqueuePullRequest`) and observes the queue; a dequeue is typed, non-parking and reconciled before a bounded re-enqueue ([provider writes](../provider-writes.md)).
 - Native only (ADR 0010). Legacy defaults and `approve` stay inert.
 
 ## Consequences

@@ -3,6 +3,7 @@ name: Changesets
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  merge_group:
   workflow_dispatch:
     inputs:
       version:
@@ -27,21 +28,32 @@ defaults:
     shell: bash --noprofile --norc -euo pipefail {0}
 
 jobs:
+  # A merge group only combines PRs this job already validated (labels and
+  # authors exist only on the PR), so the group reports success without re-checking.
   changeset:
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Merge group combines changesets validated on each PR
+        if: ${{ github.event_name == 'merge_group' }}
+        run: echo "Validated on each pull request in ${MERGE_GROUP_HEAD}."
+        env:
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
+        timeout-minutes: 1
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
         timeout-minutes: 3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .node-version
         timeout-minutes: 3
       - name: Validate changesets and reject direct CHANGELOG.md edits
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
