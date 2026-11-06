@@ -738,6 +738,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     let mut items = Vec::new();
     for (id, job) in groups {
         let mut reviews: Vec<_> = reviews_by_item.remove(&id).unwrap_or_default();
+        // The barrier sees every entry, as the scheduler does; the filters
+        // below shape what the item shows.
+        let barrier = reviews.clone();
         let skip = |r: &review::host::Candidate| {
             r.run.is_none()
                 && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
@@ -1094,7 +1097,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 let primary = reviews
                     .iter()
                     .find(|r| primary_id == Some(r.assignment_id.as_str()))?;
-                review::teammates::blocker(repository?, &reviews, primary)
+                review::teammates::blocker(repository?, &barrier, primary)
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();

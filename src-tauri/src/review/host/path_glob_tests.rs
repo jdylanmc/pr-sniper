@@ -413,6 +413,7 @@ fn a_same_head_state_move_keeps_the_secondary_report_on_the_item() {
     // The item shows the report it gave for this head, not a skip.
     let item = item(&store, &monitor);
     assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(item.blocked_by.is_none(), "{:?}", item.blocked_by);
     assert!(
         item.review_keys.contains(&reported),
         "{:?}",
