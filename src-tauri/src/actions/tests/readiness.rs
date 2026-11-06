@@ -1428,6 +1428,8 @@ fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
     // (packet read resolved, reopen receipt, fresh resolved, external change)
     for (read_resolved, receipt, fresh_resolved, external) in [
         (true, "exit-1-0", false, false),
+        // Reopened, then resolved again by someone else: the finding is hidden again.
+        (true, "exit-1-0", true, true),
         // Already open: the no-op reopen wrote nothing; a later resolve is someone else's.
         (false, "already", true, true),
     ] {
@@ -1472,7 +1474,7 @@ fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
         } else {
             fresh.normalize().hash()
         };
-        assert_eq!(baseline, expected, "{receipt}");
+        assert_eq!(baseline, expected, "{receipt} {fresh_resolved}");
     }
 }
 

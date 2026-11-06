@@ -524,13 +524,16 @@ impl StateMarks {
             return true;
         }
         fresh.threads.iter().any(|t| {
-            // Own only in the direction the host wrote it.
-            let own = if t.resolved {
-                &own.resolved_threads
+            // A thread the host wrote must hold the state that write set; others the
+            // packet state.
+            let expected = if own.reopened_threads.contains(&t.id) {
+                false
+            } else if own.resolved_threads.contains(&t.id) {
+                true
             } else {
-                &own.reopened_threads
+                self.resolved_threads.contains(&t.id)
             };
-            t.resolved != self.resolved_threads.contains(&t.id) && !own.contains(&t.id)
+            t.resolved != expected
         })
     }
 }
