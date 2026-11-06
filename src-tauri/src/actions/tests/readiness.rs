@@ -1410,17 +1410,21 @@ fn published_comments_end_the_revision_so_ci_turning_green_never_reruns_it() {
 #[test]
 fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
     use crate::github::state::{SnapshotComment, SnapshotThread};
-    let with = |resolved| PrSnapshot {
+    let comment = |id: &str, body: &str| SnapshotComment {
+        id: id.into(),
+        body: body.into(),
+        commit: None,
+    };
+    // `replied`: the host's correction reply (receipt 42) that precedes the reopen.
+    let with = |resolved, replied: bool| PrSnapshot {
         threads: vec![SnapshotThread {
             id: "own".into(),
             resolved,
             outdated: false,
-            comments: vec![SnapshotComment {
-                id: "41".into(),
-                body: "Finding.".into(),
-                commit: None,
-            }],
-            comment_total: 1,
+            comments: std::iter::once(comment("41", "Finding."))
+                .chain(replied.then(|| comment("42", "Correction: still applies.")))
+                .collect(),
+            comment_total: 1 + u64::from(replied),
         }],
         thread_total: 1,
         ..snapshot(false, "SUCCESS")
@@ -1434,7 +1438,7 @@ fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
         (false, "already", true, true),
     ] {
         let (_root, store, _) = read_only_primary(false);
-        let read = with(read_resolved);
+        let read = with(read_resolved, false);
         poll(&store, &read, NOW + 10);
         let env = env(&store);
         let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
@@ -1455,11 +1459,16 @@ fn only_an_own_reopen_that_wrote_absorbs_the_thread_opening() {
         write.steps[0].kind = crate::exit_writes::StepKind::Unresolve;
         write.steps[0].state = crate::exit_writes::StepState::Done;
         write.steps[0].receipt = Some(receipt.into());
+        let mut reply = write.steps[0].clone();
+        reply.kind = crate::exit_writes::StepKind::Reply;
+        reply.receipt = Some("42".into());
+        write.steps.insert(0, reply);
         write.phase = crate::exit_writes::Phase::Completed;
         write.operation.state = OperationState::Completed;
         write.consumed = true;
         store.save_feedback(&ledger).unwrap();
-        let fresh = with(fresh_resolved);
+        let fresh = with(fresh_resolved, true);
+        assert_ne!(read.normalize().hash(), fresh.normalize().hash());
         crate::exits::consume::settle_fresh(&store, &run.job, &run.operation.id, &fresh).unwrap();
         let baseline = store
             .load_pr_states()
