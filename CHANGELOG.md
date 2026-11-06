@@ -5,6 +5,25 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## [0.6.1] - 2026-11-06
+
+### Added
+
+- Approve & Merge enqueues into a GitHub merge queue when the base requires one, follows the queue to its merge and re-enqueues after a confirmed dequeue (#325).
+
+### Changed
+
+- Azure DevOps: Include self lets PR Sniper cast the Approve vote on the acting identity's own pull requests; a branch policy refusing it parks the item without retrying (#324).
+
+### Fixed
+
+- Review every changed file of a GitHub pull request past the 3,000-file listing, and park one whose full list can't be read before its review starts (#307).
+- Reopen a resolved own thread when a re-review finds its finding still applies, so GitHub and Azure DevOps show it open (#310).
+- Keep skipped secondaries on stale queue items, and settle a clean re-review of an own PR as Ready instead of waiting on the author (#322).
+- Azure DevOps: only Build validation policies count as pending CI, so a pending status policy (such as a code-owner gate) no longer deadlocks the Approve vote; red statuses still block and non-blocking policies are ignored (#332).
+- A review that stalls while awake now fails as a timeout, not a sleep-related network failure, when the system clocks drift slightly apart (#336).
+- Review pull requests with more than 100 changed files: follow GitHub's multi-page listings instead of parking them as incomplete reads (#333).
+
 ## [0.6.0] - 2026-11-06
 
 ### Added
