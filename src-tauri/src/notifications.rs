@@ -218,6 +218,22 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 causes.insert(operation.id.clone());
             }
         }
+        if category == Some(Category::Approved) {
+            // Approved announces the vote, not the passes behind it: a re-review
+            // of the same head that finds its vote already cast is not new.
+            causes = item
+                .action_status
+                .iter()
+                .flat_map(|status| &status.effects)
+                .filter(|e| {
+                    e.action == crate::github::actions::Action::Approve
+                        && e.state == crate::actions::EffectState::Confirmed
+                })
+                .filter_map(|e| e.receipt.as_ref())
+                .filter(|r| r.head == item.job.head_sha)
+                .map(|r| format!("{}:{}", r.id, r.head))
+                .collect();
+        }
         if category == Some(Category::Failure) {
             for health in snapshot.health.iter().filter(|h| {
                 h.repository_id == item.job.configuration_id

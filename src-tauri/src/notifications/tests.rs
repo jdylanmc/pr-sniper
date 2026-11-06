@@ -638,6 +638,98 @@ fn merge_receipt_enrichment_does_not_create_a_second_alert_or_change_navigation(
     );
 }
 
+fn approve_effect(id: &str, receipt: &str, head: &str) -> crate::actions::Effect {
+    serde_json::from_value(serde_json::json!({
+        "id":id,"final_id":"final","item_id":"iteration-0","action":"approve",
+        "operation":{
+            "id":format!("{id}-operation"),"provider":"github","account_id":"22",
+            "configuration_id":"config","repository_id":"100","pull_request_id":"9",
+            "head_sha":head,"trigger_policy":"policy","operation_type":"github_approve",
+            "state":"completed","attempt_count":1,"initial_attempt_at":100,
+            "retry_deadline":200,"next_attempt_at":null,"failure":null,
+            "attempted_mutation":"Approve","pending_review_id":null,"owned_thread_id":null,
+            "triggering_external_comment_id":null,"confirmed_receipt":receipt
+        },
+        "observation":{
+            "write_capability":true,"node_id":"node","repository_id":"100",
+            "pull_request_id":"9","account_id":"22","author_id":"11",
+            "head_repository_id":null,"head":head,"base":"b".repeat(40),
+            "base_name":"main","merge_rules":null,"merge_rules_error":null,
+            "state":"OPEN","draft":false,"permission":"WRITE",
+            "mergeable":"MERGEABLE","merge_state":"CLEAN","review_decision":null,
+            "checks":null,"check_contexts":[],"in_merge_queue":false,"method":null,
+            "protection":null,"threads":[],"reviews":[],"comments":[],
+            "merged_by":null,"merged_at":null,"merge_commit":null
+        },
+        "body":"","state":"confirmed","error":null,
+        "receipt":{
+            "id":receipt,"actor_id":"22","head":head,"action":"approve","merge_commit":null
+        }
+    }))
+    .unwrap()
+}
+
+/// One revision whose review pass `pass` ended in `state` with `effects` cast.
+fn approval_snapshot(
+    state: queue::State,
+    pass: &str,
+    effects: Vec<crate::actions::Effect>,
+) -> queue::Snapshot {
+    let mut snapshot = merged_snapshot(1);
+    let item = &mut snapshot.items[0];
+    item.state = state;
+    item.review_keys = vec![pass.into()];
+    item.action_status.as_mut().unwrap().effects = effects;
+    snapshot.reviews = vec![crate::review::host::Candidate {
+        key: pass.into(),
+        assignment_id: "assignment".into(),
+        agent_name: "Reviewer".into(),
+        job: item.job.clone(),
+        blocked: None,
+        gate: crate::capacity::Gate::ExternalPrerequisite,
+        planned_selection: None,
+        run: None,
+    }];
+    snapshot
+}
+
+#[test]
+fn rereviewing_an_approved_head_does_not_announce_the_same_vote_again() {
+    let head = "0".repeat(40);
+    let vote = || vec![approve_effect("vote", "vote-receipt", &head)];
+    let (_root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    for (now, snapshot) in [
+        approval_snapshot(queue::State::Approved, "first-pass", vote()),
+        // A second pass of the same revision runs, then finds the vote already cast.
+        approval_snapshot(queue::State::Reviewing, "second-pass", vote()),
+        approval_snapshot(queue::State::Approved, "second-pass", vote()),
+        approval_snapshot(queue::State::Approved, "third-pass", vote()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ledger.observe(&frames(&snapshot), now as i64).unwrap();
+        attempt_queued(&mut ledger);
+    }
+    let approved = |ledger: &Ledger| {
+        ledger
+            .notices
+            .iter()
+            .filter(|n| n.event.category == Category::Approved)
+            .count()
+    };
+    assert_eq!(approved(&ledger), 1);
+    // A different confirmed vote on the head is a new approval.
+    let revote = approval_snapshot(
+        queue::State::Approved,
+        "third-pass",
+        vec![approve_effect("revote", "revote-receipt", &head)],
+    );
+    ledger.observe(&frames(&revote), 9).unwrap();
+    assert_eq!(approved(&ledger), 2);
+}
+
 #[test]
 fn merged_pruning_and_persisted_restart_never_reemit() {
     let snapshot = merged_snapshot(21);
