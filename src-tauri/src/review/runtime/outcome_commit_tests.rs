@@ -44,6 +44,20 @@ impl crate::github::threads::QueryTransport for Wire {
     }
 }
 
+/// A wall clock that runs 5% fast: the worst case of the noise a busy runner
+/// adds between the awake and wall reads. Inactivity then expires on the wall
+/// axis with awake time just short of the window, every run.
+struct FastWall(Instant);
+
+impl crate::clock::Source for FastWall {
+    fn awake(&self) -> Duration {
+        self.0.elapsed()
+    }
+    fn wall(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH + self.0.elapsed() * 21 / 20
+    }
+}
+
 async fn ordering_case(inactivity: bool, earlier_feedback: bool) {
     let (_state, store) = fixtures::fixture(1, 1, true);
     let mut settings = store.load_settings().unwrap();
@@ -110,7 +124,17 @@ async fn ordering_case(inactivity: bool, earlier_feedback: bool) {
     let base = request(false);
     let runtime_returned = AtomicBool::new(false);
     let inference = async {
-        let outcome = execute(
+        let window = if inactivity {
+            Duration::from_secs(2)
+        } else {
+            base.inactivity
+        };
+        let progress = Arc::new(Watchdog::with_clock(
+            crate::clock::Clock::with(Arc::new(FastWall(Instant::now()))),
+            operation.deadline.into(),
+            window,
+        ));
+        let outcome = execute_with(
             options,
             &Identity {
                 id: "33".into(),
@@ -118,11 +142,7 @@ async fn ordering_case(inactivity: bool, earlier_feedback: bool) {
             },
             &operation,
             Request {
-                inactivity: if inactivity {
-                    Duration::from_secs(2)
-                } else {
-                    base.inactivity
-                },
+                inactivity: window,
                 diagnostics: base.diagnostics,
                 context: base.context,
                 client,
@@ -135,6 +155,7 @@ async fn ordering_case(inactivity: bool, earlier_feedback: bool) {
                 exits: base.exits,
                 duck: base.duck,
             },
+            progress,
         )
         .await;
         runtime_returned.store(true, Ordering::SeqCst);

@@ -5,6 +5,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::Instant;
 
+/// Wall-clock lead over awake time below this is clock noise (preemption between
+/// the two reads, NTP slew), not sleep. The inactivity timer fires at the window
+/// edge, so any noise would otherwise turn a timeout into a sleep failure.
+const CLOCK_NOISE: Duration = Duration::from_secs(1);
+
 /// Attempt-local clock. Late callbacks cannot revive it or affect a replacement.
 /// Inactivity counts sleep ([`Clock`]); the total budget counts awake time only.
 pub(super) struct Watchdog {
@@ -75,7 +80,9 @@ impl Watchdog {
             idle_ms: idle.total.as_millis() as u64,
             total_ms: total.total.as_millis() as u64,
             slept_ms: total.slept().as_millis() as u64,
-            by_sleep: kind == FailureKind::InactivityTimeout && idle.awake < self.inactivity,
+            by_sleep: kind == FailureKind::InactivityTimeout
+                && idle.awake < self.inactivity
+                && idle.slept() >= CLOCK_NOISE,
         })
     }
 
@@ -336,6 +343,20 @@ mod tests {
         let failure = expiry.failure();
         assert_eq!(failure.kind, crate::monitoring::OperationFailure::Timeout);
         assert_eq!(failure.slept_seconds, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn clock_noise_at_the_window_edge_keeps_awake_inactivity_a_timeout() {
+        let (source, clock) = sleeping(Duration::from_secs(2));
+        tokio::time::advance(Duration::from_millis(1950)).await;
+        // The wall clock read 50 ms ahead of awake time: not a sleep.
+        source.sleep(Duration::from_millis(50));
+        let expiry = clock.expiry().unwrap();
+        assert_eq!(expiry.kind, FailureKind::InactivityTimeout);
+        assert_eq!(
+            expiry.failure().kind,
+            crate::monitoring::OperationFailure::Timeout
+        );
     }
 
     #[tokio::test(start_paused = true)]

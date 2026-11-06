@@ -363,7 +363,7 @@ fn incomplete_listing_climbs_to_a_tree_diff_before_parking() {
     let ungated = plan(&[], &[("s", &["docs/"], None)]);
     let facts = read(&stub, &ungated, Some(&gated_out)).unwrap();
     assert_eq!(facts.incomplete_at(HEAD), Some(3_500));
-    // Step 5: only after every strategy failed.
+    // Step 4 (park): only after every strategy failed.
     let stub = Stub::new(vec![]).incomplete(3_500);
     let facts = read(&stub, &gate, None).unwrap();
     assert_eq!(facts.incomplete_at(HEAD), Some(3_500));
