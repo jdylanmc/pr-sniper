@@ -80,6 +80,10 @@ pub struct Observation {
     pub merged_by: Option<String>,
     pub merged_at: Option<String>,
     pub merge_commit: Option<String>,
+    /// The provider accepts the author's own approval (Azure DevOps). Whether
+    /// PR Sniper casts it is the assignment's Include self ([`crate::exits::gates`]).
+    #[serde(default)]
+    pub author_may_approve: bool,
 }
 
 /// Merge blocker when branch protection needs an up-to-date branch.
@@ -137,7 +141,7 @@ impl Observation {
             return Some(reason);
         }
         match action {
-            Action::Approve if self.author_id == self.account_id => {
+            Action::Approve if self.author_id == self.account_id && !self.author_may_approve => {
                 Some("GitHub does not allow the PR author to approve their own PR.".into())
             }
             Action::Approve => None,

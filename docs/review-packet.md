@@ -219,7 +219,7 @@ Teammate failure shows in Needs attention: cause and which teammate failed, one 
 - Assignment: **Tools** drill-in, one switch per tool (icon, short name, one-line muted description). Absent = role default, shown checked: investigation tools + granted exits + `ready_for_human` + `panic_exit` (primary); investigation tools + `submit_report` + `panic_exit` (teammate). `Repository::assignment_tools`, `default_tools` (Rust), `defaultTools` (`src/policy.ts`). Toggling a row saves an explicit list. Stored as `tools` ids (`PACKET_TOOLS`, Rust `storage.rs`, mirrored `src/policy.ts`).
 - Readiness: unknown or duplicate id invalid. `leave_comments`, `ready_for_human`, `approve_*` primary only. `submit_report` teammate only. `panic_exit` any. `leave_comments` needs Publish Comment. `approve_pull_request` needs Approve or Approve & Merge. `approve_and_merge` needs Approve & Merge.
 - Repository: **Review drafts** switch (`review_drafts`, default off).
-- Approve & Merge: **Include self** (`actions.include_self`, default off; GitHub acceptance unverified). Shown only on Approve & Merge.
+- Approve & Merge: **Include self** (`actions.include_self`, default off; GitHub acceptance unverified). Shown only on Approve & Merge; Azure DevOps: on Approve (own PRs get the vote).
 - Old files load unchanged. Unset fields are not written. Every new run is `RunMode::Packet`. `RunMode::Legacy` (missing `mode`) is history: unfinished legacy runs, legacy finals and unanalyzed follow-ups are cancelled on startup (`retire_legacy`, `actions::restore`, `follow_up::restore`); finished ones stay readable. Legacy results never publish.
 
 ## Rubber duck
