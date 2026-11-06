@@ -467,8 +467,8 @@ pub fn validate_local(store: &Store, run: &FinalReview) -> Result<(), String> {
 
 /// Whether `action` may be sent now. Gates: CI red or conflicts deny both; CI
 /// pending allows approve only; unmet required reviews deny merge; others'
-/// threads deny merge, never approve; self-authored: no approve, merge needs
-/// include self.
+/// threads deny merge, never approve; self-authored: approve only where the
+/// provider allows it (Azure DevOps) and merge, each needs include self.
 pub fn ready(
     store: &Store,
     run: &FinalReview,
@@ -625,7 +625,8 @@ pub fn approval_body(effect_id: &str, provider: &crate::storage::ProviderId) -> 
 /// The packet finals of `item_id` whose wanted writes are all confirmed (or whose
 /// approval already stood): their state is ready to consume. Abandoned finals
 /// (state moved, PR closed) are settled here with no consume; a failed write is a
-/// toss that re-queues the review through the budget.
+/// toss that re-queues the review through the budget, except a provider refusal
+/// ([`crate::actions::Effect::refused`]), which parks with no re-review.
 pub fn settle(
     store: &Store,
     item_id: &str,
@@ -686,6 +687,15 @@ pub fn settle(
             .iter()
             .filter(|e| e.final_id == run.id)
             .collect();
+        if effects
+            .iter()
+            .any(|e| e.refused(&run.basis.repository.provider))
+        {
+            // A provider refusal is final: no re-review would change it.
+            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            changed = true;
+            continue;
+        }
         if effects
             .iter()
             .any(|e| matches!(e.state, EffectState::Rejected | EffectState::Stale))

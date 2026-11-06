@@ -195,13 +195,19 @@ fn approve_and_merge_is_never_offered_and_completion_is_refused() {
     assert_eq!(offer(Exit::ApprovePullRequest), Offer::Offered);
     // A sign-off with the merge grant approves only.
     assert_eq!(gates::lgtm_action(&input), LgtmAction::Approve);
-    // Self-authored: denied before any vote, with this provider's reason.
+    // Self-authored: denied before any vote unless Include self is on.
     let mut own = input.clone();
     own.facts.author_is_acting = true;
-    assert!(matches!(
-        gates::offered(&own).iter().find(|(e, _)| *e == Exit::ApprovePullRequest),
-        Some((_, Offer::Denied(reason))) if reason.contains("Azure DevOps")
-    ));
+    let approve = |input: &GateInput| {
+        gates::offered(input)
+            .into_iter()
+            .find(|(e, _)| *e == Exit::ApprovePullRequest)
+            .unwrap()
+            .1
+    };
+    assert_eq!(approve(&own), Offer::Denied(gates::SELF_EXCLUDED.into()));
+    own.grants.include_self = true;
+    assert_eq!(approve(&own), Offer::Offered);
 
     let runtime = runtime();
     let wire = Arc::new(FakeWire::default());
@@ -216,6 +222,11 @@ fn approve_and_merge_is_never_offered_and_completion_is_refused() {
 
 /// Queues one readiness read whose reviewers hold `votes`.
 fn pull(wire: &FakeWire, votes: &[(&str, i64)]) {
+    pull_by(wire, BLAKE, votes);
+}
+
+/// [`pull`] authored by `creator`.
+fn pull_by(wire: &FakeWire, creator: &str, votes: &[(&str, i64)]) {
     let reviewers: Vec<_> = votes
         .iter()
         .map(|(id, vote)| json!({"id": id, "displayName": "Someone", "vote": vote}))
@@ -224,7 +235,7 @@ fn pull(wire: &FakeWire, votes: &[(&str, i64)]) {
         &git("pullrequests/7?"),
         json!({
             "pullRequestId": 7, "status": "active", "title": "Change 7",
-            "createdBy": author(BLAKE), "creationDate": "2026-10-20T10:00:00Z",
+            "createdBy": author(creator), "creationDate": "2026-10-20T10:00:00Z",
             "isDraft": false, "repository": {"id": REPO, "project": {"id": PROJECT}},
             "lastMergeSourceCommit": {"commitId": sha(2)},
             "lastMergeTargetCommit": {"commitId": sha(900)},
@@ -279,4 +290,60 @@ fn an_uncertain_vote_reconciles_from_the_observed_reviewers_once() {
     assert_eq!(receipt.id, format!("7:{AVERY}"));
     assert_eq!(receipt.actor_id, AVERY);
     assert!(writes(&wire).is_empty());
+}
+
+#[test]
+fn the_observed_pr_gates_the_vote_on_authorship_and_include_self_alone() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let input = |facts: Facts, include_self: bool| GateInput {
+        tools: vec![Exit::ApprovePullRequest.id().into()],
+        primary: true,
+        grants: Grants {
+            approve: true,
+            include_self,
+            ..Grants::default()
+        },
+        review_drafts: false,
+        capabilities: ProviderCapabilities::of(&ProviderId::AzureDevops),
+        facts,
+    };
+    let approve = |input: &GateInput| {
+        gates::offered(input)
+            .into_iter()
+            .find(|(e, _)| *e == Exit::ApprovePullRequest)
+            .unwrap()
+            .1
+    };
+    // Another author's PR: no provider blocker before the vote.
+    pull(&wire, &[]);
+    let other = Facts::from_observation(&session.action_observation(&repository(), 7).unwrap());
+    assert_eq!(other.approve_blocker, None);
+    assert_eq!(approve(&input(other, false)), Offer::Offered);
+    // The bound identity's own PR.
+    pull_by(&wire, AVERY, &[]);
+    let own = Facts::from_observation(&session.action_observation(&repository(), 7).unwrap());
+    assert!(own.author_is_acting);
+    assert_eq!(own.approve_blocker, None);
+    assert_eq!(
+        approve(&input(own.clone(), false)),
+        Offer::Denied(gates::SELF_EXCLUDED.into())
+    );
+    assert_eq!(approve(&input(own, true)), Offer::Offered);
+}
+
+#[test]
+fn a_policy_refusing_the_requesters_own_vote_is_a_typed_final_failure() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    iterations(&wire);
+    reviewers(&wire, &[]);
+    wire.on(&vote_url(), Ok(status(403, None)));
+    let failure = approve(&session).unwrap_err();
+    assert!(!failure.uncertain);
+    assert_eq!(failure.failure.kind, OperationFailure::Permission);
+    assert_eq!(failure.failure.message, VOTE_REFUSED);
+    assert_eq!(writes(&wire).len(), 1, "sent once, never retried");
 }

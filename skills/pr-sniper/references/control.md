@@ -115,7 +115,7 @@ New repositories are disabled and bound to a `resolve` result; the same save
 may carry assignments, admission and grants, validated like an update (an
 enabled add fails). Azure DevOps repositories: `provider:"azure_devops"`,
 `provider_repository_id` `{organization}/{project ID}/{repository ID}`, people
-by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote; approve-and-merge is refused (`unsupported_provider_action`). Then enable the human-requested
+by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote (own PRs only with `actions.include_self`; a policy refusal parks, never retried); approve-and-merge is refused (`unsupported_provider_action`). Then enable the human-requested
 scope in a later save. Repository schedules are five-field cron in the saved IANA time zone.
 Path globs (ADR 0027): repository
 `paths` gate admission (AND); a secondary assignment's `paths` decide whether

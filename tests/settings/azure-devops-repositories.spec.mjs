@@ -372,7 +372,7 @@ test("teammate results of an earlier query are cleared and never picked", async 
   ).toHaveCount(0);
 });
 
-test("Azure DevOps assignments offer Approve but never Approve & Merge", async ({
+test("Azure DevOps assignments offer Approve, with Include self, but never Approve & Merge", async ({
   page,
   store,
 }) => {
@@ -409,6 +409,19 @@ test("Azure DevOps assignments offer Approve but never Approve & Merge", async (
   ).toHaveCount(0);
   await expect(assignment.locator("[data-include-self]")).toBeHidden();
   await approval.getByRole("radio", { name: "Approve", exact: true }).check();
+  // Own PRs get the Approve vote only with Include self.
+  const includeSelf = assignment.getByRole("switch", {
+    name: "Include self",
+    exact: true,
+  });
+  await expect(includeSelf).toBeVisible();
+  await expect(includeSelf).not.toBeChecked();
+  await includeSelf.check();
+  await approval.getByRole("radio", { name: "Neither", exact: true }).check();
+  await expect(assignment.locator("[data-include-self]")).toBeHidden();
+  await expect(includeSelf).not.toBeChecked();
+  await approval.getByRole("radio", { name: "Approve", exact: true }).check();
+  await includeSelf.check();
   await assignmentBack(page, assignment);
   await assignment.getByRole("button", { name: "Tools", exact: true }).click();
   await expect(
@@ -431,6 +444,7 @@ test("Azure DevOps assignments offer Approve but never Approve & Merge", async (
   expect(saved.assignments[0].actions).toMatchObject({
     approve: true,
     merge: false,
+    include_self: true,
   });
   expect(saved.assignments[0].tools ?? []).not.toContain("approve_and_merge");
 });

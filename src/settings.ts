@@ -4447,6 +4447,10 @@ export async function mountSettings(
     const merge = isPrimary && merges && !!existing?.actions?.merge;
     const approve =
       isPrimary && !!(existing?.actions?.approve || existing?.actions?.merge);
+    // Include self rides the strongest action: own PRs merge on GitHub and
+    // get the Approve vote on Azure DevOps.
+    const selfAction = merges ? "merge" : "approve";
+    const includesSelf = merges ? merge : approve;
     const modal = dialog(
       existing ? "Edit assignment" : "Assign agent",
       `<form><input type="hidden" name="agent" value="${escape(existing?.agent_id ?? "")}" /><input type="hidden" name="duck" value="${escape(isPrimary ? (existing?.rubber_duck ?? "") : "")}" />
@@ -4463,7 +4467,7 @@ export async function mountSettings(
         <label class="repository-check"><input type="checkbox" role="switch" name="comment" aria-label="Publish Comment" ${existing?.comment ? "checked" : ""} /><span>Publish Comment</span></label>
         <div data-primary-permissions ${isPrimary ? "" : "hidden"}><label class="repository-check"><input type="checkbox" role="switch" name="reply" aria-label="Reply Comment" ${isPrimary && existing?.actions?.reply ? "checked" : ""} /><span>Reply Comment</span></label>
         <div class="permission-row-line"><span>Approval</span><div class="permission-choices" role="radiogroup" aria-label="${merges ? "Approval and merge" : "Approval"}" data-value="${merge ? "merge" : approve ? "approve" : "none"}"><label class="segment"><input type="radio" name="action" value="none" aria-label="Neither" ${approve ? "" : "checked"} /><span>off</span></label><label class="segment"><input type="radio" name="action" value="approve" aria-label="Approve" ${approve && !merge ? "checked" : ""} /><span>Approve</span></label>${merges ? `<label class="segment"><input type="radio" name="action" value="merge" aria-label="Approve &amp; Merge" ${merge ? "checked" : ""} /><span>&amp; Merge</span></label>` : ""}</div></div>
-        <label class="repository-check" data-include-self ${merge ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
+        <label class="repository-check" data-include-self ${includesSelf ? "" : "hidden"}><input type="checkbox" role="switch" name="include_self" aria-label="Include self" ${existing?.actions?.include_self ? "checked" : ""} /><span>Include self</span></label></div></section>
         <section class="repository-group" data-assign-tools hidden>${(
           Object.keys(toolRows) as PacketTool[]
         )
@@ -4567,8 +4571,8 @@ export async function mountSettings(
         if (input.checked) count += 1;
       }
       modal.querySelector<HTMLElement>("[data-include-self]")!.hidden =
-        !isPrimaryNow || action !== "merge";
-      if (action !== "merge")
+        !isPrimaryNow || action !== selfAction;
+      if (action !== selfAction)
         modal.querySelector<HTMLInputElement>("[name=include_self]")!.checked =
           false;
       openTools.querySelector("[data-tool-summary]")!.textContent =
@@ -4796,7 +4800,7 @@ export async function mountSettings(
             approve: primary.checked && action !== "none",
             merge: primary.checked && action === "merge",
             ...(primary.checked &&
-            action === "merge" &&
+            action === selfAction &&
             modal.querySelector<HTMLInputElement>("[name=include_self]")!
               .checked
               ? { include_self: true }

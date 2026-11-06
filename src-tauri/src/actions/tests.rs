@@ -559,6 +559,7 @@ fn observed() -> Observation {
         merged_by: None,
         merged_at: None,
         merge_commit: None,
+        author_may_approve: false,
     }
 }
 /// A packet approve exit adopted as a final: the only final that authorizes actions.
@@ -1015,6 +1016,8 @@ impl host::ActionEnvironment for Env<'_> {
             1,
         )?;
         o.write_capability = true;
+        // The GitHub fake stands in for a provider that accepts an author's vote.
+        o.author_may_approve = self.wire.0.lock().unwrap().observation.author_may_approve;
         Ok(o)
     }
     fn authorize(&mut self, effect: &Effect, current: &Observation) -> Result<(), Failure> {

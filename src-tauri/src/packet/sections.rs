@@ -444,7 +444,13 @@ fn exits(out: &mut String, input: &PacketInput) {
         }) {
             let _ = writeln!(out, "clean_review_exit: {}", preferred.id());
         }
-        if input.include_self && input.pr.author_relation == AuthorRelation::Owner {
+        let self_approve = input
+            .exits
+            .iter()
+            .any(|(exit, offer)| *exit == Exit::ApprovePullRequest && offer.is_offered());
+        if input.include_self && input.pr.author_relation == AuthorRelation::Owner && self_approve {
+            out.push_str("Include self is enabled for this repository assignment. If lgtm or approve_pull_request is offered and review is clear, use it: the host casts the approval vote on this own PR. If the provider refuses it, the item parks for a human.\n");
+        } else if input.include_self && input.pr.author_relation == AuthorRelation::Owner {
             out.push_str("Include self is enabled for this repository assignment. If lgtm or approve_and_merge is offered and review is clear, use it: the host merges without an approval vote. Do not hand off solely because approve_pull_request is unavailable. If merge is not offered, state its actual gate reason.\n");
         }
     }

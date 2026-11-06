@@ -83,7 +83,7 @@ impl Exit {
             Exit::LeaveComments => "Terminal exit: post new inline comments on diff lines (each new finding once, in its own thread), answer questions asked of you in threads, resolve your own fixed threads. No PR-level body. Ends the run. Call once.",
             Exit::ReadyForHuman => "Terminal exit: nothing to post; hand the PR to the human with a short local summary. Ends the run.",
             Exit::Wait => "Terminal exit: yield for a host-observed external prerequisite to a permitted action. The host polls on the repository schedule and queues a fresh review when it changes. Not for defects, uncertainty or tool failures.",
-            Exit::ApprovePullRequest => "Terminal exit: approve the PR head. The approval carries no text; comment is a local rationale only. Ends the run.",
+            Exit::ApprovePullRequest => "Terminal exit: approve the PR head. The approval carries no text; comment is a local rationale only. On the acting account's own PR, offered only where the provider permits it and Include self is on. Ends the run.",
             Exit::ApproveAndMerge => "Terminal exit: merge the reviewed PR when offered. For another author's PR, the host approves first. For the acting account's own PR with Include self enabled, the host merges without an approval vote. Ends the run.",
             Exit::PanicExit => "Terminal exit: unrecoverable problem. State reason and detail. Ends the run.",
             Exit::SubmitReport => "Terminal exit: submit your findings report to the primary reviewer. Caveman. Ends the run.",
