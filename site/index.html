@@ -153,9 +153,11 @@
             </div>
             <div class="cmd">
               <code
-                data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                data-macos="brew tap jdylanmc/pr-sniper &amp;&amp; brew trust --cask jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew install --cask jdylanmc/pr-sniper/pr-sniper"
                 data-windows="choco install pr-sniper"
-                >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                >brew tap jdylanmc/pr-sniper &amp;&amp; brew trust --cask
+                jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew install --cask
+                jdylanmc/pr-sniper/pr-sniper</code
               >
               <button type="button" class="copy" data-copy="brew-info">
                 <span class="t-on">[COPY]</span><span class="t-off">COPY</span>
@@ -279,9 +281,11 @@
                     </div>
                     <div class="cmd hero-cmd">
                       <code
-                        data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                        data-macos="brew tap jdylanmc/pr-sniper &amp;&amp; brew trust --cask jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew install --cask jdylanmc/pr-sniper/pr-sniper"
                         data-windows="choco install pr-sniper"
-                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                        >brew tap jdylanmc/pr-sniper &amp;&amp; brew trust
+                        --cask jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew
+                        install --cask jdylanmc/pr-sniper/pr-sniper</code
                       >
                       <button type="button" class="copy" data-copy="hero">
                         <span class="t-on">[COPY]</span
@@ -737,6 +741,7 @@
                   </li>
                   <li>
                     Approve and merge: opt-in, primary Agent only, fail closed.
+                    Azure DevOps: approve only, never merge.
                   </li>
                   <li>
                     Agent get host-owned review tools (reads plus one exit).
@@ -811,6 +816,7 @@
                         Homebrew. No Homebrew? Get at
                         <a href="https://brew.sh">brew.sh</a>.
                       </li>
+                      <li>Homebrew before 7: drop <code>brew trust</code>.</li>
                     </ul>
                     <ul class="bullets" data-os-pane="windows" hidden>
                       <li>Windows 10 or 11 (x64).</li>
@@ -829,7 +835,7 @@
                   <li>
                     <h3>Install</h3>
                     <p data-os-pane="macos">
-                      One command. Tap repository, install app.
+                      One command. Tap repository, trust cask, install app.
                     </p>
                     <p data-os-pane="windows" hidden>
                       One command (pending initial Chocolatey moderation; use
@@ -840,9 +846,11 @@
                     </p>
                     <div class="cmd">
                       <code
-                        data-macos="brew install --cask jdylanmc/pr-sniper/pr-sniper"
+                        data-macos="brew tap jdylanmc/pr-sniper &amp;&amp; brew trust --cask jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew install --cask jdylanmc/pr-sniper/pr-sniper"
                         data-windows="choco install pr-sniper"
-                        >brew install --cask jdylanmc/pr-sniper/pr-sniper</code
+                        >brew tap jdylanmc/pr-sniper &amp;&amp; brew trust
+                        --cask jdylanmc/pr-sniper/pr-sniper &amp;&amp; brew
+                        install --cask jdylanmc/pr-sniper/pr-sniper</code
                       >
                       <button type="button" class="copy" data-copy="install">
                         <span class="t-on">[COPY]</span
@@ -874,13 +882,13 @@
                     <h3>First run</h3>
                     <ol class="sub" type="a">
                       <li>
-                        <b>Settings › Accounts</b>: connect GitHub account (Git
-                        Repository) and Copilot account (AI Tooling). Browser
-                        sign-in. No pasted tokens.
+                        <b>Settings › Accounts</b>: connect GitHub account or
+                        Azure DevOps via Azure CLI (Git Repository) and Copilot
+                        account (AI Tooling). Browser sign-in. No pasted tokens.
                       </li>
                       <li>
-                        Add repository. Pick GitHub account. Pick admission: All
-                        or Filtered.
+                        Add repository. Pick GitHub or Azure DevOps account.
+                        Pick admission: All or Filtered.
                       </li>
                       <li>
                         Create Agent (Copilot account and model). Assign to

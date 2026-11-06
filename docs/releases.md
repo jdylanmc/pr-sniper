@@ -274,8 +274,13 @@ signing, Apple notarization or a working Homebrew installation.
 After explicit first-tag authorization and successful release:
 
 ```sh
+brew tap jdylanmc/pr-sniper
+brew trust --cask jdylanmc/pr-sniper/pr-sniper
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
+
+Homebrew 7 requires `brew trust` before it loads the tap's cask; older Homebrew
+has no `brew trust` and needs only the install command.
 
 Verify the downloaded version/checksum, Developer ID/team signature, stapled
 ticket and Gatekeeper acceptance without disabling quarantine or security

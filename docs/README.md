@@ -10,7 +10,7 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 | [settings.md](settings.md)                 | Settings UI: accounts, repos, assignments, Agents, Doctrines, Voices, Preferences, Genie |
 | [review-queue.md](review-queue.md)         | Queue states, retry/park, local Agent reviews, notifications (macOS)                     |
 | [review-packet.md](review-packet.md)       | Proposed: the one packet each agent run receives                                         |
-| [polling.md](polling.md)                   | Schedule, admission filters, lifecycle reads, GitHub connection and PR reads             |
+| [polling.md](polling.md)                   | Schedule, admission filters, lifecycle reads, GitHub and Azure DevOps PR reads           |
 | [provider-writes.md](provider-writes.md)   | Publication, thread/mention replies, Approve and Merge mechanics                         |
 | [active-results.md](active-results.md)     | `result_page` / `result_detail` API, summary index, terminal cleanup                     |
 | [local-data.md](local-data.md)             | Data root, state files, atomic replace, recovery, retention journal                      |
@@ -20,15 +20,16 @@ Index of everything under `docs/`. Start with the [main README](../README.md); a
 
 ## Platform and release
 
-| Doc                                                                | Purpose                                                             |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| [macos-development.md](macos-development.md)                       | macOS requirements, dev run, signing, bundle, install, verification |
-| [releases.md](releases.md)                                         | macOS release pipeline, notarization, Homebrew cask                 |
-| [windows-development.md](windows-development.md)                   | Windows build, tests, CI artifact, native acceptance                |
-| [windows-packaging.md](windows-packaging.md)                       | Unsigned NSIS installer and Chocolatey candidate lane               |
-| [windows-notifications.md](windows-notifications.md)               | Windows toast identity and activation                               |
-| [../tests/macos-acceptance.md](../tests/macos-acceptance.md)       | Native macOS window acceptance                                      |
-| [../tests/macos-notifications.md](../tests/macos-notifications.md) | Native macOS notification acceptance                                |
+| Doc                                                                        | Purpose                                                             |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [macos-development.md](macos-development.md)                               | macOS requirements, dev run, signing, bundle, install, verification |
+| [releases.md](releases.md)                                                 | macOS release pipeline, notarization, Homebrew cask                 |
+| [windows-development.md](windows-development.md)                           | Windows build, tests, CI artifact, native acceptance                |
+| [windows-packaging.md](windows-packaging.md)                               | Unsigned NSIS installer and Chocolatey candidate lane               |
+| [windows-notifications.md](windows-notifications.md)                       | Windows toast identity and activation                               |
+| [../tests/macos-acceptance.md](../tests/macos-acceptance.md)               | Native macOS window acceptance                                      |
+| [../tests/macos-notifications.md](../tests/macos-notifications.md)         | Native macOS notification acceptance                                |
+| [../tests/azure-devops-acceptance.md](../tests/azure-devops-acceptance.md) | Live Azure DevOps acceptance                                        |
 
 ## Decisions ([adr/](adr/))
 
