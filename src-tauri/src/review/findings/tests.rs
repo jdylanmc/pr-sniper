@@ -297,6 +297,28 @@ fn ready_for_human_is_refused_once_when_lgtm_is_offered_and_nothing_needs_a_huma
     }
 }
 
+#[test]
+fn a_resolve_only_leave_comments_is_refused_once_when_lgtm_is_due() {
+    let a = assessment(Disposition::Fixed);
+    let mut c = contract(false, false);
+    c.identities.lgtm_offered = true;
+    assert_eq!(
+        c.validate(&resolve(), std::slice::from_ref(&a), &[], |_| Ok(())),
+        Err(LGTM_DUE_RESOLVE.into())
+    );
+    assert_eq!(
+        c.validate(&resolve(), std::slice::from_ref(&a), &[], |_| Ok(())),
+        Ok(())
+    );
+    // Not due: lgtm unavailable, or the finding still applies.
+    let mut unoffered = contract(false, false);
+    unoffered.identities.lgtm_offered = false;
+    assert_eq!(
+        unoffered.validate(&resolve(), std::slice::from_ref(&a), &[], |_| Ok(())),
+        Ok(())
+    );
+}
+
 fn duck(a: &Assessment) -> DuckCall {
     serde_json::from_value(json!({
         "ordinal":1,"input":{"kind":"thread","thread_id":"existing","verify_fixed":true,

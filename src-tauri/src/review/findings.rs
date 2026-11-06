@@ -565,6 +565,7 @@ pub(crate) struct Contract {
 
 /// Refusal of `ready_for_human` when the review is clear and `lgtm` is offered.
 pub const LGTM_DUE: &str = "Nothing here needs a human: the review is clear and lgtm is offered. Call lgtm; the host acts on your authority, and pending CI only parks it until green. A defect goes in leave_comments. Only a concern you cannot post on the diff needs ready_for_human: name it in the summary and call ready_for_human again.";
+pub const LGTM_DUE_RESOLVE: &str = "Nothing new to post: resolving your own settled threads is a sign-off. Call lgtm with the same finding_dispositions; the host resolves them and acts on your authority. A defect goes in new_comments.";
 
 /// A comment PR Sniper wrote: a saved receipt, or the acting account's comment with
 /// a host marker or signature. The acting account may also be the PR author: its
@@ -846,13 +847,24 @@ impl Contract {
         ducks: &[DuckCall],
         served: impl Fn(&EvidenceRef) -> Result<(), Unserved>,
     ) -> Result<(), String> {
-        if call.exit() == Exit::ReadyForHuman
+        // Resolving own threads with nothing new to post is a sign-off, not author work.
+        let resolve_only = matches!(
+            call,
+            ExitCall::LeaveComments { new_comments, reply_comments, resolve_own_threads }
+                if new_comments.is_empty() && reply_comments.is_empty() && !resolve_own_threads.is_empty()
+        );
+        if (call.exit() == Exit::ReadyForHuman || resolve_only)
             && self.lgtm_due(assessments, ducks)
             && !self
                 .handoff_nudged
                 .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(LGTM_DUE.into());
+            return Err(if resolve_only {
+                LGTM_DUE_RESOLVE
+            } else {
+                LGTM_DUE
+            }
+            .into());
         }
         if call.exit() == Exit::Wait && super::duck::unsettled(ducks).next().is_some() {
             return Err("Unsettled Rubber Duck evidence cannot become an external wait.".into());

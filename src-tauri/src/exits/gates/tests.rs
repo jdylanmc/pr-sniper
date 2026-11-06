@@ -51,7 +51,7 @@ fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
     type Edit = fn(&mut GateInput);
     // Pending CI alone blocking the sign-off is a wait for any primary,
     // whatever its authority or tool set.
-    let any_primary: [Edit; 4] = [
+    let any_primary: [Edit; 5] = [
         |i| i.grants.merge = false,
         |i| i.tools.retain(|t| t != "approve_and_merge"),
         |i| i.tools.retain(|t| t != "wait"),
@@ -60,6 +60,8 @@ fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
             i.grants.approve = false;
             i.tools.clear();
         },
+        // Own PR without Include self: a local Ready sign-off, still blocked by CI.
+        |i| i.facts.author_is_acting = true,
     ];
     for edit in any_primary {
         let mut primary = input.clone();
@@ -67,14 +69,13 @@ fn wait_requires_a_concrete_prerequisite_to_an_enabled_action() {
         assert_eq!(wait_reasons(&primary), [WaitReason::Ci], "{primary:?}");
         assert!(is_offered(&primary, Exit::Wait), "{primary:?}");
     }
-    let denied: [Edit; 7] = [
+    let denied: [Edit; 6] = [
         |i| i.primary = false,
         |i| i.facts.ci = Ci::Red,
         |i| i.facts.ci = Ci::Unknown,
         |i| i.facts.unresolved_threads = true,
         |i| i.facts.changes_requested = true,
         |i| i.facts.wait_merge_blocker = Some("Permission unavailable".into()),
-        |i| i.facts.author_is_acting = true,
     ];
     for edit in denied {
         let mut blocked = input.clone();
@@ -616,14 +617,28 @@ fn pending_ci_alone_parks_an_own_pr_merge_sign_off_with_include_self() {
 fn lgtm_on_an_own_pr_follows_include_self() {
     let mut own = base();
     own.facts.author_is_acting = true;
-    assert!(lgtm_denial(&own).unwrap().contains("Include self is off"));
+    // No approval is possible and merge needs Include self: a local Ready sign-off,
+    // so a clean re-review settles instead of waiting on the author.
+    assert_eq!(lgtm_action(&own), LgtmAction::Ready);
+    assert_eq!(lgtm_denial(&own), None);
+    assert_eq!(offer(&own, Exit::Lgtm), Some(Offer::Offered));
     own.grants.include_self = true;
+    assert_eq!(lgtm_action(&own), LgtmAction::Merge);
     assert_eq!(lgtm_denial(&own), None);
     let mut approve_only = own.clone();
     approve_only.grants.merge = false;
-    assert!(lgtm_denial(&approve_only)
-        .unwrap()
-        .contains("self-approval"));
+    assert_eq!(lgtm_action(&approve_only), LgtmAction::Ready);
+    assert_eq!(lgtm_denial(&approve_only), None);
+    // Azure DevOps never completes; it self-approves only under Include self.
+    let mut azure = own.clone();
+    azure.capabilities = ProviderCapabilities::of(&ProviderId::AzureDevops);
+    assert_eq!(lgtm_action(&azure), LgtmAction::Approve);
+    azure.grants.include_self = false;
+    assert_eq!(lgtm_action(&azure), LgtmAction::Ready);
+    assert_eq!(offer(&azure, Exit::Lgtm), Some(Offer::Offered));
+    // Hard gates still refuse it.
+    azure.facts.ci = Ci::Red;
+    assert!(lgtm_denial(&azure).unwrap().contains("CI is red"));
 }
 
 #[test]
@@ -826,9 +841,18 @@ fn azure_devops_approves_an_own_pr_only_with_include_self_and_github_never_does(
             approves,
             "{case}"
         );
-        assert_eq!(lgtm_action(&input), LgtmAction::Approve, "{case}");
-        assert_eq!(lgtm_denial(&input).is_none(), approves, "{case}");
-        let reason = lgtm_denial(&input).unwrap_or_default();
+        // A vote it may not cast: the sign-off is a local Ready, never refused for it.
+        let action = if approves {
+            LgtmAction::Approve
+        } else {
+            LgtmAction::Ready
+        };
+        assert_eq!(lgtm_action(&input), action, "{case}");
+        assert_eq!(lgtm_denial(&input), None, "{case}");
+        let reason = match offer(&input, Exit::ApprovePullRequest) {
+            Some(Offer::Denied(reason)) => reason,
+            _ => String::new(),
+        };
         match (&provider, include_self) {
             (ProviderId::AzureDevops, false) => assert_eq!(reason, SELF_EXCLUDED),
             (ProviderId::Github, _) => assert!(reason.contains("self-approval"), "{reason}"),

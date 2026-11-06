@@ -476,13 +476,23 @@ pub fn self_approves(input: &GateInput) -> bool {
         && lgtm_action(input) == LgtmAction::Approve
 }
 
-/// The sign-off's action: the assignment's strongest granted authority. Grants alone
-/// decide it; the tool list only gates the legacy explicit approve exits.
+/// The sign-off's action: the strongest granted authority this PR can ever take. The
+/// tool list only gates the legacy explicit approve exits. On its own PR the acting
+/// account approves only when the provider permits it under Include self, and merges
+/// only with Include self; otherwise its sign-off is a local Ready, so a clean review
+/// still settles instead of waiting on the author.
 pub fn lgtm_action(input: &GateInput) -> LgtmAction {
     let capabilities = &input.capabilities;
-    if input.grants.merge && capabilities.approve_and_merge.is_available() {
+    let own = input.facts.author_is_acting;
+    if input.grants.merge
+        && capabilities.approve_and_merge.is_available()
+        && (!own || input.grants.include_self)
+    {
         LgtmAction::Merge
-    } else if (input.grants.approve || input.grants.merge) && capabilities.approve.is_available() {
+    } else if (input.grants.approve || input.grants.merge)
+        && capabilities.approve.is_available()
+        && (!own || self_approval_denial(input).is_none())
+    {
         LgtmAction::Approve
     } else {
         LgtmAction::Ready

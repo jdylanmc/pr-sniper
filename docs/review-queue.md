@@ -32,7 +32,7 @@ Reference for Queue states, evidence, local Agent reviews, retry/parking and not
 | `panic_exit` | Needs attention | **Panic** + cooldown clock |
 
 - **Can't see all N changed files: needs a human** (`incomplete_files`): no strategy listed every changed file ([polling.md](polling.md#paths)). No review ran; no Retry; detail shows **Changed files** and **Tried**. A new revision re-evaluates.
-- **Skipped: no matching files**: Activity row per secondary whose paths matched nothing changed since its last review (`Item.skipped`). Never holds the item, the primary or its exits.
+- **Skipped: no matching files**: Activity row per secondary whose paths matched nothing changed since its last review (`Item.skipped`). Never holds the item, the primary or its exits. Kept when a newer revision makes the item Stale.
 
 Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-queues the review. Panic Retry restarts the run.
 
