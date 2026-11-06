@@ -49,6 +49,8 @@ Complete changed-file list ladder; first complete wins, no file-count limit of o
 | 5. Park             | No review; Queue › Needs attention **Can't see all N changed files: needs a human** with the strategies tried; next revision re-evaluates.                                                                 |                                                                                                               |
 
 - Without globs only completeness is checked: the count, and steps 2 then 5 when it exceeds the listing cap.
+- A scoped list (step 3) can keep a PR out; one it admits parks (step 5), since the review needs every file.
+- The review reads the same list: GitHub past 3,000 files keeps the listed files' patches and adds the rest of the merge-base tree diff without a patch (no addressable line). Azure DevOps reviews every iteration change; past 300 files, no patch.
 - An incremental read that cannot complete falls back to the whole-PR list (may run, never misses).
 - Rate limits, network failures and raced reads retry under the poll's retry policy; they never decide a gate, skip or park.
 

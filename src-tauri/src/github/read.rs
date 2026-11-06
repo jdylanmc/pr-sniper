@@ -661,11 +661,11 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
         let count = detail["changed_files"]
             .as_u64()
             .ok_or(ConnectionError::InvalidResponse)?;
-        if count > 3000 {
-            return Err(ConnectionError::LimitExceeded);
-        }
-        let raw = self.pages(&format!("{path}/files?per_page=100&page=1"))?;
-        if raw.len() as u64 != count {
+        // Past GitHub's listing cap the listed files keep their patches and
+        // the merge-base tree diff (the path facts' ladder) lists the rest.
+        let cap = super::metadata::FILES_LISTING_CAP;
+        let raw = self.pages_until(&format!("{path}/files?per_page=100&page=1"), cap as usize)?;
+        if raw.len() as u64 != count.min(cap) {
             return Err(ConnectionError::IncompleteRead);
         }
         let mut files = Vec::new();
@@ -735,6 +735,32 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
             {
                 return Err(ConnectionError::IncompleteRead);
             }
+        }
+        if count > cap {
+            let changes = crate::provider::tree_changes(&base, &head_tree);
+            let changed: BTreeSet<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            if files
+                .iter()
+                .any(|f| f.status != "unchanged" && !changed.contains(f.path.as_str()))
+            {
+                return Err(ConnectionError::IncompleteRead);
+            }
+            let listed: BTreeSet<String> = files
+                .iter()
+                .flat_map(|f| std::iter::once(f.path.clone()).chain(f.previous_path.clone()))
+                .collect();
+            // Unlisted files have no provider patch: no addressable line.
+            files.extend(
+                changes
+                    .into_iter()
+                    .filter(|c| !listed.contains(&c.path))
+                    .map(|c| ReviewFile {
+                        path: c.path,
+                        previous_path: None,
+                        status: c.status,
+                        patch: None,
+                    }),
+            );
         }
         let current = self.pull_request(repo, number)?;
         if current != pull {

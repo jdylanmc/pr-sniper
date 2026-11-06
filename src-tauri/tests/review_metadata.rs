@@ -137,9 +137,10 @@ fn size_limits_are_permanent_but_a_missing_page_is_retryable() {
             .review_context(&repository(), 1, &"a".repeat(40))
             .unwrap_err()
     };
+    // Past the listing cap, a listing short of the cap is a missing page.
     let mut over = fixture();
     over.changed_files = 3001;
-    assert_eq!(read(over), ConnectionError::LimitExceeded);
+    assert_eq!(read(over), ConnectionError::IncompleteRead);
     let mut truncated = fixture();
     truncated.truncated = true;
     assert_eq!(read(truncated), ConnectionError::LimitExceeded);
@@ -172,5 +173,113 @@ fn cancellation_fences_each_read_and_discards_an_inflight_response() {
     assert_eq!(
         client.pull_request(&repository(), 1),
         Err(ConnectionError::Timeout)
+    );
+}
+
+/// 3,202 changed files: GitHub lists the first 3,000 (and advertises more
+/// pages); the merge-base tree diff has every one.
+struct PastCap {
+    calls: Mutex<Vec<String>>,
+}
+
+const PAST_CAP: usize = 3_201;
+
+impl Transport for PastCap {
+    fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+        self.calls.lock().unwrap().push(path.into());
+        let mut headers = BTreeMap::new();
+        let body = if path == "/repos/example/repo/pulls/1" {
+            json!({
+                "id":9,"number":1,"title":"Thousands of files","user":{"id":11,"login":"author"},
+                "requested_reviewers":[],"requested_teams":[],"state":"open","merged":false,"draft":false,
+                "head":{"sha":"a".repeat(40),"repo":{"id":100}},
+                "base":{"sha":"b".repeat(40),"repo":{"id":100}},
+                "updated_at":"2026-09-27T00:00:00Z","changed_files":PAST_CAP + 1
+            })
+        } else if path.starts_with("/repos/example/repo/pulls/1/files?") {
+            let page: usize = path.rsplit('=').next().unwrap().parse().unwrap();
+            assert!(page <= 30, "read past the listing cap: {path}");
+            headers.insert("link".into(), format!("<https://api.github.com/repos/example/repo/pulls/1/files?per_page=100&page={}>; rel=\"next\", <https://api.github.com/repos/example/repo/pulls/1/files?per_page=100&page=33>; rel=\"last\"", page + 1));
+            json!(((page - 1) * 100..page * 100)
+                .map(|i| json!({"filename":format!("f-{i}.rs"),"status":"modified","patch":"@@ -1 +1 @@\n-a\n+b"}))
+                .collect::<Vec<_>>())
+        } else if path.contains("/compare/") {
+            json!({"merge_base_commit":{"sha":"d".repeat(40)}})
+        } else if path.contains("/git/trees/") {
+            let base = path.contains(&"d".repeat(40));
+            let mut tree: Vec<_> = (0..PAST_CAP)
+                .map(|i| {
+                    json!({"path":format!("f-{i}.rs"),"mode":"100644","type":"blob",
+                    "sha":format!("{:040x}", if base { i } else { i + 10_000 })})
+                })
+                .collect();
+            tree.push(json!({"path":"same.rs","mode":"100644","type":"blob","sha":"e".repeat(40)}));
+            if base {
+                tree.push(
+                    json!({"path":"gone.rs","mode":"100644","type":"blob","sha":"f".repeat(40)}),
+                );
+            }
+            json!({"truncated":false,"tree":tree})
+        } else {
+            panic!("Unexpected or mutating endpoint: {path}");
+        };
+        Ok(Response {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(&body).unwrap(),
+        })
+    }
+}
+
+#[test]
+fn past_the_listing_cap_the_tree_diff_completes_the_review_files() {
+    let client = GithubClient::new(PastCap {
+        calls: Mutex::new(vec![]),
+    });
+    let context = client
+        .review_context(&repository(), 1, &"a".repeat(40))
+        .unwrap();
+    assert_eq!(context.files.len(), PAST_CAP + 1);
+    let paths: std::collections::BTreeSet<_> = context.files.iter().map(|f| &f.path).collect();
+    assert_eq!(paths.len(), PAST_CAP + 1);
+    assert!(!paths.contains(&"same.rs".to_string()));
+    // Listed files keep GitHub's patch; the rest have no addressable line.
+    assert!(context.files[..3_000].iter().all(|f| f.patch.is_some()));
+    assert!(context.files[3_000..].iter().all(|f| f.patch.is_none()));
+    let gone = context.files.iter().find(|f| f.path == "gone.rs").unwrap();
+    assert_eq!(gone.status, "removed");
+    let last = context
+        .files
+        .iter()
+        .find(|f| f.path == "f-3200.rs")
+        .unwrap();
+    assert_eq!(last.status, "modified");
+    // The packet manifest lists every changed file.
+    let manifest = pr_sniper_lib::packet::reads::files(&context);
+    assert_eq!(manifest.len(), PAST_CAP + 1);
+}
+
+#[test]
+fn past_the_listing_cap_a_truncated_tree_never_returns_a_partial_list() {
+    struct Truncated(PastCap);
+    impl Transport for Truncated {
+        fn get(&self, path: &str) -> Result<Response, ConnectionError> {
+            let mut response = self.0.get(path)?;
+            if path.contains("/git/trees/") {
+                let mut body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+                body["truncated"] = json!(true);
+                response.body = serde_json::to_vec(&body).unwrap();
+            }
+            Ok(response)
+        }
+    }
+    let client = GithubClient::new(Truncated(PastCap {
+        calls: Mutex::new(vec![]),
+    }));
+    assert_eq!(
+        client
+            .review_context(&repository(), 1, &"a".repeat(40))
+            .unwrap_err(),
+        ConnectionError::LimitExceeded
     );
 }

@@ -226,6 +226,9 @@ struct Whole<'a, R: ?Sized> {
     /// Union scope of every glob in the plan; empty without globs.
     scope: Vec<String>,
     files: Option<Result<Vec<ChangedFile>, Parked>>,
+    /// The list came from a scoped walk: it decides globs, but a review needs
+    /// every file, so an admitted PR still parks with this.
+    partial: Option<Parked>,
 }
 
 impl<R: PullRequestReader + ?Sized> Whole<'_, R> {
@@ -251,7 +254,7 @@ impl<R: PullRequestReader + ?Sized> Whole<'_, R> {
     /// Steps 2-3 after an incomplete listing of `count` files. `visible_only`:
     /// no glob reads the list, so only a complete diff counts.
     fn climb(
-        &self,
+        &mut self,
         count: u64,
         visible_only: bool,
     ) -> Result<Result<Vec<ChangedFile>, Parked>, ConnectionError> {
@@ -269,6 +272,8 @@ impl<R: PullRequestReader + ?Sized> Whole<'_, R> {
                 self.reader
                     .tree_diff(self.repository, &base, head, &self.scope)?
             {
+                tried.push(Strategy::ScopedTreeDiff);
+                self.partial = Some((count, tried));
                 return Ok(Ok(files));
             }
             tried.push(Strategy::ScopedTreeDiff);
@@ -281,7 +286,8 @@ impl<R: PullRequestReader + ?Sized> Whole<'_, R> {
 /// the same head. Every new head checks that all changed files are visible
 /// (cheap count first); the full list is read only when a glob needs it.
 /// An incomplete listing climbs the ladder (tree diff, scoped tree diff)
-/// before parking. Provider errors (rate limits, network, raced reads)
+/// before parking. A scoped list can keep a PR out, but an admitted PR needs
+/// the complete list its review reads, so it parks. Provider errors (rate limits, network, raced reads)
 /// propagate: they never decide, skip or park.
 pub fn read_facts<R: PullRequestReader + ?Sized>(
     reader: &R,
@@ -308,6 +314,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
         pull,
         scope,
         files: None,
+        partial: None,
     };
     let parked = |(count, tried): Parked| PathFacts::incomplete(pull, count, tried);
     if previous.is_none() {
@@ -376,6 +383,10 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
                 matched,
             },
         );
+    }
+    // Admitted on a list a review cannot see in full: no review starts.
+    if let Some(stuck) = whole.partial.filter(|_| admitted) {
+        return Ok(parked(stuck));
     }
     Ok(PathFacts {
         head_sha: head.into(),
