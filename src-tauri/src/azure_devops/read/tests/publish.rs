@@ -595,10 +595,11 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
     assert_eq!(
         observation.check_contexts,
         [
-            json!({"__typename": "StatusContext", "context": "Build/CI", "state": "PENDING", "isRequired": true}),
+            json!({"__typename": "CheckRun", "name": "Build/CI", "status": "IN_PROGRESS", "conclusion": null, "isRequired": true}),
             json!({"__typename": "StatusContext", "context": "lint/style", "state": "SUCCESS", "isRequired": false}),
         ]
     );
+    assert_eq!(gates::pending_checks(&observation), ["Build/CI"]);
     assert_eq!(
         sign_off_denial(&observation).as_deref(),
         Some("CI is pending. Do not sign off until it is green.")
@@ -653,13 +654,13 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
     let status_policy = policy(
         STATUS,
         "approved",
-        false,
+        true,
         json!({"statusGenre": "lint", "statusName": "style"}),
     );
     readiness_wire(
         &wire,
         json!({"value": [build("approved"), status_policy]}),
-        statuses,
+        statuses.clone(),
     );
     let observation = session.action_observation(&repository, 7).unwrap();
     assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
@@ -668,6 +669,27 @@ fn policy_evaluations_and_statuses_gate_sign_off_and_the_ready_notification() {
         2,
         "status policy dedupes its status"
     );
+    assert_eq!(sign_off_denial(&observation), None);
+
+    // Non-blocking policies never block, nor their statuses: a running
+    // optional build and a rejected optional status policy are ignored.
+    let optional_build = policy(BUILD, "running", false, json!({"displayName": "Nightly"}));
+    let optional_status = policy(
+        STATUS,
+        "rejected",
+        false,
+        json!({"statusGenre": "old", "statusName": "check"}),
+    );
+    readiness_wire(
+        &wire,
+        json!({"value": [build("approved"), optional_build, optional_status]}),
+        json!({"value": [
+            {"id": 5, "state": "failed", "context": {"genre": "old", "name": "check"}, "iterationId": 2},
+        ]}),
+    );
+    let observation = session.action_observation(&repository, 7).unwrap();
+    assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
+    assert_eq!(observation.check_contexts.len(), 1);
     assert_eq!(sign_off_denial(&observation), None);
 
     // The heartbeat sees the same CI: settled green with the build required.
@@ -708,15 +730,88 @@ fn statuses_and_policies_without_their_default_state_read_as_pending() {
 
     let observation = session.action_observation(&repository, 7).unwrap();
 
-    assert_eq!(observation.checks.as_deref(), Some("PENDING"));
+    // A required status policy waiting on a code owner and a governance status
+    // with no build policy: not CI, so the vote is not held (no deadlock). The
+    // optional lint policy is ignored.
+    assert_eq!(observation.checks.as_deref(), Some("SUCCESS"));
     assert_eq!(
         observation.check_contexts,
         [
-            json!({"__typename": "StatusContext", "context": "Owners", "state": "PENDING", "isRequired": true}),
-            json!({"__typename": "StatusContext", "context": "lint/style", "state": "PENDING", "isRequired": false}),
+            json!({"__typename": "StatusContext", "context": "Owners", "state": "PENDING", "isRequired": true, "ci": false}),
             json!({"__typename": "StatusContext", "context": "governance/scan", "state": "SUCCESS", "isRequired": false}),
         ]
     );
+    assert!(gates::pending_checks(&observation).is_empty());
+    assert_eq!(sign_off_denial(&observation), None);
+    readiness_wire(
+        &wire,
+        fixture(include_str!("fixtures/policy-evaluations-status.json")),
+        fixture(include_str!("fixtures/statuses-omitted-state.json")),
+    );
+    let normalized = session.pr_snapshot(&repository, 7).unwrap().normalize();
+    assert!(normalized.ci_green());
+    assert!(!normalized.ci_pending());
+}
+
+#[test]
+fn a_red_status_blocks_while_a_pending_one_does_not() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+    let owners = |status| {
+        policy(
+            STATUS,
+            status,
+            true,
+            json!({"statusGenre": "owners", "statusName": "enforcer"}),
+        )
+    };
+    for (policies, statuses) in [
+        (json!({"value": [owners("rejected")]}), json!({"value": []})),
+        // A non-blocking policy on the same context never hides it either.
+        (
+            json!({"value": [owners("queued"), policy(
+                STATUS,
+                "rejected",
+                false,
+                json!({"statusGenre": "owners", "statusName": "enforcer"}),
+            )]}),
+            json!({"value": [
+                {"id": 1, "state": "failed", "context": {"genre": "owners", "name": "enforcer"}, "iterationId": 2},
+            ]}),
+        ),
+        // The policy evaluation lags its own red status.
+        (
+            json!({"value": [owners("queued")]}),
+            json!({"value": [
+                {"id": 1, "state": "failed", "context": {"genre": "owners", "name": "enforcer"}, "iterationId": 2},
+            ]}),
+        ),
+        (
+            json!({"value": [owners("queued")]}),
+            json!({"value": [
+                {"id": 1, "state": "error", "context": {"genre": "governance", "name": "scan"}, "iterationId": 2},
+            ]}),
+        ),
+    ] {
+        readiness_wire(&wire, policies.clone(), statuses.clone());
+        let observation = session.action_observation(&repository, 7).unwrap();
+        assert_eq!(observation.checks.as_deref(), Some("FAILURE"));
+        assert_eq!(
+            sign_off_denial(&observation).as_deref(),
+            Some("CI is red. Do not sign off.")
+        );
+        readiness_wire(&wire, policies, statuses);
+        assert!(session
+            .pr_snapshot(&repository, 7)
+            .unwrap()
+            .normalize()
+            .ci_failed());
+    }
 }
 
 #[test]

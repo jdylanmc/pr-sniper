@@ -720,6 +720,9 @@ fn parked_lgtm_after(
     {
         let mut server = env.wire.0.lock().unwrap();
         server.observation.checks = Some("PENDING".into());
+        server.observation.check_contexts = vec![serde_json::json!({
+            "__typename": "CheckRun", "name": "Build/CI", "status": "IN_PROGRESS", "conclusion": null,
+        })];
         server.observation.review_decision = None;
         if self_authored {
             server.observation.author_id = server.observation.account_id.clone();
@@ -766,7 +769,7 @@ fn parked_lgtm_after(
     for &action in wanted {
         let reason = ready(&store, parked, &observation, action).unwrap_err();
         assert!(
-            reason.contains("LGTM pending on revision aaaaaaaaaaaa"),
+            reason.contains("LGTM pending on revision aaaaaaaaaaaa: waiting for CI (Build/CI)."),
             "{reason}"
         );
     }
