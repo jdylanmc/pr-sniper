@@ -435,11 +435,12 @@ impl Readiness {
     /// Everything a sign-off and its Approve vote are gated on. Azure DevOps
     /// exposes no cheap per-repository vote check: a contributor may vote, and
     /// a refused vote reports its permission failure. Completion is never
-    /// offered.
+    /// offered. An own PR may be approved too; a branch policy refuses or
+    /// discounts that vote.
     pub fn observation(&self, account_id: &str) -> Observation {
         let (mergeable, merge_state) = self.mergeable();
         Observation {
-            write_capability: false,
+            write_capability: true,
             node_id: self.pull.id.clone(),
             repository_id: self.pull.base_repository_id.clone(),
             pull_request_id: self.pull.id.clone(),
@@ -495,6 +496,7 @@ impl Readiness {
             merged_by: None,
             merged_at: None,
             merge_commit: None,
+            author_may_approve: true,
         }
     }
 

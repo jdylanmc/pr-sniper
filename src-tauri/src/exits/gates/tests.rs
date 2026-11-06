@@ -806,3 +806,68 @@ fn no_code_path_updates_a_pull_request_branch() {
     }
     assert!(scanned > 50);
 }
+
+#[test]
+fn azure_devops_approves_an_own_pr_only_with_include_self_and_github_never_does() {
+    for (provider, include_self, approves) in [
+        (ProviderId::AzureDevops, false, false),
+        (ProviderId::AzureDevops, true, true),
+        (ProviderId::Github, false, false),
+        (ProviderId::Github, true, false),
+    ] {
+        let mut input = base();
+        input.capabilities = ProviderCapabilities::of(&provider);
+        input.grants.merge = false;
+        input.grants.include_self = include_self;
+        input.facts.author_is_acting = true;
+        let case = format!("{provider:?}, include_self {include_self}");
+        assert_eq!(
+            is_offered(&input, Exit::ApprovePullRequest),
+            approves,
+            "{case}"
+        );
+        assert_eq!(lgtm_action(&input), LgtmAction::Approve, "{case}");
+        assert_eq!(lgtm_denial(&input).is_none(), approves, "{case}");
+        let reason = lgtm_denial(&input).unwrap_or_default();
+        match (&provider, include_self) {
+            (ProviderId::AzureDevops, false) => assert_eq!(reason, SELF_EXCLUDED),
+            (ProviderId::Github, _) => assert!(reason.contains("self-approval"), "{reason}"),
+            _ => {}
+        }
+        // Pending CI alone: an own vote this assignment may cast parks; else no wait.
+        input.facts.ci = Ci::Pending;
+        assert_eq!(lgtm_parks(&input), approves, "{case}");
+    }
+    // Never a merge on Azure DevOps, own PR or not.
+    let mut input = base();
+    input.capabilities = ProviderCapabilities::of(&ProviderId::AzureDevops);
+    input.grants.include_self = true;
+    input.facts.author_is_acting = true;
+    assert_eq!(lgtm_action(&input), LgtmAction::Approve);
+    assert_eq!(
+        offer(&input, Exit::ApproveAndMerge),
+        Some(Offer::Denied(UNSUPPORTED.into()))
+    );
+}
+
+#[test]
+fn include_self_approves_by_provider_and_grants_not_by_the_offered_exit() {
+    let mut input = base();
+    input.capabilities = ProviderCapabilities::of(&ProviderId::AzureDevops);
+    input.grants.include_self = true;
+    input.facts.author_is_acting = true;
+    // Neither a missing approve_pull_request tool nor conflicts change it.
+    input.tools.retain(|t| t != "approve_pull_request");
+    input.facts.conflicts = true;
+    assert!(self_approves(&input));
+    input.grants.include_self = false;
+    assert!(!self_approves(&input));
+    input.grants.include_self = true;
+    input.grants.approve = false;
+    input.grants.merge = false;
+    assert!(!self_approves(&input), "no approve grant: Ready");
+    let mut github = base();
+    github.grants.include_self = true;
+    github.grants.merge = false;
+    assert!(!self_approves(&github));
+}
