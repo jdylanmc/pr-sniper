@@ -46,7 +46,7 @@ mod action_observation {
                 "headRefOid": "a".repeat(40), "isDraft": false,
                 "state": "OPEN", "mergeStateStatus": "CLEAN",
                 "mergeable": "MERGEABLE", "reviewDecision": null,
-                "isInMergeQueue": false, "author": {"databaseId": 11},
+                "isInMergeQueue": false, "isMergeQueueEnabled": false, "author": {"databaseId": 11},
                 "headRepository": {"databaseId": 100},
                 "mergedBy": null, "mergedAt": null, "mergeCommit": null,
                 "baseRef": {"branchProtectionRule": self.0},

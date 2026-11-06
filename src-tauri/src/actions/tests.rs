@@ -28,6 +28,7 @@ const NOW: i64 = 1_800_000_000;
 mod approve_exits;
 mod fixwave;
 mod legacy_compat;
+mod merge_queue;
 mod readiness;
 
 fn output() -> ReviewResult {
@@ -551,6 +552,7 @@ fn observed() -> Observation {
         checks: Some("SUCCESS".into()),
         check_contexts: vec![],
         in_merge_queue: false,
+        merge_queue: false,
         method: Some(MergeMethod::Squash),
         protection: Value::Null,
         threads: vec![],
@@ -916,7 +918,7 @@ impl QueryTransport for Wire {
         }
         let o = &server.observation;
         let mut pull = json!({"id":o.node_id,"fullDatabaseId":9,"baseRefOid":o.base,"headRefOid":o.head,"isDraft":o.draft,"state":o.state,
-                "mergeStateStatus":o.merge_state,"mergeable":o.mergeable,"reviewDecision":o.review_decision,"isInMergeQueue":o.in_merge_queue,
+                "mergeStateStatus":o.merge_state,"mergeable":o.mergeable,"reviewDecision":o.review_decision,"isInMergeQueue":o.in_merge_queue,"isMergeQueueEnabled":o.merge_queue,
                 "author":{"databaseId":o.author_id.parse::<u64>().unwrap()},"mergedBy":o.merged_by.as_ref().map(|id|json!({"databaseId":id.parse::<u64>().unwrap()})),
                 "mergedAt":o.merged_at,"mergeCommit":o.merge_commit.as_ref().map(|id|json!({"oid":id})),
                 "baseRef":{"branchProtectionRule":o.protection}});
@@ -957,8 +959,22 @@ impl MutationTransport for Wire {
                 body: b"{}".to_vec(),
             });
         }
-        let value = if path == "/graphql" {
+        let value = if path == "/graphql"
+            && body["query"]
+                .as_str()
+                .unwrap()
+                .contains("enqueuePullRequest")
+        {
             let input = &body["variables"]["input"];
+            assert!(server.observation.merge_queue);
+            assert_eq!(input["expectedHeadOid"], server.observation.head);
+            assert!(input.get("mergeMethod").is_none() && input.get("jump").is_none());
+            server.observation.in_merge_queue = true;
+            json!({"data":{"enqueuePullRequest":{"clientMutationId":input["clientMutationId"],"mergeQueueEntry":{"id":"MQE_entry","state":"QUEUED",
+                "pullRequest":{"id":"PR_node","headRefOid":server.observation.head,"isInMergeQueue":true}}}}})
+        } else if path == "/graphql" {
+            let input = &body["variables"]["input"];
+            assert!(!server.observation.merge_queue);
             assert_eq!(input["expectedHeadOid"], server.observation.head);
             assert_eq!(input["mergeMethod"], "SQUASH");
             assert!(input.get("admin").is_none());
@@ -1548,10 +1564,14 @@ fn provider_gate_reads_fail_closed_on_partial_policy_and_ci_evidence() {
             },
             1,
         );
-        if matches!(
-            case,
-            "nonpassing" | "no_checks" | "queue_rule" | "rules_unavailable"
-        ) {
+        if case == "queue_rule" {
+            // A queue rule turns merge into an enqueue; it never blocks or bypasses.
+            let mut observation = result.unwrap();
+            observation.write_capability = true;
+            assert!(observation.merge_queue);
+            assert!(observation.blocker(Action::Merge).is_none());
+            assert!(observation.blocker(Action::Approve).is_none());
+        } else if matches!(case, "nonpassing" | "no_checks" | "rules_unavailable") {
             let mut observation = result.unwrap();
             observation.write_capability = true;
             assert!(observation.blocker(Action::Merge).is_some());
