@@ -588,6 +588,8 @@ pub(crate) fn compact_retired(
         };
         retired(job)
             && work.legacy_item_id.is_none()
+            // The revision's skip history: listed on its stale item.
+            && !work.skipped
             && group(job).is_some_and(|(key, rank)| newest.get(&key) != Some(&rank))
             && !evidence
                 .get(&(assignment_id, crate::review::key(job, assignment_id)))

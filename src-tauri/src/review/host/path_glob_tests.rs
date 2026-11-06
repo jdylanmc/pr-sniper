@@ -362,6 +362,8 @@ fn a_stale_revision_keeps_its_skipped_secondary() {
     wire.head('b', &["docs/a.md", "src/a.rs"]);
     scan(&mut monitor, &store, &wire, 'b', NOW + 10);
     assert_eq!(waiting(&store, 'b')[TEAMMATE], WAITING_AI_CAPACITY);
+    // Startup and maintenance compaction keep the skip history.
+    crate::monitoring::compact_saved_queue(&store).unwrap();
     let snapshot = crate::queue::snapshot(&store, monitor.snapshot()).unwrap();
     let stale = snapshot
         .items
