@@ -169,6 +169,9 @@ pub struct PacketInput {
     pub admitted_by: Option<String>,
     pub acting_login: String,
     pub include_self: bool,
+    /// Include self casts the Approve vote on an own PR: the provider permits
+    /// self-approval and the sign-off approves (Azure DevOps).
+    pub self_approves: bool,
     pub role: Role,
     pub tools: Vec<String>,
     pub exits: Vec<(Exit, Offer)>,

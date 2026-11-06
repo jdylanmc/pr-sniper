@@ -115,6 +115,15 @@ impl Effect {
         self.state == EffectState::Uncertain
             || self.state == EffectState::Confirmed && self.error.is_some()
     }
+    /// Azure DevOps refused the vote (a branch policy, e.g. one forbidding the
+    /// requester's own approval, or missing permission). Final: the review is
+    /// not re-queued; it parks for a human.
+    pub fn refused(&self, provider: &crate::storage::ProviderId) -> bool {
+        *provider == crate::storage::ProviderId::AzureDevops
+            && self.state == EffectState::Rejected
+            && self.operation.failure == Some(monitoring::OperationFailure::Permission)
+    }
+
     /// A merge still owned by the provider merge queue, or a dequeue not yet
     /// reconciled by a later read.
     pub fn in_merge_queue(&self) -> bool {
@@ -720,6 +729,7 @@ pub fn finish_effect(
             };
             effect.operation.state = OperationState::ManualRetry;
             effect.operation.next_attempt_at = None;
+            effect.operation.failure = Some(error.failure.kind);
             effect.error = Some(error.failure.message);
         }
     }
@@ -1068,10 +1078,23 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     .iter()
                     .filter(own)
                     .any(|e| e.action == Action::Approve && e.state == EffectState::Confirmed);
+            let refused = effects
+                .iter()
+                .filter(own)
+                .any(|e| e.refused(&run.basis.repository.provider));
             if approval.settled && tossed && !matches!(item.state, State::Merged | State::Closed) {
                 item.state = State::Failed;
-                item.failure_class = Some(monitoring::FailureClass::Other);
-                item.failure_cause = Some(queue::CAUSE_TOSSED);
+                (item.failure_class, item.failure_cause) = if refused {
+                    (
+                        Some(monitoring::FailureClass::Permission),
+                        Some(queue::CAUSE_EXIT_FAILED),
+                    )
+                } else {
+                    (
+                        Some(monitoring::FailureClass::Other),
+                        Some(queue::CAUSE_TOSSED),
+                    )
+                };
                 item.failed_operation = Some(queue::FailedOperation::ProviderAction);
                 item.remedy = Some(queue::Remedy::Retry);
                 item.summary = State::Failed.summary();

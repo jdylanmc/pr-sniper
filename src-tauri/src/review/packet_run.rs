@@ -197,6 +197,7 @@ pub(crate) fn prepare(
         }),
         acting_login: acting_login.to_string(),
         include_self: base.grants.include_self,
+        self_approves: crate::exits::gates::self_approves(&base),
         role: if base.primary {
             Role::Primary
         } else {

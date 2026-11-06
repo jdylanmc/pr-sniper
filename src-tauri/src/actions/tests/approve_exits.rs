@@ -437,6 +437,81 @@ fn a_rejected_write_tosses_and_requeues_the_review_until_it_parks() {
     assert_eq!(store.load_reviews().unwrap().len(), 3);
 }
 
+/// An Azure DevOps own PR as its provider reports it: the author may approve.
+fn own_azure_devops() -> Observation {
+    let mut own = observed();
+    own.author_id = own.account_id.clone();
+    own.author_may_approve = true;
+    own
+}
+
+/// `item`'s packet final, re-pointed at an Azure DevOps repository.
+fn on_azure_devops(store: &Store) {
+    let mut ledger = store.load_actions().unwrap();
+    ledger.finals[0].basis.repository.provider = crate::storage::ProviderId::AzureDevops;
+    store.save_actions(&ledger).unwrap();
+}
+
+#[test]
+fn azure_devops_approves_an_own_pr_only_with_include_self() {
+    for include_self in [false, true] {
+        let (_root, store, item) = setup(true, false, approve_exit(false), include_self);
+        adopted(&store, &item, own_azure_devops());
+        on_azure_devops(&store);
+        let run = store.load_actions().unwrap().finals.remove(0);
+        let ready = packet::ready(&store, &run, &own_azure_devops(), Action::Approve);
+        if include_self {
+            assert_eq!(ready, Ok(Ready::Go));
+        } else {
+            assert_eq!(ready, Err(crate::exits::gates::SELF_EXCLUDED.into()));
+        }
+    }
+}
+
+#[test]
+fn a_refused_azure_devops_vote_parks_once_with_no_re_review() {
+    let (_root, store, id) = setup(true, false, approve_exit(false), true);
+    adopted(&store, &id, own_azure_devops());
+    on_azure_devops(&store);
+    let effect = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    env.wire.0.lock().unwrap().observation = own_azure_devops();
+    // The provider refuses the vote, as a branch policy forbidding requester approval does.
+    env.wire.0.lock().unwrap().reject = true;
+    let _ = host::execute_action(&mut env, &effect);
+    let effect = store.load_actions().unwrap().effects.remove(0);
+    assert_eq!(effect.state, EffectState::Rejected);
+    assert_eq!(
+        effect.operation.failure,
+        Some(crate::monitoring::OperationFailure::Permission)
+    );
+
+    assert!(packet::settle(&store, &id, &own_azure_devops(), NOW + 30)
+        .unwrap()
+        .is_empty());
+    assert!(!packet::open(&store.load_actions().unwrap(), &id));
+    let job = store.load_reviews().unwrap().remove(0).job;
+    let record = store
+        .load_pr_states()
+        .unwrap()
+        .get(&Binding::job(&job))
+        .cloned()
+        .unwrap();
+    assert_eq!(record.error_count, 0, "no toss");
+    assert!(record.exit.is_none(), "a refused write never consumes");
+    assert_eq!(store.load_reviews().unwrap().len(), 1, "no re-review");
+    let parked = item(&store, &id);
+    assert_eq!(parked.state, State::Failed);
+    assert_eq!(parked.failure_cause, Some(crate::queue::CAUSE_EXIT_FAILED));
+    assert_eq!(
+        parked.failure_class,
+        Some(crate::monitoring::FailureClass::Permission)
+    );
+    assert_eq!(parked.remedy, Some(crate::queue::Remedy::Retry));
+}
+
 #[test]
 fn consume_after_a_moved_state_tosses_instead_of_baselining() {
     let (_root, store, _item) = setup(true, false, approve_exit(false), false);

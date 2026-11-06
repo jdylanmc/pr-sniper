@@ -21,6 +21,7 @@ fn base() -> PacketInput {
         admitted_by: None,
         acting_login: "pr-sniper-bot".into(),
         include_self: false,
+        self_approves: false,
         role: Role::Primary,
         tools: vec![],
         exits: vec![],

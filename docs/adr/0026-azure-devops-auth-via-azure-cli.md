@@ -72,3 +72,15 @@
   response.
 - A body that does not parse is `MalformedResponse(ProviderResponse)`, naming
   the response, never its content. The wire cause stays `invalid_response`.
+
+## Addendum: self-approval (#324)
+
+- Azure DevOps permits the author's own vote unless a branch policy forbids
+  it. `ProviderCapabilities::self_approval_denial` is `None` for Azure DevOps
+  (GitHub: refused). The Approve vote on an own PR needs the assignment's
+  **Include self**; off, it is denied before any vote. Approve only: Azure
+  DevOps never merges.
+- A refused vote (400/403/409, e.g. a policy forbidding requester approval)
+  is a typed `Permission` failure: the effect is Rejected and the item parks
+  as `exit_failed` with no re-review. A policy that only discounts the vote is
+  a confirmed vote.

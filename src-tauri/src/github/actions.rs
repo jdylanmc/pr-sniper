@@ -269,6 +269,8 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
             } else {
                 Some(super::metadata::sha(&pull["mergeCommit"]["oid"])?)
             },
+            // GitHub refuses self-approval.
+            author_may_approve: false,
         };
         if serde_json::to_vec(&observation)
             .map_err(|_| ConnectionError::InvalidResponse)?

@@ -374,7 +374,7 @@ fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
             .tools
             .iter()
             .any(|t| t == Exit::ApprovePullRequest.id())
-        && !f.author_is_acting
+        && !(f.author_is_acting && self_approval_denial(input).is_some())
         && f.wait_approve_blocker.is_none();
     let mut reasons = Vec::new();
     if merge && f.ci == Ci::Pending {
@@ -393,6 +393,19 @@ fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
 /// Denial of an outcome the repository's provider does not offer.
 pub const UNSUPPORTED: &str = "The repository's provider does not offer this action.";
 
+/// Denial of an action on the acting account's own PR while Include self is off.
+pub const SELF_EXCLUDED: &str = "Acting account authored this PR. Include self is off.";
+
+/// Why the acting account may not approve its own PR: the provider refuses
+/// self-approval, or it permits it and Include self is off.
+fn self_approval_denial(input: &GateInput) -> Option<&'static str> {
+    match input.capabilities.self_approval_denial {
+        Some(reason) => Some(reason),
+        None if !input.grants.include_self => Some(SELF_EXCLUDED),
+        None => None,
+    }
+}
+
 fn approve_denial(input: &GateInput) -> Option<String> {
     let f = &input.facts;
     Some(if !(input.grants.approve || input.grants.merge) {
@@ -408,8 +421,8 @@ fn approve_denial(input: &GateInput) -> Option<String> {
         "Merge conflicts. Do not approve. Say so with resolution advice.".into()
     } else if f.ci == Ci::Red {
         "CI is red. Do not approve. Comment the fix if you know it.".into()
-    } else if f.author_is_acting {
-        input.capabilities.self_approval_denial.into()
+    } else if let Some(reason) = self_approval_denial(input).filter(|_| f.author_is_acting) {
+        reason.into()
     } else {
         return f.approve_blocker.clone();
     })
@@ -438,7 +451,7 @@ fn merge_denial(input: &GateInput) -> Option<String> {
         "CI is red. Do not merge.".into()
     } else if f.author_is_acting && !input.grants.include_self {
         // Approval cannot be posted on an own PR; merge alone needs Include self.
-        "Acting account authored this PR. Include self is off.".into()
+        SELF_EXCLUDED.into()
     } else if f.ci == Ci::Pending {
         "CI is pending. Cannot merge yet.".into()
     } else if f.ci == Ci::Unknown {
@@ -454,10 +467,20 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     })
 }
 
+/// Include self casts the Approve vote on an own PR: the provider permits
+/// self-approval and the sign-off approves. Grants and provider decide it, never
+/// the tool list or this revision's gates.
+pub fn self_approves(input: &GateInput) -> bool {
+    input.grants.include_self
+        && input.capabilities.self_approval_denial.is_none()
+        && lgtm_action(input) == LgtmAction::Approve
+}
+
 /// The sign-off's action: the strongest granted authority this PR can ever take. The
-/// tool list only gates the legacy explicit approve exits. The acting account never
-/// approves its own PR and merges it only with Include self; otherwise its sign-off is
-/// a local Ready, so a clean review still settles instead of waiting on the author.
+/// tool list only gates the legacy explicit approve exits. On its own PR the acting
+/// account approves only when the provider permits it under Include self, and merges
+/// only with Include self; otherwise its sign-off is a local Ready, so a clean review
+/// still settles instead of waiting on the author.
 pub fn lgtm_action(input: &GateInput) -> LgtmAction {
     let capabilities = &input.capabilities;
     let own = input.facts.author_is_acting;
@@ -468,7 +491,7 @@ pub fn lgtm_action(input: &GateInput) -> LgtmAction {
         LgtmAction::Merge
     } else if (input.grants.approve || input.grants.merge)
         && capabilities.approve.is_available()
-        && !own
+        && (!own || self_approval_denial(input).is_none())
     {
         LgtmAction::Approve
     } else {

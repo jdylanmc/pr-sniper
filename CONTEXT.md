@@ -127,11 +127,11 @@ _Avoid_: Secondary agent, peer
 **Review drafts** (repository):
 Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
-**Include self** (Approve & Merge):
-Repository-assignment option, default off: the acting account's own PRs may merge. The packet carries this choice explicitly. After a clear review, use an offered merge exit; the host merges an own PR without an approval vote. Other merge gates still apply. A denied approval exit does not deny an offered merge exit.
+**Include self** (Approve & Merge; Azure DevOps: Approve):
+Repository-assignment option, default off: the acting account's own PRs may merge (GitHub) or get the Approve vote (Azure DevOps, which permits self-approval; still never merges). The packet carries this choice explicitly. After a clear review, use an offered merge or approve exit; on GitHub the host merges an own PR without an approval vote. Other gates still apply. A denied approval exit does not deny an offered merge exit. A branch policy refusing the requester's vote parks the item (`exit_failed`, Permission), with no re-review.
 
 **Assignment Capability**:
-An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment gates exit replies and resolutions. For another author's PR, merge follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. For the acting account's own PR, Include self permits merge without posting an approval vote. Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
+An explicit repository-scoped grant on an assignment: Publish Comment for any assignment; independent Reply Comment and Approve or Approve & Merge for the primary only. New assignments start with Comment, Approve and Merge off. Publish Comment off: findings stay local. Reply Comment gates exit replies and resolutions. For another author's PR, merge follows confirmed current-head approval; an existing provider vote is not fabricated as a new PR Sniper vote. For the acting account's own PR, Include self permits merge without posting an approval vote (GitHub) or the Approve vote (Azure DevOps). Obsolete secondary action grants show disabled, never auto-promoted. Legacy start, default and override settings are inert history. These product grants never authorize development agents to publish, approve or merge.
 _Avoid_: Automation override, reusable Agent permission, merge-only grant
 
 **Authorization Boundary**:
@@ -347,7 +347,7 @@ Single native writer for every comment, reply, approval and merge, serial and in
 _Avoid_: Agent tool, publisher
 
 **Approval**:
-One acting-account provider vote, not one per Agent. Cannot self-approve a GitHub PR or replace an existing vote. Pins `commit_id`. Approve alone never merges.
+One acting-account provider vote, not one per Agent. Cannot self-approve a GitHub PR or replace an existing vote; an own Azure DevOps PR needs Include self. Pins `commit_id` (GitHub). Approve alone never merges.
 _Avoid_: Agent vote
 
 **Merge Readiness**:
@@ -359,7 +359,7 @@ Publication or reply whose result is unconfirmed. Keeps original reconciliation 
 _Avoid_: Resend
 
 **Owned Feedback**:
-Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Resolvable: `fixed` with current-head evidence, `author_wont_fix` (the PR author's latest reply, by provider identity, declines and the primary accepts it with a same-thread reply), or `signed_off` (**Sign-off**: the primary's `lgtm` exit resolves its own open threads on its judgment, then acts on the assignment's authority (own PR: never approves, merges only with Include self, else local Ready); never others' threads). **Carried forward**: an own finding PR Sniper resolved stays settled while the thread is resolved, has no new non-PR-Sniper comment and every anchored file keeps its head blob. Legacy follow-ups never resolved.
+Feedback rooted in a comment PR Sniper published, verified by saved review, receipts, repository/account identity, commit and exact root body. Username match is insufficient. Records original owner. Unassigning keeps unresolved feedback and blocks clearance. Missing, tampered or incomplete observation is never resolved. **Agent resolve**: a Packet-mode primary may resolve only owned threads, through its `leave_comments` exit and a host `resolveReviewThread` write; never others' threads, never reopen. Resolvable: `fixed` with current-head evidence, `author_wont_fix` (the PR author's latest reply, by provider identity, declines and the primary accepts it with a same-thread reply), or `signed_off` (**Sign-off**: the primary's `lgtm` exit resolves its own open threads on its judgment, then acts on the assignment's authority (own PR: approves or merges only where Include self and the provider permit it, else local Ready); never others' threads). **Carried forward**: an own finding PR Sniper resolved stays settled while the thread is resolved, has no new non-PR-Sniper comment and every anchored file keeps its head blob. Legacy follow-ups never resolved.
 _Avoid_: Own thread by author name, thread owner as responder
 
 **Feedback clearance**:
