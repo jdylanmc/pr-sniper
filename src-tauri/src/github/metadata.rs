@@ -231,6 +231,31 @@ fn optional_text(value: Option<&Value>) -> Result<Option<String>, ConnectionErro
     }
 }
 
+/// GitHub links the pages of `/repos/{owner}/{name}/...` through the
+/// repository's numeric alias `/repositories/{id}/...`; the rest of the path
+/// must be the same resource.
+fn same_resource(current: &str, linked: &str) -> bool {
+    if linked == current {
+        return true;
+    }
+    let mut named = current.splitn(5, '/').skip(1);
+    let (Some("repos"), Some(owner), Some(name), Some(rest)) =
+        (named.next(), named.next(), named.next(), named.next())
+    else {
+        return false;
+    };
+    let mut aliased = linked.splitn(4, '/').skip(1);
+    matches!(
+        (aliased.next(), aliased.next(), aliased.next()),
+        (Some("repositories"), Some(id), Some(tail))
+            if !owner.is_empty()
+                && !name.is_empty()
+                && !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_digit())
+                && tail == rest
+    )
+}
+
 pub(super) fn next_page(
     path: &str,
     response: &Response,
@@ -276,23 +301,25 @@ pub(super) fn next_page(
         }
     }
     items.push(&link[start..]);
+    // A link we refuse to follow is the same response on every read: no retry
+    // can complete it. A page sequence that moved below is a fresh-read problem.
     for item in items {
         let (target, relation) = item
             .trim()
             .split_once(';')
-            .ok_or(ConnectionError::IncompleteRead)?;
+            .ok_or(ConnectionError::InvalidResponse)?;
         let target = target
             .strip_prefix('<')
             .and_then(|s| s.strip_suffix('>'))
-            .ok_or(ConnectionError::IncompleteRead)?;
-        let url = reqwest::Url::parse(target).map_err(|_| ConnectionError::IncompleteRead)?;
+            .ok_or(ConnectionError::InvalidResponse)?;
+        let url = reqwest::Url::parse(target).map_err(|_| ConnectionError::InvalidResponse)?;
         if url.origin() != current.origin()
-            || url.path() != current.path()
+            || !same_resource(current.path(), url.path())
             || !url.username().is_empty()
             || url.password().is_some()
             || url.fragment().is_some()
         {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::InvalidResponse);
         }
         let pairs: Vec<_> = url
             .query_pairs()
@@ -304,10 +331,10 @@ pub(super) fn next_page(
             .iter()
             .find(|(key, _)| key == "page")
             .and_then(|(_, value)| value.parse::<u64>().ok())
-            .ok_or(ConnectionError::IncompleteRead)?;
+            .ok_or(ConnectionError::InvalidResponse)?;
         expected.insert("page".into(), number.to_string());
         if pairs.len() != unique.len() || unique != expected {
-            return Err(ConnectionError::IncompleteRead);
+            return Err(ConnectionError::InvalidResponse);
         }
         if !relations.insert(relation.trim()) {
             return Err(ConnectionError::IncompleteRead);
@@ -317,16 +344,17 @@ pub(super) fn next_page(
                 if number != page + 1 || next.is_some() {
                     return Err(ConnectionError::IncompleteRead);
                 }
+                // Follow the named path read so far; only the page changes.
                 next = Some(format!(
                     "{}?{}",
-                    url.path(),
+                    current.path(),
                     url.query().ok_or(ConnectionError::IncompleteRead)?
                 ));
                 next_number = Some(number);
             }
             "rel=\"last\"" => last = Some(number),
             "rel=\"prev\"" | "rel=\"first\"" => (),
-            _ => return Err(ConnectionError::IncompleteRead),
+            _ => return Err(ConnectionError::InvalidResponse),
         }
     }
     if let Some(last) = last {

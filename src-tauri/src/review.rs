@@ -567,6 +567,10 @@ pub fn restore(store: &Store) -> Result<(), String> {
             changed = true;
             continue;
         }
+        if resume_parked_incomplete_read(review, now) {
+            changed = true;
+            continue;
+        }
         if review.operation.state == OperationState::Running {
             if review.operation.interruption.is_some() {
                 review.operation.requeue_intentional(0);
@@ -728,6 +732,31 @@ fn recover_parked_transient_check(run: &mut ReviewRun, jobs: &[QueueJob], now: i
     run.result = None;
     run.error = None;
     run.phase = "Waiting for shared AI capacity".into();
+    true
+}
+
+/// Older builds could not follow GitHub's `/repositories/{id}` page links, so
+/// any listing past one page parked as `IncompleteRead`. A park still waiting
+/// for its cooldown resumes now instead; the resume spends its normal cycle,
+/// so a read that keeps failing parks again within the existing budget.
+fn resume_parked_incomplete_read(run: &mut ReviewRun, now: i64) -> bool {
+    let incomplete = match monitoring::check_error(ConnectionError::IncompleteRead) {
+        MonitoringError::Recoverable { message, .. } => message,
+        _ => return false,
+    };
+    if run.mode != RunMode::Packet
+        || run.operation.state != OperationState::ManualRetry
+        || run.operation.failure != Some(OperationFailure::Provider)
+        || run.operation.operation_type != "copilot_review"
+        || run.result.is_some()
+        || run.operation.attempted_mutation.is_some()
+        || run.operation.confirmed_receipt.is_some()
+        || run.error.as_deref() != Some(incomplete.as_str())
+        || !run.operation.resume_at.is_some_and(|at| at > now)
+    {
+        return false;
+    }
+    run.operation.resume_at = Some(now);
     true
 }
 
