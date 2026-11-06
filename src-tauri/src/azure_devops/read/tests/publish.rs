@@ -772,6 +772,13 @@ fn a_red_status_blocks_while_a_pending_one_does_not() {
     };
     for (policies, statuses) in [
         (json!({"value": [owners("rejected")]}), json!({"value": []})),
+        // The policy evaluation lags its own red status.
+        (
+            json!({"value": [owners("queued")]}),
+            json!({"value": [
+                {"id": 1, "state": "failed", "context": {"genre": "owners", "name": "enforcer"}, "iterationId": 2},
+            ]}),
+        ),
         (
             json!({"value": [owners("queued")]}),
             json!({"value": [
