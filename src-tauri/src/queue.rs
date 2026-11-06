@@ -760,7 +760,9 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let skipped: Vec<_> = reviews
             .iter()
             .filter(|r| {
-                r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES && r.run.is_none()
+                r.run.is_none()
+                    && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
+                        || r.job.work.as_ref().is_some_and(|w| w.skipped))
             })
             .map(|r| SkippedReview {
                 assignment_id: r.assignment_id.clone(),

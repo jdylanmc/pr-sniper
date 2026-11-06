@@ -354,6 +354,62 @@ fn a_skipped_secondary_is_shown_and_never_holds_the_primary() {
 }
 
 #[test]
+fn a_stale_revision_keeps_its_skipped_secondary() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    wire.head('b', &["docs/a.md", "src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'b', NOW + 10);
+    assert_eq!(waiting(&store, 'b')[TEAMMATE], WAITING_AI_CAPACITY);
+    // Startup and maintenance compaction keep the skip history.
+    crate::monitoring::compact_saved_queue(&store).unwrap();
+    let snapshot = crate::queue::snapshot(&store, monitor.snapshot()).unwrap();
+    let stale = snapshot
+        .items
+        .iter()
+        .find(|item| item.job.head_sha == sha('a'))
+        .unwrap();
+    assert_eq!(stale.state, State::Stale);
+    assert_eq!(stale.skipped.len(), 1);
+    assert_eq!(stale.skipped[0].assignment_id, TEAMMATE);
+    assert_eq!(
+        stale.skipped[0].reason,
+        crate::queue::SkipReason::NoMatchingFiles
+    );
+    let current = snapshot
+        .items
+        .iter()
+        .find(|item| item.job.head_sha == sha('b'))
+        .unwrap();
+    assert!(current.skipped.is_empty());
+}
+
+#[test]
+fn a_skip_saved_before_the_flag_existed_survives_a_new_revision() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let mut queue = store.load_queue().unwrap();
+    for job in &mut queue {
+        job.work.as_mut().unwrap().skipped = false;
+    }
+    store.save_queue(&queue).unwrap();
+    wire.head('b', &["docs/a.md", "src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'b', NOW + 10);
+    crate::monitoring::compact_saved_queue(&store).unwrap();
+    let snapshot = crate::queue::snapshot(&store, monitor.snapshot()).unwrap();
+    let stale = snapshot
+        .items
+        .iter()
+        .find(|item| item.job.head_sha == sha('a'))
+        .unwrap();
+    assert_eq!(stale.skipped.len(), 1);
+    assert_eq!(stale.skipped[0].assignment_id, TEAMMATE);
+}
+
+#[test]
 fn a_secondary_matches_incrementally_and_falls_back_to_the_whole_pr_on_rebase() {
     let (_root, store, mut monitor) = configured(&[], &["docs/"]);
     let wire = Wire::default();

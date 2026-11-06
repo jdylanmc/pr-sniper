@@ -335,6 +335,10 @@ pub struct NormalWork {
     /// state when the entry is consumed, so a newer state only retargets it.
     #[serde(default)]
     pub state_seq: u64,
+    /// Retired as skipped by its path globs. Kept once a newer revision
+    /// supersedes the entry, so the revision's history still lists the skip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +588,8 @@ pub(crate) fn compact_retired(
         };
         retired(job)
             && work.legacy_item_id.is_none()
+            // The revision's skip history: listed on its stale item.
+            && !work.skipped
             && group(job).is_some_and(|(key, rank)| newest.get(&key) != Some(&rank))
             && !evidence
                 .get(&(assignment_id, crate::review::key(job, assignment_id)))
@@ -2405,6 +2411,7 @@ impl Monitor {
         let mut jobs = store.load_queue()?;
         let previous = jobs.clone();
         for job in &mut jobs {
+            keep_skip(job);
             if !actionable(job) && job.work.is_none()
                 || matches!(
                     job.waiting.as_str(),
@@ -3159,6 +3166,7 @@ impl Monitor {
                 if matches!(job.waiting.as_str(), WAITING_CLOSED | WAITING_MERGED) {
                     continue;
                 }
+                keep_skip(job);
                 if pull.state != Lifecycle::Open {
                     job.waiting = if pull.state == Lifecycle::Merged {
                         WAITING_MERGED
@@ -3319,9 +3327,11 @@ impl Monitor {
                 } else {
                     WAITING_AI_CAPACITY
                 };
+                let skipped = waiting == WAITING_SKIPPED_NO_MATCHING_FILES;
                 let work = if let Some(mut work) = existing.and_then(|i| queue.jobs[i].work.clone())
                 {
                     work.state_seq = work.state_seq.max(state_seq);
+                    work.skipped = skipped;
                     work
                 } else {
                     let prior: Vec<_> = queue
@@ -3374,6 +3384,7 @@ impl Monitor {
                         admission: tracked.admission.clone(),
                         legacy_item_id: legacy.map(crate::queue::item_id),
                         state_seq,
+                        skipped,
                     }
                 };
                 let job = QueueJob {
@@ -4254,6 +4265,16 @@ fn configuration_failure(failure: Option<&str>) -> bool {
                 | "repository_configuration_required"
         )
     )
+}
+
+/// Records a skip on its work before the waiting reason is overwritten, including
+/// entries saved before the flag existed.
+fn keep_skip(job: &mut QueueJob) {
+    if job.waiting == WAITING_SKIPPED_NO_MATCHING_FILES {
+        if let Some(work) = job.work.as_mut() {
+            work.skipped = true;
+        }
+    }
 }
 
 /// A scan retired this entry: its PR moved on, closed, merged, left review
