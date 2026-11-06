@@ -422,6 +422,33 @@ fn a_same_head_state_move_keeps_the_secondary_report_on_the_item() {
 }
 
 #[test]
+fn a_replacement_agent_skip_shows_despite_the_old_agent_report() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let mut settings = store.load_settings().unwrap();
+    let mut replacement = settings.agents[1].clone();
+    replacement.id = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003".into();
+    replacement.name = "Code Reviewer".into();
+    settings.agents.push(replacement);
+    let assignment = &mut settings.repositories[0].assignments[1];
+    assignment.agent_id = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003".into();
+    assignment.paths = vec!["src/".into()];
+    settings.validate().unwrap();
+    store.save_settings(&settings).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES
+    );
+    let item = item(&store, &monitor);
+    assert_eq!(item.skipped.len(), 1, "{:?}", item.skipped);
+    assert_eq!(item.skipped[0].assignment_id, TEAMMATE);
+}
+
+#[test]
 fn a_skip_saved_before_the_flag_existed_survives_a_new_revision() {
     let (_root, store, mut monitor) = configured(&[], &["docs/"]);
     let wire = Wire::default();

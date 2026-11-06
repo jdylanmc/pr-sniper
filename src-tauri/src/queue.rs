@@ -746,8 +746,15 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
                     || r.job.work.as_ref().is_some_and(|w| w.skipped))
         };
-        // A skip after a state move on the same head adds nothing: the
-        // assignment's completed report for that head still stands.
+        // A skip after a state move on the same head adds nothing: the same
+        // Agent's completed report for that head still stands.
+        let agent = |r: &review::host::Candidate| {
+            r.job
+                .work
+                .as_ref()
+                .map(|w| w.agent_id.clone())
+                .or_else(|| r.run.as_ref().map(|run| run.selection.agent.id.clone()))
+        };
         let reported: Vec<_> = reviews
             .iter()
             .filter(|r| {
@@ -755,13 +762,13 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                     .as_ref()
                     .is_some_and(|run| run.operation.state == OperationState::Completed)
             })
-            .map(|r| (r.assignment_id.clone(), r.job.head_sha.clone()))
+            .map(|r| (r.assignment_id.clone(), agent(r), r.job.head_sha.clone()))
             .collect();
         reviews.retain(|r| {
             !skip(r)
-                || !reported
-                    .iter()
-                    .any(|(a, head)| *a == r.assignment_id && *head == r.job.head_sha)
+                || !reported.iter().any(|(a, by, head)| {
+                    *a == r.assignment_id && *by == agent(r) && *head == r.job.head_sha
+                })
         });
         // One entry per PR: an older state's result is history and must not
         // mask the newest state's wait.
