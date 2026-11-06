@@ -556,12 +556,12 @@ fn a_legacy_body_and_reply_result_waits_for_the_author_once_its_replies_land() {
     assert_eq!(state, crate::queue::State::WaitingForAuthor);
 }
 
+/// Ready needs the sign-off gates (CI, others' threads); a resolve-only comment
+/// exit never infers them. A clean re-review reaches Ready through `lgtm`.
 #[test]
-fn a_re_review_that_only_resolves_settled_own_threads_is_ready() {
-    for (disposition, expected) in [
-        ("fixed", crate::queue::State::MachineSignedOff),
-        ("still_applies", crate::queue::State::WaitingForAuthor),
-    ] {
+fn a_resolve_only_comment_exit_is_never_inferred_ready() {
+    for disposition in ["fixed", "still_applies"] {
+        let expected = crate::queue::State::WaitingForAuthor;
         let (_root, store, template) = fixture();
         let run = running_packet(&store, &template, 100);
         let mut result = packet_result(json!({"exit":"comments","new_comments":[],

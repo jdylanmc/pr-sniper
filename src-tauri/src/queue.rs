@@ -502,10 +502,7 @@ fn review_state(
                 }
             }
             ExitOutcome::Comments {
-                new_comments,
-                body,
-                reply_comments,
-                ..
+                new_comments, body, ..
             } => match context.write(run) {
                 Some(write) => match write.phase {
                     Phase::Failed => return State::Failed,
@@ -515,17 +512,7 @@ fn review_state(
                     Phase::Completed if write.consumed => {
                         // A legacy body never published now: its replies are the outcome.
                         if new_comments.is_empty() && (body.is_none() || publication.is_none()) {
-                            // Only settled own threads resolved: nothing left for the author.
-                            let settled = reply_comments.is_empty()
-                                && crate::review::findings::action_clearance(
-                                    &result.finding_dispositions,
-                                )
-                                .is_ok();
-                            return if settled {
-                                State::MachineSignedOff
-                            } else {
-                                State::WaitingForAuthor
-                            };
+                            return State::WaitingForAuthor;
                         }
                     }
                     _ => return State::AwaitingPublication,
