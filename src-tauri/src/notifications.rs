@@ -483,9 +483,13 @@ impl Ledger {
                     .ok_or("Notification episode limit reached.")?;
                 // Re-entering an event (flicker, A→B→A) is status chatter: never
                 // resend one that had a send attempt; re-arm one still queued.
+                // A queue item is one head, approved at most once, whatever
+                // digest an older version stored.
                 if self.notices.iter().any(|n| {
                     n.source == frame.source
-                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                        && (Some(&n.fingerprint) == fingerprint.as_ref()
+                            || event.category == Category::Approved
+                                && n.event.category == Category::Approved)
                         && !matches!(n.phase, Phase::Queued | Phase::NotSent)
                 }) {
                     continue;

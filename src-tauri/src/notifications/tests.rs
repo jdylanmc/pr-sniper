@@ -720,14 +720,16 @@ fn rereviewing_an_approved_head_does_not_announce_the_same_vote_again() {
             .count()
     };
     assert_eq!(approved(&ledger), 1);
-    // A different confirmed vote on the head is a new approval.
+    // Neither a later vote on the same head nor a digest saved by an older
+    // version announces the revision again.
     let revote = approval_snapshot(
         queue::State::Approved,
         "third-pass",
         vec![approve_effect("revote", "revote-receipt", &head)],
     );
+    ledger.notices[0].fingerprint = "legacy-digest".into();
     ledger.observe(&frames(&revote), 9).unwrap();
-    assert_eq!(approved(&ledger), 2);
+    assert_eq!(approved(&ledger), 1);
 }
 
 #[test]
