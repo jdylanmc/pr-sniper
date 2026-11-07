@@ -455,7 +455,8 @@ impl NormalizedSnapshot {
 /// else's change after an exit, without comment authors.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateMarks {
-    /// Acting account login: its approval is an own write.
+    /// Acting account as snapshot reviews name it (GitHub login, Azure DevOps id):
+    /// its approval is an own write.
     pub actor: String,
     /// Digest of the review revision's non-conversation fields except the review
     /// decision and own approval. CI, mergeability and labels are not review changes.

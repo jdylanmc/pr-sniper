@@ -121,6 +121,7 @@ export function workPresentation(
           reopened: "PR reopened",
           assignment_added: "Agent assigned to tracked PR",
           legacy_admission: "Legacy admission",
+          state_changed: "PR state changed",
         }[job.work.trigger]
       : "Legacy admission";
     ordinal = job.work ? `Pass ${job.work.pass_ordinal}` : "Normal pass";

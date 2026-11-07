@@ -305,6 +305,8 @@ pub enum WorkTrigger {
     Reopened,
     AssignmentAdded,
     LegacyAdmission,
+    /// The PR state moved on the same head after this assignment's pass completed.
+    StateChanged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3265,6 +3267,7 @@ impl Monitor {
                     .iter()
                     .find(|(id, _)| *id == assignment.assignment_id)
                     .map(|(_, patterns)| patterns.as_slice());
+                let mut state_changed = false;
                 if let Some(i) = existing {
                     let job = &queue.jobs[i];
                     let covered = job.work.as_ref().is_some_and(|w| w.state_seq >= needed);
@@ -3273,6 +3276,7 @@ impl Monitor {
                     });
                     if completed && !covered {
                         existing = None;
+                        state_changed = true;
                     }
                 }
                 let mut adopting = false;
@@ -3380,7 +3384,11 @@ impl Monitor {
                         agent_id: assignment.agent_id.clone(),
                         enqueue_order: order,
                         pass_ordinal: ordinal,
-                        trigger: trigger.clone(),
+                        trigger: if state_changed {
+                            WorkTrigger::StateChanged
+                        } else {
+                            trigger.clone()
+                        },
                         admission: tracked.admission.clone(),
                         legacy_item_id: legacy.map(crate::queue::item_id),
                         state_seq,

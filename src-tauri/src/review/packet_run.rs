@@ -235,7 +235,12 @@ pub(crate) fn prepare(
     packet.record.wait_snapshot = offered
         .contains(&crate::exits::Exit::Wait)
         .then(|| snapshot.normalize());
-    packet.record.state_marks = Some(crate::github::state::StateMarks::of(snapshot, acting_login));
+    // The acting account as snapshot reviews name it, so its own vote is no external change.
+    let reviewer = match config.repository.provider {
+        crate::storage::ProviderId::AzureDevops => run.job.account_id.as_str(),
+        crate::storage::ProviderId::Github => acting_login,
+    };
+    packet.record.state_marks = Some(crate::github::state::StateMarks::of(snapshot, reviewer));
     let duck_tools = tools::duck_tools(&base.tools);
     let duck = config
         .rubber_duck
