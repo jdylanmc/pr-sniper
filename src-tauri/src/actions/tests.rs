@@ -2102,11 +2102,11 @@ fn state_marks_treat_the_acting_accounts_own_vote_as_its_own_write_on_each_provi
         .unwrap();
         let none = OwnWrites::default();
         assert!(
-            !marks.external(&approved_by(own), &none),
+            !marks.external(&approved_by(own), &none, &[]),
             "{provider:?}: the host's own vote must not re-trigger a pass"
         );
         assert!(
-            marks.external(&approved_by("someone-else"), &none),
+            marks.external(&approved_by("someone-else"), &none, &[]),
             "{provider:?}: another reviewer's vote is a change"
         );
     }

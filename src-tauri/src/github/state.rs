@@ -436,10 +436,28 @@ mod tests {
             fresh
         };
         let own = OwnWrites::default();
-        assert!(!marks.external(&arrived(true), &own));
-        assert!(marks.external(&arrived(false), &own));
+        assert!(!marks.external(&arrived(true), &own, &[]));
+        assert!(marks.external(&arrived(false), &own, &[]));
         let mut resolved_by_someone = read.clone();
         resolved_by_someone.threads[0].resolved = true;
-        assert!(marks.external(&resolved_by_someone, &own));
+        assert!(marks.external(&resolved_by_someone, &own, &[]));
+        // Recorded by the heartbeat as it arrived: a later reply or edit is a change.
+        let recorded = [QuietThread::of(arrived(true).threads.last().unwrap())];
+        assert!(!marks.external(&arrived(true), &own, &recorded));
+        let mut replied = arrived(true);
+        replied
+            .threads
+            .last_mut()
+            .unwrap()
+            .comments
+            .push(SnapshotComment {
+                id: "31".into(),
+                body: "Please look.".into(),
+                commit: None,
+            });
+        assert!(marks.external(&replied, &own, &recorded));
+        let mut edited = arrived(true);
+        edited.threads.last_mut().unwrap().comments[0].body = "Edited.".into();
+        assert!(marks.external(&edited, &own, &recorded));
     }
 }

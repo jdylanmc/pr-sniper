@@ -985,9 +985,28 @@ async fn execute_attempt(
             };
             let number = run.job.number;
             let local_trace = diagnostics.clone();
+            let local_app = app.clone();
+            let binding = crate::retention::Binding::job(&run.job);
             result = tauri::async_runtime::spawn_blocking(move || {
                 Failure::caught(Some(&*local_trace), || {
-                    finalize_local_exit(&*client_after, &repo, number, &final_packet, &mut result)?;
+                    let recorded = local_app
+                        .state::<Host>()
+                        .store
+                        .lock()
+                        .map_err(|_| Failure::permanent("Review storage unavailable."))?
+                        .load_pr_states()
+                        .map_err(Failure::permanent)?
+                        .get(&binding)
+                        .map(|r| r.quiet_threads.clone())
+                        .unwrap_or_default();
+                    finalize_local_exit(
+                        &*client_after,
+                        &repo,
+                        number,
+                        &final_packet,
+                        &recorded,
+                        &mut result,
+                    )?;
                     Ok(result)
                 })
             })
@@ -1166,6 +1185,7 @@ pub(crate) fn finalize_local_exit(
     repo: &RemoteRepository,
     number: u64,
     packet: &crate::packet::PacketRecord,
+    recorded: &[crate::github::state::QuietThread],
     result: &mut super::ReviewResult,
 ) -> Result<(), Failure> {
     let read_hash = packet
@@ -1179,7 +1199,7 @@ pub(crate) fn finalize_local_exit(
     let held = packet.state_marks.as_ref().map_or_else(
         || fresh.clone(),
         |marks| {
-            raw.without_closed_on_arrival(|id| marks.comments.contains_key(id))
+            raw.without_quiet(&raw.arrivals(|id| marks.comments.contains_key(id), recorded))
                 .normalize()
         },
     );

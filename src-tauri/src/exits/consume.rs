@@ -76,17 +76,18 @@ pub fn settle_fresh(
     else {
         return settle(store, job, &fresh_hash);
     };
-    if marks.external(fresh, &own_writes(store, review_operation_id)?)
+    let binding = Binding::job(job);
+    let states = store.load_pr_states()?;
+    let recorded = states
+        .get(&binding)
+        .map_or(&[][..], |r| r.quiet_threads.as_slice());
+    if marks.external(fresh, &own_writes(store, review_operation_id)?, recorded)
         || (ready_sign_off(store, review_operation_id)?
             && (normalized.ci_failed() || normalized.ci_pending()))
     {
         return settle(store, job, &read_hash);
     }
-    let binding = Binding::job(job);
-    let seq = store
-        .load_pr_states()?
-        .state_seq(&binding)
-        .max(state_seq(job));
+    let seq = states.state_seq(&binding).max(state_seq(job));
     // Provider writes end the revision: CI settling later never re-runs it (no status
     // chatter). Only a local `ready_for_human` arms the CI wake ([`honour_local`]).
     let outcome = pr_state::consume_exit(store, &binding, seq, &fresh_hash, None)?;

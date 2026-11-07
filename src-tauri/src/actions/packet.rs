@@ -155,23 +155,24 @@ fn discussion(observation: &Observation, own_resolved: &[String]) -> serde_json:
 
 /// A human comment, reply, thread or review appeared or changed since the sign-off
 /// was adopted, even before a poll moved its state. A thread that arrived already
-/// resolved and is still as it arrived (`quiet`, from the heartbeat) is no change.
+/// resolved is no change while still as it arrived (`quiet`, from the heartbeat).
 fn discussion_moved(
     run: &FinalReview,
     current: &Observation,
     quiet: &[crate::github::state::QuietThread],
 ) -> bool {
     let mut current = current.clone();
+    // New since adoption and resolved: closed on arrival, unless the heartbeat
+    // recorded its arrival and it changed since (a reply or an edit).
     current.threads.retain(|t| {
         !(t.resolved
             && !run.observation.threads.iter().any(|seen| seen.id == t.id)
-            && quiet.iter().any(|q| {
-                q.id == t.id
-                    && q.as_arrived(
-                        t.comments
-                            .iter()
-                            .map(|c| c["body"].as_str().unwrap_or_default()),
-                    )
+            && quiet.iter().find(|q| q.id == t.id).is_none_or(|q| {
+                q.as_arrived(
+                    t.comments
+                        .iter()
+                        .map(|c| c["body"].as_str().unwrap_or_default()),
+                )
             }))
     });
     let current = &current;

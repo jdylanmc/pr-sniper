@@ -723,6 +723,7 @@ fn feedback_change_after_preparation_is_tossed_at_ready_and_wait_finalization() 
                 &repo,
                 1,
                 &packet,
+                &[],
                 &mut result,
             ))
             .unwrap_err();

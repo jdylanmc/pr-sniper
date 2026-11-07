@@ -829,7 +829,13 @@ fn parked_lgtm_stays_waiting_on_ci_through_a_rate_limited_read() {
 #[test]
 fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review() {
     // `bot`: a status bot posts a thread that arrives resolved while CI is pending.
-    for (self_authored, bot) in [(true, false), (false, false), (false, true)] {
+    // `polled`: a heartbeat records the thread before the action worker sees it.
+    for (self_authored, bot, polled) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, true),
+        (false, true, false),
+    ] {
         let (root, item, mut state) = parked_lgtm(self_authored);
         // Persisted: a fresh Store over the same data dir holds the parked decision.
         let store = Store::new(root.path().into());
@@ -855,7 +861,7 @@ fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review
                 });
             }
         }
-        if bot {
+        if bot && polled {
             state.threads.push(crate::github::state::SnapshotThread {
                 id: "policy".into(),
                 resolved: true,
@@ -1290,6 +1296,7 @@ fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
             },
             run.job.number,
             run.packet.as_ref().unwrap(),
+            &[],
             &mut result,
         )
     };
@@ -1358,7 +1365,7 @@ fn a_thread_that_arrives_resolved_during_a_run_keeps_each_local_exit() {
             env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
         }
         let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
-        let finalize = |state: PrSnapshot| {
+        let finalize_with = |state: PrSnapshot, recorded: &[crate::github::state::QuietThread]| {
             let mut result = output();
             result.output = ReviewOutput::from_exit(exit.clone(), None);
             review_host::finalize_local_exit(
@@ -1372,11 +1379,34 @@ fn a_thread_that_arrives_resolved_during_a_run_keeps_each_local_exit() {
                 },
                 run.job.number,
                 run.packet.as_ref().unwrap(),
+                recorded,
                 &mut result,
             )
         };
+        let finalize = |state: PrSnapshot| finalize_with(state, &[]);
         let bot = with(&read, thread("bot", true, &["Policy check posted."]));
-        assert!(finalize(bot).is_ok(), "{exit:?}");
+        assert!(finalize(bot.clone()).is_ok(), "{exit:?}");
+        // A heartbeat recorded the arrival; a reply in it before the exit still counts.
+        let recorded = [crate::github::state::QuietThread::of(
+            bot.threads.last().unwrap(),
+        )];
+        assert!(finalize_with(bot.clone(), &recorded).is_ok(), "{exit:?}");
+        let mut bot_replied = bot.clone();
+        bot_replied
+            .threads
+            .last_mut()
+            .unwrap()
+            .comments
+            .push(SnapshotComment {
+                id: "bot-reply".into(),
+                body: "This needs a look.".into(),
+                commit: None,
+            });
+        assert_eq!(
+            finalize_with(bot_replied, &recorded).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed,
+            "{exit:?}"
+        );
         let mut replied = read.clone();
         replied.threads[0].resolved = true;
         replied.threads[0].comments.push(SnapshotComment {
@@ -1688,6 +1718,7 @@ fn final_wait_read(
         },
         run.job.number,
         run.packet.as_ref().unwrap(),
+        &[],
         &mut result,
     )?;
     Ok(result)
@@ -1933,6 +1964,7 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
         },
         1,
         run.packet.as_ref().unwrap(),
+        &[],
         &mut result
     )
     .is_err());

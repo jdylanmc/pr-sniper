@@ -336,10 +336,38 @@ impl PrSnapshot {
         })
     }
 
-    /// This snapshot without the threads [`Self::closed_on_arrival`] against `known`.
-    pub fn without_closed_on_arrival(&self, known: impl Fn(&str) -> bool) -> Self {
-        let arrived: Vec<_> = self.closed_on_arrival(known).map(QuietThread::of).collect();
-        self.without_quiet(&arrived)
+    /// Resolved threads none of whose comments `known` holds, as they arrived: the
+    /// heartbeat's `recorded` arrival when there is one (a later reply or edit is
+    /// then no part of it), else the thread as it is now.
+    pub fn arrivals(
+        &self,
+        known: impl Fn(&str) -> bool,
+        recorded: &[QuietThread],
+    ) -> Vec<QuietThread> {
+        self.closed_on_arrival(known)
+            .map(|t| {
+                recorded
+                    .iter()
+                    .find(|q| q.id == t.id)
+                    .cloned()
+                    .unwrap_or_else(|| QuietThread::of(t))
+            })
+            .collect()
+    }
+
+    /// Ids of the comments in `arrivals` that are still as they arrived.
+    pub fn quiet_comments(&self, arrivals: &[QuietThread]) -> std::collections::BTreeSet<String> {
+        self.threads
+            .iter()
+            .filter(|t| t.resolved)
+            .filter_map(|t| Some((t, arrivals.iter().find(|q| q.id == t.id)?)))
+            .flat_map(|(t, q)| {
+                t.comments
+                    .iter()
+                    .filter(|c| q.comments.get(&c.id) == Some(&digest(&c.body)))
+                    .map(|c| c.id.clone())
+            })
+            .collect()
     }
 
     /// This snapshot without the comments `quiet` recorded at arrival, while their
@@ -580,12 +608,14 @@ impl StateMarks {
 
     /// `fresh` holds a change that is not one of `own`: a new or edited comment,
     /// a thread resolved or reopened by someone else, or any other field.
-    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites) -> bool {
+    /// Threads that arrived resolved (`recorded` by the heartbeat, or none of whose
+    /// comments the packet or `own` holds) are no change while still as they arrived.
+    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites, recorded: &[QuietThread]) -> bool {
         let now = Self::of(fresh, &self.actor);
-        let quiet: std::collections::BTreeSet<&str> = fresh
-            .closed_on_arrival(|id| self.comments.contains_key(id) || own.comments.contains(id))
-            .flat_map(|t| t.comments.iter().map(|c| c.id.as_str()))
-            .collect();
+        let quiet = fresh.quiet_comments(&fresh.arrivals(
+            |id| self.comments.contains_key(id) || own.comments.contains(id),
+            recorded,
+        ));
         if now.fields != self.fields
             || (now.review_decision != self.review_decision
                 && now.own_approval == self.own_approval)
@@ -597,7 +627,7 @@ impl StateMarks {
             .iter()
             .any(|(id, body)| match self.comments.get(id) {
                 Some(before) => before != body,
-                None => !own.comments.contains(id) && !quiet.contains(id.as_str()),
+                None => !own.comments.contains(id) && !quiet.contains(id),
             })
         {
             return true;
@@ -608,7 +638,7 @@ impl StateMarks {
             let expected = if own.reopened_threads.contains(&t.id) {
                 false
             } else if own.resolved_threads.contains(&t.id)
-                || t.comments.iter().any(|c| quiet.contains(c.id.as_str()))
+                || t.comments.iter().any(|c| quiet.contains(&c.id))
             {
                 true
             } else {
