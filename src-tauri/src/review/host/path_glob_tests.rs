@@ -449,6 +449,39 @@ fn a_replacement_agent_skip_shows_despite_the_old_agent_report() {
 }
 
 #[test]
+fn a_hidden_same_head_skip_never_leaves_the_item_stale_after_a_draft_round_trip() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let reported = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .map(|j| key(&j, TEAMMATE))
+        .unwrap();
+    let mut draft = pull('a');
+    draft.draft = true;
+    let (ticket, result) = read(&mut monitor, &store, &wire, draft, NOW + 5);
+    monitor.finish(&store, ticket, result, NOW + 6).unwrap();
+    let mut states = store.load_pr_states().unwrap();
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, NOW + 7).unwrap();
+    store.save_pr_states(&states).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    let item = item(&store, &monitor);
+    assert_ne!(item.state, State::Stale);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(
+        item.review_keys.contains(&reported),
+        "{:?}",
+        item.review_keys
+    );
+}
+
+#[test]
 fn a_skip_saved_before_the_flag_existed_survives_a_new_revision() {
     let (_root, store, mut monitor) = configured(&[], &["docs/"]);
     let wire = Wire::default();

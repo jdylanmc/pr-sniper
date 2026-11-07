@@ -738,16 +738,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
     let mut items = Vec::new();
     for (id, job) in groups {
         let mut reviews: Vec<_> = reviews_by_item.remove(&id).unwrap_or_default();
-        // The barrier sees every entry, as the scheduler does; the filters
-        // below shape what the item shows.
-        let barrier = reviews.clone();
         let skip = |r: &review::host::Candidate| {
             r.run.is_none()
                 && (r.job.waiting == monitoring::WAITING_SKIPPED_NO_MATCHING_FILES
                     || r.job.work.as_ref().is_some_and(|w| w.skipped))
         };
-        // A skip after a state move on the same head adds nothing: the same
-        // Agent's completed report for that head still stands.
         let agent = |r: &review::host::Candidate| {
             r.job
                 .work
@@ -755,21 +750,20 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 .map(|w| w.agent_id.clone())
                 .or_else(|| r.run.as_ref().map(|run| run.selection.agent.id.clone()))
         };
-        let reported: Vec<_> = reviews
-            .iter()
-            .filter(|r| {
+        // A skip after a state move on the same head adds nothing: the same
+        // Agent's completed report for that head still stands and is shown
+        // instead. Display only; the skip still decides state and barrier.
+        let earlier = reviews.clone();
+        let report = |s: &review::host::Candidate| {
+            earlier.iter().copied().find(|r| {
                 r.run
                     .as_ref()
                     .is_some_and(|run| run.operation.state == OperationState::Completed)
+                    && r.assignment_id == s.assignment_id
+                    && agent(r) == agent(s)
+                    && r.job.head_sha == s.job.head_sha
             })
-            .map(|r| (r.assignment_id.clone(), agent(r), r.job.head_sha.clone()))
-            .collect();
-        reviews.retain(|r| {
-            !skip(r)
-                || !reported.iter().any(|(a, by, head)| {
-                    *a == r.assignment_id && *by == agent(r) && *head == r.job.head_sha
-                })
-        });
+        };
         // One entry per PR: an older state's result is history and must not
         // mask the newest state's wait.
         let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
@@ -791,7 +785,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let mut blocked_publication = false;
         let skipped: Vec<_> = reviews
             .iter()
-            .filter(|r| skip(r))
+            .filter(|r| skip(r) && report(r).is_none())
             .map(|r| SkippedReview {
                 assignment_id: r.assignment_id.clone(),
                 agent_name: r.agent_name.clone(),
@@ -805,7 +799,11 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         let mut states: Vec<_> = reviews
             .iter()
             .filter(|r| r.job.waiting != monitoring::WAITING_ASSIGNMENT_REMOVED)
-            .filter(|r| !skipped.iter().any(|s| s.assignment_id == r.assignment_id))
+            .filter(|r| {
+                !reviews
+                    .iter()
+                    .any(|s| skip(s) && s.assignment_id == r.assignment_id)
+            })
             .map(|r| {
                 review_state(
                     settings,
@@ -1104,7 +1102,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 let primary = reviews
                     .iter()
                     .find(|r| primary_id == Some(r.assignment_id.as_str()))?;
-                review::teammates::blocker(repository?, &barrier, primary)
+                review::teammates::blocker(repository?, &reviews, primary)
                     .map(review::teammates::BlockedBy::Teammate)
             })
             .flatten();
@@ -1275,7 +1273,14 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             remedy,
             blocked_by,
             summary: state.summary(),
-            review_keys: reviews.iter().map(|r| r.key.clone()).collect(),
+            review_keys: reviews
+                .iter()
+                .map(|r| {
+                    report(r)
+                        .filter(|_| skip(r))
+                        .map_or(r.key.clone(), |report| report.key.clone())
+                })
+                .collect(),
             follow_up_ids: follow_ups.iter().map(|f| f.run.id.clone()).collect(),
             warnings: warnings.into_iter().collect(),
         });
