@@ -3216,10 +3216,13 @@ impl Monitor {
                     && bound(&r.job)
             });
             // Own exit writes in flight: the consume after them baselines that state.
-            let normalized = snapshots
+            let observed = snapshots
                 .get(&pull.id)
-                .filter(|_| new_iteration || !writing.contains(&binding))
-                .map(|s| s.normalize());
+                .filter(|_| new_iteration || !writing.contains(&binding));
+            if let Some(snapshot) = observed.filter(|_| !new_iteration) {
+                pr_states.absorb_quiet(&binding, snapshot);
+            }
+            let normalized = observed.map(|s| s.normalize());
             pr_states.observe(
                 &binding,
                 crate::pr_state::Observation {

@@ -479,3 +479,71 @@ fn a_ci_wait_holds_while_no_check_is_reported() {
     assert!(!wait.pending(&with_ci("green").normalize()));
     assert!(!wait.pending(&with_ci("red").normalize()));
 }
+
+fn with_thread(mut snapshot: PrSnapshot, id: &str, resolved: bool) -> PrSnapshot {
+    snapshot.threads.push(SnapshotThread {
+        id: id.into(),
+        resolved,
+        outdated: false,
+        comments: vec![SnapshotComment {
+            id: format!("{id}-1"),
+            body: "Policy check posted.".into(),
+            commit: None,
+        }],
+        comment_total: 1,
+    });
+    snapshot.thread_total += 1;
+    snapshot
+}
+
+fn heartbeat(states: &mut PrStates, snapshot: &PrSnapshot) -> Change {
+    states.absorb_quiet(&binding(), snapshot);
+    observe(states, snapshot, true)
+}
+
+#[test]
+fn a_thread_that_arrives_resolved_queues_no_review_and_an_open_one_does() {
+    let mut states = PrStates::default();
+    assert_eq!(observe(&mut states, &snapshot(), true), Change::Adopted);
+    let closed = with_thread(snapshot(), "bot", true);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    assert_eq!(states.state_seq(&binding()), 0);
+    // A reply in an existing thread, or a thread someone opens, is review input.
+    let mut replied = closed.clone();
+    replied.threads[0].comments.push(SnapshotComment {
+        id: "21".into(),
+        body: "Why?".into(),
+        commit: None,
+    });
+    replied.threads[0].comment_total += 1;
+    assert!(matches!(
+        heartbeat(&mut states, &replied),
+        Change::Pending(1)
+    ));
+    let mut states = PrStates::default();
+    assert_eq!(observe(&mut states, &snapshot(), true), Change::Adopted);
+    assert!(matches!(
+        heartbeat(&mut states, &with_thread(snapshot(), "human", false)),
+        Change::Pending(1)
+    ));
+}
+
+#[test]
+fn a_thread_that_arrives_resolved_during_a_run_neither_tosses_it_nor_queues_another() {
+    let mut states = PrStates::default();
+    assert_eq!(observe(&mut states, &snapshot(), false), Change::Pending(1));
+    let read = snapshot().normalize().hash();
+    let closed = with_thread(snapshot(), "bot", true);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    // A local exit consumes the state it read, before the thread arrived.
+    assert_eq!(states.consume(&binding(), 1, &read), Consumed::Consumed);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    assert_eq!(states.state_seq(&binding()), 1);
+    // Reopening that thread is a change.
+    let reopened = with_thread(snapshot(), "bot", false);
+    assert!(matches!(
+        heartbeat(&mut states, &reopened),
+        Change::Pending(2)
+    ));
+}

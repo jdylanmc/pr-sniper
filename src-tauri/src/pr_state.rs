@@ -7,7 +7,11 @@
 //! baseline. There is one record per PR, so a state that moves while queued
 //! changes nothing but `pending`.
 
-use crate::{github::state::NormalizedSnapshot, retention::Binding, storage::Store};
+use crate::{
+    github::state::{NormalizedSnapshot, PrSnapshot},
+    retention::Binding,
+    storage::Store,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +136,9 @@ pub struct PrStateRecord {
     /// an already-published head anew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_again_seq: Option<u64>,
+    /// Threads first seen already resolved ([`PrSnapshot::closed_on_arrival`]): no review input.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub quiet_threads: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +223,7 @@ impl PrStates {
                     revision_seq: None,
                     ci_wake: false,
                     review_again_seq: None,
+                    quiet_threads: Default::default(),
                 });
                 self.records.len() - 1
             });
@@ -226,6 +234,47 @@ impl PrStates {
         let before = self.records.len();
         self.records.retain(|r| &r.binding != binding);
         before != self.records.len()
+    }
+
+    /// Before [`Self::observe`] on the same head: a move made only of threads that
+    /// arrived already resolved (status and policy bots) joins the baseline, or the
+    /// pending state, instead of queuing a review.
+    pub fn absorb_quiet(&mut self, binding: &Binding, snapshot: &PrSnapshot) {
+        let Some(record) = self.records.iter_mut().find(|r| &r.binding == binding) else {
+            return;
+        };
+        let Some(previous) = &record.snapshot else {
+            return;
+        };
+        let known: std::collections::BTreeSet<&str> =
+            previous.comments.iter().map(|c| c.id.as_str()).collect();
+        let arrived: Vec<String> = snapshot
+            .closed_on_arrival(|id| known.contains(id))
+            .map(|t| t.id.clone())
+            .collect();
+        record.quiet_threads.extend(arrived);
+        if record.quiet_threads.is_empty() {
+            return;
+        }
+        let quiet = snapshot
+            .without_quiet(&record.quiet_threads)
+            .normalize()
+            .hash();
+        let hash = snapshot.normalize().hash();
+        if quiet == hash {
+            return;
+        }
+        match &mut record.pending {
+            None if record.external_wait.is_none()
+                && record.baseline_hash.as_deref() == Some(&quiet) =>
+            {
+                record.baseline_hash = Some(hash);
+            }
+            Some(pending) if pending.hash.as_deref() == Some(&quiet) => {
+                pending.hash = Some(hash);
+            }
+            _ => {}
+        }
     }
 
     /// Pure heartbeat step for a tracked open PR.

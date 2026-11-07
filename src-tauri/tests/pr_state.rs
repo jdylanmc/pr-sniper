@@ -294,6 +294,18 @@ fn a_changed_state_after_a_completed_pass_adds_one_entry_that_masks_the_old_resu
         NOW + 20,
     );
     assert_eq!(seqs(&store), [0]);
+    // A status bot's thread that arrives resolved is no reason to review again.
+    let mut bot = with_thread(snapshot("a"), "bot", "300");
+    bot.threads[0].resolved = true;
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(bot.clone()),
+        NOW + 25,
+    );
+    scan(&mut monitor, &store, open(false), Some(bot), NOW + 26);
+    assert_eq!(seqs(&store), [0]);
     scan(
         &mut monitor,
         &store,
