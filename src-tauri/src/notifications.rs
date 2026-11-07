@@ -886,7 +886,7 @@ fn prepare_with(
     }
     if notice.phase == Phase::Submitting {
         if let Destination::QueueItem { item_id } = &notice.event.destination {
-            if let Err(error) = queue::destination(store, item_id, None) {
+            if let Err(error) = queue::available(store, item_id) {
                 ledger.finish(id, Phase::NotSent, Some(error))?;
                 notice = ledger.notices.iter().find(|n| n.id == id).unwrap().clone();
             }

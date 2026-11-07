@@ -1,6 +1,11 @@
 import type { DuckCall, ExitOutcome, MonitoringSnapshot } from "./monitoring";
 import { keyValues, type KeyValue } from "./key-values";
-import { compactDuration, openDestination, type QueueItem } from "./queue";
+import {
+  compactDuration,
+  openDestination,
+  providerName,
+  type QueueItem,
+} from "./queue";
 import { exitPresentation, progressPresentation, type ExitName } from "./exits";
 
 const paths = {
@@ -546,10 +551,10 @@ export function renderActivity(
       const open = document.createElement("button");
       open.type = "button";
       open.className = "activity-open";
-      open.title = "Open on GitHub";
+      open.title = `Open on ${providerName(item)}`;
       open.setAttribute(
         "aria-label",
-        `Open ${row.verb.toLowerCase()} on GitHub`,
+        `Open ${row.verb.toLowerCase()} on ${providerName(item)}`,
       );
       open.innerHTML = icon(paths.open);
       open.onclick = async () => {

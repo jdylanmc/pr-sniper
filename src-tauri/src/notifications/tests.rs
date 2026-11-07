@@ -943,6 +943,72 @@ fn exact_destinations_and_profile_identity_survive_restart_without_fallback() {
 }
 
 #[test]
+fn azure_devops_queue_items_are_submitted_selected_and_opened_by_stable_identity() {
+    const PROJECT: &str = "00000000-0000-0000-0000-0000000000b1";
+    const REPOSITORY: &str = "00000000-0000-0000-0000-0000000000c2";
+    let (root, store) = store();
+    let mut ado = job();
+    ado.provider = "azure_devops".into();
+    ado.repository_id = format!("contoso/{PROJECT}/{REPOSITORY}");
+    ado.repository_name = "contoso/Project/Repo".into();
+    store.save_queue(&[ado.clone()]).unwrap();
+    let item_id = queue::item_id(&ado);
+    let exact = [queue_frame(&item_id, Category::Ready, "review")];
+    let id = admit(&store, &exact);
+    let notice = prepare(&store, &exact, &id, 101).unwrap();
+    assert_eq!((&notice.phase, &notice.error), (&Phase::Submitting, &None));
+    let wire = Wire {
+        store: Store::new(root.path().into()),
+        calls: AtomicUsize::new(0),
+        failure: None,
+    };
+    assert_eq!(
+        submit(&wire, &notice, &render(&notice, None)),
+        (Phase::AcceptedUnconfirmed, None)
+    );
+    assert_eq!(wire.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        destination(&store, &id).unwrap(),
+        Destination::QueueItem {
+            item_id: item_id.clone()
+        }
+    );
+    queue::select(&store, Some(&item_id)).unwrap();
+    assert_eq!(
+        store.load_queue_selection().unwrap().as_deref(),
+        Some(item_id.as_str())
+    );
+    assert_eq!(
+        queue::destination(&store, &item_id, None).unwrap().as_str(),
+        format!("https://dev.azure.com/contoso/{PROJECT}/_git/{REPOSITORY}/pullrequest/9")
+    );
+    assert!(queue::select(&store, Some("unknown")).is_err());
+    store.save_queue(&[]).unwrap();
+    assert!(queue::select(&store, Some(&item_id)).is_err());
+}
+
+#[test]
+fn queue_destinations_reject_unknown_providers_and_unreadable_identities() {
+    let (_root, store) = store();
+    let mut unknown = job();
+    unknown.provider = "gitlab".into();
+    let mut unparsed = job();
+    unparsed.provider = "azure_devops".into();
+    unparsed.pull_request_id = "10".into();
+    unparsed.number = 10;
+    unparsed.repository_id = "not-an-identity".into();
+    store
+        .save_queue(&[unknown.clone(), unparsed.clone()])
+        .unwrap();
+    for job in [unknown, unparsed] {
+        assert_eq!(
+            queue::destination(&store, &queue::item_id(&job), None).unwrap_err(),
+            "This queue item's provider destination is unsupported."
+        );
+    }
+}
+
+#[test]
 fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
     let states = [
         (

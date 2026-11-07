@@ -275,3 +275,46 @@ test("queue remains readable in native-sized light, dark and narrow layouts", as
   await page.keyboard.press("Enter");
   await expect(page.locator("#evidence-heading")).toBeFocused();
 });
+
+test("Azure DevOps queue items select and open their pull request by stable identity", async ({
+  page,
+  store,
+}) => {
+  const { state, review } = await queueFixture(store);
+  const project = "00000000-0000-0000-0000-0000000000b1";
+  const repository = "00000000-0000-0000-0000-0000000000c2";
+  const ado = review(4);
+  Object.assign(ado.job, {
+    provider: "azure_devops",
+    repository_id: `contoso/${project}/${repository}`,
+    repository_name: "contoso/Project/Repo",
+  });
+  Object.assign(ado.operation, {
+    provider: ado.job.provider,
+    repository_id: ado.job.repository_id,
+  });
+  const key = JSON.parse(ado.key);
+  key[0] = ado.job.provider;
+  key[3] = ado.job.repository_id;
+  ado.key = JSON.stringify(key);
+  state.jobs.push(ado.job);
+  state.reviews.push(ado);
+  await store("seed_queue_state", state);
+  await captureDestinations(page);
+  const item = (await store("monitoring_snapshot")).items.find(
+    (i) => i.job.provider === "azure_devops",
+  );
+  const pull = `https://dev.azure.com/contoso/${project}/_git/${repository}/pullrequest/4`;
+  await page.goto(`/?view=queue#item=${item.id}`);
+  await expect.poll(() => store("queue_selection")).toBe(item.id);
+  await page
+    .getByRole("article", { name: "contoso/Project/Repo #4", exact: true })
+    .getByRole("button", { name: "Open PR on Azure DevOps" })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => window.__destinations.map((d) => d.url)))
+    .toEqual([pull]);
+  expect(
+    await store("queue_destination", { itemId: item.id, file: "z-first.rs" }),
+  ).toBe(`${pull}?_a=files&path=%2Fz-first.rs`);
+});
