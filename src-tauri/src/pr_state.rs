@@ -258,29 +258,43 @@ impl PrStates {
         record
             .quiet_threads
             .retain(|q| snapshot.threads.iter().any(|t| t.id == q.id));
+        let fresh = snapshot.normalize();
+        let hash = fresh.hash();
+        // The recorded state predates the latest arrivals: strip the newest ones, one
+        // more at a time, until the rest matches it.
+        let count = record.quiet_threads.len();
+        let stripped: Vec<NormalizedSnapshot> = (1..=count)
+            .map(|newest| {
+                snapshot
+                    .without_quiet(&record.quiet_threads[count - newest..])
+                    .normalize()
+            })
+            .collect();
+        if let Some(wait) = &mut record.external_wait {
+            // A held wait keeps holding; its snapshot and the baseline take the arrivals.
+            let view = wait.snapshot.review_view();
+            if fresh.review_view() != view && stripped.iter().any(|s| s.review_view() == view) {
+                wait.snapshot.comments = fresh.comments.clone();
+                wait.snapshot.thread_total = fresh.thread_total;
+                wait.snapshot.comment_total = fresh.comment_total;
+                if record
+                    .baseline_hash
+                    .as_ref()
+                    .is_some_and(|b| stripped.iter().any(|s| &s.hash() == b))
+                {
+                    record.baseline_hash = Some(hash);
+                }
+            }
+            return;
+        }
         let target = match &record.pending {
-            None if record.external_wait.is_none() => record.baseline_hash.clone(),
-            None => None,
+            None => record.baseline_hash.clone(),
             Some(pending) => pending.hash.clone(),
         };
         let Some(target) = target else {
             return;
         };
-        let hash = snapshot.normalize().hash();
-        if hash == target {
-            return;
-        }
-        // The baseline or pending state predates the latest arrivals: strip the newest
-        // ones, one more at a time, until the rest matches it.
-        let count = record.quiet_threads.len();
-        let matched = (1..=count).any(|newest| {
-            snapshot
-                .without_quiet(&record.quiet_threads[count - newest..])
-                .normalize()
-                .hash()
-                == target
-        });
-        if !matched {
+        if hash == target || !stripped.iter().any(|s| s.hash() == target) {
             return;
         }
         match &mut record.pending {

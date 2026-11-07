@@ -595,3 +595,38 @@ fn a_reply_or_edit_in_a_thread_that_arrived_resolved_is_a_change() {
         assert_eq!(heartbeat(&mut states, &changed), Change::Pending(2));
     }
 }
+
+#[test]
+fn a_thread_that_arrives_resolved_keeps_a_ci_wait_and_green_ci_wakes_it_once() {
+    let mut states = PrStates::default();
+    let mut waiting = snapshot();
+    waiting.checks[0].status = "QUEUED".into();
+    waiting.checks[0].conclusion.clear();
+    assert_eq!(observe(&mut states, &waiting, false), Change::Pending(1));
+    assert_eq!(
+        states.wait(
+            &binding(),
+            &waiting.normalize().hash(),
+            ExternalWait {
+                state_seq: 1,
+                reason: crate::exits::WaitReason::Ci,
+                assignment_id: "primary".into(),
+                agent_id: "agent".into(),
+                snapshot: waiting.normalize(),
+            }
+        ),
+        Consumed::Consumed
+    );
+    let closed = with_thread(waiting.clone(), "bot", true);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    assert_eq!(heartbeat(&mut states, &closed), Change::None);
+    let record = states.get(&binding()).unwrap();
+    assert!(record.external_wait.is_some());
+    assert_eq!((record.state_seq, states.revision_seq(&binding())), (1, 1));
+    let mut green = closed.clone();
+    green.checks[0].status = "COMPLETED".into();
+    green.checks[0].conclusion = "SUCCESS".into();
+    assert_eq!(heartbeat(&mut states, &green), Change::Pending(2));
+    assert_eq!(states.revision_seq(&binding()), 1);
+    assert_eq!(heartbeat(&mut states, &green), Change::None);
+}
