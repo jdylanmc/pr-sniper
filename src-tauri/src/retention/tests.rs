@@ -434,6 +434,7 @@ fn cleanup_removes_every_bulky_copy_retains_receipts_and_preserves_settings_byte
         .observe(
             &[crate::notifications::Frame {
                 source: format!("queue:{item}"),
+                legacy: None,
                 event: Some(crate::notifications::Event {
                     category: crate::notifications::Category::Ready,
                     destination: crate::notifications::Destination::QueueItem {
