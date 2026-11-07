@@ -82,6 +82,9 @@ impl Event {
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub source: String,
+    /// The fingerprint an older version saved for this same event; seeing it
+    /// adopts the current fingerprint silently.
+    pub legacy: Option<String>,
     pub event: Option<Event>,
 }
 
@@ -218,6 +221,24 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 causes.insert(operation.id.clone());
             }
         }
+        let mut legacy = None;
+        if category == Some(Category::Approved) {
+            legacy = Some(digest(&serde_json::json!(causes).to_string()));
+            // Approved announces the vote, not the passes behind it: a re-review
+            // of the same head that finds its vote already cast is not new.
+            causes = item
+                .action_status
+                .iter()
+                .flat_map(|status| &status.effects)
+                .filter(|e| {
+                    e.action == crate::github::actions::Action::Approve
+                        && e.state == crate::actions::EffectState::Confirmed
+                })
+                .filter_map(|e| e.receipt.as_ref())
+                .filter(|r| r.head == item.job.head_sha)
+                .map(|r| format!("{}:{}", r.id, r.head))
+                .collect();
+        }
         if category == Some(Category::Failure) {
             for health in snapshot.health.iter().filter(|h| {
                 h.repository_id == item.job.configuration_id
@@ -232,23 +253,33 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 }
             }
         }
+        let event = category.map(|category| Event {
+            category,
+            destination: Destination::QueueItem {
+                item_id: item.id.clone(),
+            },
+            cause: digest(&serde_json::json!(causes).to_string()),
+            group: digest(
+                &serde_json::json!([
+                    item.job.provider,
+                    item.job.account_id,
+                    item.job.configuration_id
+                ])
+                .to_string(),
+            ),
+        });
         frames.push(Frame {
             source: format!("queue:{}", item.id),
-            event: category.map(|category| Event {
-                category,
-                destination: Destination::QueueItem {
-                    item_id: item.id.clone(),
-                },
-                cause: digest(&serde_json::json!(causes).to_string()),
-                group: digest(
-                    &serde_json::json!([
-                        item.job.provider,
-                        item.job.account_id,
-                        item.job.configuration_id
-                    ])
-                    .to_string(),
-                ),
+            legacy: legacy.and_then(|cause| {
+                event.as_ref().map(|event| {
+                    Event {
+                        cause,
+                        ..event.clone()
+                    }
+                    .fingerprint()
+                })
             }),
+            event,
         });
     }
     for (identity, item) in merged {
@@ -268,6 +299,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         });
         frames.push(Frame {
             source: format!("merged:{identity}"),
+            legacy: None,
             event: Some(Event {
                 category: Category::Merged,
                 destination: Destination::QueueItem {
@@ -294,6 +326,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         });
         frames.push(Frame {
             source: format!("schedule:{source}"),
+            legacy: None,
             event: health
                 .last_failure
                 .as_ref()
@@ -458,6 +491,32 @@ impl Ledger {
             if previous.fingerprint == fingerprint {
                 continue;
             }
+            if previous.fingerprint.is_some() && previous.fingerprint == frame.legacy {
+                // Same event, re-digested by this version: not a transition.
+                // An item already announced keeps an older pass's queued
+                // duplicate from being sent.
+                let announced = self.notices.iter().any(|n| {
+                    n.source == frame.source
+                        && n.event.category == Category::Approved
+                        && !matches!(n.phase, Phase::Queued | Phase::NotSent)
+                });
+                for notice in self.notices.iter_mut().filter(|n| {
+                    n.phase == Phase::Queued
+                        && n.source == frame.source
+                        && Some(&n.fingerprint) == frame.legacy.as_ref()
+                }) {
+                    if announced {
+                        notice.phase = Phase::NotSent;
+                        notice.error = Some("This approval was already announced.".into());
+                    } else {
+                        notice.fingerprint = fingerprint.clone().unwrap();
+                        notice.event = frame.event.clone().unwrap();
+                    }
+                }
+                previous.fingerprint = fingerprint;
+                changed = true;
+                continue;
+            }
             previous.fingerprint = fingerprint.clone();
             changed = true;
             if let Some(event) = &frame.event {
@@ -467,9 +526,13 @@ impl Ledger {
                     .ok_or("Notification episode limit reached.")?;
                 // Re-entering an event (flicker, A→B→A) is status chatter: never
                 // resend one that had a send attempt; re-arm one still queued.
+                // A queue item is one head, approved at most once, whatever
+                // digest an older version stored.
                 if self.notices.iter().any(|n| {
                     n.source == frame.source
-                        && Some(&n.fingerprint) == fingerprint.as_ref()
+                        && (Some(&n.fingerprint) == fingerprint.as_ref()
+                            || event.category == Category::Approved
+                                && n.event.category == Category::Approved)
                         && !matches!(n.phase, Phase::Queued | Phase::NotSent)
                 }) {
                     continue;

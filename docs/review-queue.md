@@ -70,6 +70,7 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 
 - Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Opt-in is from now forward: states that exist at opt-in, or arose while off, never notify. Turning on sends one confirmation (opens Settings).
 - Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
+- Approved is once per revision (queue item): a later review pass or observation of the same vote does not re-notify.
 - Types: while on, each type has its own switch (default on, including older profiles). A type turned back on never replays what happened while it was off.
 - Click opens the exact saved queue item, or Settings for a scheduling/account failure with no PR.
 - Grouped by opaque repo/account identity. Disabling stops new submissions and marks unsent ones not sent; an accepted request may still show.

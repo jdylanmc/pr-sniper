@@ -8,6 +8,7 @@ use crate::windows_permissions;
 fn frame(category: Category, cause: &str) -> Frame {
     Frame {
         source: "queue:exact-revision".into(),
+        legacy: None,
         event: Some(Event {
             category,
             destination: Destination::Settings,
@@ -193,6 +194,7 @@ fn new_causes_are_eligible_without_polling_duplicates_or_status_chatter() {
         .observe(
             &[Frame {
                 source: first.source.clone(),
+                legacy: None,
                 event: None,
             }],
             4,
@@ -227,6 +229,7 @@ fn a_returning_failure_cause_does_not_repeat_its_notification() {
     let mut ledger = store.load_notifications().unwrap();
     let gone = Frame {
         source: "queue:exact-revision".into(),
+        legacy: None,
         event: None,
     };
     for (now, frame) in [
@@ -301,6 +304,7 @@ fn stale_or_disabled_transitions_stop_before_native_submission() {
         &store,
         &[Frame {
             source: frames[0].source.clone(),
+            legacy: None,
             event: None,
         }],
         &id,
@@ -638,6 +642,180 @@ fn merge_receipt_enrichment_does_not_create_a_second_alert_or_change_navigation(
     );
 }
 
+fn approve_effect(id: &str, receipt: &str, head: &str) -> crate::actions::Effect {
+    serde_json::from_value(serde_json::json!({
+        "id":id,"final_id":"final","item_id":"iteration-0","action":"approve",
+        "operation":{
+            "id":format!("{id}-operation"),"provider":"github","account_id":"22",
+            "configuration_id":"config","repository_id":"100","pull_request_id":"9",
+            "head_sha":head,"trigger_policy":"policy","operation_type":"github_approve",
+            "state":"completed","attempt_count":1,"initial_attempt_at":100,
+            "retry_deadline":200,"next_attempt_at":null,"failure":null,
+            "attempted_mutation":"Approve","pending_review_id":null,"owned_thread_id":null,
+            "triggering_external_comment_id":null,"confirmed_receipt":receipt
+        },
+        "observation":{
+            "write_capability":true,"node_id":"node","repository_id":"100",
+            "pull_request_id":"9","account_id":"22","author_id":"11",
+            "head_repository_id":null,"head":head,"base":"b".repeat(40),
+            "base_name":"main","merge_rules":null,"merge_rules_error":null,
+            "state":"OPEN","draft":false,"permission":"WRITE",
+            "mergeable":"MERGEABLE","merge_state":"CLEAN","review_decision":null,
+            "checks":null,"check_contexts":[],"in_merge_queue":false,"method":null,
+            "protection":null,"threads":[],"reviews":[],"comments":[],
+            "merged_by":null,"merged_at":null,"merge_commit":null
+        },
+        "body":"","state":"confirmed","error":null,
+        "receipt":{
+            "id":receipt,"actor_id":"22","head":head,"action":"approve","merge_commit":null
+        }
+    }))
+    .unwrap()
+}
+
+/// One revision whose review pass `pass` ended in `state` with `effects` cast.
+fn approval_snapshot(
+    state: queue::State,
+    pass: &str,
+    effects: Vec<crate::actions::Effect>,
+) -> queue::Snapshot {
+    let mut snapshot = merged_snapshot(1);
+    let item = &mut snapshot.items[0];
+    item.state = state;
+    item.review_keys = vec![pass.into()];
+    item.action_status.as_mut().unwrap().effects = effects;
+    snapshot.reviews = vec![crate::review::host::Candidate {
+        key: pass.into(),
+        assignment_id: "assignment".into(),
+        agent_name: "Reviewer".into(),
+        job: item.job.clone(),
+        blocked: None,
+        gate: crate::capacity::Gate::ExternalPrerequisite,
+        planned_selection: None,
+        run: None,
+    }];
+    snapshot
+}
+
+#[test]
+fn rereviewing_an_approved_head_does_not_announce_the_same_vote_again() {
+    let head = "0".repeat(40);
+    let vote = || vec![approve_effect("vote", "vote-receipt", &head)];
+    let (_root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    for (now, snapshot) in [
+        approval_snapshot(queue::State::Approved, "first-pass", vote()),
+        // A second pass of the same revision runs, then finds the vote already cast.
+        approval_snapshot(queue::State::Reviewing, "second-pass", vote()),
+        approval_snapshot(queue::State::Approved, "second-pass", vote()),
+        approval_snapshot(queue::State::Approved, "third-pass", vote()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ledger.observe(&frames(&snapshot), now as i64).unwrap();
+        attempt_queued(&mut ledger);
+    }
+    let approved = |ledger: &Ledger| {
+        ledger
+            .notices
+            .iter()
+            .filter(|n| n.event.category == Category::Approved)
+            .count()
+    };
+    assert_eq!(approved(&ledger), 1);
+    // Neither a later vote on the same head nor a digest saved by an older
+    // version announces the revision again.
+    let revote = approval_snapshot(
+        queue::State::Approved,
+        "third-pass",
+        vec![approve_effect("revote", "revote-receipt", &head)],
+    );
+    ledger.notices[0].fingerprint = "legacy-digest".into();
+    ledger.observe(&frames(&revote), 9).unwrap();
+    assert_eq!(approved(&ledger), 1);
+}
+
+#[test]
+fn approvals_baselined_by_an_older_version_are_adopted_silently() {
+    let head = "0".repeat(40);
+    let snapshot = approval_snapshot(
+        queue::State::Approved,
+        "first-pass",
+        vec![approve_effect("vote", "vote-receipt", &head)],
+    );
+    let current = frames(&snapshot);
+    // What an older version saved: every review and effect of the item.
+    let mut old = current.clone();
+    old[0].legacy = None;
+    old[0].event.as_mut().unwrap().cause =
+        digest(&serde_json::json!(["first-pass", "vote:Confirmed"]).to_string());
+    assert_eq!(
+        current[0].legacy,
+        Some(old[0].event.as_ref().unwrap().fingerprint())
+    );
+    for muted in [false, true] {
+        let (root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        if muted {
+            // Approved while its type was off, then turned back on.
+            ledger.set_category(Category::Approved, false).unwrap();
+            ledger.observe(&old, 1).unwrap();
+            ledger.set_category(Category::Approved, true).unwrap();
+        } else {
+            // Already approved when notifications were turned on.
+            ledger.disable();
+            ledger.enable(&old, 1).unwrap();
+        }
+        store.save_notifications(&ledger).unwrap();
+        let reloaded = Store::new(root.path().into());
+        let mut ledger = reloaded.load_notifications().unwrap();
+        ledger.observe(&current, 2).unwrap();
+        ledger.observe(&current, 3).unwrap();
+        assert!(!ledger
+            .notices
+            .iter()
+            .any(|n| n.event.category == Category::Approved));
+    }
+}
+
+#[test]
+fn a_queued_older_pass_duplicate_is_not_sent_after_upgrade() {
+    let head = "0".repeat(40);
+    let vote = || vec![approve_effect("vote", "vote-receipt", &head)];
+    let older = |pass: &str| {
+        let mut frames = frames(&approval_snapshot(queue::State::Approved, pass, vote()));
+        frames[0].legacy = None;
+        frames[0].event.as_mut().unwrap().cause =
+            digest(&serde_json::json!([pass, "vote:Confirmed"]).to_string());
+        frames
+    };
+    let (root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    // An older version announced the first pass, then queued the second's.
+    ledger.observe(&older("first-pass"), 1).unwrap();
+    attempt_queued(&mut ledger);
+    ledger.observe(&older("second-pass"), 2).unwrap();
+    let mut duplicate = ledger.notices[0].clone();
+    duplicate.id = format!("pr-sniper:{}:second", ledger.profile_id);
+    duplicate.phase = Phase::Queued;
+    duplicate.event = older("second-pass")[0].event.clone().unwrap();
+    duplicate.fingerprint = duplicate.event.fingerprint();
+    duplicate.episode = 2;
+    ledger.notices.push(duplicate);
+    store.save_notifications(&ledger).unwrap();
+    let reloaded = Store::new(root.path().into());
+    let mut ledger = reloaded.load_notifications().unwrap();
+    let current = frames(&approval_snapshot(
+        queue::State::Approved,
+        "second-pass",
+        vote(),
+    ));
+    ledger.observe(&current, 3).unwrap();
+    assert!(ledger.next().is_none());
+    assert_eq!(ledger.notices[1].phase, Phase::NotSent);
+}
+
 #[test]
 fn merged_pruning_and_persisted_restart_never_reemit() {
     let snapshot = merged_snapshot(21);
@@ -899,6 +1077,7 @@ fn opt_in_and_dedup_are_independent_of_permission_queries_and_confirmations() {
 fn queue_frame(item: &str, category: Category, cause: &str) -> Frame {
     Frame {
         source: format!("queue:{item}"),
+        legacy: None,
         event: Some(Event {
             category,
             destination: Destination::QueueItem {
