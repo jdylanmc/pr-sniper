@@ -780,6 +780,43 @@ fn approvals_baselined_by_an_older_version_are_adopted_silently() {
 }
 
 #[test]
+fn a_queued_older_pass_duplicate_is_not_sent_after_upgrade() {
+    let head = "0".repeat(40);
+    let vote = || vec![approve_effect("vote", "vote-receipt", &head)];
+    let older = |pass: &str| {
+        let mut frames = frames(&approval_snapshot(queue::State::Approved, pass, vote()));
+        frames[0].legacy = None;
+        frames[0].event.as_mut().unwrap().cause =
+            digest(&serde_json::json!([pass, "vote:Confirmed"]).to_string());
+        frames
+    };
+    let (root, store) = store();
+    let mut ledger = store.load_notifications().unwrap();
+    // An older version announced the first pass, then queued the second's.
+    ledger.observe(&older("first-pass"), 1).unwrap();
+    attempt_queued(&mut ledger);
+    ledger.observe(&older("second-pass"), 2).unwrap();
+    let mut duplicate = ledger.notices[0].clone();
+    duplicate.id = format!("pr-sniper:{}:second", ledger.profile_id);
+    duplicate.phase = Phase::Queued;
+    duplicate.event = older("second-pass")[0].event.clone().unwrap();
+    duplicate.fingerprint = duplicate.event.fingerprint();
+    duplicate.episode = 2;
+    ledger.notices.push(duplicate);
+    store.save_notifications(&ledger).unwrap();
+    let reloaded = Store::new(root.path().into());
+    let mut ledger = reloaded.load_notifications().unwrap();
+    let current = frames(&approval_snapshot(
+        queue::State::Approved,
+        "second-pass",
+        vote(),
+    ));
+    ledger.observe(&current, 3).unwrap();
+    assert!(ledger.next().is_none());
+    assert_eq!(ledger.notices[1].phase, Phase::NotSent);
+}
+
+#[test]
 fn merged_pruning_and_persisted_restart_never_reemit() {
     let snapshot = merged_snapshot(21);
     let (root, store) = store();

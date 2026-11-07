@@ -493,13 +493,25 @@ impl Ledger {
             }
             if previous.fingerprint.is_some() && previous.fingerprint == frame.legacy {
                 // Same event, re-digested by this version: not a transition.
+                // An item already announced keeps an older pass's queued
+                // duplicate from being sent.
+                let announced = self.notices.iter().any(|n| {
+                    n.source == frame.source
+                        && n.event.category == Category::Approved
+                        && !matches!(n.phase, Phase::Queued | Phase::NotSent)
+                });
                 for notice in self.notices.iter_mut().filter(|n| {
                     n.phase == Phase::Queued
                         && n.source == frame.source
                         && Some(&n.fingerprint) == frame.legacy.as_ref()
                 }) {
-                    notice.fingerprint = fingerprint.clone().unwrap();
-                    notice.event = frame.event.clone().unwrap();
+                    if announced {
+                        notice.phase = Phase::NotSent;
+                        notice.error = Some("This approval was already announced.".into());
+                    } else {
+                        notice.fingerprint = fingerprint.clone().unwrap();
+                        notice.event = frame.event.clone().unwrap();
+                    }
                 }
                 previous.fingerprint = fingerprint;
                 changed = true;
