@@ -154,8 +154,27 @@ fn discussion(observation: &Observation, own_resolved: &[String]) -> serde_json:
 }
 
 /// A human comment, reply, thread or review appeared or changed since the sign-off
-/// was adopted, even before a poll moved its state.
-fn discussion_moved(run: &FinalReview, current: &Observation) -> bool {
+/// was adopted, even before a poll moved its state. A thread that arrived already
+/// resolved and is still as it arrived (`quiet`, from the heartbeat) is no change.
+fn discussion_moved(
+    run: &FinalReview,
+    current: &Observation,
+    quiet: &[crate::github::state::QuietThread],
+) -> bool {
+    let mut current = current.clone();
+    current.threads.retain(|t| {
+        !(t.resolved
+            && !run.observation.threads.iter().any(|seen| seen.id == t.id)
+            && quiet.iter().any(|q| {
+                q.id == t.id
+                    && q.as_arrived(
+                        t.comments
+                            .iter()
+                            .map(|c| c["body"].as_str().unwrap_or_default()),
+                    )
+            }))
+    });
+    let current = &current;
     let own: &[String] = match run
         .execution
         .result
@@ -509,9 +528,14 @@ pub fn ready(
     // (comment, thread, review, base) revokes it before its first effect.
     let untouched = !ledger.effects.iter().any(|e| e.final_id == run.id);
     if let Some(packet) = run.packet.as_ref().filter(|_| signed_off(run)) {
+        let states = store.load_pr_states()?;
+        let binding = Binding::job(job);
+        let quiet = states
+            .get(&binding)
+            .map_or(&[][..], |r| r.quiet_threads.as_slice());
         if untouched
-            && (store.load_pr_states()?.state_seq(&Binding::job(job)) != packet.state_seq
-                || discussion_moved(run, observation))
+            && (states.state_seq(&binding) != packet.state_seq
+                || discussion_moved(run, observation, quiet))
         {
             return Err(LGTM_REVOKED.into());
         }
@@ -684,7 +708,13 @@ pub fn settle(
         let final_id = run.id.clone();
         if signed_off(run)
             && (Facts::from_observation(observation).ci == gates::Ci::Red
-                || discussion_moved(run, observation))
+                || discussion_moved(
+                    run,
+                    observation,
+                    states
+                        .get(&Binding::job(&job))
+                        .map_or(&[][..], |r| r.quiet_threads.as_slice()),
+                ))
             && !ledger.effects.iter().any(|e| e.final_id == final_id)
             && crate::exit_writes::for_review(store, &run.execution.operation.id)?
                 .is_none_or(|w| w.terminal())

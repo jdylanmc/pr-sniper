@@ -828,8 +828,9 @@ fn parked_lgtm_stays_waiting_on_ci_through_a_rate_limited_read() {
 
 #[test]
 fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review() {
-    for self_authored in [true, false] {
-        let (root, item, state) = parked_lgtm(self_authored);
+    // `bot`: a status bot posts a thread that arrives resolved while CI is pending.
+    for (self_authored, bot) in [(true, false), (false, false), (false, true)] {
+        let (root, item, mut state) = parked_lgtm(self_authored);
         // Persisted: a fresh Store over the same data dir holds the parked decision.
         let store = Store::new(root.path().into());
         let mut env = env(&store);
@@ -840,8 +841,42 @@ fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review
             if self_authored {
                 server.observation.author_id = server.observation.account_id.clone();
             }
+            if bot {
+                server.observation.threads.push(HumanThread {
+                    id: "policy".into(),
+                    resolved: true,
+                    outdated: false,
+                    resolved_by: None,
+                    comments: vec![serde_json::json!({
+                        "fullDatabaseId": "policy-1",
+                        "author": {"login": "policy-bot", "databaseId": 77},
+                        "body": "Policy check posted.",
+                    })],
+                });
+            }
         }
+        if bot {
+            state.threads.push(crate::github::state::SnapshotThread {
+                id: "policy".into(),
+                resolved: true,
+                outdated: false,
+                comments: vec![crate::github::state::SnapshotComment {
+                    id: "policy-1".into(),
+                    body: "Policy check posted.".into(),
+                    commit: None,
+                }],
+                comment_total: 1,
+            });
+            state.thread_total += 1;
+        }
+        let binding = Binding::job(&store.load_queue().unwrap()[0]);
+        let parked_seq = store.load_pr_states().unwrap().state_seq(&binding);
         poll(&store, &state, NOW + 15);
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            parked_seq,
+            "bot={bot}"
+        );
         let mut green = state.clone();
         green.checks[0].status = "COMPLETED".into();
         green.checks[0].conclusion = "SUCCESS".into();

@@ -271,6 +271,15 @@ pub struct QuietThread {
 }
 
 impl QuietThread {
+    /// `bodies` are exactly the comments this thread arrived with.
+    pub fn as_arrived<'a>(&self, bodies: impl Iterator<Item = &'a str>) -> bool {
+        let mut now: Vec<String> = bodies.map(digest).collect();
+        let mut then: Vec<String> = self.comments.values().cloned().collect();
+        now.sort();
+        then.sort();
+        now == then
+    }
+
     pub fn of(thread: &SnapshotThread) -> Self {
         Self {
             id: thread.id.clone(),
