@@ -8,6 +8,7 @@ use crate::windows_permissions;
 fn frame(category: Category, cause: &str) -> Frame {
     Frame {
         source: "queue:exact-revision".into(),
+        legacy: None,
         event: Some(Event {
             category,
             destination: Destination::Settings,
@@ -193,6 +194,7 @@ fn new_causes_are_eligible_without_polling_duplicates_or_status_chatter() {
         .observe(
             &[Frame {
                 source: first.source.clone(),
+                legacy: None,
                 event: None,
             }],
             4,
@@ -227,6 +229,7 @@ fn a_returning_failure_cause_does_not_repeat_its_notification() {
     let mut ledger = store.load_notifications().unwrap();
     let gone = Frame {
         source: "queue:exact-revision".into(),
+        legacy: None,
         event: None,
     };
     for (now, frame) in [
@@ -301,6 +304,7 @@ fn stale_or_disabled_transitions_stop_before_native_submission() {
         &store,
         &[Frame {
             source: frames[0].source.clone(),
+            legacy: None,
             event: None,
         }],
         &id,
@@ -733,6 +737,49 @@ fn rereviewing_an_approved_head_does_not_announce_the_same_vote_again() {
 }
 
 #[test]
+fn approvals_baselined_by_an_older_version_are_adopted_silently() {
+    let head = "0".repeat(40);
+    let snapshot = approval_snapshot(
+        queue::State::Approved,
+        "first-pass",
+        vec![approve_effect("vote", "vote-receipt", &head)],
+    );
+    let current = frames(&snapshot);
+    // What an older version saved: every review and effect of the item.
+    let mut old = current.clone();
+    old[0].legacy = None;
+    old[0].event.as_mut().unwrap().cause =
+        digest(&serde_json::json!(["first-pass", "vote:Confirmed"]).to_string());
+    assert_eq!(
+        current[0].legacy,
+        Some(old[0].event.as_ref().unwrap().fingerprint())
+    );
+    for muted in [false, true] {
+        let (root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        if muted {
+            // Approved while its type was off, then turned back on.
+            ledger.set_category(Category::Approved, false).unwrap();
+            ledger.observe(&old, 1).unwrap();
+            ledger.set_category(Category::Approved, true).unwrap();
+        } else {
+            // Already approved when notifications were turned on.
+            ledger.disable();
+            ledger.enable(&old, 1).unwrap();
+        }
+        store.save_notifications(&ledger).unwrap();
+        let reloaded = Store::new(root.path().into());
+        let mut ledger = reloaded.load_notifications().unwrap();
+        ledger.observe(&current, 2).unwrap();
+        ledger.observe(&current, 3).unwrap();
+        assert!(!ledger
+            .notices
+            .iter()
+            .any(|n| n.event.category == Category::Approved));
+    }
+}
+
+#[test]
 fn merged_pruning_and_persisted_restart_never_reemit() {
     let snapshot = merged_snapshot(21);
     let (root, store) = store();
@@ -993,6 +1040,7 @@ fn opt_in_and_dedup_are_independent_of_permission_queries_and_confirmations() {
 fn queue_frame(item: &str, category: Category, cause: &str) -> Frame {
     Frame {
         source: format!("queue:{item}"),
+        legacy: None,
         event: Some(Event {
             category,
             destination: Destination::QueueItem {

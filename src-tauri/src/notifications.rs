@@ -82,6 +82,9 @@ impl Event {
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub source: String,
+    /// The fingerprint an older version saved for this same event; seeing it
+    /// adopts the current fingerprint silently.
+    pub legacy: Option<String>,
     pub event: Option<Event>,
 }
 
@@ -218,7 +221,9 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 causes.insert(operation.id.clone());
             }
         }
+        let mut legacy = None;
         if category == Some(Category::Approved) {
+            legacy = Some(digest(&serde_json::json!(causes).to_string()));
             // Approved announces the vote, not the passes behind it: a re-review
             // of the same head that finds its vote already cast is not new.
             causes = item
@@ -248,23 +253,33 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 }
             }
         }
+        let event = category.map(|category| Event {
+            category,
+            destination: Destination::QueueItem {
+                item_id: item.id.clone(),
+            },
+            cause: digest(&serde_json::json!(causes).to_string()),
+            group: digest(
+                &serde_json::json!([
+                    item.job.provider,
+                    item.job.account_id,
+                    item.job.configuration_id
+                ])
+                .to_string(),
+            ),
+        });
         frames.push(Frame {
             source: format!("queue:{}", item.id),
-            event: category.map(|category| Event {
-                category,
-                destination: Destination::QueueItem {
-                    item_id: item.id.clone(),
-                },
-                cause: digest(&serde_json::json!(causes).to_string()),
-                group: digest(
-                    &serde_json::json!([
-                        item.job.provider,
-                        item.job.account_id,
-                        item.job.configuration_id
-                    ])
-                    .to_string(),
-                ),
+            legacy: legacy.and_then(|cause| {
+                event.as_ref().map(|event| {
+                    Event {
+                        cause,
+                        ..event.clone()
+                    }
+                    .fingerprint()
+                })
             }),
+            event,
         });
     }
     for (identity, item) in merged {
@@ -284,6 +299,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         });
         frames.push(Frame {
             source: format!("merged:{identity}"),
+            legacy: None,
             event: Some(Event {
                 category: Category::Merged,
                 destination: Destination::QueueItem {
@@ -310,6 +326,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
         });
         frames.push(Frame {
             source: format!("schedule:{source}"),
+            legacy: None,
             event: health
                 .last_failure
                 .as_ref()
@@ -472,6 +489,20 @@ impl Ledger {
             };
             let previous = self.observations.entry(frame.source.clone()).or_default();
             if previous.fingerprint == fingerprint {
+                continue;
+            }
+            if previous.fingerprint.is_some() && previous.fingerprint == frame.legacy {
+                // Same event, re-digested by this version: not a transition.
+                for notice in self.notices.iter_mut().filter(|n| {
+                    n.phase == Phase::Queued
+                        && n.source == frame.source
+                        && Some(&n.fingerprint) == frame.legacy.as_ref()
+                }) {
+                    notice.fingerprint = fingerprint.clone().unwrap();
+                    notice.event = frame.event.clone().unwrap();
+                }
+                previous.fingerprint = fingerprint;
+                changed = true;
                 continue;
             }
             previous.fingerprint = fingerprint.clone();
