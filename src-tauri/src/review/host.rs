@@ -1172,20 +1172,27 @@ pub(crate) fn finalize_local_exit(
         .state_hash
         .as_deref()
         .ok_or_else(|| Failure::permanent("The packet record has no state hash."))?;
-    let fresh = client
-        .pr_snapshot(repo, number)
-        .map_err(Failure::from)?
-        .normalize();
+    let raw = client.pr_snapshot(repo, number).map_err(Failure::from)?;
+    let fresh = raw.normalize();
+    // A thread that arrived already resolved during the run (status or policy bot)
+    // is no move; the heartbeat absorbs it the same way.
+    let held = packet.state_marks.as_ref().map_or_else(
+        || fresh.clone(),
+        |marks| {
+            raw.without_closed_on_arrival(|id| marks.comments.contains_key(id))
+                .normalize()
+        },
+    );
     let valid = if let Some(crate::exits::ExitOutcome::Wait { reason }) = &result.output.exit {
         packet.wait_snapshot.as_ref().is_some_and(|read| {
             read.hash() == read_hash
-                && crate::pr_state::ExternalWait::pending_snapshot(*reason, read, &fresh)
+                && crate::pr_state::ExternalWait::pending_snapshot(*reason, read, &held)
         })
     } else {
         // The review revision must hold; CI progress is not a move. A local
         // sign-off was judged green at its exit call: CI must still be settled
         // green, since a later check result no longer wakes another review.
-        fresh.hash() == read_hash
+        held.hash() == read_hash
             && !(crate::exits::consume::local_sign_off(result.output.exit.as_ref()).is_some()
                 && (fresh.ci_failed() || fresh.ci_pending()))
     };

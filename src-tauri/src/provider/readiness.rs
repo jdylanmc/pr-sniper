@@ -336,6 +336,12 @@ impl PrSnapshot {
         })
     }
 
+    /// This snapshot without the threads [`Self::closed_on_arrival`] against `known`.
+    pub fn without_closed_on_arrival(&self, known: impl Fn(&str) -> bool) -> Self {
+        let arrived: Vec<_> = self.closed_on_arrival(known).map(QuietThread::of).collect();
+        self.without_quiet(&arrived)
+    }
+
     /// This snapshot without the comments `quiet` recorded at arrival, while their
     /// thread stays resolved. A later reply or edit stays; an emptied thread goes.
     pub fn without_quiet(&self, quiet: &[QuietThread]) -> Self {
