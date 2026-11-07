@@ -7,8 +7,8 @@ use super::{
 };
 use crate::provider::PullRequestStateReader;
 pub use crate::provider::{
-    NormalizedComment, NormalizedSnapshot, OwnWrites, PrSnapshot, SnapshotCheck, SnapshotComment,
-    SnapshotReview, SnapshotThread, StateMarks,
+    NormalizedComment, NormalizedSnapshot, OwnWrites, PrSnapshot, QuietThread, SnapshotCheck,
+    SnapshotComment, SnapshotReview, SnapshotThread, StateMarks,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -413,5 +413,51 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(other, ConnectionError::RepositoryChanged);
+    }
+
+    #[test]
+    fn a_thread_that_arrives_resolved_is_no_external_change_after_an_exit() {
+        let read = base();
+        let marks = StateMarks::of(&read, "actor");
+        let arrived = |resolved: bool| {
+            let mut fresh = read.clone();
+            fresh.threads.push(SnapshotThread {
+                id: "bot".into(),
+                resolved,
+                outdated: false,
+                comments: vec![SnapshotComment {
+                    id: "30".into(),
+                    body: "Policy check posted.".into(),
+                    commit: None,
+                }],
+                comment_total: 1,
+            });
+            fresh.thread_total += 1;
+            fresh
+        };
+        let own = OwnWrites::default();
+        assert!(!marks.external(&arrived(true), &own, &[]));
+        assert!(marks.external(&arrived(false), &own, &[]));
+        let mut resolved_by_someone = read.clone();
+        resolved_by_someone.threads[0].resolved = true;
+        assert!(marks.external(&resolved_by_someone, &own, &[]));
+        // Recorded by the heartbeat as it arrived: a later reply or edit is a change.
+        let recorded = [QuietThread::of(arrived(true).threads.last().unwrap())];
+        assert!(!marks.external(&arrived(true), &own, &recorded));
+        let mut replied = arrived(true);
+        replied
+            .threads
+            .last_mut()
+            .unwrap()
+            .comments
+            .push(SnapshotComment {
+                id: "31".into(),
+                body: "Please look.".into(),
+                commit: None,
+            });
+        assert!(marks.external(&replied, &own, &recorded));
+        let mut edited = arrived(true);
+        edited.threads.last_mut().unwrap().comments[0].body = "Edited.".into();
+        assert!(marks.external(&edited, &own, &recorded));
     }
 }

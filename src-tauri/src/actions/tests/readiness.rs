@@ -828,8 +828,15 @@ fn parked_lgtm_stays_waiting_on_ci_through_a_rate_limited_read() {
 
 #[test]
 fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review() {
-    for self_authored in [true, false] {
-        let (root, item, state) = parked_lgtm(self_authored);
+    // `bot`: a status bot posts a thread that arrives resolved while CI is pending.
+    // `polled`: a heartbeat records the thread before the action worker sees it.
+    for (self_authored, bot, polled) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, true),
+        (false, true, false),
+    ] {
+        let (root, item, mut state) = parked_lgtm(self_authored);
         // Persisted: a fresh Store over the same data dir holds the parked decision.
         let store = Store::new(root.path().into());
         let mut env = env(&store);
@@ -840,8 +847,42 @@ fn parked_lgtm_acts_once_ci_is_green_on_the_same_revision_without_another_review
             if self_authored {
                 server.observation.author_id = server.observation.account_id.clone();
             }
+            if bot {
+                server.observation.threads.push(HumanThread {
+                    id: "policy".into(),
+                    resolved: true,
+                    outdated: false,
+                    resolved_by: None,
+                    comments: vec![serde_json::json!({
+                        "fullDatabaseId": "policy-1",
+                        "author": {"login": "policy-bot", "databaseId": 77},
+                        "body": "Policy check posted.",
+                    })],
+                });
+            }
         }
+        if bot && polled {
+            state.threads.push(crate::github::state::SnapshotThread {
+                id: "policy".into(),
+                resolved: true,
+                outdated: false,
+                comments: vec![crate::github::state::SnapshotComment {
+                    id: "policy-1".into(),
+                    body: "Policy check posted.".into(),
+                    commit: None,
+                }],
+                comment_total: 1,
+            });
+            state.thread_total += 1;
+        }
+        let binding = Binding::job(&store.load_queue().unwrap()[0]);
+        let parked_seq = store.load_pr_states().unwrap().state_seq(&binding);
         poll(&store, &state, NOW + 15);
+        assert_eq!(
+            store.load_pr_states().unwrap().state_seq(&binding),
+            parked_seq,
+            "bot={bot}"
+        );
         let mut green = state.clone();
         green.checks[0].status = "COMPLETED".into();
         green.checks[0].conclusion = "SUCCESS".into();
@@ -1255,6 +1296,7 @@ fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
             },
             run.job.number,
             run.packet.as_ref().unwrap(),
+            &[],
             &mut result,
         )
     };
@@ -1265,6 +1307,123 @@ fn local_sign_off_is_tossed_when_ci_is_pending_again_at_the_final_read() {
             finalize(rerun).unwrap_err().kind,
             crate::monitoring::OperationFailure::Tossed
         );
+    }
+}
+
+#[test]
+fn a_thread_that_arrives_resolved_during_a_run_keeps_each_local_exit() {
+    use crate::github::state::{SnapshotComment, SnapshotThread};
+    let thread = |id: &str, resolved, comments: &[&str]| SnapshotThread {
+        id: id.into(),
+        resolved,
+        outdated: false,
+        comments: comments
+            .iter()
+            .map(|c| SnapshotComment {
+                id: format!("{id}-{c}"),
+                body: (*c).into(),
+                commit: None,
+            })
+            .collect(),
+        comment_total: comments.len() as u64,
+    };
+    let with = |base: &PrSnapshot, extra: SnapshotThread| {
+        let mut s = base.clone();
+        s.threads.push(extra);
+        s.thread_total = s.threads.len() as u64;
+        s
+    };
+    let exits = [
+        crate::exits::ExitOutcome::ReadyForHuman {
+            summary: "Looks fine.".into(),
+        },
+        sign_off(crate::exits::LgtmAction::Ready)
+            .outcome()
+            .unwrap()
+            .0,
+        crate::exits::ExitOutcome::Wait {
+            reason: crate::exits::WaitReason::Ci,
+        },
+    ];
+    for exit in exits {
+        let wait = matches!(exit, crate::exits::ExitOutcome::Wait { .. });
+        let (_root, store, _) = if wait {
+            fixture(1, true, true)
+        } else {
+            read_only_primary(false)
+        };
+        if wait {
+            store.save_reviews(&[]).unwrap();
+        }
+        let read = with(
+            &snapshot(false, if wait { "" } else { "SUCCESS" }),
+            thread("human", false, &["Question."]),
+        );
+        poll(&store, &read, NOW + 10);
+        let env = env(&store);
+        if wait {
+            env.wire.0.lock().unwrap().observation.checks = Some("PENDING".into());
+        }
+        let (run, _) = prepare(&store, &env, &read, true, NOW + 12);
+        let finalize_with = |state: PrSnapshot, recorded: &[crate::github::state::QuietThread]| {
+            let mut result = output();
+            result.output = ReviewOutput::from_exit(exit.clone(), None);
+            review_host::finalize_local_exit(
+                &GithubClient::new(SnapshotWire {
+                    state,
+                    required: vec![],
+                }),
+                &RemoteRepository {
+                    id: "100".into(),
+                    name: "example/repo".into(),
+                },
+                run.job.number,
+                run.packet.as_ref().unwrap(),
+                recorded,
+                &mut result,
+            )
+        };
+        let finalize = |state: PrSnapshot| finalize_with(state, &[]);
+        let bot = with(&read, thread("bot", true, &["Policy check posted."]));
+        assert!(finalize(bot.clone()).is_ok(), "{exit:?}");
+        // A heartbeat recorded the arrival; a reply in it before the exit still counts.
+        let recorded = [crate::github::state::QuietThread::of(
+            bot.threads.last().unwrap(),
+        )];
+        assert!(finalize_with(bot.clone(), &recorded).is_ok(), "{exit:?}");
+        let mut bot_replied = bot.clone();
+        bot_replied
+            .threads
+            .last_mut()
+            .unwrap()
+            .comments
+            .push(SnapshotComment {
+                id: "bot-reply".into(),
+                body: "This needs a look.".into(),
+                commit: None,
+            });
+        assert_eq!(
+            finalize_with(bot_replied, &recorded).unwrap_err().kind,
+            crate::monitoring::OperationFailure::Tossed,
+            "{exit:?}"
+        );
+        let mut replied = read.clone();
+        replied.threads[0].resolved = true;
+        replied.threads[0].comments.push(SnapshotComment {
+            id: "human-reply".into(),
+            body: "Never mind.".into(),
+            commit: None,
+        });
+        for moved in [
+            with(&read, thread("bot", false, &["Policy check posted."])),
+            replied,
+        ] {
+            assert_eq!(
+                finalize(moved).unwrap_err().kind,
+                crate::monitoring::OperationFailure::Tossed,
+                "{exit:?}"
+            );
+        }
     }
 }
 
@@ -1521,7 +1680,11 @@ impl QueryTransport for SnapshotWire {
                     "__typename":"CheckRun","name":c.name,"status":c.status,"conclusion":c.conclusion
                 })).collect::<Vec<_>>()
             }}}}]},
-            "reviewThreads":{"totalCount":0,"nodes":[]}
+            "reviewThreads":{"totalCount":s.threads.len(),"nodes":s.threads.iter().map(|t|json!({
+                "id":t.id,"isResolved":t.resolved,"isOutdated":t.outdated,
+                "comments":{"totalCount":t.comments.len(),"nodes":t.comments.iter().map(|c|
+                    json!({"fullDatabaseId":c.id,"body":c.body})).collect::<Vec<_>>()}
+            })).collect::<Vec<_>>()}
         });
         Ok(Response {
             status: 200,
@@ -1555,6 +1718,7 @@ fn final_wait_read(
         },
         run.job.number,
         run.packet.as_ref().unwrap(),
+        &[],
         &mut result,
     )?;
     Ok(result)
@@ -1800,6 +1964,7 @@ fn review_fix_final_wait_still_rejects_non_ci_changes_and_completed_or_failed_ch
         },
         1,
         run.packet.as_ref().unwrap(),
+        &[],
         &mut result
     )
     .is_err());

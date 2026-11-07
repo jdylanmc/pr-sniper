@@ -7,7 +7,11 @@
 //! baseline. There is one record per PR, so a state that moves while queued
 //! changes nothing but `pending`.
 
-use crate::{github::state::NormalizedSnapshot, retention::Binding, storage::Store};
+use crate::{
+    github::state::{NormalizedSnapshot, PrSnapshot, QuietThread},
+    retention::Binding,
+    storage::Store,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +136,10 @@ pub struct PrStateRecord {
     /// an already-published head anew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_again_seq: Option<u64>,
+    /// Threads first seen already resolved ([`PrSnapshot::closed_on_arrival`]), in
+    /// arrival order, as they arrived: no review input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quiet_threads: Vec<QuietThread>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +224,7 @@ impl PrStates {
                     revision_seq: None,
                     ci_wake: false,
                     review_again_seq: None,
+                    quiet_threads: Default::default(),
                 });
                 self.records.len() - 1
             });
@@ -226,6 +235,72 @@ impl PrStates {
         let before = self.records.len();
         self.records.retain(|r| &r.binding != binding);
         before != self.records.len()
+    }
+
+    /// Before [`Self::observe`] on the same head: a move made only of threads that
+    /// arrived already resolved (status and policy bots) joins the baseline, or the
+    /// pending state, instead of queuing a review.
+    pub fn absorb_quiet(&mut self, binding: &Binding, snapshot: &PrSnapshot) {
+        let Some(record) = self.records.iter_mut().find(|r| &r.binding == binding) else {
+            return;
+        };
+        let Some(previous) = &record.snapshot else {
+            return;
+        };
+        let known: std::collections::BTreeSet<&str> =
+            previous.comments.iter().map(|c| c.id.as_str()).collect();
+        let arrived: Vec<_> = snapshot
+            .closed_on_arrival(|id| known.contains(id))
+            .map(QuietThread::of)
+            .collect();
+        record.quiet_threads.extend(arrived);
+        // A thread gone from the read is a change by itself; nothing to strip.
+        record
+            .quiet_threads
+            .retain(|q| snapshot.threads.iter().any(|t| t.id == q.id));
+        let fresh = snapshot.normalize();
+        let hash = fresh.hash();
+        // The recorded state predates the latest arrivals: strip the newest ones, one
+        // more at a time, until the rest matches it.
+        let count = record.quiet_threads.len();
+        let stripped: Vec<NormalizedSnapshot> = (1..=count)
+            .map(|newest| {
+                snapshot
+                    .without_quiet(&record.quiet_threads[count - newest..])
+                    .normalize()
+            })
+            .collect();
+        if let Some(wait) = &mut record.external_wait {
+            // A held wait keeps holding; its snapshot and the baseline take the arrivals.
+            let view = wait.snapshot.review_view();
+            if fresh.review_view() != view && stripped.iter().any(|s| s.review_view() == view) {
+                wait.snapshot.comments = fresh.comments.clone();
+                wait.snapshot.thread_total = fresh.thread_total;
+                wait.snapshot.comment_total = fresh.comment_total;
+                if record
+                    .baseline_hash
+                    .as_ref()
+                    .is_some_and(|b| stripped.iter().any(|s| &s.hash() == b))
+                {
+                    record.baseline_hash = Some(hash);
+                }
+            }
+            return;
+        }
+        let target = match &record.pending {
+            None => record.baseline_hash.clone(),
+            Some(pending) => pending.hash.clone(),
+        };
+        let Some(target) = target else {
+            return;
+        };
+        if hash == target || !stripped.iter().any(|s| s.hash() == target) {
+            return;
+        }
+        match &mut record.pending {
+            None => record.baseline_hash = Some(hash),
+            Some(pending) => pending.hash = Some(hash),
+        }
     }
 
     /// Pure heartbeat step for a tracked open PR.

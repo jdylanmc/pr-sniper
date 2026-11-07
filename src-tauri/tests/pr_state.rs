@@ -7,7 +7,7 @@ use pr_sniper_lib::{
     },
     monitoring::{
         ActivationMode, JobOperation, Monitor, MonitoringActivation, OperationState, PollResult,
-        QueueJob,
+        QueueJob, WorkTrigger,
     },
     pr_state::{self, Consumed},
     queue::{self, State},
@@ -294,6 +294,18 @@ fn a_changed_state_after_a_completed_pass_adds_one_entry_that_masks_the_old_resu
         NOW + 20,
     );
     assert_eq!(seqs(&store), [0]);
+    // A status bot's thread that arrives resolved is no reason to review again.
+    let mut bot = with_thread(snapshot("a"), "bot", "300");
+    bot.threads[0].resolved = true;
+    scan(
+        &mut monitor,
+        &store,
+        open(false),
+        Some(bot.clone()),
+        NOW + 25,
+    );
+    scan(&mut monitor, &store, open(false), Some(bot), NOW + 26);
+    assert_eq!(seqs(&store), [0]);
     scan(
         &mut monitor,
         &store,
@@ -305,6 +317,11 @@ fn a_changed_state_after_a_completed_pass_adds_one_entry_that_masks_the_old_resu
     let jobs = store.load_queue().unwrap();
     assert_eq!(jobs[1].work.as_ref().unwrap().pass_ordinal, 2);
     assert_eq!(jobs[1].work.as_ref().unwrap().iteration, 1);
+    // A state change on the same head is not a newly added assignment.
+    assert_eq!(
+        jobs[1].work.as_ref().unwrap().trigger,
+        WorkTrigger::StateChanged
+    );
     let items = queue::snapshot(&store, vec![]).unwrap().items;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].state, State::Queued);

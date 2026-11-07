@@ -18,7 +18,8 @@ export interface NormalWork {
     | "new_revision"
     | "reopened"
     | "assignment_added"
-    | "legacy_admission";
+    | "legacy_admission"
+    | "state_changed";
   admission: {
     watched_author: boolean;
     all_authors: boolean;

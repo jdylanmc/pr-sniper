@@ -1984,3 +1984,130 @@ fn approval_already_given_on_the_head_is_never_posted_again() {
     let _ = GithubClient::new(wire.clone()).approve_exact(&repo, 1, "23", &head, "Approve");
     assert_eq!(wire.0.lock().unwrap().writes.len(), 1);
 }
+
+#[test]
+fn state_marks_treat_the_acting_accounts_own_vote_as_its_own_write_on_each_provider() {
+    use crate::{
+        github::{
+            metadata::{Lifecycle, PullRequest},
+            review::ReviewContext,
+            state::{OwnWrites, PrSnapshot, SnapshotReview},
+        },
+        review::{packet_run, RunMode},
+        storage::ProviderId,
+    };
+    let (_root, store, _item) = fixture(1, true, false);
+    let settings = store.load_settings().unwrap();
+    let job = store.load_queue().unwrap().remove(0);
+    let assignment = settings.repositories[0].assignments[0].id.clone();
+    let env = env(&store);
+    let client: Arc<dyn crate::provider::ProviderReads + Send + Sync> =
+        Arc::new(GithubClient::new(env.wire.clone()));
+    let repo = RemoteRepository {
+        id: "100".into(),
+        name: "example/repo".into(),
+    };
+    let context = ReviewContext {
+        pull: PullRequest {
+            mentioned: false,
+            id: "9".into(),
+            number: 1,
+            title: "Change".into(),
+            author: None,
+            requested_reviewers: vec![],
+            requested_teams: vec![],
+            state: Lifecycle::Open,
+            draft: false,
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            head_repository_id: Some("100".into()),
+            base_repository_id: "100".into(),
+            updated_at: "2026-09-30T00:00:00Z".into(),
+            files: vec![],
+        },
+        base_revision: "b".repeat(40),
+        files: vec![],
+        head: BTreeMap::new(),
+        base: BTreeMap::new(),
+    };
+    let read = PrSnapshot {
+        number: 1,
+        pull_request_id: "9".into(),
+        head: "a".repeat(40),
+        base: "b".repeat(40),
+        state: "OPEN".into(),
+        ..Default::default()
+    };
+    let approved_by = |actor: &str| {
+        let mut fresh = read.clone();
+        fresh.reviews.push(SnapshotReview {
+            actor: actor.into(),
+            state: "APPROVED".into(),
+            head: Some("a".repeat(40)),
+        });
+        fresh
+    };
+    // GitHub names reviewers by login, Azure DevOps by account id.
+    for (provider, own) in [
+        (ProviderId::Github, "actor"),
+        (ProviderId::AzureDevops, job.account_id.as_str()),
+    ] {
+        let mut selection = Selection::resolve(&settings, &job, &assignment).unwrap();
+        selection
+            .configuration
+            .as_mut()
+            .unwrap()
+            .repository
+            .provider = provider.clone();
+        let run = ReviewRun {
+            mode: RunMode::Packet,
+            packet: None,
+            failed_duck: None,
+            failed_model: None,
+            attempt_ducks: Vec::new(),
+            feedback_context: None,
+            key: crate::review::key(&job, &assignment),
+            assignment_id: assignment.clone(),
+            operation: JobOperation::review(&job, NOW),
+            job: job.clone(),
+            selection: selection.into(),
+            manual_start: false,
+            trust_confirmed: false,
+            phase: String::new(),
+            error: None,
+            result: None,
+        };
+        let marks = packet_run::prepare(
+            &client,
+            &repo,
+            &run,
+            &context,
+            &read,
+            packet_run::Caller {
+                resolutions: Vec::new(),
+                receipts: Default::default(),
+                review_again: false,
+                acting_login: "actor",
+                ownership: vec![],
+                write_capability: true,
+                teammates: vec![],
+                iterations: &[],
+                last_consumed_at: None,
+            },
+        )
+        .unwrap()
+        .packet
+        .record
+        .state_marks
+        .unwrap();
+        let none = OwnWrites::default();
+        assert!(
+            !marks.external(&approved_by(own), &none, &[]),
+            "{provider:?}: the host's own vote must not re-trigger a pass"
+        );
+        assert!(
+            marks.external(&approved_by("someone-else"), &none, &[]),
+            "{provider:?}: another reviewer's vote is a change"
+        );
+    }
+}

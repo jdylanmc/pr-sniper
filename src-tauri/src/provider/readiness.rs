@@ -263,6 +263,35 @@ pub struct PrSnapshot {
     pub comment_total: u64,
 }
 
+/// A thread that arrived already resolved, as it arrived: comment id -> body digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuietThread {
+    pub id: String,
+    pub comments: BTreeMap<String, String>,
+}
+
+impl QuietThread {
+    /// `bodies` are exactly the comments this thread arrived with.
+    pub fn as_arrived<'a>(&self, bodies: impl Iterator<Item = &'a str>) -> bool {
+        let mut now: Vec<String> = bodies.map(digest).collect();
+        let mut then: Vec<String> = self.comments.values().cloned().collect();
+        now.sort();
+        then.sort();
+        now == then
+    }
+
+    pub fn of(thread: &SnapshotThread) -> Self {
+        Self {
+            id: thread.id.clone(),
+            comments: thread
+                .comments
+                .iter()
+                .map(|c| (c.id.clone(), digest(&c.body)))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedComment {
     pub id: String,
@@ -296,6 +325,74 @@ fn digest(value: &str) -> String {
 }
 
 impl PrSnapshot {
+    /// Threads that arrived already resolved: none of their comments is in `known`.
+    /// Status and policy bots post these; they ask nothing of a review.
+    pub fn closed_on_arrival<'a>(
+        &'a self,
+        known: impl Fn(&str) -> bool + 'a,
+    ) -> impl Iterator<Item = &'a SnapshotThread> + 'a {
+        self.threads.iter().filter(move |t| {
+            t.resolved && !t.comments.is_empty() && t.comments.iter().all(|c| !known(&c.id))
+        })
+    }
+
+    /// Resolved threads none of whose comments `known` holds, as they arrived: the
+    /// heartbeat's `recorded` arrival when there is one (a later reply or edit is
+    /// then no part of it), else the thread as it is now.
+    pub fn arrivals(
+        &self,
+        known: impl Fn(&str) -> bool,
+        recorded: &[QuietThread],
+    ) -> Vec<QuietThread> {
+        self.closed_on_arrival(known)
+            .map(|t| {
+                recorded
+                    .iter()
+                    .find(|q| q.id == t.id)
+                    .cloned()
+                    .unwrap_or_else(|| QuietThread::of(t))
+            })
+            .collect()
+    }
+
+    /// Ids of the comments in `arrivals` that are still as they arrived.
+    pub fn quiet_comments(&self, arrivals: &[QuietThread]) -> std::collections::BTreeSet<String> {
+        self.threads
+            .iter()
+            .filter(|t| t.resolved)
+            .filter_map(|t| Some((t, arrivals.iter().find(|q| q.id == t.id)?)))
+            .flat_map(|(t, q)| {
+                t.comments
+                    .iter()
+                    .filter(|c| q.comments.get(&c.id) == Some(&digest(&c.body)))
+                    .map(|c| c.id.clone())
+            })
+            .collect()
+    }
+
+    /// This snapshot without the comments `quiet` recorded at arrival, while their
+    /// thread stays resolved. A later reply or edit stays; an emptied thread goes.
+    pub fn without_quiet(&self, quiet: &[QuietThread]) -> Self {
+        let mut snapshot = self.clone();
+        let mut removed_threads = 0;
+        snapshot.threads.retain_mut(|t| {
+            let Some(arrival) = quiet.iter().find(|q| q.id == t.id).filter(|_| t.resolved) else {
+                return true;
+            };
+            let before = t.comments.len();
+            t.comments
+                .retain(|c| arrival.comments.get(&c.id) != Some(&digest(&c.body)));
+            t.comment_total = t
+                .comment_total
+                .saturating_sub((before - t.comments.len()) as u64);
+            let keep = !t.comments.is_empty();
+            removed_threads += u64::from(!keep);
+            keep
+        });
+        snapshot.thread_total = snapshot.thread_total.saturating_sub(removed_threads);
+        snapshot
+    }
+
     /// Stable view: sorted, deduplicated, no timestamps. A re-read of an
     /// unchanged PR yields an identical value whatever order the provider used.
     pub fn normalize(&self) -> NormalizedSnapshot {
@@ -455,7 +552,8 @@ impl NormalizedSnapshot {
 /// else's change after an exit, without comment authors.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateMarks {
-    /// Acting account login: its approval is an own write.
+    /// Acting account as snapshot reviews name it (GitHub login, Azure DevOps id):
+    /// its approval is an own write.
     pub actor: String,
     /// Digest of the review revision's non-conversation fields except the review
     /// decision and own approval. CI, mergeability and labels are not review changes.
@@ -510,8 +608,14 @@ impl StateMarks {
 
     /// `fresh` holds a change that is not one of `own`: a new or edited comment,
     /// a thread resolved or reopened by someone else, or any other field.
-    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites) -> bool {
+    /// Threads that arrived resolved (`recorded` by the heartbeat, or none of whose
+    /// comments the packet or `own` holds) are no change while still as they arrived.
+    pub fn external(&self, fresh: &PrSnapshot, own: &OwnWrites, recorded: &[QuietThread]) -> bool {
         let now = Self::of(fresh, &self.actor);
+        let quiet = fresh.quiet_comments(&fresh.arrivals(
+            |id| self.comments.contains_key(id) || own.comments.contains(id),
+            recorded,
+        ));
         if now.fields != self.fields
             || (now.review_decision != self.review_decision
                 && now.own_approval == self.own_approval)
@@ -523,7 +627,7 @@ impl StateMarks {
             .iter()
             .any(|(id, body)| match self.comments.get(id) {
                 Some(before) => before != body,
-                None => !own.comments.contains(id),
+                None => !own.comments.contains(id) && !quiet.contains(id),
             })
         {
             return true;
@@ -533,7 +637,9 @@ impl StateMarks {
             // packet state.
             let expected = if own.reopened_threads.contains(&t.id) {
                 false
-            } else if own.resolved_threads.contains(&t.id) {
+            } else if own.resolved_threads.contains(&t.id)
+                || t.comments.iter().any(|c| quiet.contains(&c.id))
+            {
                 true
             } else {
                 self.resolved_threads.contains(&t.id)
