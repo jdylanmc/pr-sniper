@@ -6,6 +6,7 @@ import {
   failureChip,
   incompleteFilesLabel,
   openDestination,
+  providerName,
   type FailedOperation,
   type QueueItem,
 } from "./queue";
@@ -387,12 +388,12 @@ function button(label: string, path: string, name: string) {
   return element;
 }
 
-function githubLink(item: QueueItem, context: QueueDetailContext) {
+function providerLink(item: QueueItem, context: QueueDetailContext) {
   const link = document.createElement("button");
   link.type = "button";
   link.className = "job-provider-link";
-  link.setAttribute("aria-label", "Open PR on GitHub");
-  link.title = "Open PR on GitHub";
+  link.setAttribute("aria-label", `Open PR on ${providerName(item)}`);
+  link.title = `Open PR on ${providerName(item)}`;
   link.innerHTML = icon(paths.github);
   link.onclick = async () => {
     link.disabled = true;
@@ -434,7 +435,7 @@ export function renderQueueStatus(
   actions.className = "queue-status-actions";
   // Nothing to retry: a human reviews it, or a new revision re-evaluates it.
   if (failed && cause === "incomplete_files") {
-    const open = githubLink(item, context);
+    const open = providerLink(item, context);
     open.classList.add("queue-primary");
     open.dataset.queuePrimary = "open";
     open.innerHTML = `${icon(paths.github)}<span>Open</span>`;
@@ -474,9 +475,9 @@ export function renderQueueStatus(
     }
     actions.append(primary);
     if (target) actions.append(retryButton);
-    actions.append(githubLink(item, context));
+    actions.append(providerLink(item, context));
   } else {
-    const open = githubLink(item, context);
+    const open = providerLink(item, context);
     open.classList.add("queue-primary");
     open.dataset.queuePrimary = "open";
     open.innerHTML = `${icon(paths.github)}<span>Open</span>`;

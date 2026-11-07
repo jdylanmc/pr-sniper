@@ -98,18 +98,30 @@ impl IntakeTarget {
 /// The pull request URL of a saved repository, addressed by its stable
 /// identity: GitHub's canonical name; Azure DevOps project and repository IDs.
 pub fn pull_request_url(repository: &Repository, number: u64) -> Option<String> {
+    provider_pull_request_url(
+        &repository.provider,
+        &repository.name,
+        repository.provider_repository_id.as_deref(),
+        number,
+    )
+}
+
+/// The pull request URL for a provider, repository `name` and stable
+/// `provider_repository_id`; Azure DevOps accepts project and repository IDs
+/// in the path, so a rename never breaks the link.
+pub fn provider_pull_request_url(
+    provider: &ProviderId,
+    name: &str,
+    provider_repository_id: Option<&str>,
+    number: u64,
+) -> Option<String> {
     if number == 0 {
         return None;
     }
-    match repository.provider {
-        ProviderId::Github => Some(format!(
-            "https://github.com/{}/pull/{number}",
-            repository.name
-        )),
+    match provider {
+        ProviderId::Github => Some(format!("https://github.com/{name}/pull/{number}")),
         ProviderId::AzureDevops => {
-            let key = crate::azure_devops::read::RepositoryKey::parse(
-                repository.provider_repository_id.as_deref()?,
-            )?;
+            let key = crate::azure_devops::read::RepositoryKey::parse(provider_repository_id?)?;
             Some(format!(
                 "https://dev.azure.com/{}/{}/_git/{}/pullrequest/{number}",
                 key.organization,

@@ -1354,27 +1354,51 @@ impl<'a> CurrentJobs<'a> {
     }
 }
 
-pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
+/// The exact live queue item `id` names (or aliases), unless it was cleaned.
+fn exact_item(store: &Store, id: &str) -> Result<(Snapshot, usize), String> {
     if let Some(message) =
         crate::retention::cleaned(store, &crate::panel::Detail::Item { item_id: id.into() })?
     {
         return Err(message.into());
     }
     let snapshot = snapshot(store, vec![])?;
-    let item = snapshot
+    let index = snapshot
         .items
         .iter()
-        .find(|item| item.id == id || item.aliases.iter().any(|alias| alias == id))
+        .position(|item| item.id == id || item.aliases.iter().any(|alias| alias == id))
         .ok_or("This exact queue item is no longer available; no other PR was opened.")?;
-    if item.job.provider != "github" || item.job.number == 0 {
-        return Err("This queue item's provider destination is unsupported.".into());
-    }
-    let name = crate::storage::canonical_repository(&item.job.repository_name)?;
-    let mut url = url::Url::parse(&format!(
-        "https://github.com/{name}/pull/{}",
-        item.job.number
-    ))
-    .map_err(|_| "Invalid saved GitHub destination.")?;
+    Ok((snapshot, index))
+}
+
+/// Confirms the exact queue item `id` exists and is not cleaned, for any provider.
+pub fn available(store: &Store, id: &str) -> Result<(), String> {
+    exact_item(store, id).map(|_| ())
+}
+
+/// The provider web URL of the exact queue item `id`, optionally at `file`
+/// in its pull request diff.
+pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::Url, String> {
+    use crate::storage::ProviderId;
+    const UNSUPPORTED: &str = "This queue item's provider destination is unsupported.";
+    let (snapshot, index) = exact_item(store, id)?;
+    let item = &snapshot.items[index];
+    let provider = match item.job.provider.as_str() {
+        "github" => ProviderId::Github,
+        "azure_devops" => ProviderId::AzureDevops,
+        _ => return Err(UNSUPPORTED.into()),
+    };
+    let name = match provider {
+        ProviderId::Github => crate::storage::canonical_repository(&item.job.repository_name)?,
+        ProviderId::AzureDevops => item.job.repository_name.clone(),
+    };
+    let url = crate::provider::intake::provider_pull_request_url(
+        &provider,
+        &name,
+        Some(&item.job.repository_id),
+        item.job.number,
+    )
+    .ok_or(UNSUPPORTED)?;
+    let mut url = url::Url::parse(&url).map_err(|_| "Invalid saved pull request destination.")?;
     if let Some(file) = file {
         let present = snapshot
             .reviews
@@ -1392,15 +1416,30 @@ pub fn destination(store: &Store, id: &str, file: Option<&str>) -> Result<url::U
         if !present {
             return Err("This file is not in the exact review's complete guide.".into());
         }
-        url.set_path(&format!("{}/files", url.path()));
-        url.set_fragment(Some(&format!("diff-{:x}", Sha256::digest(file.as_bytes()))));
+        at_file(&provider, &mut url, file);
     }
     Ok(url)
 }
 
+/// Points a pull request `url` at `file` in the provider's diff view.
+fn at_file(provider: &crate::storage::ProviderId, url: &mut url::Url, file: &str) {
+    match provider {
+        crate::storage::ProviderId::Github => {
+            url.set_path(&format!("{}/files", url.path()));
+            url.set_fragment(Some(&format!("diff-{:x}", Sha256::digest(file.as_bytes()))));
+        }
+        crate::storage::ProviderId::AzureDevops => {
+            let path = format!("/{}", file.trim_start_matches('/'));
+            url.query_pairs_mut()
+                .append_pair("_a", "files")
+                .append_pair("path", &path);
+        }
+    }
+}
+
 pub fn select(store: &Store, id: Option<&str>) -> Result<(), String> {
     if let Some(id) = id {
-        destination(store, id, None)?;
+        available(store, id)?;
     }
     store.save_queue_selection(id)
 }
@@ -1408,6 +1447,27 @@ pub fn select(store: &Store, id: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+
+    #[test]
+    fn file_destinations_use_each_providers_diff_view() {
+        use crate::storage::ProviderId;
+        let mut github = url::Url::parse("https://github.com/example/repo/pull/9").unwrap();
+        at_file(&ProviderId::Github, &mut github, "src/a b.rs");
+        assert_eq!(
+            github.as_str(),
+            format!(
+                "https://github.com/example/repo/pull/9/files#diff-{:x}",
+                Sha256::digest(b"src/a b.rs")
+            )
+        );
+        let mut ado =
+            url::Url::parse("https://dev.azure.com/contoso/p/_git/r/pullrequest/9").unwrap();
+        at_file(&ProviderId::AzureDevops, &mut ado, "src/a b.rs");
+        assert_eq!(
+            ado.as_str(),
+            "https://dev.azure.com/contoso/p/_git/r/pullrequest/9?_a=files&path=%2Fsrc%2Fa+b.rs"
+        );
+    }
 
     #[test]
     fn feedback_history_reads_do_not_grow_with_queue_size() {

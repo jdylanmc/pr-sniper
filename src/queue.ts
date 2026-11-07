@@ -339,6 +339,11 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
     .sort((a, b) => Number(credentials(b)) - Number(credentials(a)));
 }
 
+/// The provider whose web page `openDestination` opens for `item`.
+export function providerName(item: QueueItem) {
+  return item.job.provider === "azure_devops" ? "Azure DevOps" : "GitHub";
+}
+
 export async function openDestination(
   itemId: string,
   file: string | null,
@@ -580,7 +585,7 @@ export function renderQueue(
       evidence.onclick = () => choose(item.id, true, evidence);
       const github = document.createElement("button");
       github.type = "button";
-      github.textContent = "Open PR on GitHub";
+      github.textContent = `Open PR on ${providerName(item)}`;
       github.onclick = async () => {
         github.disabled = true;
         await openDestination(item.id, null, showError);

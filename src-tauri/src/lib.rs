@@ -4808,7 +4808,7 @@ async fn open_queue_destination(
             queue::destination(&store, &item_id, file.as_deref())?
         };
         webbrowser::open(url.as_str())
-            .map_err(|_| "Could not open this GitHub destination. Try again.".into())
+            .map_err(|_| "Could not open this pull request destination. Try again.".into())
     })
     .await
     .map_err(|_| "Could not open the queue destination.".to_string())?
