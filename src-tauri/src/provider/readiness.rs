@@ -263,6 +263,26 @@ pub struct PrSnapshot {
     pub comment_total: u64,
 }
 
+/// A thread that arrived already resolved, as it arrived: comment id -> body digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuietThread {
+    pub id: String,
+    pub comments: BTreeMap<String, String>,
+}
+
+impl QuietThread {
+    pub fn of(thread: &SnapshotThread) -> Self {
+        Self {
+            id: thread.id.clone(),
+            comments: thread
+                .comments
+                .iter()
+                .map(|c| (c.id.clone(), digest(&c.body)))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedComment {
     pub id: String,
@@ -307,14 +327,26 @@ impl PrSnapshot {
         })
     }
 
-    /// This snapshot without the resolved threads in `quiet`.
-    pub fn without_quiet(&self, quiet: &std::collections::BTreeSet<String>) -> Self {
+    /// This snapshot without the comments `quiet` recorded at arrival, while their
+    /// thread stays resolved. A later reply or edit stays; an emptied thread goes.
+    pub fn without_quiet(&self, quiet: &[QuietThread]) -> Self {
         let mut snapshot = self.clone();
-        snapshot
-            .threads
-            .retain(|t| !(t.resolved && quiet.contains(&t.id)));
-        let removed = (self.threads.len() - snapshot.threads.len()) as u64;
-        snapshot.thread_total = snapshot.thread_total.saturating_sub(removed);
+        let mut removed_threads = 0;
+        snapshot.threads.retain_mut(|t| {
+            let Some(arrival) = quiet.iter().find(|q| q.id == t.id).filter(|_| t.resolved) else {
+                return true;
+            };
+            let before = t.comments.len();
+            t.comments
+                .retain(|c| arrival.comments.get(&c.id) != Some(&digest(&c.body)));
+            t.comment_total = t
+                .comment_total
+                .saturating_sub((before - t.comments.len()) as u64);
+            let keep = !t.comments.is_empty();
+            removed_threads += u64::from(!keep);
+            keep
+        });
+        snapshot.thread_total = snapshot.thread_total.saturating_sub(removed_threads);
         snapshot
     }
 

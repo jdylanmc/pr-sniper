@@ -7,8 +7,8 @@ use super::{
 };
 use crate::provider::PullRequestStateReader;
 pub use crate::provider::{
-    NormalizedComment, NormalizedSnapshot, OwnWrites, PrSnapshot, SnapshotCheck, SnapshotComment,
-    SnapshotReview, SnapshotThread, StateMarks,
+    NormalizedComment, NormalizedSnapshot, OwnWrites, PrSnapshot, QuietThread, SnapshotCheck,
+    SnapshotComment, SnapshotReview, SnapshotThread, StateMarks,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

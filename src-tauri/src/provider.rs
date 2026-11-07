@@ -11,8 +11,8 @@ mod types;
 pub use capability::*;
 pub use readiness::{
     Action, HumanThread, JobLog, MergeMethod, NormalizedComment, NormalizedSnapshot, Observation,
-    OutcomeReceipt, OwnWrites, PrSnapshot, ProviderReview, SnapshotCheck, SnapshotComment,
-    SnapshotReview, SnapshotThread, StateMarks, BEHIND_BASE,
+    OutcomeReceipt, OwnWrites, PrSnapshot, ProviderReview, QuietThread, SnapshotCheck,
+    SnapshotComment, SnapshotReview, SnapshotThread, StateMarks, BEHIND_BASE,
 };
 pub use threads::{Comment, Ownership, Provenance, Thread, TopComment};
 pub use types::*;

@@ -547,3 +547,51 @@ fn a_thread_that_arrives_resolved_during_a_run_neither_tosses_it_nor_queues_anot
         Change::Pending(2)
     ));
 }
+
+#[test]
+fn threads_that_arrive_resolved_on_separate_heartbeats_queue_no_review() {
+    for running in [false, true] {
+        let mut states = PrStates::default();
+        let first = observe(&mut states, &snapshot(), !running);
+        assert_eq!(first == Change::Pending(1), running);
+        let seq = states.state_seq(&binding());
+        let a = with_thread(snapshot(), "a", true);
+        let ab = with_thread(a.clone(), "b", true);
+        assert_eq!(heartbeat(&mut states, &a), Change::None, "{running}");
+        assert_eq!(heartbeat(&mut states, &ab), Change::None, "{running}");
+        assert_eq!(heartbeat(&mut states, &ab), Change::None, "{running}");
+        assert_eq!(states.state_seq(&binding()), seq);
+        if running {
+            // The local exit consumes the state it read, before either arrived.
+            let read = snapshot().normalize().hash();
+            assert_eq!(states.consume(&binding(), seq, &read), Consumed::Consumed);
+            assert_eq!(heartbeat(&mut states, &ab), Change::None);
+            assert_eq!(states.state_seq(&binding()), seq);
+        }
+    }
+}
+
+#[test]
+fn a_reply_or_edit_in_a_thread_that_arrived_resolved_is_a_change() {
+    for edit in [
+        (|s: &mut PrSnapshot| {
+            s.threads[1].comments.push(SnapshotComment {
+                id: "bot-2".into(),
+                body: "Please look.".into(),
+                commit: None,
+            });
+            s.threads[1].comment_total += 1;
+        }) as fn(&mut PrSnapshot),
+        |s| s.threads[1].comments[0].body = "Edited.".into(),
+    ] {
+        let mut states = PrStates::default();
+        assert_eq!(observe(&mut states, &snapshot(), false), Change::Pending(1));
+        let closed = with_thread(snapshot(), "bot", true);
+        assert_eq!(heartbeat(&mut states, &closed), Change::None);
+        let read = snapshot().normalize().hash();
+        assert_eq!(states.consume(&binding(), 1, &read), Consumed::Consumed);
+        let mut changed = closed.clone();
+        edit(&mut changed);
+        assert_eq!(heartbeat(&mut states, &changed), Change::Pending(2));
+    }
+}

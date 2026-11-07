@@ -8,7 +8,7 @@
 //! changes nothing but `pending`.
 
 use crate::{
-    github::state::{NormalizedSnapshot, PrSnapshot},
+    github::state::{NormalizedSnapshot, PrSnapshot, QuietThread},
     retention::Binding,
     storage::Store,
 };
@@ -136,9 +136,10 @@ pub struct PrStateRecord {
     /// an already-published head anew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_again_seq: Option<u64>,
-    /// Threads first seen already resolved ([`PrSnapshot::closed_on_arrival`]): no review input.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub quiet_threads: std::collections::BTreeSet<String>,
+    /// Threads first seen already resolved ([`PrSnapshot::closed_on_arrival`]), in
+    /// arrival order, as they arrived: no review input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quiet_threads: Vec<QuietThread>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,32 +249,43 @@ impl PrStates {
         };
         let known: std::collections::BTreeSet<&str> =
             previous.comments.iter().map(|c| c.id.as_str()).collect();
-        let arrived: Vec<String> = snapshot
+        let arrived: Vec<_> = snapshot
             .closed_on_arrival(|id| known.contains(id))
-            .map(|t| t.id.clone())
+            .map(QuietThread::of)
             .collect();
         record.quiet_threads.extend(arrived);
-        if record.quiet_threads.is_empty() {
+        // A thread gone from the read is a change by itself; nothing to strip.
+        record
+            .quiet_threads
+            .retain(|q| snapshot.threads.iter().any(|t| t.id == q.id));
+        let target = match &record.pending {
+            None if record.external_wait.is_none() => record.baseline_hash.clone(),
+            None => None,
+            Some(pending) => pending.hash.clone(),
+        };
+        let Some(target) = target else {
+            return;
+        };
+        let hash = snapshot.normalize().hash();
+        if hash == target {
             return;
         }
-        let quiet = snapshot
-            .without_quiet(&record.quiet_threads)
-            .normalize()
-            .hash();
-        let hash = snapshot.normalize().hash();
-        if quiet == hash {
+        // The baseline or pending state predates the latest arrivals: strip the newest
+        // ones, one more at a time, until the rest matches it.
+        let count = record.quiet_threads.len();
+        let matched = (1..=count).any(|newest| {
+            snapshot
+                .without_quiet(&record.quiet_threads[count - newest..])
+                .normalize()
+                .hash()
+                == target
+        });
+        if !matched {
             return;
         }
         match &mut record.pending {
-            None if record.external_wait.is_none()
-                && record.baseline_hash.as_deref() == Some(&quiet) =>
-            {
-                record.baseline_hash = Some(hash);
-            }
-            Some(pending) if pending.hash.as_deref() == Some(&quiet) => {
-                pending.hash = Some(hash);
-            }
-            _ => {}
+            None => record.baseline_hash = Some(hash),
+            Some(pending) => pending.hash = Some(hash),
         }
     }
 
