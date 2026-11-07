@@ -261,7 +261,8 @@ fn complete_teammate(store: &Store, now: i64) {
         .unwrap()
         .into_iter()
         .filter(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
-        .find(|j| j.waiting == WAITING_AI_CAPACITY)
+        .filter(|j| j.waiting == WAITING_AI_CAPACITY)
+        .max_by_key(|j| j.work.as_ref().map(|w| w.state_seq))
         .unwrap();
     let key = key(&job, TEAMMATE);
     request(store, &key, true, now).unwrap();
@@ -383,6 +384,150 @@ fn a_stale_revision_keeps_its_skipped_secondary() {
         .find(|item| item.job.head_sha == sha('b'))
         .unwrap();
     assert!(current.skipped.is_empty());
+}
+
+#[test]
+fn a_same_head_state_move_keeps_the_secondary_report_on_the_item() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md", "src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let reported = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .map(|j| key(&j, TEAMMATE))
+        .unwrap();
+    // Discussion moves the PR state; the head stays.
+    let mut states = store.load_pr_states().unwrap();
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, NOW + 5).unwrap();
+    store.save_pr_states(&states).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES,
+        "no file changed since its review of this head"
+    );
+    // The item shows the report it gave for this head, not a skip.
+    let item = item(&store, &monitor);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(item.blocked_by.is_none(), "{:?}", item.blocked_by);
+    assert!(
+        item.review_keys.contains(&reported),
+        "{:?}",
+        item.review_keys
+    );
+}
+
+#[test]
+fn a_replacement_agent_skip_shows_despite_the_old_agent_report() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let mut settings = store.load_settings().unwrap();
+    let mut replacement = settings.agents[1].clone();
+    replacement.id = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003".into();
+    replacement.name = "Code Reviewer".into();
+    settings.agents.push(replacement);
+    let assignment = &mut settings.repositories[0].assignments[1];
+    assignment.agent_id = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003".into();
+    assignment.paths = vec!["src/".into()];
+    settings.validate().unwrap();
+    store.save_settings(&settings).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES
+    );
+    let item = item(&store, &monitor);
+    assert_eq!(item.skipped.len(), 1, "{:?}", item.skipped);
+    assert_eq!(item.skipped[0].assignment_id, TEAMMATE);
+}
+
+#[test]
+fn a_hidden_same_head_skip_never_leaves_the_item_stale_after_a_draft_round_trip() {
+    let (_root, store, mut monitor) = configured(&[], &["docs/"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/a.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    let reported = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .map(|j| key(&j, TEAMMATE))
+        .unwrap();
+    let mut draft = pull('a');
+    draft.draft = true;
+    let (ticket, result) = read(&mut monitor, &store, &wire, draft, NOW + 5);
+    monitor.finish(&store, ticket, result, NOW + 6).unwrap();
+    let mut states = store.load_pr_states().unwrap();
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, NOW + 7).unwrap();
+    store.save_pr_states(&states).unwrap();
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    let item = item(&store, &monitor);
+    assert_ne!(item.state, State::Stale);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(
+        item.review_keys.contains(&reported),
+        "{:?}",
+        item.review_keys
+    );
+}
+
+/// Moves the PR state on the same head; the next poll queues a new pass.
+fn move_state(store: &Store, at: i64) {
+    let mut states = store.load_pr_states().unwrap();
+    // The primary's exit would consume the previous state; none runs here.
+    states.records[0].pending = None;
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, at).unwrap();
+    store.save_pr_states(&states).unwrap();
+}
+
+fn teammate_keys(store: &Store) -> Vec<String> {
+    let mut jobs: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .collect();
+    jobs.sort_by_key(|j| j.work.as_ref().map(|w| w.state_seq));
+    jobs.iter().map(|j| key(j, TEAMMATE)).collect()
+}
+
+#[test]
+fn a_hidden_same_head_skip_shows_the_newest_report() {
+    let (_root, store, mut monitor) = configured(&[], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    move_state(&store, NOW + 5);
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    complete_teammate(&store, NOW + 12);
+    let keys = teammate_keys(&store);
+    let (first, second) = (keys[0].clone(), keys[1].clone());
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[1].paths = vec!["src/".into()];
+    store.save_settings(&settings).unwrap();
+    move_state(&store, NOW + 15);
+    scan(&mut monitor, &store, &wire, 'a', NOW + 20);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES
+    );
+    let item = item(&store, &monitor);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(item.review_keys.contains(&second), "{:?}", item.review_keys);
+    assert!(!item.review_keys.contains(&first), "{:?}", item.review_keys);
 }
 
 #[test]
