@@ -753,20 +753,24 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         // A skip after a state move on the same head adds nothing: the same
         // Agent's completed report for that head still stands and is shown
         // instead. Display only; the skip still decides state and barrier.
+        let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
         let earlier = reviews.clone();
         let report = |s: &review::host::Candidate| {
-            earlier.iter().copied().find(|r| {
-                r.run
-                    .as_ref()
-                    .is_some_and(|run| run.operation.state == OperationState::Completed)
-                    && r.assignment_id == s.assignment_id
-                    && agent(r) == agent(s)
-                    && r.job.head_sha == s.job.head_sha
-            })
+            earlier
+                .iter()
+                .copied()
+                .filter(|r| {
+                    r.run
+                        .as_ref()
+                        .is_some_and(|run| run.operation.state == OperationState::Completed)
+                        && r.assignment_id == s.assignment_id
+                        && agent(r) == agent(s)
+                        && r.job.head_sha == s.job.head_sha
+                })
+                .max_by_key(|r| newest(r))
         };
         // One entry per PR: an older state's result is history and must not
         // mask the newest state's wait.
-        let newest = |r: &review::host::Candidate| r.job.work.as_ref().map_or(0, |w| w.state_seq);
         let latest: BTreeMap<_, _> = reviews.iter().fold(BTreeMap::new(), |mut latest, r| {
             let seq = latest.entry(r.assignment_id.clone()).or_insert(0);
             *seq = (*seq).max(newest(r));

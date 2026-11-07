@@ -261,7 +261,8 @@ fn complete_teammate(store: &Store, now: i64) {
         .unwrap()
         .into_iter()
         .filter(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
-        .find(|j| j.waiting == WAITING_AI_CAPACITY)
+        .filter(|j| j.waiting == WAITING_AI_CAPACITY)
+        .max_by_key(|j| j.work.as_ref().map(|w| w.state_seq))
         .unwrap();
     let key = key(&job, TEAMMATE);
     request(store, &key, true, now).unwrap();
@@ -479,6 +480,54 @@ fn a_hidden_same_head_skip_never_leaves_the_item_stale_after_a_draft_round_trip(
         "{:?}",
         item.review_keys
     );
+}
+
+/// Moves the PR state on the same head; the next poll queues a new pass.
+fn move_state(store: &Store, at: i64) {
+    let mut states = store.load_pr_states().unwrap();
+    // The primary's exit would consume the previous state; none runs here.
+    states.records[0].pending = None;
+    let binding = states.records[0].binding.clone();
+    states.review_again(&binding, at).unwrap();
+    store.save_pr_states(&states).unwrap();
+}
+
+fn teammate_keys(store: &Store) -> Vec<String> {
+    let mut jobs: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.assignment_id.as_deref() == Some(TEAMMATE))
+        .collect();
+    jobs.sort_by_key(|j| j.work.as_ref().map(|w| w.state_seq));
+    jobs.iter().map(|j| key(j, TEAMMATE)).collect()
+}
+
+#[test]
+fn a_hidden_same_head_skip_shows_the_newest_report() {
+    let (_root, store, mut monitor) = configured(&[], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.rs"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+    move_state(&store, NOW + 5);
+    scan(&mut monitor, &store, &wire, 'a', NOW + 10);
+    complete_teammate(&store, NOW + 12);
+    let keys = teammate_keys(&store);
+    let (first, second) = (keys[0].clone(), keys[1].clone());
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[1].paths = vec!["src/".into()];
+    store.save_settings(&settings).unwrap();
+    move_state(&store, NOW + 15);
+    scan(&mut monitor, &store, &wire, 'a', NOW + 20);
+    assert_eq!(
+        waiting(&store, 'a')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES
+    );
+    let item = item(&store, &monitor);
+    assert!(item.skipped.is_empty(), "{:?}", item.skipped);
+    assert!(item.review_keys.contains(&second), "{:?}", item.review_keys);
+    assert!(!item.review_keys.contains(&first), "{:?}", item.review_keys);
 }
 
 #[test]
