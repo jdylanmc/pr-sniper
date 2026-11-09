@@ -2815,6 +2815,10 @@ button:disabled {
 .has-fab {
   padding-bottom: 76px;
 }
+/* Repositories: the scroller ends above the pill, so rows never pass under it. */
+.fab-band {
+  height: calc(100% - 66px);
+}
 .floating-pill {
   position: absolute;
   z-index: 5;
