@@ -359,6 +359,16 @@ export async function mountPanel(app: HTMLElement) {
     },
     onSnapshot: (value) => {
       snapshot = value;
+      if (reopened && value?.items) {
+        reopened = false;
+        const items = humanQueue(value.items);
+        const ready = items.filter(
+          (item) => item.state === "machine_signed_off",
+        ).length;
+        const counts = { ready, attention: items.length - ready };
+        if (queueFilter && !counts[queueFilter] && items.length)
+          queueFilter = undefined;
+      }
       drawSummary();
       drawLists();
     },
@@ -532,8 +542,8 @@ export async function mountPanel(app: HTMLElement) {
   }
 
   let queueFilter: "ready" | "attention" | undefined;
-  // Rows in the chosen card when last drawn; its emptying ends the choice.
-  let filtered = 0;
+  // A reopened panel drops a chosen card that emptied while the other has rows.
+  let reopened = false;
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
     const queue = route.tab === "queue";
@@ -577,10 +587,6 @@ export async function mountPanel(app: HTMLElement) {
           ? `${ready} ready / ${items.length - ready} need attention`
           : "Handoffs unavailable",
       );
-      const counts = { ready, attention: items.length - ready };
-      if (known && queueFilter && filtered > 0 && !counts[queueFilter])
-        queueFilter = undefined;
-      if (known && queueFilter) filtered = counts[queueFilter];
       const view = queueFilter ?? (ready > 0 ? "ready" : "attention");
       app.dataset.queueView = view;
       for (const button of summary.querySelectorAll<HTMLElement>(
@@ -991,6 +997,7 @@ export async function mountPanel(app: HTMLElement) {
     const changed = key(state.route) !== key(route);
     const restore = state.visible && (changed || !lastVisible);
     const focusAtStart = focusRevision;
+    if (state.visible && !lastVisible) reopened = true;
     lastVisible = state.visible;
     if (changed || !state.visible) remember();
     if (changed && (state.route.tab !== setupOwner || state.route.detail)) {
@@ -1159,7 +1166,6 @@ export async function mountPanel(app: HTMLElement) {
   ))
     button.onclick = () => {
       queueFilter = button.dataset.queueFilter as "ready" | "attention";
-      filtered = 0;
       drawSummary();
     };
   app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>

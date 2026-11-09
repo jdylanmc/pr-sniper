@@ -1,5 +1,6 @@
 import { expect, test } from "./fixtures.mjs";
 import { queueFixture } from "./queue-fixture.mjs";
+import { repositorySettings } from "./navigation.mjs";
 
 test.use({ viewport: { width: 408, height: 744 } });
 
@@ -87,7 +88,7 @@ test("a superseded notification navigation never shows an error in Queue or Sett
   await expect(page.locator("[data-panel-error]")).toBeHidden();
 });
 
-test("Ready rows show once the chosen Needs attention card empties", async ({
+test("a reopened panel shows Ready rows once the chosen Needs attention card emptied", async ({
   page,
   store,
 }) => {
@@ -102,8 +103,18 @@ test("Ready rows show once the chosen Needs attention card empties", async ({
   for (const key of ["jobs", "reviews", "publications"])
     state[key] = state[key].filter(kept);
   await store("seed_queue_state", state);
+  // While open, the explicit choice holds.
   await stateChanged(page);
   await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  await expect(page.locator("[data-queue-filter=attention]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.evaluate(async () => {
+    await window.__TAURI_INTERNALS__.invoke("hide_panel", {});
+    await window.__TAURI_INTERNALS__.invoke("fixture_show_panel", {});
+    await window.__settingsIdle();
+  });
   await expect(page.locator("[data-queue-filter=ready]")).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -111,11 +122,84 @@ test("Ready rows show once the chosen Needs attention card empties", async ({
   await expect(
     page.getByRole("article", { name: "example/repo #9", exact: true }),
   ).toBeVisible();
-  // An explicit choice of an already empty card still holds.
-  await page.locator("[data-queue-filter=attention]").click();
-  await stateChanged(page);
-  await expect(page.locator("[data-queue-filter=attention]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
+});
+
+test("a notification navigation error never renders on Settings, even after repository saves", async ({
+  page,
+  store,
+}) => {
+  const legacy = "Panel opening was replaced by a newer dismissal or Quit.";
+  await store("set_notifications_enabled", { enabled: true });
+  await queueFixture(store);
+  const ledger = await store("observe_notifications");
+  const [upgraded, missing] = ledger.notices;
+  // Saved by an older build; superseded opens are no longer errors.
+  upgraded.navigation_error = legacy;
+  missing.event.destination = { kind: "queue_item", item_id: "missing-item" };
+  await store("seed_notifications", ledger);
+  const name = "fixture/repo-0";
+  await store("save_repository", { repository: name });
+  const { settings } = await store("snapshot");
+  Object.assign(
+    settings.repositories.find((r) => r.name === name),
+    {
+      provider_account_id: "22",
+      provider_repository_id: "200",
+      enabled: false,
+      cron: "*/30 * * * *",
+    },
   );
+  await store("seed_settings", settings);
+  await page.goto("/");
+  await page.evaluate(async (noticeId) => {
+    await window.__TAURI_INTERNALS__.invoke("fixture_notification_click", {
+      itemId: "missing-item",
+      noticeId,
+      race: "none",
+    });
+    await window.__settingsIdle();
+  }, missing.id);
+  const notices = new Map(
+    (await store("notification_snapshot")).notices.map((n) => [
+      n.id,
+      n.navigation_error,
+    ]),
+  );
+  expect(notices.get(upgraded.id)).toBeNull();
+  const failure = notices.get(missing.id);
+  expect(failure).toContain("not available");
+  expect((await store("snapshot")).error).toBeNull();
+  const nav = (label) =>
+    page
+      .getByRole("navigation", { name: "Application destinations" })
+      .getByRole("button", { name: label, exact: true });
+  await nav("Settings").click();
+  const noError = async () => {
+    await page.evaluate(() => window.__settingsIdle());
+    for (const text of [legacy, failure])
+      await expect(
+        page.locator("[role=alert]:visible", { hasText: text }),
+      ).toHaveCount(0);
+    await expect(page.locator("#error")).toBeHidden();
+  };
+  for (const every of ["15", "60"]) {
+    const editor = await repositorySettings(page, name);
+    await expect(editor.locator("[data-schedule]")).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    await editor.locator("#schedule-every").selectOption(every);
+    await editor
+      .getByRole("button", { name: "Save repository", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    await noError();
+  }
+  expect(
+    (await store("snapshot")).settings.repositories.find((r) => r.name === name)
+      .cron,
+  ).not.toBe("*/30 * * * *");
+  await page.reload();
+  await nav("Settings").click();
+  await noError();
 });

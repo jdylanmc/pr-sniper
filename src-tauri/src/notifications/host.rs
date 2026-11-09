@@ -378,29 +378,15 @@ pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String>
         Err(Opening::Superseded) => return Ok(()),
         outcome => outcome.map_err(String::from),
     };
-    {
-        let store = host
+    super::record_open(
+        &*host
             .store
             .lock()
-            .map_err(|_| "Notification storage unavailable.")?;
-        let mut ledger = store.load_notifications()?;
-        if let Some(notice) = ledger.notices.iter_mut().find(|n| n.id == id) {
-            match &outcome {
-                Ok(()) => {
-                    notice.opened_at = Some(now);
-                    notice.navigation_error = None;
-                }
-                Err(error) => notice.navigation_error = Some(error.clone()),
-            }
-            store.save_notifications(&ledger)?;
-        } else if !crate::retention::load(&store)?
-            .receipts
-            .iter()
-            .any(|r| r.notices.contains_key(id))
-        {
-            return Err("Notification disappeared during navigation.".into());
-        }
-    }
+            .map_err(|_| "Notification storage unavailable.")?,
+        id,
+        &outcome,
+        now,
+    )?;
     crate::record(
         app,
         if outcome.is_ok() {

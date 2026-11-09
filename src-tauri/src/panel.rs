@@ -526,17 +526,17 @@ pub(crate) async fn show(app: &tauri::AppHandle, request: Request) -> Result<Sna
     show_at(app, request, None).await
 }
 
-/// Opens from a background trigger. A superseded open is not reported.
+/// Opens from a background trigger. A failure is logged; a superseded open is not.
 pub(crate) fn present(app: &tauri::AppHandle, request: Request) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        report(&app, show(&app, request).await);
+        report(show(&app, request).await);
     });
 }
 
-fn report(app: &tauri::AppHandle, outcome: Result<Snapshot, Opening>) {
+fn report(outcome: Result<Snapshot, Opening>) {
     if let Some(error) = outcome.err().as_ref().and_then(Opening::reportable) {
-        crate::report(app, error.into());
+        crate::log_navigation(error);
     }
 }
 
@@ -709,10 +709,7 @@ pub(crate) fn tray(
         let _ = click;
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            report(
-                &app,
-                show_at(&app, Request::Reveal(None), Some(clicked)).await,
-            );
+            report(show_at(&app, Request::Reveal(None), Some(clicked)).await);
         });
         Ok(())
     }

@@ -21,7 +21,8 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 - Deferred positioning and the initial Settings load yield to newer focus, routes, dismissal.
 - Native notification and legacy Settings entry use retained routes. No webview reload.
 - Exact opens (notification, menu item, in-panel navigation) win over generic reveals (tray click, relaunch, macOS reopen). A reveal during an exact open joins it; activation blur cannot dismiss it.
-- An open replaced by a newer navigation, explicit Close or Quit is no error: nothing reported, notice keeps no `navigation_error`.
+- An open replaced by a newer navigation, explicit Close or Quit is no error: nothing reported, notice keeps no `navigation_error`. Older builds' saved superseded `navigation_error` loads as none.
+- A failed panel or notification open is logged (notice `navigation_error`, `notification_failed`), never the host error. Settings never shows it, before or after a save.
 - Unavailable exact PR, iteration or job: missing-destination view. Never another item.
 - Profile-scoped PR selection survives restart (`state/queue-selection.json`). Unsaved drafts live in-process only.
 - Back and Settings-dialog close restore the activating control. Saves keep the logical opener through redraw by stable resource ID. Removed resources: section heading. Removed assignment: Add control. Background completion never steals focus.
@@ -37,7 +38,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 
 ## Queue tab
 
-- Two toggle cards: **Ready for you**, **Needs attention**. Active card orange. Default: Ready when it has rows. A chosen card holds until its rows empty; an explicitly chosen empty card holds.
+- Two toggle cards: **Ready for you**, **Needs attention**. Active card orange. Default: Ready when it has rows. A chosen card holds while the panel stays open; reopening drops it if it is empty and the other card has rows.
 - **Ready for you**: machine-signed-off PRs the agent did not approve (no Approve grant); the human decides. Confirmed approval of the current head moves the PR to Reviewed (**Approved**), out of both cards. One current handoff per account/repo PR. Completed reviews stay Ready despite config drift or disabled repo. Stale only on new head/base.
 - **Needs attention**: every parked failure. Cause chip: Credentials, Permission, Network, Failed. Row actions **Fix** (credentials, opens the failing account) and **Retry**. **Retry all** pill: icon + count of rows it re-arms, shown from one; skips permanent, panic, withdrawn-publication and provider-action failures; single-flight. Paused: re-armed rows leave the list and the pill shows clock + count until resume.
 - Queue item detail: status block (PR title, short state label, Fix / Retry / Open, ↻ **Review again**) plus collapsed **Details**. ↻ shows when every review of the current pass completed (packet work; Ready, Your input, Author, Approved, Stale); same gates as MCP `watch_pull_request` `review_again`.

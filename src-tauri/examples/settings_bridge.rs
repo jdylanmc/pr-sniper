@@ -243,6 +243,7 @@ fn panel_dispatch(
             .request(store, Open::Exact(Route::item(item.into())))?
             .ok_or("Notification open did not start.")?;
         match request.args["race"].as_str() {
+            Some("none") => {}
             Some("reopen") => {
                 session.request(store, Open::Reveal(Some(Route::tab(Tab::Queue))))?;
             }
@@ -255,20 +256,16 @@ fn panel_dispatch(
             }
             _ => return Err("Unknown notification race.".into()),
         }
-        match session.current(epoch) {
-            Ok(()) => session.set_visible(true),
-            Err(opening) => {
-                // The native host keeps reported background errors for later snapshots.
-                if let Some(error) = opening.reportable() {
-                    std::fs::write(
-                        root.join("fixture-host-error.json"),
-                        json!(error).to_string(),
-                    )
-                    .map_err(|_| "Cannot save fixture host error.")?;
-                }
-            }
+        let presented = session.current(epoch).is_ok();
+        if presented {
+            session.set_visible(true);
         }
         session.finish(epoch);
+        // Like `notifications::host::open`: a superseded open records nothing.
+        if let (true, Some(notice)) = (presented, request.args["noticeId"].as_str()) {
+            let outcome = session.snapshot(store).missing.map_or(Ok(()), Err);
+            pr_sniper_lib::notifications::record_open(store, notice, &outcome, 1_800_000_000)?;
+        }
     } else if route.is_some() || request.command == "fixture_show_panel" {
         session.navigate(store, route)?;
         session.set_visible(true);
@@ -994,17 +991,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             panel_dispatch(&store, &root, &request, probe)
         } else if probe.is_some() {
             Err("Panel fixture probes require a panel command.".into())
-        } else if request.command == "snapshot" {
-            // Like Host::error, a reported background error outlives the action that set it.
-            let reported = fs::read(root.join("fixture-host-error.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok());
-            dispatch(&store, request).map(|mut value| {
-                if value["error"].is_null() {
-                    value["error"] = json!(reported);
-                }
-                value
-            })
         } else {
             dispatch(&store, request)
         };

@@ -2214,6 +2214,12 @@ fn report(app: &tauri::AppHandle, error: String) {
     }
 }
 
+/// A failed panel or notification navigation. It is logged, never the host error:
+/// that error re-renders on every later Settings read and save.
+pub(crate) fn log_navigation(error: &str) {
+    eprintln!("PR Sniper: {error}");
+}
+
 #[tauri::command]
 fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
     let mut error = host
