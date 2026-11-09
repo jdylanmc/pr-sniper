@@ -180,44 +180,172 @@ test("without Azure DevOps, only GitHub sections show and unknown repos stay at 
   ).toHaveAttribute("data-repository-disconnected", "");
 });
 
+// Many rows across accounts so the list scrolls well past the + URL pill.
+async function seedMany(store) {
+  const settings = (await store("snapshot")).settings;
+  settings.repositories = [
+    repo(1, "azure_devops", "contoso/project/repo", AVERY),
+    ...Array.from({ length: 14 }, (_, i) =>
+      repo(10 + i, "github", `octo-org/app-${i}`, "22"),
+    ),
+    ...Array.from({ length: 8 }, (_, i) =>
+      repo(30 + i, "github", `octo-team/svc-${i}`, "44"),
+    ),
+    repo(5, "github", "octo-org/paused", "55"),
+  ];
+  await store("seed_settings", settings);
+}
+
+// Accessible names of row/header controls whose visible box the pill's box
+// intersects. Visible = clipped by scrolling ancestors and by the pill's own
+// band when that band is an opaque sticky toolbar that rows scroll behind.
+const coveredControls = (page) =>
+  page.evaluate(() => {
+    const element = document.querySelector("#add-repository");
+    const pill = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(
+      pill.left + pill.width / 2,
+      pill.top + pill.height / 2,
+    );
+    if (!element.contains(hit)) return ["+ URL is not on top"];
+    const band = element.parentElement;
+    const bandStyle = getComputedStyle(band);
+    const bandTop =
+      bandStyle.position === "sticky" &&
+      !/rgba\(.*, 0\)|transparent/.test(bandStyle.backgroundColor)
+        ? band.getBoundingClientRect().top
+        : Infinity;
+    const visible = (control) => {
+      const r = control.getBoundingClientRect();
+      let { top, bottom } = r;
+      for (let el = control.parentElement; el; el = el.parentElement)
+        if (
+          /^(auto|scroll|hidden|clip)$/.test(getComputedStyle(el).overflowY)
+        ) {
+          const box = el.getBoundingClientRect();
+          top = Math.max(top, box.top);
+          bottom = Math.min(bottom, box.bottom);
+        }
+      return {
+        left: r.left,
+        right: r.right,
+        top,
+        bottom: Math.min(bottom, bandTop),
+      };
+    };
+    return [
+      ...document.querySelectorAll(
+        "[data-repository-accounts] :is(button, [role=switch])",
+      ),
+    ]
+      .map((control) => [control, visible(control)])
+      .filter(
+        ([, r]) =>
+          r.right > r.left &&
+          r.bottom > r.top &&
+          r.left < pill.right &&
+          r.right > pill.left &&
+          r.top < pill.bottom &&
+          r.bottom > pill.top,
+      )
+      .map(([control]) => control.getAttribute("aria-label"));
+  });
+
+const scrollTo = (page, fraction) =>
+  page.locator("[data-repository-accounts]").evaluate((node, fraction) => {
+    for (let el = node; el; el = el.parentElement)
+      if (
+        el.scrollHeight > el.clientHeight &&
+        /^(auto|scroll)$/.test(getComputedStyle(el).overflowY)
+      ) {
+        el.scrollTop = Math.round(
+          (el.scrollHeight - el.clientHeight) * fraction,
+        );
+        return el.scrollTop;
+      }
+    return -1;
+  }, fraction);
+
 for (const theme of ["light", "dark"])
-  test(`the + URL pill clears every account action at the end of the list (${theme})`, async ({
+  for (const [width, height] of [
+    [408, 744],
+    [408, 520],
+    [720, 600],
+  ])
+    test(`the + URL pill never covers a row or header control while scrolling (${theme}, ${width}x${height})`, async ({
+      page,
+      store,
+    }, info) => {
+      await page.setViewportSize({ width, height });
+      await seedMany(store);
+      await open(page, store);
+      await page.evaluate((theme) => {
+        document.documentElement.dataset.theme = theme;
+      }, theme);
+      const pill = page.getByRole("button", {
+        name: "Add repository by URL",
+        exact: true,
+      });
+      await expect(pill).toBeVisible();
+      const scrolled = [];
+      for (const fraction of [0, 0.2, 0.37, 0.5, 0.63, 0.8, 1]) {
+        scrolled.push(await scrollTo(page, fraction));
+        expect(await coveredControls(page), `at ${fraction}`).toEqual([]);
+      }
+      // The sweep really moved the list under the pill's band.
+      expect(scrolled.at(-1)).toBeGreaterThan(0);
+      await page.screenshot({
+        path: info.outputPath(`repository-sections-end-${theme}.png`),
+      });
+      // Every toggle stays reachable: the last row is fully above the pill.
+      const last = page.locator("[data-toggle-repository]").last();
+      await expect(last).toBeInViewport({ ratio: 1 });
+      await last.click({ trial: true });
+      // Keyboard: + URL keeps its name and opens the add dialog.
+      await pill.focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByRole("dialog")).toBeVisible();
+    });
+
+for (const [width, height] of [
+  [408, 744],
+  [408, 520],
+])
+  test(`tabbing through a long list never leaves focus behind the + URL band (${width}x${height})`, async ({
     page,
     store,
-  }, info) => {
-    await page.setViewportSize({ width: 408, height: 744 });
-    await seed(store);
+  }) => {
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await page.setViewportSize({ width, height });
+    await seedMany(store);
     await open(page, store);
-    await page.evaluate((theme) => {
-      document.documentElement.dataset.theme = theme;
-    }, theme);
-    const pill = page.getByRole("button", {
-      name: "Add repository by URL",
-      exact: true,
-    });
-    await expect(pill).toHaveCSS("position", "fixed");
-    await page.locator("[data-repository-accounts]").evaluate((node) => {
-      for (let el = node; el; el = el.parentElement)
-        if (el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight;
-    });
-    await page.screenshot({
-      path: info.outputPath(`repository-sections-end-${theme}.png`),
-    });
-    const overlaps = await page.evaluate(() => {
-      const pill = document
-        .querySelector("#add-repository")
-        .getBoundingClientRect();
-      return [...document.querySelectorAll("[data-repository-accounts] button")]
-        .map((button) => [button, button.getBoundingClientRect()])
-        .filter(
-          ([, r]) =>
-            r.width &&
-            r.left < pill.right &&
-            r.right > pill.left &&
-            r.top < pill.bottom &&
-            r.bottom > pill.top,
-        )
-        .map(([button]) => button.getAttribute("aria-label"));
-    });
-    expect(overlaps).toEqual([]);
+    const controls = page.locator(
+      "[data-repository-accounts] :is(button, [role=switch]):not([disabled])",
+    );
+    const total = await controls.count();
+    await controls.first().focus();
+    const hidden = [];
+    for (let i = 1; i < total; i++) {
+      await page.keyboard.press(nextKey);
+      const result = await page.evaluate(() => {
+        const focused = document.activeElement;
+        if (!focused?.closest("[data-repository-accounts]")) return null;
+        const band = document
+          .querySelector("#add-repository")
+          .parentElement.getBoundingClientRect();
+        const scroller = document
+          .querySelector("#content")
+          .getBoundingClientRect();
+        const box = focused.getBoundingClientRect();
+        return box.bottom <= band.top && box.top >= scroller.top
+          ? ""
+          : focused.getAttribute("aria-label");
+      });
+      if (result) hidden.push(result);
+    }
+    expect(hidden).toEqual([]);
   });

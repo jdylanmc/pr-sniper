@@ -84,11 +84,14 @@ for (const viewport of [
     // scroll and focus.
     await section(page, "Repositories");
     const content = page.locator(".settings-window #content");
-    const row = page.locator("[data-repository]").nth(repositories.length - 4);
+    const row = page.locator("[data-repository]").nth(repositories.length - 6);
     await page.evaluate(() => window.__settingsIdle());
     await row.scrollIntoViewIfNeeded();
     const listScroll = await content.evaluate((element) => element.scrollTop);
     expect(listScroll).toBeGreaterThan(0);
+    expect(listScroll).toBeLessThan(
+      await content.evaluate((e) => e.scrollHeight - e.clientHeight),
+    );
     const name = await row.getAttribute("aria-label");
     await row.focus();
     await page.keyboard.press("Enter");

@@ -883,7 +883,7 @@ function repositoriesPage() {
     );
   });
   const empty = !live.length && !lost.length;
-  return `<div class="page-scroll has-fab" data-scroll="repos">
+  return `<div class="page-scroll fab-band" data-scroll="repos">
     ${live.join("")}${lost.join("")}
     ${empty ? `<div class="settings-list repository-accounts"><button class="settings-row" data-page="github"><span class="row-copy"><strong>Connect a repository account</strong></span>${icon("chevron")}</button></div>` : ""}
   </div>
