@@ -53,7 +53,7 @@ define_class!(
                 tauri::async_runtime::spawn(async move {
                     crate::record(&app, crate::storage::DiagnosticEvent::NotificationActivated);
                     if let Err(error) = super::host::open(&app, &request_id).await {
-                        crate::report(&app, error);
+                        crate::log_navigation(&error);
                     }
                 });
             }

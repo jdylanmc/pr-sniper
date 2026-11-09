@@ -63,6 +63,53 @@ impl Route {
     }
 }
 
+/// What a panel open asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    /// An exact destination: a notification, a menu item or an in-panel navigation.
+    Exact(Route),
+    /// A generic reveal (tray click, relaunch, macOS reopen). It joins an exact
+    /// open still in flight instead of replacing its destination.
+    Reveal(Option<Route>),
+}
+
+/// Why a panel open did not present its own destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    /// A newer navigation, an explicit dismissal or Quit owns the panel. Not a failure.
+    Superseded,
+    Failed(String),
+}
+impl Opening {
+    /// The message a background caller reports; a superseded open reports nothing.
+    pub fn reportable(&self) -> Option<&str> {
+        match self {
+            Self::Superseded => None,
+            Self::Failed(error) => Some(error),
+        }
+    }
+}
+impl From<String> for Opening {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+impl From<&str> for Opening {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.into())
+    }
+}
+impl From<Opening> for String {
+    fn from(opening: Opening) -> Self {
+        match opening {
+            Opening::Superseded => {
+                "Panel opening was replaced by a newer navigation, dismissal or Quit.".into()
+            }
+            Opening::Failed(error) => error,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub route: Route,
@@ -82,6 +129,9 @@ pub struct Session {
     blur_from_tray: Option<Instant>,
     #[serde(skip)]
     tray_down_visible: Option<bool>,
+    /// Revision of the exact open not yet presented.
+    #[serde(skip)]
+    pending: Option<u64>,
     placement_warning: Option<String>,
 }
 impl Session {
@@ -102,6 +152,36 @@ impl Session {
         self.blur_from_tray = None;
         Ok(())
     }
+    /// Starts an open. `None`: a reveal joined the exact open in flight, whose
+    /// presentation shows the panel; otherwise the revision this open presents.
+    pub fn request(&mut self, store: &Store, request: Request) -> Result<Option<u64>, String> {
+        match request {
+            Request::Reveal(_) if self.pending.is_some() => Ok(None),
+            Request::Reveal(route) => {
+                self.navigate(store, route)?;
+                Ok(Some(self.revision))
+            }
+            Request::Exact(route) => {
+                self.navigate(store, Some(route))?;
+                self.pending = Some(self.revision);
+                Ok(Some(self.revision))
+            }
+        }
+    }
+    /// Whether the open at `epoch` still owns the panel.
+    pub fn current(&self, epoch: u64) -> Result<(), Opening> {
+        if self.revision == epoch {
+            Ok(())
+        } else {
+            Err(Opening::Superseded)
+        }
+    }
+    /// Ends the open at `epoch`, presented or not.
+    pub fn finish(&mut self, epoch: u64) {
+        if self.pending == Some(epoch) {
+            self.pending = None;
+        }
+    }
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
         self.revision += 1;
@@ -111,6 +191,7 @@ impl Session {
         if !from_focus_loss {
             self.blur_from_tray = None;
             self.tray_down_visible = None;
+            self.pending = None;
         }
     }
     pub fn snapshot(&self, store: &Store) -> Snapshot {
@@ -127,7 +208,8 @@ impl Session {
         }
     }
     fn blur_can_hide(&self, epoch: u64) -> bool {
-        self.revision == epoch && self.visible
+        // Activation from a notification can blur the panel before its exact open presents.
+        self.revision == epoch && self.visible && self.pending.is_none()
     }
     fn should_toggle_closed(&mut self, now: Instant) -> bool {
         self.tray_down_visible.take().unwrap_or(
@@ -440,18 +522,32 @@ fn emit(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|_| "Panel route delivery failed.".into())
 }
 
-pub(crate) async fn show(app: &tauri::AppHandle, route: Option<Route>) -> Result<Snapshot, String> {
-    show_at(app, route, None).await
+pub(crate) async fn show(app: &tauri::AppHandle, request: Request) -> Result<Snapshot, Opening> {
+    show_at(app, request, None).await
+}
+
+/// Opens from a background trigger. A failure is logged; a superseded open is not.
+pub(crate) fn present(app: &tauri::AppHandle, request: Request) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        report(show(&app, request).await);
+    });
+}
+
+fn report(outcome: Result<Snapshot, Opening>) {
+    if let Some(error) = outcome.err().as_ref().and_then(Opening::reportable) {
+        crate::log_navigation(error);
+    }
 }
 
 async fn show_at(
     app: &tauri::AppHandle,
-    route: Option<Route>,
+    request: Request,
     clicked: Option<Rect>,
-) -> Result<Snapshot, String> {
+) -> Result<Snapshot, Opening> {
     let host = app.state::<Host>();
     if host.quitting.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("PR Sniper is quitting.".into());
+        return Err(Opening::Superseded);
     }
     let epoch = {
         let store = host
@@ -463,20 +559,30 @@ async fn show_at(
             .session
             .lock()
             .map_err(|_| "Panel navigation unavailable.")?;
-        session.navigate(&store, route)?;
-        session.revision
+        match session.request(&store, request)? {
+            Some(epoch) => epoch,
+            None => return Ok(session.snapshot(&store)),
+        }
     };
+    let outcome = present_at(app, epoch, clicked).await;
+    if let Ok(mut session) = host.panel.session.lock() {
+        session.finish(epoch);
+    }
+    outcome
+}
+
+async fn present_at(
+    app: &tauri::AppHandle,
+    epoch: u64,
+    clicked: Option<Rect>,
+) -> Result<Snapshot, Opening> {
+    let host = app.state::<Host>();
     let _opening = host.panel.opening.lock().await;
-    if host
-        .panel
+    host.panel
         .session
         .lock()
         .map_err(|_| "Panel navigation unavailable.")?
-        .revision
-        != epoch
-    {
-        return Err("Panel opening was replaced by a newer navigation or dismissal.".into());
-    }
+        .current(epoch)?;
     // WebView2 creation must not run in a synchronous command/event callback.
     let window = if let Some(window) = app.get_webview_window(LABEL) {
         window
@@ -496,20 +602,16 @@ async fn show_at(
     let (send, receive) = tokio::sync::oneshot::channel();
     let present_app = app.clone();
     app.run_on_main_thread(move || {
-        let outcome = (|| {
+        let outcome = (|| -> Result<Snapshot, Opening> {
             let host = present_app.state::<Host>();
-            {
-                let session = host
-                    .panel
-                    .session
-                    .lock()
-                    .map_err(|_| "Panel navigation unavailable.")?;
-                if session.revision != epoch
-                    || host.quitting.load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    return Err("Panel opening was replaced by a newer dismissal or Quit.".into());
-                }
+            if host.quitting.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(Opening::Superseded);
             }
+            host.panel
+                .session
+                .lock()
+                .map_err(|_| "Panel navigation unavailable.")?
+                .current(epoch)?;
             let warning = position(&present_app, &window, clicked)?;
             window
                 .show()
@@ -607,9 +709,7 @@ pub(crate) fn tray(
         let _ = click;
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(error) = show_at(&app, None, Some(clicked)).await {
-                crate::report(&app, error);
-            }
+            report(show_at(&app, Request::Reveal(None), Some(clicked)).await);
         });
         Ok(())
     }
@@ -703,7 +803,11 @@ pub(crate) async fn panel_navigate(
     app: tauri::AppHandle,
     route: Route,
 ) -> Result<Snapshot, String> {
-    show(&app, Some(route)).await
+    match show(&app, Request::Exact(route)).await {
+        // The newer owner already delivered its route; this one has nothing to show.
+        Err(Opening::Superseded) => snapshot(&app),
+        outcome => outcome.map_err(String::from),
+    }
 }
 #[tauri::command]
 pub(crate) fn hide_panel(app: tauri::AppHandle) -> Result<(), String> {

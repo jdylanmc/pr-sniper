@@ -369,11 +369,27 @@ pub struct Notice {
     pub created_at: i64,
     pub error: Option<String>,
     pub opened_at: Option<i64>,
+    #[serde(default, deserialize_with = "navigation_error")]
     pub navigation_error: Option<String>,
     /// The item's typed failure cause when this Failure notice was sent. The
     /// banner and history render its reason from this alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_cause: Option<String>,
+}
+
+/// Older builds saved a superseded panel open as a navigation error. Superseded
+/// is not a failure (`panel::Opening::Superseded`), so those exact sentences load as none.
+const SUPERSEDED_NAVIGATION: [&str; 3] = [
+    "Panel opening was replaced by a newer dismissal or Quit.",
+    "Panel opening was replaced by a newer navigation or dismissal.",
+    "PR Sniper is quitting.",
+];
+
+fn navigation_error<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?
+        .filter(|error| !SUPERSEDED_NAVIGATION.contains(&error.as_str())))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -769,6 +785,34 @@ pub fn restore(store: &Store) -> Result<(), String> {
     let mut ledger = store.load_notifications()?;
     ledger.restore();
     store.save_notifications(&ledger)
+}
+
+/// Records a presented or failed notification open on its notice.
+pub fn record_open(
+    store: &Store,
+    id: &str,
+    outcome: &Result<(), String>,
+    now: i64,
+) -> Result<(), String> {
+    let mut ledger = store.load_notifications()?;
+    if let Some(notice) = ledger.notices.iter_mut().find(|n| n.id == id) {
+        match outcome {
+            Ok(()) => {
+                notice.opened_at = Some(now);
+                notice.navigation_error = None;
+            }
+            Err(error) => notice.navigation_error = Some(error.clone()),
+        }
+        store.save_notifications(&ledger)
+    } else if crate::retention::load(store)?
+        .receipts
+        .iter()
+        .any(|r| r.notices.contains_key(id))
+    {
+        Ok(())
+    } else {
+        Err("Notification disappeared during navigation.".into())
+    }
 }
 
 #[cfg(windows)]

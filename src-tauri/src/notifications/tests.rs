@@ -1808,3 +1808,45 @@ fn windows_badge_uris_drop_verbatim_prefixes_and_escape_paths() {
     );
     assert_eq!(windows_file_uri(r"D:\x\y.png"), "file:///D:/x/y.png");
 }
+
+#[test]
+fn an_older_build_superseded_navigation_error_loads_as_none_after_upgrade() {
+    let (root, store) = store();
+    let id = admit(&store, &[frame(Category::Approved, "approved-1")]);
+    for (saved, loaded) in [
+        (
+            "Panel opening was replaced by a newer dismissal or Quit.",
+            None,
+        ),
+        (
+            "Panel opening was replaced by a newer navigation or dismissal.",
+            None,
+        ),
+        ("PR Sniper is quitting.", None),
+        (
+            "This exact saved destination is not available in the current evidence view.",
+            Some("This exact saved destination is not available in the current evidence view."),
+        ),
+    ] {
+        let mut ledger = store.load_notifications().unwrap();
+        ledger
+            .notices
+            .iter_mut()
+            .find(|n| n.id == id)
+            .unwrap()
+            .navigation_error = Some(saved.into());
+        store.save_notifications(&ledger).unwrap();
+        let bytes = String::from_utf8(store.read_state("notifications.json").unwrap()).unwrap();
+        assert!(bytes.contains(saved));
+        let upgraded = Store::new(root.path().into());
+        let notice = upgraded
+            .load_notifications()
+            .unwrap()
+            .notices
+            .into_iter()
+            .find(|n| n.id == id)
+            .unwrap();
+        assert_eq!(notice.navigation_error.as_deref(), loaded);
+        assert_eq!(notice.opened_at, None);
+    }
+}

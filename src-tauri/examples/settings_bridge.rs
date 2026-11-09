@@ -171,7 +171,7 @@ fn panel_dispatch(
     request: &Request,
     probe: Option<&str>,
 ) -> Result<Value, String> {
-    use pr_sniper_lib::panel::{Route, Session, Tab};
+    use pr_sniper_lib::panel::{Request as Open, Route, Session, Tab};
     // Lock a stable sidecar, not the session inode replaced at commit. Never unlink
     // it while the root is live: waiting processes must share the same OS lock.
     std::fs::create_dir_all(root).map_err(|_| "Cannot lock panel fixture session.")?;
@@ -234,7 +234,39 @@ fn panel_dispatch(
         )),
         _ => None,
     };
-    if route.is_some() || request.command == "fixture_show_panel" {
+    if request.command == "fixture_notification_click" {
+        // A notification open with a native trigger landing before it presents.
+        let item = request.args["itemId"]
+            .as_str()
+            .ok_or("Item identity required.")?;
+        let epoch = session
+            .request(store, Open::Exact(Route::item(item.into())))?
+            .ok_or("Notification open did not start.")?;
+        match request.args["race"].as_str() {
+            Some("none") => {}
+            Some("reopen") => {
+                session.request(store, Open::Reveal(Some(Route::tab(Tab::Queue))))?;
+            }
+            Some("navigation") => {
+                let newer = session
+                    .request(store, Open::Exact(Route::tab(Tab::Queue)))?
+                    .ok_or("Navigation did not start.")?;
+                session.set_visible(true);
+                session.finish(newer);
+            }
+            _ => return Err("Unknown notification race.".into()),
+        }
+        let presented = session.current(epoch).is_ok();
+        if presented {
+            session.set_visible(true);
+        }
+        session.finish(epoch);
+        // Like `notifications::host::open`: a superseded open records nothing.
+        if let (true, Some(notice)) = (presented, request.args["noticeId"].as_str()) {
+            let outcome = session.snapshot(store).missing.map_or(Ok(()), Err);
+            pr_sniper_lib::notifications::record_open(store, notice, &outcome, 1_800_000_000)?;
+        }
+    } else if route.is_some() || request.command == "fixture_show_panel" {
         session.navigate(store, route)?;
         session.set_visible(true);
     } else if request.command == "hide_panel" {
@@ -954,6 +986,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | "open_settings"
                 | "open_queue_item"
                 | "fixture_show_panel"
+                | "fixture_notification_click"
         ) {
             panel_dispatch(&store, &root, &request, probe)
         } else if probe.is_some() {

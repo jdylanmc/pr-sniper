@@ -370,7 +370,7 @@ fn dispatch(app: &tauri::AppHandle, registration: Registration, id: String) -> R
             super::host::open(&handle, &id).await
         }.await;
         if let Err(error) = result {
-            crate::report(&handle, error.clone());
+            crate::log_navigation(&error);
             show_error(&error);
         }
     });

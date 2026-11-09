@@ -171,6 +171,7 @@ export const test = base.extend({
                   "open_settings",
                   "open_queue_item",
                   "fixture_show_panel",
+                  "fixture_notification_click",
                 ].includes(command)
               )
                 window.__panelEvent(value);
