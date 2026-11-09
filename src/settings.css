@@ -3434,10 +3434,11 @@
 .panel-shell .shared-resource-host:has(~ .shared-resource-host) {
   visibility: hidden;
 }
+/* Card forms overlap the band like every other page; bare fields clear it. */
 .panel-shell
   .shared-resource-editor
   .dialog-body
-  > form:not(:has(.agent-section)) {
+  > form:not(:has(.agent-section, .repository-group)) {
   padding-top: 36px;
 }
 
