@@ -306,3 +306,46 @@ for (const theme of ["light", "dark"])
       await page.keyboard.press("Enter");
       await expect(page.getByRole("dialog")).toBeVisible();
     });
+
+for (const [width, height] of [
+  [408, 744],
+  [408, 520],
+])
+  test(`tabbing through a long list never leaves focus behind the + URL band (${width}x${height})`, async ({
+    page,
+    store,
+  }) => {
+    const nextKey =
+      page.context().browser().browserType().name() === "webkit" &&
+      process.platform === "darwin"
+        ? "Alt+Tab"
+        : "Tab";
+    await page.setViewportSize({ width, height });
+    await seedMany(store);
+    await open(page, store);
+    const controls = page.locator(
+      "[data-repository-accounts] :is(button, [role=switch]):not([disabled])",
+    );
+    const total = await controls.count();
+    await controls.first().focus();
+    const hidden = [];
+    for (let i = 1; i < total; i++) {
+      await page.keyboard.press(nextKey);
+      const result = await page.evaluate(() => {
+        const focused = document.activeElement;
+        if (!focused?.closest("[data-repository-accounts]")) return null;
+        const band = document
+          .querySelector("#add-repository")
+          .parentElement.getBoundingClientRect();
+        const scroller = document
+          .querySelector("#content")
+          .getBoundingClientRect();
+        const box = focused.getBoundingClientRect();
+        return box.bottom <= band.top && box.top >= scroller.top
+          ? ""
+          : focused.getAttribute("aria-label");
+      });
+      if (result) hidden.push(result);
+    }
+    expect(hidden).toEqual([]);
+  });

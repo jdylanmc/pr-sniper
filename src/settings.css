@@ -2861,11 +2861,22 @@
   min-height: 100%;
   margin-bottom: 0;
 }
+.panel-shell .settings-window {
+  --repository-add-band: 68px; /* 8px + 44px pill + 16px */
+}
 /* The band supplies the scroller's bottom inset so no row shows beneath it. */
 .panel-shell
   .settings-window[data-resource-library="repositories"][data-settings-section="repositories"]
   #content {
   padding-bottom: 0;
+}
+/* Keyboard focus scrolls list controls clear of the band, with ring room. */
+.panel-shell
+  .settings-window
+  .repository-library
+  [data-repository-accounts]
+  :is(button, [role="switch"]) {
+  scroll-margin-bottom: calc(var(--repository-add-band) + 8px);
 }
 .panel-shell .settings-window .repository-library > .section-actions {
   order: 1;
@@ -2874,12 +2885,16 @@
   bottom: 0;
   z-index: 5;
   justify-content: flex-end;
+  box-sizing: border-box;
+  height: var(--repository-add-band);
   margin-bottom: 0;
   padding: 8px 0 16px;
   background: var(--panel-mist);
 }
 .panel-shell .settings-window .repository-library #add-repository {
-  padding: 12px 18px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 18px;
   border: 0;
   border-radius: 999px;
   background: var(--panel-accent);
