@@ -2851,19 +2851,50 @@
   .settings-row-value {
   display: none;
 }
-/* Clear the floating + URL pill at the end of the scroll. */
+/* + URL sits in an opaque action band pinned to the bottom of the scroller,
+   after the last account: rows scroll out of view at its top edge, as at
+   the scroller's own edge, so the pill never covers a row or header control. */
 .panel-shell .settings-window .repository-library {
-  padding-bottom: 76px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 100%;
+  margin-bottom: 0;
+}
+.panel-shell .settings-window {
+  --repository-add-band: 68px; /* 8px + 44px pill + 16px */
+}
+/* The band supplies the scroller's bottom inset so no row shows beneath it. */
+.panel-shell
+  .settings-window[data-resource-library="repositories"][data-settings-section="repositories"]
+  #content {
+  padding-bottom: 0;
+}
+/* Keyboard focus scrolls list controls clear of the band, with ring room. */
+.panel-shell
+  .settings-window
+  .repository-library
+  [data-repository-accounts]
+  :is(button, [role="switch"]) {
+  scroll-margin-bottom: calc(var(--repository-add-band) + 8px);
 }
 .panel-shell .settings-window .repository-library > .section-actions {
-  margin: 0;
+  order: 1;
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  height: var(--repository-add-band);
+  margin-bottom: 0;
+  padding: 8px 0 16px;
+  background: var(--panel-mist);
 }
 .panel-shell .settings-window .repository-library #add-repository {
-  position: fixed;
-  right: 18px;
-  bottom: 104px;
-  z-index: 5;
-  padding: 12px 18px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 18px;
   border: 0;
   border-radius: 999px;
   background: var(--panel-accent);
