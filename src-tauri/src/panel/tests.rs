@@ -392,3 +392,92 @@ fn exact_iteration_and_normal_job_routing_uses_the_real_native_projection() {
     assert!(store.load_reviews().unwrap().is_empty());
     assert!(store.load_actions().unwrap().effects.is_empty());
 }
+
+#[test]
+fn a_reopen_during_a_notification_open_joins_it_instead_of_replacing_the_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut session = Session::default();
+    let exact = Route::item("iteration-exact".into());
+    let epoch = session
+        .request(&store, Request::Exact(exact.clone()))
+        .unwrap()
+        .unwrap();
+    // The notification click activates the app; macOS then reopens it.
+    let queue = Request::Reveal(Some(Route::tab(Tab::Queue)));
+    assert_eq!(session.request(&store, queue.clone()).unwrap(), None);
+    assert_eq!(
+        session.request(&store, Request::Reveal(None)).unwrap(),
+        None
+    );
+    // Activation blurs the still-visible panel; that must not dismiss the pending open.
+    session.visible = true;
+    assert!(!session.blur_can_hide(epoch));
+    assert_eq!(session.current(epoch), Ok(()));
+    session.set_visible(true);
+    session.finish(epoch);
+    assert_eq!(session.snapshot(&store).route, exact);
+    assert_eq!(
+        store.load_queue_selection().unwrap().as_deref(),
+        Some("iteration-exact")
+    );
+    // Once presented, a later reopen navigates normally.
+    let later = session.request(&store, queue).unwrap().unwrap();
+    assert_eq!(session.current(later), Ok(()));
+    assert_eq!(session.snapshot(&store).route, Route::tab(Tab::Queue));
+}
+
+#[test]
+fn a_reopen_before_the_notification_open_is_superseded_silently_by_the_exact_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut session = Session::default();
+    let reveal = session
+        .request(&store, Request::Reveal(Some(Route::tab(Tab::Queue))))
+        .unwrap()
+        .unwrap();
+    let exact = Route::item("iteration-exact".into());
+    let epoch = session
+        .request(&store, Request::Exact(exact.clone()))
+        .unwrap()
+        .unwrap();
+    let superseded = session.current(reveal).unwrap_err();
+    assert_eq!(superseded, Opening::Superseded);
+    assert_eq!(superseded.reportable(), None);
+    session.finish(reveal);
+    assert_eq!(session.current(epoch), Ok(()));
+    assert_eq!(session.snapshot(&store).route, exact);
+}
+
+#[test]
+fn an_explicit_dismissal_or_newer_destination_supersedes_a_pending_open_without_an_error() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut session = Session::default();
+    let first = session
+        .request(&store, Request::Exact(Route::item("first".into())))
+        .unwrap()
+        .unwrap();
+    let second = session
+        .request(&store, Request::Exact(Route::item("second".into())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.current(first), Err(Opening::Superseded));
+    session.finish(first);
+    // The newer exact open is still pending: a reveal still joins it.
+    assert_eq!(
+        session.request(&store, Request::Reveal(None)).unwrap(),
+        None
+    );
+    session.dismiss(false);
+    assert_eq!(session.current(second), Err(Opening::Superseded));
+    // Explicit Close ends the pending open; the next reveal opens normally.
+    assert!(session
+        .request(&store, Request::Reveal(None))
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        Opening::Failed("Cannot show the application panel.".into()).reportable(),
+        Some("Cannot show the application panel.")
+    );
+}

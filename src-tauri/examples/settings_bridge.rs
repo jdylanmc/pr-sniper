@@ -171,7 +171,7 @@ fn panel_dispatch(
     request: &Request,
     probe: Option<&str>,
 ) -> Result<Value, String> {
-    use pr_sniper_lib::panel::{Route, Session, Tab};
+    use pr_sniper_lib::panel::{Request as Open, Route, Session, Tab};
     // Lock a stable sidecar, not the session inode replaced at commit. Never unlink
     // it while the root is live: waiting processes must share the same OS lock.
     std::fs::create_dir_all(root).map_err(|_| "Cannot lock panel fixture session.")?;
@@ -234,7 +234,42 @@ fn panel_dispatch(
         )),
         _ => None,
     };
-    if route.is_some() || request.command == "fixture_show_panel" {
+    if request.command == "fixture_notification_click" {
+        // A notification open with a native trigger landing before it presents.
+        let item = request.args["itemId"]
+            .as_str()
+            .ok_or("Item identity required.")?;
+        let epoch = session
+            .request(store, Open::Exact(Route::item(item.into())))?
+            .ok_or("Notification open did not start.")?;
+        match request.args["race"].as_str() {
+            Some("reopen") => {
+                session.request(store, Open::Reveal(Some(Route::tab(Tab::Queue))))?;
+            }
+            Some("navigation") => {
+                let newer = session
+                    .request(store, Open::Exact(Route::tab(Tab::Queue)))?
+                    .ok_or("Navigation did not start.")?;
+                session.set_visible(true);
+                session.finish(newer);
+            }
+            _ => return Err("Unknown notification race.".into()),
+        }
+        match session.current(epoch) {
+            Ok(()) => session.set_visible(true),
+            Err(opening) => {
+                // The native host keeps reported background errors for later snapshots.
+                if let Some(error) = opening.reportable() {
+                    std::fs::write(
+                        root.join("fixture-host-error.json"),
+                        json!(error).to_string(),
+                    )
+                    .map_err(|_| "Cannot save fixture host error.")?;
+                }
+            }
+        }
+        session.finish(epoch);
+    } else if route.is_some() || request.command == "fixture_show_panel" {
         session.navigate(store, route)?;
         session.set_visible(true);
     } else if request.command == "hide_panel" {
@@ -954,10 +989,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | "open_settings"
                 | "open_queue_item"
                 | "fixture_show_panel"
+                | "fixture_notification_click"
         ) {
             panel_dispatch(&store, &root, &request, probe)
         } else if probe.is_some() {
             Err("Panel fixture probes require a panel command.".into())
+        } else if request.command == "snapshot" {
+            // Like Host::error, a reported background error outlives the action that set it.
+            let reported = fs::read(root.join("fixture-host-error.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok());
+            dispatch(&store, request).map(|mut value| {
+                if value["error"].is_null() {
+                    value["error"] = json!(reported);
+                }
+                value
+            })
         } else {
             dispatch(&store, request)
         };

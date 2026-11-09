@@ -4787,9 +4787,13 @@ fn describe_schedules(crons: Vec<String>) -> Vec<Option<schedule::Builder>> {
 
 #[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    panel::show(&app, Some(panel::Route::tab(panel::Tab::Settings)))
-        .await
-        .map(|_| ())
+    panel::show(
+        &app,
+        panel::Request::Exact(panel::Route::tab(panel::Tab::Settings)),
+    )
+    .await
+    .map(|_| ())
+    .map_err(String::from)
 }
 
 #[tauri::command]
@@ -4816,7 +4820,7 @@ async fn open_queue_destination(
 
 #[tauri::command]
 async fn open_queue_item(app: tauri::AppHandle, item_id: String) -> Result<(), String> {
-    match panel::show(&app, Some(panel::Route::item(item_id)))
+    match panel::show(&app, panel::Request::Exact(panel::Route::item(item_id)))
         .await?
         .missing
     {
@@ -5342,12 +5346,7 @@ pub fn run() {
                     let Some(target) = tray_route(event.id.as_ref()) else {
                         return;
                     };
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) = panel::show(&app, Some(target)).await {
-                            report(&app, error);
-                        }
-                    });
+                    panel::present(app, panel::Request::Exact(target));
                 })
                 .build(app)?;
             Ok(())
@@ -5390,12 +5389,11 @@ pub fn run() {
 
 #[cfg(not(windows))]
 fn show_queue_panel(app: &tauri::AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = panel::show(&app, Some(panel::Route::tab(panel::Tab::Queue))).await {
-            report(&app, error);
-        }
-    });
+    // macOS also reopens when a notification click activates the app: join that open.
+    panel::present(
+        app,
+        panel::Request::Reveal(Some(panel::Route::tab(panel::Tab::Queue))),
+    );
 }
 
 #[cfg(test)]

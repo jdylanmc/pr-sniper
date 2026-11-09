@@ -362,9 +362,21 @@ pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String>
         destination(&store, id)?
     };
     let now = now_seconds()?;
+    use crate::panel::{Opening, Request, Route, Tab};
     let outcome = match destination {
-        Destination::QueueItem { item_id } => crate::open_queue_item(app.clone(), item_id).await,
-        Destination::Settings => crate::open_settings(app.clone()).await,
+        Destination::QueueItem { item_id } => {
+            crate::panel::show(app, Request::Exact(Route::item(item_id)))
+                .await
+                .and_then(|state| state.missing.map_or(Ok(()), |reason| Err(reason.into())))
+        }
+        Destination::Settings => crate::panel::show(app, Request::Exact(Route::tab(Tab::Settings)))
+            .await
+            .map(|_| ()),
+    };
+    // A newer navigation, dismissal or Quit owns the panel: nothing failed to report.
+    let outcome = match outcome {
+        Err(Opening::Superseded) => return Ok(()),
+        outcome => outcome.map_err(String::from),
     };
     {
         let store = host
