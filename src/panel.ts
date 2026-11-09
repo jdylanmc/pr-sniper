@@ -9,7 +9,7 @@ import { renderMonitoring, type MonitoringSnapshot } from "./monitoring";
 import type { AutomationSnapshot, FailureClass } from "./automation";
 import crosshair from "./crosshair.svg";
 import sniperArt from "./sniper-mark.png";
-import { humanQueue, teammateChip } from "./queue";
+import { humanQueue, teammateChip, type QueueItem } from "./queue";
 import { itemFixTarget, retryCommands, runRecoveries } from "./queue-detail";
 import {
   workPresentation,
@@ -376,13 +376,7 @@ export async function mountPanel(app: HTMLElement) {
       snapshot = value;
       if (reopened && value?.items) {
         reopened = false;
-        const items = humanQueue(value.items);
-        const ready = items.filter(
-          (item) => item.state === "machine_signed_off",
-        ).length;
-        const counts = { ready, attention: items.length - ready };
-        if (queueFilter && !counts[queueFilter] && items.length)
-          queueFilter = undefined;
+        dropEmptyChoice(value.items);
       }
       drawSummary();
       drawLists();
@@ -559,7 +553,18 @@ export async function mountPanel(app: HTMLElement) {
 
   let queueFilter: "ready" | "attention" | undefined;
   // A reopened panel drops a chosen card that emptied while the other has rows.
+  // Checked on reopen and again on the first snapshot after it; a choice made
+  // after the reopen always holds.
   let reopened = false;
+  function dropEmptyChoice(all: QueueItem[]) {
+    const items = humanQueue(all);
+    const ready = items.filter(
+      (item) => item.state === "machine_signed_off",
+    ).length;
+    const counts = { ready, attention: items.length - ready };
+    if (queueFilter && !counts[queueFilter] && items.length)
+      queueFilter = undefined;
+  }
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
     const queue = route.tab === "queue";
@@ -1013,7 +1018,10 @@ export async function mountPanel(app: HTMLElement) {
     const changed = key(state.route) !== key(route);
     const restore = state.visible && (changed || !lastVisible);
     const focusAtStart = focusRevision;
-    if (state.visible && !lastVisible) reopened = true;
+    if (state.visible && !lastVisible) {
+      reopened = true;
+      if (snapshot?.items) dropEmptyChoice(snapshot.items);
+    }
     lastVisible = state.visible;
     if (changed || !state.visible) remember();
     if (changed && (state.route.tab !== setupOwner || state.route.detail)) {
@@ -1182,6 +1190,7 @@ export async function mountPanel(app: HTMLElement) {
   ))
     button.onclick = () => {
       queueFilter = button.dataset.queueFilter as "ready" | "attention";
+      reopened = false;
       drawSummary();
     };
   app.querySelector<HTMLButtonElement>("[data-queue-work]")!.onclick = () =>

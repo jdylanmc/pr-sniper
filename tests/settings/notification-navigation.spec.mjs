@@ -124,6 +124,38 @@ test("a reopened panel shows Ready rows once the chosen Needs attention card emp
   ).toBeVisible();
 });
 
+test("a card chosen right after a reopen holds before its first snapshot lands", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const { state } = await queueFixture(store);
+  await page.goto("/");
+  await expect(
+    page.locator('[data-queue-group="attention"] .queue-item').first(),
+  ).toBeAttached();
+  const kept = (entry) =>
+    (entry.job ?? entry.review?.job ?? entry).number === 9;
+  for (const key of ["jobs", "reviews", "publications"])
+    state[key] = state[key].filter(kept);
+  await store("seed_queue_state", state);
+  const hold = ipc.holdNext("monitoring_snapshot");
+  await page.evaluate(async () => {
+    await window.__TAURI_INTERNALS__.invoke("hide_panel", {});
+    await window.__TAURI_INTERNALS__.invoke("fixture_show_panel", {});
+  });
+  await hold.arrived;
+  await page.locator("[data-queue-filter=attention]").click();
+  hold.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  await stateChanged(page);
+  await expect(page.locator("[data-queue-filter=attention]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
 test("a notification navigation error never renders on Settings, even after repository saves", async ({
   page,
   store,
