@@ -100,6 +100,15 @@ grants no approval, ready, or merge authority.
   Use `GH_TOKEN="$(gh auth token --user jdylanmc)"` for `gh` and a one-shot
   credential helper for `git push`; never change the global active account.
 - Never use `pkill`; stop own processes by PID.
+- Delivery worktrees: one per task, sibling of the main checkout
+  (`../pr-sniper-<slug>`). Each grows 10–20 GB once built (`target/`,
+  `node_modules/`, test output). Remove yours as soon as its PR merges or is
+  abandoned: `git worktree remove --force ../pr-sniper-<slug>`, then
+  `git worktree prune`. First confirm nothing is lost: no uncommitted changes
+  (ignore build output) and no commits missing from `origin/main` or the
+  pushed branch; otherwise keep it and report why. Never remove the main
+  checkout or a worktree another active agent owns. Coordinators sweep
+  merged worktrees after each delivery cycle.
 - Icons: `swift scripts/generate-icons.swift`. Source `src/crosshair.svg`; tray uses a transparent template PNG.
 - Never put credentials in doctrines, prompts or config. Never log provider bodies, tokens or subprocess output.
 
