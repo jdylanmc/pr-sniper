@@ -162,19 +162,34 @@ export async function mountPanel(app: HTMLElement) {
   const context = app.querySelector<HTMLElement>(".panel-context")!;
   // Cards overlap the title band at rest; scrolled content slides under the band
   // instead of drawing over it. Covers every scroller inside the content area.
+  const bandScrollers = new Set<HTMLElement>([content]);
   const clipUnderBand = (scroller: HTMLElement) => {
-    // A band that scrolls with the content never needs a clip.
-    const overlap = scroller.contains(context)
-      ? 0
-      : context.getBoundingClientRect().bottom -
-        scroller.getBoundingClientRect().top;
+    // A band that scrolls with the content never needs a clip. Neither does a
+    // scroller that is not the active one: a list kept under an open drill-in
+    // retains its scrollTop, and its clip would slice the drill-in's cards.
+    const active =
+      scroller.isConnected &&
+      /^(auto|scroll)$/.test(getComputedStyle(scroller).overflowY);
+    const overlap =
+      !active || scroller.contains(context)
+        ? 0
+        : context.getBoundingClientRect().bottom -
+          scroller.getBoundingClientRect().top;
     const clip = Math.max(0, Math.min(scroller.scrollTop, overlap));
     scroller.style.clipPath = clip > 0 ? `inset(${clip}px 0 0 0)` : "";
+  };
+  const refreshBandClips = () => {
+    for (const scroller of bandScrollers) {
+      if (!scroller.isConnected) bandScrollers.delete(scroller);
+      clipUnderBand(scroller);
+    }
   };
   content.addEventListener(
     "scroll",
     (event) => {
-      if (event.target instanceof HTMLElement) clipUnderBand(event.target);
+      if (!(event.target instanceof HTMLElement)) return;
+      bandScrollers.add(event.target);
+      clipUnderBand(event.target);
     },
     { capture: true, passive: true },
   );
@@ -423,6 +438,7 @@ export async function mountPanel(app: HTMLElement) {
     heading.textContent = sub ? sub.title : destinations[route.tab].title;
     back.hidden =
       !sub && !route.detail && (!setupVisible() || setupTitle === "Welcome");
+    refreshBandClips();
   };
   views.settings.addEventListener("pr-sniper:settings-section", (event) => {
     settingsSub = (event as CustomEvent).detail;
@@ -1059,7 +1075,6 @@ export async function mountPanel(app: HTMLElement) {
     } else if (inContent(context) || inContent(summary)) {
       content.before(context, summary, error);
     }
-    clipUnderBand(content);
     drawSummary();
     for (const button of app.querySelectorAll<HTMLButtonElement>(
       "[data-panel-tab]",
@@ -1077,6 +1092,7 @@ export async function mountPanel(app: HTMLElement) {
           : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
+    refreshBandClips();
     views.settings.dispatchEvent(
       new CustomEvent("pr-sniper:section-active", {
         detail: visible === "settings",
