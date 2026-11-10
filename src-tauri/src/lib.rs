@@ -14,6 +14,7 @@ pub mod exits;
 pub mod feedback;
 pub mod follow_up;
 pub mod github;
+pub mod host_errors;
 pub mod host_panic;
 pub mod monitoring;
 pub mod notifications;
@@ -70,7 +71,7 @@ struct Host {
     panel: panel::Panel,
     store: Mutex<Store>,
     monitor: Mutex<monitoring::Monitor>,
-    error: Mutex<Option<String>>,
+    errors: Mutex<host_errors::Board>,
     isolated: bool,
     quitting: AtomicBool,
     registration: LoginRegistration,
@@ -1365,6 +1366,8 @@ struct Snapshot {
     login_registration: Option<RegistrationStatus>,
     isolated: bool,
     error: Option<String>,
+    /// Occurrence id when `error` is a host error; dismiss it with `dismiss_error`.
+    error_id: Option<u64>,
     version: &'static str,
     settings_persisted: bool,
 }
@@ -2031,6 +2034,9 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let ticket_for_poll = ticket.clone();
+            let poll_source = host_errors::Source::Poll {
+                repository: ticket.repository_id.clone(),
+            };
             let account_id = ticket.provider_account_id.clone();
             let provider = ticket.provider.clone();
             let result = (|| {
@@ -2076,9 +2082,8 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 let scope = connectivity::repository_scope(&provider, &account_id);
                 let observation = connectivity::probe(&scope);
                 if let (Ok(store), Ok(now)) = (host.store.lock(), now_seconds()) {
-                    if let Err(error) = connectivity::record(&store, scope, observation, now) {
-                        report(&app, error);
-                    }
+                    let recorded = connectivity::record(&store, scope, observation, now);
+                    settle(&app, host_errors::Source::Connectivity, recorded);
                 }
             }
             match connection_failure {
@@ -2101,23 +2106,23 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 Err(error) => Err(monitoring::MonitoringError::Storage(error)),
             };
             let continue_checks = match &saved {
-                Ok(()) => true,
                 Err(error) if error.requires_host_report() => {
-                    report(&app, error.message().into());
+                    report(&app, poll_source, error.message().into());
                     false
                 }
                 Err(error) => {
                     eprintln!("PR Sniper: {}", error.message());
                     true
                 }
+                Ok(()) => {
+                    settle(&app, poll_source, Ok(()));
+                    true
+                }
             };
             if continue_checks && !host.quitting.load(Ordering::SeqCst) {
-                if let Err(error) = retention_maintenance(&app, None, false) {
-                    report(&app, error);
-                }
-                if let Err(error) = start_checks(&app, false) {
-                    report(&app, error);
-                }
+                let maintained = retention_maintenance(&app, None, false).map(|_| ());
+                settle(&app, pass(host_errors::Pass::Maintenance), maintained);
+                settle(&app, host_errors::Source::Checks, start_checks(&app, false));
             }
         });
     }
@@ -2201,17 +2206,52 @@ fn record(app: &tauri::AppHandle, event: DiagnosticEvent) {
         .lock()
         .map_err(|_| "Storage is unavailable.".to_string())
         .and_then(|store| store.record(event));
-    if let Err(error) = result {
-        report(app, error);
+    settle(app, host_errors::Source::Journal, result);
+}
+
+/// A background failure with no screen of its own. Callers supply only fixed,
+/// safe messages; never forward platform errors.
+fn report(app: &tauri::AppHandle, source: host_errors::Source, error: String) {
+    settle(app, source, Err(error));
+}
+
+/// Records a background outcome: a failure becomes (or continues) the source's
+/// host error; a success resolves it.
+fn settle(app: &tauri::AppHandle, source: host_errors::Source, result: Result<(), String>) {
+    if let Err(error) = &result {
+        eprintln!("PR Sniper: {error}");
+    }
+    if let Ok(mut board) = app.state::<Host>().errors.lock() {
+        board.settle(source, result);
     }
 }
 
-fn report(app: &tauri::AppHandle, error: String) {
-    // Callers supply only fixed, safe messages; never forward platform errors.
-    eprintln!("PR Sniper: {error}");
-    if let Ok(mut current) = app.state::<Host>().error.lock() {
-        *current = Some(error);
-    }
+fn pass(pass: host_errors::Pass) -> host_errors::Source {
+    host_errors::Source::Pass { pass }
+}
+
+/// The host error source of one scheduler pass; notification runs settle their own.
+fn scheduled_pass(coordinator: wake::Coordinator) -> Option<host_errors::Source> {
+    use host_errors::Pass;
+    Some(pass(match coordinator {
+        wake::Coordinator::Maintenance => Pass::Maintenance,
+        wake::Coordinator::Resume => Pass::Resume,
+        wake::Coordinator::Capacity => Pass::Capacity,
+        wake::Coordinator::Publication => Pass::Publication,
+        wake::Coordinator::ExitWrites => Pass::ExitWrites,
+        wake::Coordinator::FollowUps => Pass::FollowUps,
+        wake::Coordinator::Actions => Pass::Actions,
+        wake::Coordinator::Notifications => return None,
+    }))
+}
+
+#[tauri::command]
+fn dismiss_error(host: State<'_, Host>, id: u64) -> Result<(), String> {
+    host.errors
+        .lock()
+        .map_err(|_| "Host status is unavailable.")?
+        .dismiss(id);
+    Ok(())
 }
 
 /// A failed panel or notification navigation. It is logged, never the host error:
@@ -2222,11 +2262,13 @@ pub(crate) fn log_navigation(error: &str) {
 
 #[tauri::command]
 fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
-    let mut error = host
-        .error
+    let shown = host
+        .errors
         .lock()
         .map_err(|_| "Host status is unavailable.")?
-        .clone();
+        .current();
+    let mut error_id = shown.as_ref().map(|shown| shown.id);
+    let mut error = shown.map(|shown| shown.message);
     let settings = match host
         .store
         .lock()
@@ -2236,6 +2278,7 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
         Ok(settings) => Some(settings),
         Err(message) => {
             error = Some(message);
+            error_id = None;
             None
         }
     };
@@ -2243,6 +2286,7 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
         Ok(status) => Some(status),
         Err(message) => {
             error = Some(message);
+            error_id = None;
             None
         }
     };
@@ -2252,6 +2296,7 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
         login_registration,
         isolated: host.isolated,
         error,
+        error_id,
         version: env!("CARGO_PKG_VERSION"),
         settings_persisted: host
             .store
@@ -4481,9 +4526,7 @@ fn confirm_github_account(
             .map_err(|_| "Storage is unavailable.".to_string())
             .and_then(|store| store.freeze())
             .and_then(|frozen| auto_resume_parked(&app, &frozen));
-        if let Err(error) = resumed {
-            report(&app, error);
-        }
+        settle(&app, pass(host_errors::Pass::Resume), resumed);
     }
     Ok(view)
 }
@@ -4944,6 +4987,7 @@ pub fn run() {
             result_detail,
             clean_reviewed,
             dismiss_stale_review,
+            dismiss_error,
             review_again,
             snapshot,
             save_preferences,
@@ -5092,7 +5136,7 @@ pub fn run() {
                 panel: panel::Panel::default(),
                 store: Mutex::new(store),
                 monitor: Mutex::new(monitor),
-                error: Mutex::new(None),
+                errors: Mutex::new(host_errors::Board::default()),
                 isolated,
                 quitting: AtomicBool::new(false),
                 registration: LoginRegistration::for_app(
@@ -5122,15 +5166,15 @@ pub fn run() {
             app.manage(azure_devops_setup);
             app.manage(azure_devops::host::read_transport()?);
             if let Err(error) = control::start(app.handle(), &root) {
-                report(app.handle(), error);
+                report(app.handle(), host_errors::Source::Control, error);
             }
             #[cfg(windows)]
             notifications::windows::ready(app.handle());
             if let Err(error) = notification_restore {
-                report(app.handle(), error);
+                report(app.handle(), host_errors::Source::Notifications, error);
             }
             if let Err(error) = compaction {
-                report(app.handle(), error);
+                report(app.handle(), host_errors::Source::Compaction, error);
             }
             if !isolated {
                 let host = app.state::<Host>();
@@ -5160,20 +5204,17 @@ pub fn run() {
                     if host.quitting.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(error) = connectivity::refresh(&scheduler_app).await {
-                        report(&scheduler_app, error);
-                    }
-                    if let Err(error) = start_checks(&scheduler_app, false) {
-                        report(&scheduler_app, error);
-                    }
+                    let refreshed = connectivity::refresh(&scheduler_app).await;
+                    settle(&scheduler_app, host_errors::Source::Connectivity, refreshed);
+                    let checks = start_checks(&scheduler_app, false);
+                    settle(&scheduler_app, host_errors::Source::Checks, checks);
                     let now = now_seconds().unwrap_or(i64::MAX);
                     // Sample before the gated passes: their own writes wake
                     // the next tick once, then an unchanged store settles.
                     let generations = match host.store.lock() {
                         Ok(store) => {
-                            if let Err(error) = store.flush_progress(false) {
-                                report(&scheduler_app, error);
-                            }
+                            let flushed = store.flush_progress(false);
+                            settle(&scheduler_app, host_errors::Source::Progress, flushed);
                             store.generations()
                         }
                         Err(_) => continue,
@@ -5191,9 +5232,12 @@ pub fn run() {
                         .map_err(|_| "Storage is unavailable.".to_string())
                         .and_then(|store| store.freeze())
                     {
-                        Ok(view) => view,
+                        Ok(view) => {
+                            settle(&scheduler_app, host_errors::Source::Scheduler, Ok(()));
+                            view
+                        }
                         Err(error) => {
-                            report(&scheduler_app, error);
+                            report(&scheduler_app, host_errors::Source::Scheduler, error);
                             continue;
                         }
                     };
@@ -5201,7 +5245,12 @@ pub fn run() {
                         let result = match coordinator {
                             wake::Coordinator::Maintenance => {
                                 let compact = gates.compaction_due(now);
-                                retention_maintenance(&scheduler_app, None, compact).map(|_| ())
+                                let result = retention_maintenance(&scheduler_app, None, compact)
+                                    .map(|_| ());
+                                if compact && result.is_ok() {
+                                    settle(&scheduler_app, host_errors::Source::Compaction, Ok(()));
+                                }
+                                result
                             }
                             wake::Coordinator::Resume => auto_resume_parked(&scheduler_app, &view),
                             wake::Coordinator::Capacity => {
@@ -5228,8 +5277,8 @@ pub fn run() {
                                 Ok(())
                             }
                         };
-                        if let Err(error) = result {
-                            report(&scheduler_app, error);
+                        if let Some(source) = scheduled_pass(*coordinator) {
+                            settle(&scheduler_app, source, result);
                         }
                     }
                     due.retain(|coordinator| !deferred.contains(coordinator));
@@ -5271,7 +5320,7 @@ pub fn run() {
                             button_state == MouseButtonState::Down,
                             position,
                         ) {
-                            report(tray.app_handle(), error);
+                            log_navigation(&error);
                         }
                     }
                 })
@@ -5279,7 +5328,7 @@ pub fn run() {
                     if event.id.as_ref() == "close-panel" {
                         if let Some(window) = app.get_webview_window(panel::LABEL) {
                             if window.close().is_err() {
-                                report(app, "Cannot request native panel close.".into());
+                                log_navigation("Cannot request native panel close.");
                             }
                         }
                         return;
@@ -5287,9 +5336,8 @@ pub fn run() {
                     if event.id.as_ref() == "check" {
                         let check_app = app.clone();
                         tauri::async_runtime::spawn_blocking(move || {
-                            if let Err(error) = start_checks(&check_app, true) {
-                                report(&check_app, error);
-                            }
+                            let checks = start_checks(&check_app, true);
+                            settle(&check_app, host_errors::Source::Checks, checks);
                         });
                         return;
                     }
@@ -5302,10 +5350,10 @@ pub fn run() {
                         host.copilot.request_shutdown();
                         if let Ok(store) = host.store.lock() {
                             if let Err(error) = host.ai.shutdown(&store) {
-                                report(app, error);
+                                report(app, host_errors::Source::Capacity, error);
                             }
                             if let Err(error) = store.flush_progress(true) {
-                                report(app, error);
+                                report(app, host_errors::Source::Progress, error);
                             }
                         }
                         host.follow_ups.cancel_all();
@@ -5365,7 +5413,7 @@ pub fn run() {
                 api.prevent_close();
                 record(window.app_handle(), DiagnosticEvent::WindowCloseRequested);
                 if let Err(error) = panel::hide(window.app_handle()) {
-                    report(window.app_handle(), error);
+                    log_navigation(&error);
                 }
             } else if let tauri::WindowEvent::Focused(false) = event {
                 panel::lost_focus(window.app_handle());

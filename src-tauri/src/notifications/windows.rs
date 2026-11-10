@@ -83,8 +83,9 @@ impl Native {
         self.stopped.store(true, Ordering::SeqCst);
         if let Ok(mut server) = self.server.lock() {
             if let Some(server) = server.take() {
+                // Quit: the process ends before any window could show it.
                 if let Err(error) = server.stop() {
-                    crate::report(&self.app, error);
+                    eprintln!("PR Sniper: {error}");
                 }
             }
         }
@@ -418,7 +419,7 @@ pub(crate) fn ready(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = handle.state::<Host>().notifications.ready() {
-            crate::report(&handle, error);
+            crate::report(&handle, crate::host_errors::Source::NotificationHost, error);
         }
     });
     forward(app, &std::env::args().collect::<Vec<_>>());
@@ -442,8 +443,8 @@ pub(crate) fn shutdown(app: &tauri::AppHandle) {
     let cancelled = PENDING.lock().map(|mut pending| pending.shutdown());
     match cancelled {
         Ok(pending) if pending.is_empty() => {}
-        Ok(_) => crate::report(app, "Notification startup navigation was cancelled during shutdown; retry the notification.".into()),
-        Err(_) => crate::report(app, "Notification startup queue could not be closed.".into()),
+        Ok(_) => crate::log_navigation("Notification startup navigation was cancelled during shutdown; retry the notification."),
+        Err(_) => crate::log_navigation("Notification startup queue could not be closed."),
     }
     app.state::<Host>().notifications.shutdown();
 }

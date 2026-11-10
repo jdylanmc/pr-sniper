@@ -1,4 +1,5 @@
 use super::{key, runtime, Failure, ReviewRun, Selection};
+use crate::host_errors::Source;
 use crate::{
     monitoring::{self, OperationState, QueueJob},
     now_seconds,
@@ -314,18 +315,17 @@ pub(crate) fn launch_worker(app: &tauri::AppHandle, run: ReviewRun, cancelled: A
                     super::diagnostics::retry_event(&current.operation),
                 )
             });
-            if let Err(error) = diagnostic {
-                crate::report(&app, error);
-            }
+            crate::settle(&app, Source::AttemptDiagnostics, diagnostic);
             Ok::<_, String>(())
         })();
         if let Err(error) = saved {
-            crate::report(&app, error);
+            crate::report(&app, Source::Review, error);
             if let Err(error) = host.ai.persistence_failed(&run.operation.id) {
-                crate::report(&app, error);
+                crate::report(&app, Source::Review, error);
             }
             return;
         }
+        crate::settle(&app, Source::Review, Ok(()));
         crate::capacity::refill(
             &app,
             &crate::capacity::WorkId {
@@ -657,7 +657,7 @@ pub(crate) async fn execute(
     });
     if let Err(error) = &result {
         if let Err(error) = crate::connectivity::confirm_failure(&app, &run, error).await {
-            crate::report(&app, error);
+            crate::report(&app, Source::Connectivity, error);
         }
     }
     diagnostics.finish(
@@ -1291,8 +1291,8 @@ fn duck_setup(
             let now = now_seconds().unwrap_or(0);
             crate::backpressure::record(&store, scope, retry_after, &seed, now)
         });
-        if let Ok(Err(error)) = recorded {
-            crate::report(&pace_app, error);
+        if let Ok(recorded) = recorded {
+            crate::settle(&pace_app, Source::Backpressure, recorded.map(|_| ()));
         }
     });
     Ok(Some(runtime::DuckSetup {

@@ -947,6 +947,49 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
     }
 }
 
+// The host error board lives in the native process; fixtures keep it beside the store.
+fn host_errors(root: &Path, request: &Request, result: Value) -> Result<Value, String> {
+    use pr_sniper_lib::host_errors::{Board, Source};
+    let path = root.join("fixture-host-errors.json");
+    let mut board: Board = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Invalid host error fixture.")?,
+        Err(_) => Board::default(),
+    };
+    let value = match request.command.as_str() {
+        "snapshot" => {
+            let mut result = result;
+            // Like the native snapshot: a settings read error replaces the host error.
+            if result["error"].is_null() {
+                let shown = board.current();
+                result["error"] = json!(shown.as_ref().map(|shown| &shown.message));
+                result["error_id"] = json!(shown.map(|shown| shown.id));
+            } else {
+                result["error_id"] = Value::Null;
+            }
+            return Ok(result);
+        }
+        "fixture_host_error" => {
+            let source: Source = serde_json::from_value(request.args["source"].clone())
+                .map_err(|_| "Invalid host error source.")?;
+            match request.args["message"].as_str() {
+                Some(message) => json!(board.raise(source, message.into())),
+                None => {
+                    board.resolve(&source);
+                    Value::Null
+                }
+            }
+        }
+        "dismiss_error" => {
+            board.dismiss(request.args["id"].as_u64().ok_or("Error id required.")?);
+            Value::Null
+        }
+        _ => return Err("Unsupported host error command.".into()),
+    };
+    let bytes = serde_json::to_vec(&board).map_err(|_| "Cannot encode host errors.")?;
+    fs::write(&path, bytes).map_err(|_| "Cannot save host error fixture.")?;
+    Ok(value)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::args().nth(1).ok_or("Missing test data root")?);
     if !root.is_absolute() {
@@ -991,6 +1034,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             panel_dispatch(&store, &root, &request, probe)
         } else if probe.is_some() {
             Err("Panel fixture probes require a panel command.".into())
+        } else if matches!(
+            request.command.as_str(),
+            "fixture_host_error" | "dismiss_error"
+        ) {
+            host_errors(&root, &request, Value::Null)
+        } else if request.command == "snapshot" {
+            let command = Request {
+                command: request.command.clone(),
+                args: request.args.clone(),
+            };
+            dispatch(&store, command).and_then(|result| host_errors(&root, &request, result))
         } else {
             dispatch(&store, request)
         };
