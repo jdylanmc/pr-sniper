@@ -38,12 +38,10 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 **macOS** (Apple Silicon, macOS 13.5+):
 
 ```sh
-brew tap jdylanmc/pr-sniper
-brew trust --cask jdylanmc/pr-sniper/pr-sniper
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
 
-Homebrew 7 refuses casks from untrusted taps. `brew trust` unknown? Run `brew update` first.
+The full name taps `jdylanmc/pr-sniper` and trusts only this cask.
 
 Or download the signed, notarized `pr-sniper-VERSION-aarch64-apple-darwin.zip` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `SHA256SUMS` digest. Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater.
 
