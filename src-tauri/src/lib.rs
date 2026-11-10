@@ -2105,20 +2105,14 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 ),
                 Err(error) => Err(monitoring::MonitoringError::Storage(error)),
             };
-            let continue_checks = match &saved {
-                Err(error) if error.requires_host_report() => {
-                    report(&app, poll_source, error.message().into());
-                    false
-                }
-                Err(error) => {
+            if let Err(error) = &saved {
+                if !error.requires_host_report() {
                     eprintln!("PR Sniper: {}", error.message());
-                    true
                 }
-                Ok(()) => {
-                    settle(&app, poll_source, Ok(()));
-                    true
-                }
-            };
+            }
+            let outcome = poll_host_outcome(&saved);
+            let continue_checks = outcome.is_ok();
+            settle(&app, poll_source, outcome);
             if continue_checks && !host.quitting.load(Ordering::SeqCst) {
                 let maintained = retention_maintenance(&app, None, false).map(|_| ());
                 settle(&app, pass(host_errors::Pass::Maintenance), maintained);
@@ -2228,6 +2222,16 @@ fn settle(app: &tauri::AppHandle, source: host_errors::Source, result: Result<()
 
 fn pass(pass: host_errors::Pass) -> host_errors::Source {
     host_errors::Source::Pass { pass }
+}
+
+/// A saved poll, even one the provider failed, resolves the repository's host
+/// error: that failure shows on the repository's health. Only an unsaved
+/// result (or a failed conversation admission) is a host error.
+fn poll_host_outcome(saved: &Result<(), monitoring::MonitoringError>) -> Result<(), String> {
+    match saved {
+        Err(error) if error.requires_host_report() => Err(error.message().into()),
+        _ => Ok(()),
+    }
 }
 
 /// The host error source of one scheduler pass; notification runs settle their own.
@@ -4775,6 +4779,38 @@ fn tray_route(id: &str) -> Option<panel::Route> {
         "queue" => Some(panel::Route::tab(panel::Tab::Queue)),
         "settings" => Some(panel::Route::tab(panel::Tab::Settings)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod poll_host_error_tests {
+    use super::*;
+    use monitoring::{MonitoringError, OperationFailure};
+
+    fn provider_failure() -> MonitoringError {
+        MonitoringError::Recoverable {
+            code: "network".into(),
+            message: "Network error.".into(),
+            failure: OperationFailure::Network,
+            retry_after_seconds: None,
+        }
+    }
+
+    #[test]
+    fn a_saved_provider_failure_resolves_the_repository_storage_error() {
+        let source = host_errors::Source::Poll {
+            repository: "repo".into(),
+        };
+        let mut board = host_errors::Board::default();
+        let storage = Err(MonitoringError::Storage("Storage is unavailable.".into()));
+        board.settle(source.clone(), poll_host_outcome(&storage));
+        let first = board.current().expect("storage failure").id;
+        board.dismiss(first);
+        board.settle(source.clone(), poll_host_outcome(&Err(provider_failure())));
+        assert_eq!(board.current(), None);
+        board.settle(source, poll_host_outcome(&storage));
+        let next = board.current().expect("a new storage failure shows");
+        assert_ne!(next.id, first);
     }
 }
 
