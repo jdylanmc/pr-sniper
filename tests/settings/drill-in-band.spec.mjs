@@ -279,11 +279,15 @@ for (const browserViewport of [
       if (scrollTop === 0) expect(gap).toBeGreaterThanOrEqual(8);
     }
     await expect(banner).not.toHaveAttribute("aria-hidden", "true");
-    // Leaving the drill-in returns the banner to the page.
-    await page.locator("[data-panel-back]").click();
-    await expect(editor).toHaveCount(0);
-    await expect(
-      page.locator(".settings-window .settings-main > #error"),
-    ).toHaveCount(1);
+    // Dismissed, the drill-in's cards overlap the band again.
+    await body.evaluate((element) => (element.scrollTop = 0));
+    await banner.click();
+    await expect(banner).toBeHidden();
+    await expect
+      .poll(async () => {
+        const { band, cardTop } = await geometry(body);
+        return cardTop < band;
+      })
+      .toBe(true);
   });
 }

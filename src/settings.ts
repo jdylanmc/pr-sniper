@@ -572,30 +572,12 @@ export async function mountSettings(
     returnGenie.hidden = true;
     settingsBack.hidden = !options.embedded || section === "home";
   };
-  // A drill-in covers the page, so the page banner leads the open drill-in
-  // instead, above its scrolled cards; it returns home once none is open.
-  const errorHome = error.nextElementSibling!;
-  const placeError = () => {
-    const top = options.embedded
-      ? [
-          ...content.querySelectorAll<HTMLDialogElement>(
-            ":scope > .shared-resource-host > .shared-resource-editor[open]",
-          ),
-        ].pop()
-      : undefined;
-    const body = top?.querySelector<HTMLElement>(":scope > .dialog-body");
-    if (body) {
-      if (error.nextElementSibling !== body) body.before(error);
-      error.removeAttribute("inert");
-      error.removeAttribute("aria-hidden");
-    } else if (error.nextElementSibling !== errorHome) errorHome.before(error);
-  };
   const dialogs = createDialogs(
     content,
     () => {
       revision++;
-      // Runs before the drill-in opens or closes; place after it settles.
-      queueMicrotask(placeError);
+      // Runs before the drill-in opens or closes; measure after it settles.
+      queueMicrotask(placeDrillIns);
       // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
       // no other Reload (Repositories has its own). Once the last editor
       // closes on a clean draft there, re-read instead.
@@ -613,6 +595,22 @@ export async function mountSettings(
     },
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
+  // A drill-in covers the page from the band down; it starts below a shown
+  // page banner, so the banner renders whole and reachable, as on the page.
+  function placeDrillIns() {
+    const box = error.getBoundingClientRect();
+    const below = error.hidden
+      ? 0
+      : box.bottom +
+        parseFloat(getComputedStyle(error).marginBottom) -
+        app.getBoundingClientRect().top;
+    app.style.setProperty("--page-banner", `${Math.max(0, below)}px`);
+    if (!error.hidden && dialogs.hasOpen()) {
+      error.removeAttribute("inert");
+      error.removeAttribute("aria-hidden");
+    }
+  }
+  new ResizeObserver(placeDrillIns).observe(error);
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
   const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);
