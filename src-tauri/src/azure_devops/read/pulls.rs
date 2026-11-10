@@ -336,6 +336,15 @@ fn resumable(error: ConnectionError) -> bool {
     ) && !matches!(error, ConnectionError::ProviderRejectedStatus(status) if status != 408)
 }
 
+fn throttled(error: ConnectionError) -> bool {
+    matches!(
+        error,
+        ConnectionError::RateLimited
+            | ConnectionError::RateLimitedAfter(_)
+            | ConnectionError::RateLimitedWithContext { .. }
+    )
+}
+
 fn stated_wait(error: ConnectionError) -> Option<i64> {
     match error {
         ConnectionError::RateLimitedAfter(seconds)
@@ -429,8 +438,8 @@ impl Client {
     /// a slice of closed ones (a reopen the scope may not list). Scale is
     /// never a failure: a listing read that fails for a reason a later poll
     /// can clear ends the batch where it stopped; only access, identity and
-    /// repository failures surface. A throttled listing ends the poll's
-    /// reads: the organization waits.
+    /// repository failures surface. A throttled listing is the poll's rate
+    /// limit: shared backpressure, nothing committed.
     pub async fn poll_batch(
         &self,
         key: &RepositoryKey,
@@ -449,23 +458,8 @@ impl Client {
         let mut pulls = BTreeMap::new();
         if next.retry_at.is_none_or(|at| now >= at) {
             next.retry_at = None;
-            let start = next.clone();
-            let throttled = self
-                .list_batch(key, &queries, &mut next, &mut pulls, now)
+            self.list_batch(key, &queries, &mut next, &mut pulls, now)
                 .await?;
-            // The poll commits none of this batch: the next one re-reads it
-            // from where it began, after the wait.
-            if throttled {
-                return Ok(PolledPullRequests {
-                    pulls: pulls.into_values().collect(),
-                    cursor: Some(ListingCursor {
-                        retry_at: next.retry_at,
-                        stalls: next.stalls,
-                        ..start
-                    }),
-                    throttled: true,
-                });
-            }
         }
         let missing = |ids: &[(String, u64)]| {
             let mut ids: Vec<(String, u64)> = ids
@@ -498,7 +492,6 @@ impl Client {
         Ok(PolledPullRequests {
             pulls: pulls.into_values().collect(),
             cursor: (next != ListingCursor::default()).then_some(next),
-            throttled: false,
         })
     }
 
@@ -509,7 +502,7 @@ impl Client {
         next: &mut ListingCursor,
         pulls: &mut BTreeMap<u64, PullRequest>,
         now: i64,
-    ) -> Result<bool, ConnectionError> {
+    ) -> Result<(), ConnectionError> {
         // Listings are newest first: when a pass resumes, the head page shows
         // pull requests opened since it began.
         let mut head = next.skip > 0;
@@ -532,41 +525,33 @@ impl Client {
                         next.skip += count;
                     }
                 }
-                Err(error) if resumable(error) => {
-                    let stated = stated_wait(error);
-                    if let Some(seconds) = stated {
+                // Throttling is backpressure (ADR 0026), never a scale
+                // failure: the poll waits under the shared gate, commits
+                // nothing, and resumes from the last committed cursor.
+                Err(error) if throttled(error) => {
+                    if let Some(seconds) = stated_wait(error) {
                         self.pacer.hold(
                             u64::try_from(seconds)
                                 .unwrap_or_default()
                                 .saturating_mul(1_000),
                         );
                     }
-                    let throttled = stated.is_some()
-                        || matches!(
-                            error,
-                            ConnectionError::RateLimited
-                                | ConnectionError::RateLimitedAfter(_)
-                                | ConnectionError::RateLimitedWithContext { .. }
-                        );
-                    // A throttled batch keeps no progress.
-                    next.stalls = if pages == 0 || throttled {
+                    return Err(error);
+                }
+                Err(error) if resumable(error) => {
+                    next.stalls = if pages == 0 {
                         next.stalls.saturating_add(1)
                     } else {
                         0
                     };
-                    // Throttling waits like backpressure; other failures
-                    // back off only when no page was read.
-                    let retry = next.stalls.saturating_sub(1);
-                    let policy = if throttled {
-                        Some(crate::retry::BACKPRESSURE)
-                    } else {
-                        (pages == 0).then_some(crate::retry::TRANSIENT)
-                    };
-                    if let Some(policy) = policy {
-                        next.retry_at =
-                            Some(now.saturating_add(policy.wait(&key.id(), retry, stated)));
+                    if pages == 0 {
+                        next.retry_at = Some(now.saturating_add(crate::retry::TRANSIENT.wait(
+                            &key.id(),
+                            next.stalls.saturating_sub(1),
+                            stated_wait(error),
+                        )));
                     }
-                    return Ok(throttled);
+                    return Ok(());
                 }
                 Err(error) => return Err(error),
             }
@@ -577,7 +562,7 @@ impl Client {
             next.skip = 0;
             next.passes += 1;
         }
-        Ok(false)
+        Ok(())
     }
 
     pub async fn pull_request(

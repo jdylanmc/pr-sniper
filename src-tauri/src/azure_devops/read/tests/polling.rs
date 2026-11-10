@@ -107,9 +107,6 @@ fn poll(
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
     let (connection, polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
-    if polled.throttled {
-        return Ok(PollResult::deferred(connection, polled.cursor));
-    }
     let facts = crate::path_facts(&reader, &connection, &polled.pulls, ticket)?;
     Ok(PollResult {
         facts,
@@ -829,7 +826,7 @@ fn path_facts_of_untracked_pull_requests_gone_from_a_whole_pass_are_evicted_acro
 }
 
 #[test]
-fn a_throttled_listing_commits_only_its_cursor_and_the_next_poll_resumes_there() {
+fn a_throttled_listing_waits_as_backpressure_and_resumes_from_the_committed_cursor() {
     let (_root, store, mut monitor) = monitored_with(json!({"mode": "all", "rules": []}));
     let ticket = next_ticket(&mut monitor, &store, NOW);
     let wire = connected_wire();
@@ -838,53 +835,34 @@ fn a_throttled_listing_commits_only_its_cursor_and_the_next_poll_resumes_there()
             .map(|n| raw_pull(n, BLAKE, n as u32, false))
             .collect::<Vec<_>>()})
     };
-    wire.json(
-        &git("pullrequests?searchCriteria.status=active"),
-        page(2_901),
-    )
-    .json(
-        &git("pullrequests?searchCriteria.status=active"),
-        page(2_801),
-    )
-    .on(
-        &git("pullrequests?searchCriteria.status=active"),
-        Ok(status(429, None)),
-    );
+    let listing = git("pullrequests?searchCriteria.status=active");
+    wire.json(&listing, page(2_901))
+        .json(&listing, page(2_801))
+        .on(&listing, Ok(status(429, None)));
     let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
-    let deferred = result.as_ref().unwrap();
-    assert!(
-        deferred.pull_requests.is_empty(),
-        "nothing unenriched is admitted"
-    );
-    let cursor = deferred.listing.clone().unwrap();
-    assert_eq!(
-        (cursor.query, cursor.skip),
-        (0, 0),
-        "no progress past dropped pages"
-    );
-    assert!(cursor.retry_at.is_some_and(|at| at >= NOW + 30));
-    monitor.finish(&store, ticket, result, NOW).unwrap();
-    assert_eq!(health_failure(&monitor), None);
+    assert_eq!(result.as_ref().err(), Some(&ConnectionError::RateLimited));
+    let _ = monitor.finish(&store, ticket, result, NOW);
+    // A wait, never a failure; nothing committed and no poll of the account
+    // before the shared backpressure gate opens.
+    assert!(monitor
+        .snapshot()
+        .into_iter()
+        .all(|health| health.operation.is_none_or(|op| !op.parked())));
     assert!(queued(&store).is_empty());
+    assert!(monitor
+        .prepare_checks(&store, NOW + 5, true)
+        .unwrap()
+        .is_empty());
 
-    // After the wait the batch is read again from where it began: a PR on
-    // the second page is admitted.
-    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
-    assert_eq!(ticket.listing, Some(cursor));
+    // After the wait the batch is read again from the last committed
+    // cursor: a PR on the second page is admitted.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 3_600);
+    assert_eq!(ticket.listing, None);
     let wire = connected_wire();
-    wire.json(
-        &git("pullrequests?searchCriteria.status=active"),
-        page(2_901),
-    )
-    .json(
-        &git("pullrequests?searchCriteria.status=active"),
-        page(2_801),
-    )
-    .json(
-        &git("pullrequests?searchCriteria.status=active"),
-        json!({"value": []}),
-    );
+    wire.json(&listing, page(2_901))
+        .json(&listing, page(2_801))
+        .json(&listing, json!({"value": []}));
     let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
-    monitor.finish(&store, ticket, result, NOW + 900).unwrap();
+    monitor.finish(&store, ticket, result, NOW + 3_600).unwrap();
     assert!(queued(&store).contains(&2_850));
 }

@@ -982,23 +982,6 @@ pub struct PollResult {
     pub listing: Option<crate::provider::ListingCursor>,
 }
 
-impl PollResult {
-    /// A throttled poll (ADR 0028): no pull request, only where the listing
-    /// resumes.
-    pub fn deferred(
-        connection: Connection,
-        listing: Option<crate::provider::ListingCursor>,
-    ) -> Self {
-        Self {
-            connection,
-            pull_requests: Vec::new(),
-            states: BTreeMap::new(),
-            facts: BTreeMap::new(),
-            listing,
-        }
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct ExplicitAdmission {
     pub queued: bool,

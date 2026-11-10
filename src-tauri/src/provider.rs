@@ -104,7 +104,6 @@ pub trait PullRequestReader {
         Ok(PolledPullRequests {
             pulls: self.poll_tracked_pull_requests(repository, tracked)?,
             cursor: None,
-            throttled: false,
         })
     }
     fn pull_request(

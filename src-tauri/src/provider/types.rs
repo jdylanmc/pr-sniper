@@ -352,7 +352,4 @@ pub struct PolledPullRequests {
     pub pulls: Vec<PullRequest>,
     /// `None`: the pass is complete; the next poll starts a new one.
     pub cursor: Option<ListingCursor>,
-    /// The listing was throttled: the organization waits, so the poll makes
-    /// no further provider read and commits only `cursor`.
-    pub throttled: bool,
 }

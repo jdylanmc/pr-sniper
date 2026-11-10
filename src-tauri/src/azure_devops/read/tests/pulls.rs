@@ -703,7 +703,7 @@ fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
 }
 
 #[test]
-fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
+fn a_throttled_page_is_the_polls_rate_limit_and_holds_the_organization() {
     let listing = Listing::of("throttled", 1..=3_000);
     let key = listing.key();
     let resume = ListingCursor {
@@ -716,38 +716,21 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
         .lock()
         .unwrap()
         .insert(3, status(429, Some("1")));
-    // The tracked pull request is not read while the organization waits:
-    // the listing transport refuses any other request.
+    // The tracked pull request is not read once throttled: the listing
+    // transport refuses any other request.
     let tracked = [("7".to_string(), 7)];
-    let batch = block(
-        listing
-            .client()
-            .poll_batch(&key, &tracked, &[], &ALL, Some(&resume), NOW),
-    )
-    .unwrap();
-    assert!(batch.throttled);
-    let cursor = batch.cursor.unwrap();
     assert_eq!(
-        (cursor.query, cursor.skip, cursor.passes),
-        (0, 1_000, 0),
-        "no progress past pages the poll does not commit"
+        block(
+            listing
+                .client()
+                .poll_batch(&key, &tracked, &[], &ALL, Some(&resume), NOW,)
+        ),
+        Err(ConnectionError::RateLimitedAfter(1))
     );
-    assert_eq!(cursor.retry_at, Some(NOW + 1), "the stated wait holds");
-    assert_eq!(cursor.stalls, 1);
-
-    // Within the wait: no listing read and no failure.
+    assert_eq!(listing.skips(), [0, 980, 1_080, 1_180]);
+    // The organization holds: the next read waits out the stated second.
     listing.skips.lock().unwrap().clear();
-    let held = block(
-        listing
-            .client()
-            .poll_batch(&key, &[], &[], &ALL, Some(&cursor), NOW),
-    )
-    .unwrap();
-    assert!(held.pulls.is_empty() && listing.skips().is_empty());
-    assert_eq!(held.cursor.as_ref(), Some(&cursor));
-
-    // After it (the organization's hold paused inline): the same batch
-    // again, never from 0.
+    let started = std::time::Instant::now();
     let batch = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -755,14 +738,12 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
         .block_on(
             listing
                 .client()
-                .poll_batch(&key, &[], &[], &ALL, Some(&cursor), NOW + 1),
+                .poll_batch(&key, &[], &[], &ALL, Some(&resume), NOW + 1),
         )
         .unwrap();
-    assert!(!batch.throttled);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(500));
     assert_eq!(listing.skips()[..4], [0, 980, 1_080, 1_180]);
     assert!(numbers(&batch).contains(&1_850));
-    let next = batch.cursor.unwrap();
-    assert_eq!((next.retry_at, next.stalls), (None, 0));
 }
 
 #[test]

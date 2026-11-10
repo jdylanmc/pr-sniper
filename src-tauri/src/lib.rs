@@ -2061,13 +2061,6 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 }
                 let (connection, polled) =
                     poll_repository(&*client, &ticket_for_poll, ticket_for_poll.prepared_at)?;
-                // Throttled: no further read; only where the listing resumes.
-                if polled.throttled {
-                    return Ok((
-                        monitoring::PollResult::deferred(connection, polled.cursor),
-                        follow_up::host::Scan::default(),
-                    ));
-                }
                 let mut pull_requests = polled.pulls;
                 let follow_ups = follow_up::host::scan(
                     &app,
