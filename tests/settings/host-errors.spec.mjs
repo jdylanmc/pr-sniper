@@ -113,3 +113,31 @@ test("a shown background error is not shown again by a save or refresh", async (
   await gone(page);
   expect((await store("snapshot")).error).toBe(message);
 });
+
+test("an older background error already shown stays hidden when a newer one ends", async ({
+  page,
+  store,
+}) => {
+  const journal = { kind: "journal" };
+  const newer = "Diagnostic journal could not be written.";
+  await raise(store);
+  await page.goto("/");
+  await openSettings(page);
+  const banner = page.locator("#error");
+  await expect(banner).toHaveText(message);
+  const autoHide = () => banner.evaluate((element) => (element.hidden = true));
+  const refocus = () =>
+    page.evaluate(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await window.__settingsIdle();
+    });
+  await autoHide();
+  await store("fixture_host_error", { source: journal, message: newer });
+  await refocus();
+  await expect(banner).toHaveText(newer);
+  await autoHide();
+  await store("fixture_host_error", { source: journal });
+  await refocus();
+  await gone(page);
+  expect((await store("snapshot")).error).toBe(message);
+});

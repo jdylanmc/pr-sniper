@@ -120,7 +120,7 @@ interface Snapshot {
   error_id?: number | null;
 }
 // Host error occurrences already shown in this webview; redraws never re-show them.
-let shownHostError: number | undefined;
+const shownHostErrors = new Set<number>();
 type Section =
   | "home"
   | "accounts"
@@ -630,8 +630,8 @@ export async function mountSettings(
   const showSnapshotError = (state: Snapshot) => {
     if (!state.error) return;
     if (state.error_id == null) return showError(state.error);
-    if (state.error_id === shownHostError) return;
-    shownHostError = state.error_id;
+    if (shownHostErrors.has(state.error_id)) return;
+    shownHostErrors.add(state.error_id);
     if (showError(state.error)) bannerHostError = state.error_id;
   };
   const repositories = () => draft.repositories ?? [];
