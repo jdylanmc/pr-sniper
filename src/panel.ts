@@ -263,6 +263,7 @@ export async function mountPanel(app: HTMLElement) {
   let navigating = Promise.resolve();
   let navigationOrigin: string | undefined;
   let lastVisible = false;
+  let everVisible = false;
   let focusRevision = 0;
   let setupRead = 0;
   const positions = new Map<string, Position>();
@@ -1018,10 +1019,13 @@ export async function mountPanel(app: HTMLElement) {
     const changed = key(state.route) !== key(route);
     const restore = state.visible && (changed || !lastVisible);
     const focusAtStart = focusRevision;
-    if (state.visible && !lastVisible) {
+    // This webview's first show is no reopen: a choice made before it lands
+    // is fresh, never stale.
+    if (state.visible && !lastVisible && everVisible) {
       reopened = true;
       if (snapshot?.items) dropEmptyChoice(snapshot.items);
     }
+    everVisible ||= state.visible;
     lastVisible = state.visible;
     if (changed || !state.visible) remember();
     if (changed && (state.route.tab !== setupOwner || state.route.detail)) {

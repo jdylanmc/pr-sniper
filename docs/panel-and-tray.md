@@ -22,7 +22,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 - Native notification and legacy Settings entry use retained routes. No webview reload.
 - Exact opens (notification, menu item, in-panel navigation) win over generic reveals (tray click, relaunch, macOS reopen). A reveal during an exact open joins it; activation blur cannot dismiss it.
 - An open replaced by a newer navigation, explicit Close or Quit is no error: nothing reported, notice keeps no `navigation_error`. Older builds' saved superseded `navigation_error` loads as none.
-- A failed panel or notification open is logged (notice `navigation_error`, `notification_failed`), never the host error. Settings never shows it, before or after a save.
+- A failed panel or notification open is logged (notice `navigation_error`, `notification_failed`), never the host error. Settings never shows it, before or after a save. So are tray click, blur dismissal, close and hide failures.
 - Unavailable exact PR, iteration or job: missing-destination view. Never another item.
 - Profile-scoped PR selection survives restart (`state/queue-selection.json`). Unsaved drafts live in-process only.
 - Back and Settings-dialog close restore the activating control. Saves keep the logical opener through redraw by stable resource ID. Removed resources: section heading. Removed assignment: Add control. Background completion never steals focus.
