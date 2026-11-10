@@ -36,7 +36,7 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 - Off: keys 1–5 and arrows keep browser behaviour; anchors scroll smoothly unless reduced motion.
 - DEMO is only the 16:9 desktop. Full screen is a small button on the frame's bottom edge (`[FULL]` on, icon off; name "Full screen" / "Exit full screen"); Esc exits.
 - Both looks: header link home to <https://jdylanmc.github.io/> ("dylan mccurry").
-- Install commands and `#install` steps switch between `macOS` (`brew tap jdylanmc/pr-sniper && brew trust --cask jdylanmc/pr-sniper/pr-sniper && brew install --cask jdylanmc/pr-sniper/pr-sniper`; Homebrew 7 requires `brew trust`) and `Windows` (`choco install pr-sniper`) via the `.os-tabs` platform group in the hero, sidebar and `#install` section.
+- Install commands and `#install` steps switch between `macOS` (`brew install --cask jdylanmc/pr-sniper/pr-sniper`; the full name taps and trusts the cask) and `Windows` (`choco install pr-sniper`) via the `.os-tabs` platform group in the hero, sidebar and `#install` section.
 - Markup that exists in one look only uses `.t-on` / `.t-off`; off-look rules live at the end of `style.css` under `[data-thematic="off"]`.
 
 ## Preview
@@ -54,7 +54,7 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 
 - `pages.yml` copies `site/`, `CHANGELOG.md` and the v2 prototype's runtime files (to `demo/`) into one artifact and deploys it on pushes to `main` that touch `site/**`, `prototypes/v2/**`, `CHANGELOG.md`, `tests/site/**` or the workflow, and on manual runs.
 - Needs **Settings › Pages › Source: GitHub Actions** once. Until then the deploy job fails at `configure-pages`.
-- The shown version is hardcoded in `site/index.html`; a test fails when it drifts from `package.json`.
+- The shown version is hardcoded in `site/index.html`. Release automation (`scripts/changesets.mjs release`) bumps it; a test fails when it drifts from `package.json`.
 
 ## Fonts
 
