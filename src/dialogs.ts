@@ -97,7 +97,7 @@ export function createDialogs(
         panelView &&
         event.target instanceof Element &&
         event.target.closest(
-          "[data-panel-navigation],.panel-header,.panel-context,.panel-footer",
+          "[data-panel-navigation],.panel-header,.panel-context,.panel-footer,.settings-window > .settings-main > #error",
         )
       ) &&
       event.target instanceof Node &&

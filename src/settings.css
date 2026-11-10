@@ -3492,6 +3492,10 @@
   box-shadow: 0 1px 3px rgb(36 50 71 / 12%);
   cursor: pointer;
 }
+/* A drill-in starts below a shown banner instead of covering it. */
+.panel-shell .settings-window > .settings-main .shared-resource-host {
+  top: var(--page-banner, 0px);
+}
 .panel-shell .settings-window #error:not([hidden])::after {
   content: "\00d7";
   position: absolute;

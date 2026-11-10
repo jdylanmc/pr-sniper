@@ -42,6 +42,21 @@ export interface Settings {
   admission_migration_version?: number;
   doctrine_reset?: { previous_count: number; removed_references: number };
   theme?: Theme;
+  /** Host receipts that Save writes; never user-editable configuration. */
+  repository_authorizations?: Record<string, unknown>;
+}
+
+/** The user-editable configuration, without the receipts Save itself writes. */
+export function configuration(settings: Settings): Settings {
+  const { repository_authorizations: _, ...rest } = settings;
+  return rest;
+}
+
+/** Adopt committed receipts into a view's copy; configuration is untouched. */
+export function acceptReceipts(settings: Settings, committed: Settings) {
+  if (committed.repository_authorizations)
+    settings.repository_authorizations = committed.repository_authorizations;
+  else delete settings.repository_authorizations;
 }
 
 export interface DoctrineCatalog {

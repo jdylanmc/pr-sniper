@@ -52,7 +52,9 @@ import {
   type DoctrineCatalog,
   doctrineCatalogLabel,
   type ResourceEdit,
+  acceptReceipts,
   acceptResource,
+  configuration,
   DUCK_LIMITS,
   DUCK_RANGES,
   type DuckLimits,
@@ -527,6 +529,15 @@ export async function mountSettings(
   let catalogConflict = false;
   let externalPending = false;
   let externalRead = 0;
+  // Id of the current re-read while its reply is pending; 0 when none.
+  let externalReading = 0;
+  // A re-read sent before `saved` moved compares against the wrong baseline;
+  // drop it and read again once idle.
+  const supersedeExternalRead = () => {
+    if (!externalReading || externalReading !== externalRead) return;
+    externalRead++;
+    externalPending = true;
+  };
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -578,6 +589,8 @@ export async function mountSettings(
     content,
     () => {
       revision++;
+      // Runs before the drill-in opens or closes; measure after it settles.
+      queueMicrotask(placeDrillIns);
       // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
       // no other Reload (Repositories has its own). Once the last editor
       // closes on a clean draft there, re-read instead.
@@ -595,6 +608,22 @@ export async function mountSettings(
     },
     (opener, parent) => restoreControl(opener, parent ?? content, parent),
   );
+  // A drill-in covers the page from the band down; it starts below a shown
+  // page banner, so the banner renders whole and reachable, as on the page.
+  function placeDrillIns() {
+    const box = error.getBoundingClientRect();
+    const below = error.hidden
+      ? 0
+      : box.bottom +
+        parseFloat(getComputedStyle(error).marginBottom) -
+        app.getBoundingClientRect().top;
+    app.style.setProperty("--page-banner", `${Math.max(0, below)}px`);
+    if (!error.hidden && dialogs.hasOpen()) {
+      error.removeAttribute("inert");
+      error.removeAttribute("aria-hidden");
+    }
+  }
+  new ResizeObserver(placeDrillIns).observe(error);
   const notificationView: Parameters<typeof mountNotificationSettings>[1] = {};
   const preferenceDisclosures = new Set<string>();
   const dirty = () => !!draft && !sameResource(draft, saved);
@@ -729,6 +758,7 @@ export async function mountSettings(
     controls.forEach(({ control }) => (control.disabled = true));
     try {
       const result = await saveResource(edit, accountGeneration);
+      supersedeExternalRead();
       const accepted = clone(saved);
       acceptResource(accepted, clone(result.settings), edit);
       // The submitted edit proves only its own changes, not external Agent
@@ -738,6 +768,8 @@ export async function mountSettings(
         result.settings.agents ?? [],
       );
       for (const settings of [saved, draft]) {
+        // Save writes monitoring receipts; this commit is their freshest copy.
+        acceptReceipts(settings, result.settings);
         if (
           catalogConflict &&
           (edit.kind === "doctrine" || edit.kind === "voice")
@@ -5362,6 +5394,7 @@ export async function mountSettings(
             : undefined;
         }
       } else {
+        supersedeExternalRead();
         saved = clone(state.settings);
         draft = clone(saved);
         pendingPullRequests.clear();
@@ -5427,6 +5460,7 @@ export async function mountSettings(
         section === "github") &&
       content.querySelector(".account-connection") !== null &&
       sameResource(saved, state.settings);
+    supersedeExternalRead();
     saved = clone(state.settings);
     draft = clone(saved);
     if (!themePending) applyTheme(saved.theme);
@@ -5454,17 +5488,25 @@ export async function mountSettings(
     }
     const read = ++externalRead;
     let state: Snapshot;
+    externalReading = read;
     try {
       state = await invoke<Snapshot>("snapshot");
     } catch {
       return;
+    } finally {
+      if (externalReading === read) externalReading = 0;
     }
     if (read !== externalRead || !state.settings || !app.isConnected) return;
     if (busy || startupPending) {
       externalPending = true;
       return;
     }
-    if (sameResource(state.settings, saved)) return;
+    // Receipts that Save writes are not configuration: they never stale a draft.
+    if (sameResource(configuration(state.settings), configuration(saved))) {
+      for (const settings of [saved, draft])
+        acceptReceipts(settings, state.settings);
+      return;
+    }
     if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
       applySnapshot(state);
       return;
