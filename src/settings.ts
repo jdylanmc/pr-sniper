@@ -529,11 +529,12 @@ export async function mountSettings(
   let catalogConflict = false;
   let externalPending = false;
   let externalRead = 0;
-  let externalReading = false;
+  // Id of the current re-read while its reply is pending; 0 when none.
+  let externalReading = 0;
   // A re-read sent before `saved` moved compares against the wrong baseline;
   // drop it and read again once idle.
   const supersedeExternalRead = () => {
-    if (!externalReading) return;
+    if (externalReading !== externalRead) return;
     externalRead++;
     externalPending = true;
   };
@@ -5487,13 +5488,13 @@ export async function mountSettings(
     }
     const read = ++externalRead;
     let state: Snapshot;
-    externalReading = true;
+    externalReading = read;
     try {
       state = await invoke<Snapshot>("snapshot");
     } catch {
       return;
     } finally {
-      externalReading = false;
+      if (externalReading === read) externalReading = 0;
     }
     if (read !== externalRead || !state.settings || !app.isConnected) return;
     if (busy || startupPending) {

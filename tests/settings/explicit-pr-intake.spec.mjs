@@ -787,54 +787,65 @@ test("an editor kept open after its own Save is not changed elsewhere; a real ed
   );
 });
 
-test("background commits read across the editor's own Save never conflict", async ({
-  page,
-  store,
-  ipc,
-}) => {
-  const { state } = await setup(page, store);
-  const editor = await enter(page);
-  await assign(page, editor);
-  state.responses[22]["/repos/orbit/one/pulls/302"] = response(
-    { message: "Not Found" },
-    404,
-  );
-  // A failing poll raises a host error and commits state while the editor is
-  // open; its Settings re-read lands only after the editor's own Save.
-  await store("fixture_host_error", {
-    source: { kind: "checks" },
-    message: "Repository checks could not start.",
-  });
-  const read = ipc.holdNext("snapshot");
-  try {
-    await page.evaluate(() => {
-      window.__appEvent("pr-sniper:state-changed", { revision: 7 });
-      window.__appEvent("pr-sniper:settings-changed", { revision: 7 });
+for (const overlapping of [false, true])
+  test(`background commits read across the editor's own Save never conflict${overlapping ? " (overlapping reads)" : ""}`, async ({
+    page,
+    store,
+    ipc,
+  }) => {
+    const { state } = await setup(page, store);
+    const editor = await enter(page);
+    await assign(page, editor);
+    state.responses[22]["/repos/orbit/one/pulls/302"] = response(
+      { message: "Not Found" },
+      404,
+    );
+    // A failing poll raises a host error and commits state while the editor is
+    // open; its Settings re-read lands only after the editor's own Save.
+    await store("fixture_host_error", {
+      source: { kind: "checks" },
+      message: "Repository checks could not start.",
     });
-    await read.arrived;
+    const broadcast = (revision) =>
+      page.evaluate((revision) => {
+        window.__appEvent("pr-sniper:state-changed", { revision });
+        window.__appEvent("pr-sniper:settings-changed", { revision });
+      }, revision);
+    const older = overlapping ? ipc.holdNext("snapshot") : undefined;
+    if (older) {
+      await broadcast(6);
+      await older.arrived;
+    }
+    const read = ipc.holdNext("snapshot");
+    try {
+      await broadcast(7);
+      await read.arrived;
+      // The superseded older reply settles first; the newer one stays pending.
+      older?.release();
+      await editor
+        .getByRole("button", { name: "Save repository", exact: true })
+        .click();
+      await expect(editor.getByRole("alert")).toContainText("PR #302");
+    } finally {
+      older?.release();
+      read.release();
+    }
+    await page.evaluate(() => window.__settingsIdle());
+    await expect(page.locator("#error")).not.toHaveText("Changed elsewhere");
+    await expect(page.locator("[data-repository-reload]")).toHaveCount(0);
+
+    await editor
+      .getByRole("switch", { name: "Review drafts", exact: true })
+      .click();
+    state.responses = responses();
     await editor
       .getByRole("button", { name: "Save repository", exact: true })
       .click();
-    await expect(editor.getByRole("alert")).toContainText("PR #302");
-  } finally {
-    read.release();
-  }
-  await page.evaluate(() => window.__settingsIdle());
-  await expect(page.locator("#error")).not.toHaveText("Changed elsewhere");
-  await expect(page.locator("[data-repository-reload]")).toHaveCount(0);
-
-  await editor
-    .getByRole("switch", { name: "Review drafts", exact: true })
-    .click();
-  state.responses = responses();
-  await editor
-    .getByRole("button", { name: "Save repository", exact: true })
-    .click();
-  await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
-    /^PR #\d+ queued$/,
-  );
-  await expect(page.locator("#error")).not.toHaveText("Changed elsewhere");
-  expect((await store("snapshot")).settings.repositories[0].review_drafts).toBe(
-    true,
-  );
-});
+    await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+      /^PR #\d+ queued$/,
+    );
+    await expect(page.locator("#error")).not.toHaveText("Changed elsewhere");
+    expect(
+      (await store("snapshot")).settings.repositories[0].review_drafts,
+    ).toBe(true);
+  });
