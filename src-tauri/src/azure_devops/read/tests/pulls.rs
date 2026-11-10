@@ -904,3 +904,71 @@ fn a_review_of_a_repository_too_large_for_whole_trees_reads_only_its_changes() {
         "a review never lists other pull requests"
     );
 }
+
+#[test]
+fn changed_file_trees_read_unnamed_earlier_blobs_and_keep_deletions_and_submodules() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    let blob = |body: &[u8]| {
+        Ok(Response {
+            status: 200,
+            body: body.to_vec(),
+            ..Response::default()
+        })
+    };
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/src/main.rs", "objectId": sha(11)}, "changeType": "edit"},
+                {"item": {"path": "/src/old.rs", "objectId": sha(14)}, "changeType": "delete"},
+                {"item": {"path": "/vendor/lib", "objectId": sha(15), "originalObjectId": sha(16), "gitObjectType": "commit"}, "changeType": "edit"}
+            ]}),
+        )
+        .on(&git("items?scopePath"), Ok(Response {
+            status: 200,
+            oversize: true,
+            ..Response::default()
+        }))
+        .json(
+            &git("items?path=%2Fsrc%2Fmain.rs"),
+            json!({"objectId": sha(12), "gitObjectType": "blob", "path": "/src/main.rs"}),
+        )
+        .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(14))), blob(b"gone\n"));
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    let patch = |path: &str| {
+        context
+            .files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap()
+            .patch
+            .clone()
+    };
+    assert_eq!(
+        patch("src/main.rs").as_deref(),
+        Some("@@ -1 +1 @@\n-fn old() {}\n+fn main() {}")
+    );
+    assert_eq!(patch("src/old.rs").as_deref(), Some("@@ -1 +0,0 @@\n-gone"));
+    assert_eq!(patch("vendor/lib"), None);
+    assert_eq!(context.base["src/old.rs"].sha, sha(14));
+    let gitlink = &context.head["vendor/lib"];
+    assert_eq!(
+        (gitlink.kind.as_str(), gitlink.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(context.base["vendor/lib"].sha, sha(16));
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(15)))
+            || url.contains(&format!("blobs/{}", sha(16)))));
+}

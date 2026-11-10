@@ -275,31 +275,22 @@ fn tree_too_large(error: ConnectionError) -> bool {
     )
 }
 
-/// Review trees of only the changed files (ADR 0028), from the blob IDs the
-/// iteration changes carry: head holds what the PR leaves, base what it
-/// changed. Without a named earlier blob, a changed file has no base side.
-fn changed_trees(
-    entries: &[(ChangedFile, Option<String>)],
-) -> (BTreeMap<String, TreeEntry>, BTreeMap<String, TreeEntry>) {
-    let blob = |path: &str, sha: &str| TreeEntry {
+/// A tree entry of one object kind (`blob`, or `commit` for a submodule).
+fn entry(path: &str, kind: &str, sha: &str) -> TreeEntry {
+    TreeEntry {
         path: path.to_owned(),
-        mode: "100644".into(),
+        mode: if kind == "commit" { "160000" } else { "100644" }.into(),
         sha: sha.to_owned(),
-        kind: "blob".into(),
-    };
-    let (mut head, mut base) = (BTreeMap::new(), BTreeMap::new());
-    for (file, original) in entries {
-        if file.status != "removed" {
-            head.insert(file.path.clone(), blob(&file.path, &file.sha));
-        }
-        if file.status != "added" {
-            let path = file.previous_path.as_deref().unwrap_or(&file.path);
-            if let Some(original) = original {
-                base.insert(path.to_owned(), blob(path, original));
-            }
-        }
+        kind: kind.to_owned(),
     }
-    (head, base)
+}
+
+/// One changed file with its earlier object (`originalObjectId`) when the
+/// provider names one, and its object kind.
+struct ChangeEntry {
+    file: ChangedFile,
+    original: Option<String>,
+    kind: String,
 }
 
 /// Whether a listing read failed for a reason a later poll can clear.
@@ -630,19 +621,19 @@ impl Client {
             .iteration_change_entries(key, number, iteration, compare_to)
             .await?
             .into_iter()
-            .map(|(file, _)| file)
+            .map(|change| change.file)
             .collect())
     }
 
-    /// Like `iteration_changes_since`, each file with its blob before the
-    /// change (`originalObjectId`) when the provider names one.
+    /// Like `iteration_changes_since`, with each file's earlier object and
+    /// object kind.
     async fn iteration_change_entries(
         &self,
         key: &RepositoryKey,
         number: u64,
         iteration: u64,
         compare_to: u64,
-    ) -> Result<Vec<(ChangedFile, Option<String>)>, ConnectionError> {
+    ) -> Result<Vec<ChangeEntry>, ConnectionError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawItem {
@@ -728,8 +719,9 @@ impl Client {
                 } else {
                     item.object_id
                 };
-                files.push((
-                    ChangedFile {
+                let kind = item.git_object_type.unwrap_or_else(|| "blob".into());
+                files.push(ChangeEntry {
+                    file: ChangedFile {
                         path,
                         previous_path,
                         status: status.into(),
@@ -739,7 +731,8 @@ impl Client {
                         sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
                     },
                     original,
-                ));
+                    kind,
+                });
             }
             // `nextSkip` absent or 0 ends the listing; one that does not
             // advance would end it short.
@@ -804,6 +797,75 @@ impl Client {
             }
         }
         Ok(tree)
+    }
+
+    /// Review trees of only the changed files (ADR 0028): head holds what
+    /// the PR leaves, base what it changed. An earlier object the iteration
+    /// changes do not name is read at `base`.
+    async fn changed_trees(
+        &self,
+        key: &RepositoryKey,
+        entries: &[ChangeEntry],
+        base: &str,
+    ) -> Result<(BTreeMap<String, TreeEntry>, BTreeMap<String, TreeEntry>), ConnectionError> {
+        let (mut head_tree, mut base_tree) = (BTreeMap::new(), BTreeMap::new());
+        for ChangeEntry {
+            file,
+            original,
+            kind,
+        } in entries
+        {
+            if file.status != "removed" {
+                head_tree.insert(file.path.clone(), entry(&file.path, kind, &file.sha));
+            }
+            let path = file.previous_path.as_deref().unwrap_or(&file.path);
+            let before = match (file.status.as_str(), original) {
+                ("added", _) => None,
+                ("removed", _) => Some(entry(path, kind, &file.sha)),
+                (_, Some(original)) => Some(entry(path, kind, original)),
+                (_, None) => Some(self.item(key, path, base).await?),
+            };
+            if let Some(before) = before {
+                base_tree.insert(path.to_owned(), before);
+            }
+        }
+        Ok((head_tree, base_tree))
+    }
+
+    /// One tree entry at `commit_id` by repository-relative path.
+    async fn item(
+        &self,
+        key: &RepositoryKey,
+        path: &str,
+        commit_id: &str,
+    ) -> Result<TreeEntry, ConnectionError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawItem {
+            object_id: String,
+            git_object_type: String,
+        }
+        let absolute = format!("/{path}");
+        let url = self.git_url(
+            key,
+            &["items"],
+            &[
+                ("path", absolute.as_str()),
+                ("versionDescriptor.version", commit_id),
+                ("versionDescriptor.versionType", "commit"),
+                ("$format", "json"),
+            ],
+        );
+        let (raw, _): (RawItem, _) = self.get(ProviderResponse::Tree, url).await?;
+        let malformed = ConnectionError::MalformedResponse(ProviderResponse::Tree);
+        if !matches!(raw.git_object_type.as_str(), "blob" | "commit") {
+            return Err(malformed);
+        }
+        Ok(entry(
+            path,
+            &raw.git_object_type,
+            &commit(&raw.object_id).map_err(|_| malformed)?,
+        ))
     }
 
     /// One blob's bytes by object ID.
@@ -1110,10 +1172,14 @@ impl PullRequestReader for Reader {
             };
             let (head_tree, base_tree) = match whole.await {
                 Ok(trees) => trees,
-                Err(error) if tree_too_large(error) => changed_trees(&entries),
+                Err(error) if tree_too_large(error) => {
+                    self.client
+                        .changed_trees(&key, &entries, &base_revision)
+                        .await?
+                }
                 Err(error) => return Err(error),
             };
-            let changes: Vec<ChangedFile> = entries.into_iter().map(|(file, _)| file).collect();
+            let changes: Vec<ChangedFile> = entries.into_iter().map(|change| change.file).collect();
             let mut files = Vec::with_capacity(changes.len());
             for (index, file) in changes.iter().enumerate() {
                 let patch = if index < MAX_PATCH_FILES {
