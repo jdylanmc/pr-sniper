@@ -1115,9 +1115,22 @@ impl PullRequestReader for Reader {
                     self.client.tree(&key, &base_revision).await?,
                 ))
             };
-            let (head_tree, base_tree) = match whole.await {
+            // Fallback base entries take the head's object kind; a PR can
+            // change it (a submodule replaced by a file).
+            let mut unverified = BTreeSet::new();
+            let (head_tree, mut base_tree) = match whole.await {
                 Ok(trees) => trees,
                 Err(error) if tree_too_large(error) => {
+                    unverified.extend(entries.iter().filter_map(|change| {
+                        let kept = !matches!(change.file.status.as_str(), "added" | "removed");
+                        (kept && change.original.is_some()).then(|| {
+                            change
+                                .file
+                                .previous_path
+                                .clone()
+                                .unwrap_or_else(|| change.file.path.clone())
+                        })
+                    }));
                     self.client
                         .changed_trees(&key, &entries, &base_revision)
                         .await?
@@ -1129,7 +1142,19 @@ impl PullRequestReader for Reader {
             for (index, file) in changes.iter().enumerate() {
                 let patch = if index < MAX_PATCH_FILES {
                     let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
-                    let old = self.side(&key, base_tree.get(base_path)).await?;
+                    let old = match self.side(&key, base_tree.get(base_path)).await {
+                        // A failed read of an unverified base entry: read its
+                        // real kind; a non-blob has no patch side.
+                        Err(error) if unverified.contains(base_path) => {
+                            let entry = self.client.item(&key, base_path, &base_revision).await?;
+                            if entry.kind == "blob" {
+                                return Err(error);
+                            }
+                            base_tree.insert(base_path.to_owned(), entry);
+                            Side::Other
+                        }
+                        other => other?,
+                    };
                     let new = self.side(&key, head_tree.get(&file.path)).await?;
                     match (old, new) {
                         (Side::Blob(old), Side::Blob(new)) => diff::patch(Some(&old), Some(&new)),

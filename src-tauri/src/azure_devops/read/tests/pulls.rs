@@ -1006,3 +1006,52 @@ fn changed_file_trees_read_unnamed_earlier_blobs_and_keep_deletions_and_submodul
         .any(|url| url.contains(&format!("blobs/{}", sha(15)))
             || url.contains(&format!("blobs/{}", sha(16)))));
 }
+
+#[test]
+fn a_submodule_replaced_by_a_file_reviews_from_changed_file_trees() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/vendor/lib", "objectId": sha(17), "originalObjectId": sha(18), "gitObjectType": "blob"}, "changeType": "edit"}
+            ]}),
+        )
+        .on(
+            &git("items?scopePath"),
+            Ok(Response {
+                status: 200,
+                oversize: true,
+                ..Response::default()
+            }),
+        )
+        // The old object is a submodule commit, not a blob.
+        .on(&git(&format!("blobs/{}?", sha(18))), Ok(status(404, None)))
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(18), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        )
+        .on(
+            &git(&format!("blobs/{}?", sha(17))),
+            Ok(Response {
+                status: 200,
+                body: b"now a file\n".to_vec(),
+                ..Response::default()
+            }),
+        );
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(context.files[0].patch, None);
+    let base = &context.base["vendor/lib"];
+    assert_eq!(
+        (base.kind.as_str(), base.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(context.head["vendor/lib"].kind, "blob");
+}
