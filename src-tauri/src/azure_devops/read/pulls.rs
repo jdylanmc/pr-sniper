@@ -449,13 +449,20 @@ impl Client {
         let mut pulls = BTreeMap::new();
         if next.retry_at.is_none_or(|at| now >= at) {
             next.retry_at = None;
+            let start = next.clone();
             let throttled = self
                 .list_batch(key, &queries, &mut next, &mut pulls, now)
                 .await?;
+            // The poll commits none of this batch: the next one re-reads it
+            // from where it began, after the wait.
             if throttled {
                 return Ok(PolledPullRequests {
                     pulls: pulls.into_values().collect(),
-                    cursor: Some(next),
+                    cursor: Some(ListingCursor {
+                        retry_at: next.retry_at,
+                        stalls: next.stalls,
+                        ..start
+                    }),
                     throttled: true,
                 });
             }
@@ -526,11 +533,6 @@ impl Client {
                     }
                 }
                 Err(error) if resumable(error) => {
-                    next.stalls = if pages == 0 {
-                        next.stalls.saturating_add(1)
-                    } else {
-                        0
-                    };
                     let stated = stated_wait(error);
                     if let Some(seconds) = stated {
                         self.pacer.hold(
@@ -546,6 +548,12 @@ impl Client {
                                 | ConnectionError::RateLimitedAfter(_)
                                 | ConnectionError::RateLimitedWithContext { .. }
                         );
+                    // A throttled batch keeps no progress.
+                    next.stalls = if pages == 0 || throttled {
+                        next.stalls.saturating_add(1)
+                    } else {
+                        0
+                    };
                     // Throttling waits like backpressure; other failures
                     // back off only when no page was read.
                     let retry = next.stalls.saturating_sub(1);

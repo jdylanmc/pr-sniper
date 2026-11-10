@@ -857,11 +857,34 @@ fn a_throttled_listing_commits_only_its_cursor_and_the_next_poll_resumes_there()
         "nothing unenriched is admitted"
     );
     let cursor = deferred.listing.clone().unwrap();
-    assert_eq!(cursor.skip, 200);
+    assert_eq!(
+        (cursor.query, cursor.skip),
+        (0, 0),
+        "no progress past dropped pages"
+    );
     assert!(cursor.retry_at.is_some_and(|at| at >= NOW + 30));
     monitor.finish(&store, ticket, result, NOW).unwrap();
     assert_eq!(health_failure(&monitor), None);
     assert!(queued(&store).is_empty());
-    let next = next_ticket(&mut monitor, &store, NOW + 900);
-    assert_eq!(next.listing, Some(cursor));
+
+    // After the wait the batch is read again from where it began: a PR on
+    // the second page is admitted.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
+    assert_eq!(ticket.listing, Some(cursor));
+    let wire = connected_wire();
+    wire.json(
+        &git("pullrequests?searchCriteria.status=active"),
+        page(2_901),
+    )
+    .json(
+        &git("pullrequests?searchCriteria.status=active"),
+        page(2_801),
+    )
+    .json(
+        &git("pullrequests?searchCriteria.status=active"),
+        json!({"value": []}),
+    );
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW + 900).unwrap();
+    assert!(queued(&store).contains(&2_850));
 }

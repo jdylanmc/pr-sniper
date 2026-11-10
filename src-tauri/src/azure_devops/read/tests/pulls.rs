@@ -704,8 +704,13 @@ fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
 
 #[test]
 fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
-    let listing = Listing::of("throttled", 1..=1_500);
+    let listing = Listing::of("throttled", 1..=3_000);
     let key = listing.key();
+    let resume = ListingCursor {
+        skip: 1_000,
+        ..ListingCursor::default()
+    };
+    // Head page, 980, 1,080, then 1,180 is throttled.
     listing
         .fail
         .lock()
@@ -717,14 +722,18 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
     let batch = block(
         listing
             .client()
-            .poll_batch(&key, &tracked, &[], &ALL, None, NOW),
+            .poll_batch(&key, &tracked, &[], &ALL, Some(&resume), NOW),
     )
     .unwrap();
     assert!(batch.throttled);
-    assert_eq!(batch.pulls.len(), 300);
     let cursor = batch.cursor.unwrap();
-    assert_eq!((cursor.query, cursor.skip), (0, 300));
+    assert_eq!(
+        (cursor.query, cursor.skip, cursor.passes),
+        (0, 1_000, 0),
+        "no progress past pages the poll does not commit"
+    );
     assert_eq!(cursor.retry_at, Some(NOW + 1), "the stated wait holds");
+    assert_eq!(cursor.stalls, 1);
 
     // Within the wait: no listing read and no failure.
     listing.skips.lock().unwrap().clear();
@@ -737,8 +746,8 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
     assert!(held.pulls.is_empty() && listing.skips().is_empty());
     assert_eq!(held.cursor.as_ref(), Some(&cursor));
 
-    // After it (the organization's hold paused inline): the head page, then
-    // 300 less the overlap; never from 0.
+    // After it (the organization's hold paused inline): the same batch
+    // again, never from 0.
     let batch = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -749,9 +758,11 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
                 .poll_batch(&key, &[], &[], &ALL, Some(&cursor), NOW + 1),
         )
         .unwrap();
-    assert_eq!(listing.skips()[..3], [0, 280, 380]);
-    assert!(numbers(&batch).contains(&1_220));
-    assert_eq!(batch.cursor.unwrap().retry_at, None);
+    assert!(!batch.throttled);
+    assert_eq!(listing.skips()[..4], [0, 980, 1_080, 1_180]);
+    assert!(numbers(&batch).contains(&1_850));
+    let next = batch.cursor.unwrap();
+    assert_eq!((next.retry_at, next.stalls), (None, 0));
 }
 
 #[test]
