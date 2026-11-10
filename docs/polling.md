@@ -49,7 +49,7 @@ Complete changed-file list ladder; first complete wins, no file-count limit of o
 
 - Without globs only completeness is checked: the count, and steps 2 then 4 when it exceeds the listing cap.
 - A scoped list (step 3) can keep a PR out; one it admits parks (step 4), since the review needs every file.
-- The review reads the same list: GitHub past 3,000 files keeps the listed files' patches and adds the rest of the merge-base tree diff without a patch (no addressable line). Azure DevOps reviews every iteration change; past 300 files, no patch.
+- The review reads the same list: GitHub past 3,000 files keeps the listed files' patches and adds the rest of the merge-base tree diff without a patch (no addressable line). A whole tree GitHub truncates: the review's trees hold only the changed paths, read level by level, and the unlisted rest comes from the step 3 walk over every differing subtree (cut off: listed files only). Azure DevOps reviews every iteration change; past 300 files, no patch.
 - An incremental read that cannot complete falls back to the whole-PR list (may run, never misses).
 - Rate limits, network failures and raced reads retry under the poll's retry policy; they never decide a gate, skip or park.
 
@@ -57,21 +57,21 @@ Complete changed-file list ladder; first complete wins, no file-count limit of o
 
 Replaces head-SHA-only detection for tracked open PRs. Cadence is the repository's cron; there is no settle window.
 
-| Step              | Rule                                                                                                                                                                                                                                          |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Read              | One batched GraphQL read per tick for tracked open PRs (`GithubClient::pr_snapshots`, 10 PRs per query). Cost about 1 point per PR; 5,000 points/h/user.                                                                                      |
-| Normalize         | Sorted, no timestamps, `UNKNOWN` mergeable ignored, CI as `(name, status, conclusion)` array. The hash covers the review revision only: CI, mergeable and labels are left out.                                                                |
-| Same hash         | Equal to baseline or to pending: nothing. Check runs completing on the same head never queue, supersede or re-run teammates. Legacy full-snapshot hashes translate on read.                                                                   |
-| New hash          | Records `pending` and bumps `state_seq`. Head change or reopen is a new Iteration; any other change keeps the Iteration.                                                                                                                      |
-| Queue             | One entry per PR. A state that moves while queued only updates `pending`. A finished pass plus a new state adds one new entry, trigger `state_changed`.                                                                                       |
-| Closed            | Merged or closed before its turn: leaves the queue, no run, Reviewed.                                                                                                                                                                         |
-| Drafts            | Skipped unless the repository sets Review drafts.                                                                                                                                                                                             |
-| Upgrade           | First read of a PR with a completed pass for its head sets the baseline. No re-review.                                                                                                                                                        |
-| Consume           | A successful exit sets the baseline to the post-write state. Own comments and approvals never retrigger.                                                                                                                                      |
-| Moved in run      | State moved during a run: result tossed, error count +1, re-queued. Parks after 3 (the job's attempt budget).                                                                                                                                 |
-| Closed on arrival | A thread first seen already resolved (status/policy bot) is no review input: a move made only of such threads joins the baseline or `pending`. Recorded as it arrived in `quiet_threads`; reopening it, a reply or an edit in it is a change. |
-| Own writes        | PR with an exit write in flight (packet batch posting, non-terminal exit write, approve/merge Prepared or Uncertain): no new state recorded. Head change or reopen still counts.                                                              |
-| Reused run        | A queued or interrupted run takes the queue job's current `state_seq` at dispatch, so its exit consumes the state it read.                                                                                                                    |
+| Step              | Rule                                                                                                                                                                                                                                                        |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read              | One batched GraphQL read per tick for tracked open PRs (`GithubClient::pr_snapshots`, 10 PRs per query). Cost about 1 point per PR; 5,000 points/h/user. A batch error is re-read per PR; a PR not readable whole (over 100 checks) has no state this tick. |
+| Normalize         | Sorted, no timestamps, `UNKNOWN` mergeable ignored, CI as `(name, status, conclusion)` array. The hash covers the review revision only: CI, mergeable and labels are left out.                                                                              |
+| Same hash         | Equal to baseline or to pending: nothing. Check runs completing on the same head never queue, supersede or re-run teammates. Legacy full-snapshot hashes translate on read.                                                                                 |
+| New hash          | Records `pending` and bumps `state_seq`. Head change or reopen is a new Iteration; any other change keeps the Iteration.                                                                                                                                    |
+| Queue             | One entry per PR. A state that moves while queued only updates `pending`. A finished pass plus a new state adds one new entry, trigger `state_changed`.                                                                                                     |
+| Closed            | Merged or closed before its turn: leaves the queue, no run, Reviewed.                                                                                                                                                                                       |
+| Drafts            | Skipped unless the repository sets Review drafts.                                                                                                                                                                                                           |
+| Upgrade           | First read of a PR with a completed pass for its head sets the baseline. No re-review.                                                                                                                                                                      |
+| Consume           | A successful exit sets the baseline to the post-write state. Own comments and approvals never retrigger.                                                                                                                                                    |
+| Moved in run      | State moved during a run: result tossed, error count +1, re-queued. Parks after 3 (the job's attempt budget).                                                                                                                                               |
+| Closed on arrival | A thread first seen already resolved (status/policy bot) is no review input: a move made only of such threads joins the baseline or `pending`. Recorded as it arrived in `quiet_threads`; reopening it, a reply or an edit in it is a change.               |
+| Own writes        | PR with an exit write in flight (packet batch posting, non-terminal exit write, approve/merge Prepared or Uncertain): no new state recorded. Head change or reopen still counts.                                                                            |
+| Reused run        | A queued or interrupted run takes the queue job's current `state_seq` at dispatch, so its exit consumes the state it read.                                                                                                                                  |
 
 Post-write consume (`exits::consume::settle_fresh`) compares the fresh read with the packet's `state_marks`. Only own writes (receipt comment ids, reply ids, threads we resolved, our approval): baseline = fresh, current state consumed, including a heartbeat bump that saw them. Our approval is matched by the account the provider names reviewers with: login on GitHub, account id on Azure DevOps. Threads that arrived already resolved are not changes. Any other change (new or edited comment, others' resolve, head, base, text, lifecycle, review decision, others' approvals): baseline = packet hash, so the next heartbeat queues one review. CI, mergeable and labels are not changes, except that a Ready sign-off (no later action to re-check CI) settles on the packet hash when the fresh read shows CI pending or failed.
 
@@ -143,10 +143,26 @@ A credential failure marks the bound identity disconnected: no further poll or A
 | Stated wait                                                     | Wins over jitter (`retry::BACKPRESSURE` otherwise), capped at 24h                              |
 | Write's 503                                                     | Provider failure, uncertain: the write may have landed; reconciles before any retry            |
 
+## GitHub listing
+
+[ADR 0028](adr/0028-scale-is-never-a-failure.md) (`github/listing.rs`, shared stepping `provider/listing.rs`).
+
+| Scope                                    | Query                                                                                                                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| All; Mentioning me on; legacy authors    | `pulls?state=open&sort=created&direction=desc&per_page=100&page=N`: ≤ 10 pages per poll                                                                                    |
+| Include users, Assigned to me            | `search/issues?q=repo:{repo} is:pr is:open (author:{login} OR review-requested:{login})`, ≤ 3 terms per query (`advanced_search`), ≤ 3 pages per poll; hits read by number |
+| Search over 1,000, incomplete or refused | That pass lists every open PR (`wide`); the next pass searches again                                                                                                       |
+| Explicit                                 | Nothing; tracked PRs only                                                                                                                                                  |
+
+- Logins resolved from user IDs each search (`/user/{id}`); a bot author searches as `author:app/{name}`.
+- Mentions are not searched: a PR's first observation baselines its comments, and the textual match is wider than GitHub's mention index.
+- Resumed pass: head page plus one page of overlap. Duplicates dropped; a PR missed by a moving listing is read next pass. A PR that does not parse is skipped.
+- Network, timeout, 5xx or a malformed page: pages read are kept; no page read backs off (`retry::TRANSIENT`), tracked reads go on. 403/429 rate limit: backpressure, nothing committed, resumes from the last committed cursor. Only auth, permission and repository failures surface.
+
 ## Lifecycle reads
 
-- Complete open listing, then explicit reads for admitted active PRs missing from it.
-- Reopens are found by later listings without refetching every terminal PR. Stable creation-order paging. Azure DevOps also probes closed tracked PRs by ID, ≤ 20 per poll, rotating: a narrowed scope may not list them.
+- Batched listing, then explicit reads for admitted active PRs missing from the batch: ≤ 200 per poll, rotating.
+- Reopens are found by later listings without refetching every terminal PR. Closed tracked PRs are also probed by ID, ≤ 20 per poll, rotating: a narrowed scope may not list them.
 - Merged or closed PRs move to Reviewed. Cleanup rules: [active-results.md](active-results.md#terminal-cleanup).
 
 ## GitHub connection
@@ -160,9 +176,9 @@ A credential failure marks the bound identity disconnected: no further poll or A
 ## PR metadata read
 
 - Rechecks account and remote repo ID. Reads all PR pages, per-PR changed-file pages, requested users/teams. Includes closed, merged, deleted-account and fork PRs.
-- Errors, never partial success: head change mid-read, malformed page, duplicate entry, incomplete file count, more than 3,000 files, failed page (`src-tauri/src/github/metadata.rs`). Incomplete reads (duplicate entry, count mismatch) are transient and retry; size limits (`LimitExceeded`: more than 3,000 files, truncated tree, body cap) are permanent.
+- Errors, never partial success: head change mid-read, malformed page, incomplete file count, failed page (`src-tauri/src/github/metadata.rs`). A PR repeated by a moving listing is read once; past 3,000 files, the files GitHub lists.
 - No checkout, no execution. Metadata is not full diff text.
-- Mention scan: top-level issue-comment pages, up to 1,000 comments, 1 MiB total body bytes, complete pages only; over the count or byte limit = `LimitExceeded` (permanent, parks); duplicate ID = `IncompleteRead` (transient, retries) (`github/conversation.rs`).
+- Mention scan: top-level issue-comment pages, up to 1,000 comments, 1 MiB total body bytes, complete pages only (`github/conversation.rs`). Over a limit, a duplicate ID or a moved head skips that PR's mention and thread reads this poll (`ThreadSkipped`); the repository scan goes on.
 
 ## Legacy CLI diagnostic
 

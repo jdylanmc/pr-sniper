@@ -145,7 +145,7 @@ Per-repository decision of which open PRs become tracked **Iterations**. Modes: 
 _Avoid_: Reviewer requests, People you watch, watch filter
 
 **Listing scope**:
-The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
+The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit or its search cannot serve the query), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
 
 **Path gate**:
 Repository `paths`: include globs and `!` excludes, last match wins. ANDed with admission and explicit intake, per revision. Empty: no gate. See [ADR 0027](docs/adr/0027-path-globs.md).

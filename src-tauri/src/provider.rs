@@ -5,6 +5,7 @@
 
 mod capability;
 pub mod intake;
+pub mod listing;
 mod readiness;
 mod threads;
 mod types;

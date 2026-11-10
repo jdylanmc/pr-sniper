@@ -344,6 +344,10 @@ pub struct ListingCursor {
     /// The listing waits until then (shared retry policy); tracked reads go on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_at: Option<i64>,
+    /// This pass lists every open pull request: a narrowed query could not
+    /// be served whole (GitHub's search cap).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wide: bool,
 }
 
 /// One poll's read: open pull requests of this batch plus tracked ones.

@@ -5,7 +5,7 @@
 
 use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
-    ChangedFile, ConnectionError, Lifecycle, Listing, ListingCursor, ListingScope, Person,
+    listing, ChangedFile, ConnectionError, Lifecycle, Listing, ListingCursor, ListingScope, Person,
     PolledPullRequests, ProviderResponse, PullRequest, PullRequestReader, RemoteRepository,
     RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
 };
@@ -19,10 +19,6 @@ const BATCH_PAGES: u64 = 10;
 /// Pull requests re-read when a pass resumes: closures since the last poll
 /// move later ones forward by as many places.
 const RESUME_OVERLAP: u64 = 20;
-/// Tracked pull requests missing from a batch read on their own per poll.
-const TRACKED_BATCH: usize = 200;
-/// Closed tracked pull requests probed for a reopen per poll.
-const CLOSED_BATCH: usize = 20;
 /// Azure DevOps has no mention detection (`CommentReader::top_comments` is
 /// empty), so Mentioning me never admits and never widens a listing.
 const DETECTS_MENTIONS: bool = false;
@@ -277,25 +273,6 @@ fn tree_too_large(error: ConnectionError) -> bool {
     )
 }
 
-/// Up to `budget` of `ids` (sorted by number), resuming after number
-/// `after` and wrapping; with the number to resume after next time (0: all
-/// were read).
-fn rotate(ids: &[(String, u64)], after: u64, budget: usize) -> (Vec<(String, u64)>, u64) {
-    let start = ids.partition_point(|(_, number)| *number <= after);
-    let chosen: Vec<_> = ids[start..]
-        .iter()
-        .chain(&ids[..start])
-        .take(budget)
-        .cloned()
-        .collect();
-    let next = if ids.len() > budget {
-        chosen.last().map_or(0, |(_, number)| *number)
-    } else {
-        0
-    };
-    (chosen, next)
-}
-
 /// A tree entry of one object kind (`blob`, or `commit` for a submodule).
 fn entry(path: &str, kind: &str, sha: &str) -> TreeEntry {
     TreeEntry {
@@ -312,49 +289,6 @@ struct ChangeEntry {
     file: ChangedFile,
     original: Option<String>,
     kind: String,
-}
-
-/// Whether a listing read failed for a reason a later poll can clear.
-/// Access, identity and repository failures, and a refused query, surface.
-fn resumable(error: ConnectionError) -> bool {
-    !matches!(
-        error,
-        ConnectionError::WrongIdentity
-            | ConnectionError::MissingCli
-            | ConnectionError::BrokenCli
-            | ConnectionError::SignedOut
-            | ConnectionError::MissingReadPermission
-            | ConnectionError::RepositoryUnavailable
-            | ConnectionError::MissingScope
-            | ConnectionError::ScopeUnverified
-            | ConnectionError::OrganizationPolicyDenied
-            | ConnectionError::OrganizationPolicyDeniedWithMissingScope
-            | ConnectionError::ProviderRejected
-            | ConnectionError::InvalidRepository
-            | ConnectionError::RepositoryChanged
-            | ConnectionError::Configuration
-    ) && !matches!(error, ConnectionError::ProviderRejectedStatus(status) if status != 408)
-}
-
-fn throttled(error: ConnectionError) -> bool {
-    matches!(
-        error,
-        ConnectionError::RateLimited
-            | ConnectionError::RateLimitedAfter(_)
-            | ConnectionError::RateLimitedWithContext { .. }
-    )
-}
-
-fn stated_wait(error: ConnectionError) -> Option<i64> {
-    match error {
-        ConnectionError::RateLimitedAfter(seconds)
-        | ConnectionError::ProviderFailureAfter(seconds) => Some(seconds),
-        ConnectionError::RateLimitedWithContext {
-            retry_after_seconds,
-            ..
-        } => retry_after_seconds,
-        _ => None,
-    }
 }
 
 impl Client {
@@ -461,20 +395,12 @@ impl Client {
             self.list_batch(key, &queries, &mut next, &mut pulls, now)
                 .await?;
         }
-        let missing = |ids: &[(String, u64)]| {
-            let mut ids: Vec<(String, u64)> = ids
-                .iter()
-                .filter(|(id, _)| !pulls.values().any(|pull: &PullRequest| &pull.id == id))
-                .cloned()
-                .collect();
-            ids.sort_by_key(|(_, number)| *number);
-            ids.dedup();
-            ids
-        };
-        let (open, closed) = (missing(tracked), missing(closed));
-        let (open, tracked_after) = rotate(&open, next.tracked_after, TRACKED_BATCH);
-        let (closed, closed_after) = rotate(&closed, next.closed_after, CLOSED_BATCH);
-        (next.tracked_after, next.closed_after) = (tracked_after, closed_after);
+        let (open, closed) = listing::tracked_reads(
+            |id| pulls.values().any(|pull: &PullRequest| pull.id == id),
+            tracked,
+            closed,
+            &mut next,
+        );
         for ((id, number), reopen) in open
             .iter()
             .map(|pull| (pull, false))
@@ -505,63 +431,32 @@ impl Client {
     ) -> Result<(), ConnectionError> {
         // Listings are newest first: when a pass resumes, the head page shows
         // pull requests opened since it began.
-        let mut head = next.skip > 0;
-        next.skip = next.skip.saturating_sub(RESUME_OVERLAP);
-        let mut pages = 0;
-        while next.query < queries.len() && pages < BATCH_PAGES {
-            let skip = if head { 0 } else { next.skip };
-            match self.active_page(key, queries[next.query], skip).await {
+        let mut batch = listing::Batch::start(next, queries.len(), RESUME_OVERLAP);
+        while let Some((query, skip)) = batch.next(BATCH_PAGES) {
+            match self.active_page(key, queries[query], skip).await {
                 Ok(page) => {
-                    pages += 1;
                     let count = page.len() as u64;
                     collect(key, page, pulls)?;
-                    if std::mem::take(&mut head) {
-                        continue;
-                    }
-                    if count < PAGE_SIZE {
-                        next.query += 1;
-                        next.skip = 0;
-                    } else {
-                        next.skip += count;
-                    }
+                    batch.read(count, PAGE_SIZE);
                 }
-                // Throttling is backpressure (ADR 0026), never a scale
-                // failure: the poll waits under the shared gate, commits
-                // nothing, and resumes from the last committed cursor.
-                Err(error) if throttled(error) => {
-                    if let Some(seconds) = stated_wait(error) {
+                Err(error) => {
+                    // Throttling is backpressure (ADR 0026), never a scale
+                    // failure: the poll waits under the shared gate, commits
+                    // nothing, and resumes from the last committed cursor.
+                    if let Some(seconds) =
+                        listing::stated_wait(error).filter(|_| listing::throttled(error))
+                    {
                         self.pacer.hold(
                             u64::try_from(seconds)
                                 .unwrap_or_default()
                                 .saturating_mul(1_000),
                         );
                     }
-                    return Err(error);
+                    return batch.failed(error, now, &key.id());
                 }
-                Err(error) if resumable(error) => {
-                    next.stalls = if pages == 0 {
-                        next.stalls.saturating_add(1)
-                    } else {
-                        0
-                    };
-                    if pages == 0 {
-                        next.retry_at = Some(now.saturating_add(crate::retry::TRANSIENT.wait(
-                            &key.id(),
-                            next.stalls.saturating_sub(1),
-                            stated_wait(error),
-                        )));
-                    }
-                    return Ok(());
-                }
-                Err(error) => return Err(error),
             }
         }
-        next.stalls = 0;
-        if next.query >= queries.len() {
-            next.query = 0;
-            next.skip = 0;
-            next.passes += 1;
-        }
+        batch.finish();
         Ok(())
     }
 

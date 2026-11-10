@@ -180,19 +180,30 @@ fn missing_or_failed_later_file_page_never_returns_partial_metadata() {
 }
 
 #[test]
-fn file_count_mismatch_and_provider_file_limit_are_explicitly_incomplete() {
-    for (count, error) in [
-        (0, ConnectionError::IncompleteRead),
-        (2, ConnectionError::IncompleteRead),
-        (3001, ConnectionError::LimitExceeded),
-    ] {
+fn file_count_mismatch_is_explicitly_incomplete() {
+    for count in [0, 2] {
         let mut transport = ready_transport();
         let mut pull = detail();
         pull["changed_files"] = json!(count);
         transport.reply(DETAIL, response(200, pull));
 
-        assert_eq!(read(transport), Err(error), "{count}");
+        assert_eq!(
+            read(transport),
+            Err(ConnectionError::IncompleteRead),
+            "{count}"
+        );
     }
+}
+
+#[test]
+fn past_the_provider_file_limit_the_listed_files_are_read_not_failed() {
+    let mut transport = ready_transport();
+    let mut pull = detail();
+    pull["changed_files"] = json!(3001);
+    transport.reply(DETAIL, response(200, pull));
+
+    let pulls = read(transport).unwrap();
+    assert_eq!(pulls[0].files.len(), 1);
 }
 
 #[test]
@@ -207,6 +218,18 @@ fn duplicate_pull_ids_on_later_pages_are_not_silently_deduplicated() {
     transport.reply(LIST_NEXT, response(200, json!([duplicate])));
 
     assert_eq!(read(transport), Err(ConnectionError::IncompleteRead));
+}
+
+#[test]
+fn a_pull_request_repeated_by_a_moving_listing_is_read_once() {
+    let mut transport = ready_transport();
+    transport.reply(LIST, linked(
+        json!([detail()]),
+        "<https://api.github.com/repos/jdylanmc/pr-sniper/pulls?state=all&sort=created&direction=asc&per_page=100&page=2>; rel=\"next\"",
+    ));
+    transport.reply(LIST_NEXT, response(200, json!([detail()])));
+
+    assert_eq!(read(transport).unwrap().len(), 1);
 }
 
 #[test]
