@@ -177,7 +177,8 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
 impl<T: QueryTransport> GithubClient<T> {
     /// Snapshots of `numbers`. `strict`: any unreadable PR fails the read;
     /// otherwise it is absent, so one PR (more than a page of checks, a
-    /// GraphQL error on it) never fails a repository's heartbeat (ADR 0028).
+    /// GraphQL error on it, a body past the transport cap) never fails a
+    /// repository's heartbeat (ADR 0028).
     fn snapshots(
         &self,
         repo: &RemoteRepository,
@@ -193,7 +194,9 @@ impl<T: QueryTransport> GithubClient<T> {
             !strict
                 && matches!(
                     error,
-                    ConnectionError::IncompleteRead | ConnectionError::InvalidResponse
+                    ConnectionError::IncompleteRead
+                        | ConnectionError::InvalidResponse
+                        | ConnectionError::LimitExceeded
                 )
         };
         let mut result = BTreeMap::new();
@@ -532,6 +535,10 @@ mod tests {
             query: &str,
             _: Value,
         ) -> Result<super::super::provider::Response, ConnectionError> {
+            // 4's discussion is past the body cap, alone or batched.
+            if query.contains("p4:") {
+                return Err(ConnectionError::LimitExceeded);
+            }
             let mut repository = json!({"databaseId": 100});
             let mut errors = Vec::new();
             for number in 1..=3 {
@@ -565,6 +572,8 @@ mod tests {
             name: "example/repo".into(),
         };
         let read = client.pr_snapshots(&repo, &[1, 2, 3]).unwrap();
+        assert_eq!(read.keys().copied().collect::<Vec<_>>(), [1]);
+        let read = client.pr_snapshots(&repo, &[1, 4]).unwrap();
         assert_eq!(read.keys().copied().collect::<Vec<_>>(), [1]);
         // A single fresh read stays strict.
         assert_eq!(

@@ -99,6 +99,12 @@ fn collect(
     Ok(())
 }
 
+/// A failure of one pull request's own read: that pull request is skipped,
+/// the listing goes on (ADR 0028).
+fn pull_local(error: ConnectionError) -> bool {
+    error.is_invalid_response() || error == ConnectionError::IncompleteRead
+}
+
 fn valid_login(login: &str) -> bool {
     let name = login.strip_suffix("[bot]").unwrap_or(login);
     !name.is_empty()
@@ -219,9 +225,13 @@ impl<T: Transport> GithubClient<T> {
             if pulls.contains_key(&number) {
                 continue;
             }
-            let pull = self.pull_request(repository, number)?;
-            if pull.state == Lifecycle::Open {
-                pulls.insert(number, pull);
+            match self.pull_request(repository, number) {
+                Ok(pull) if pull.state == Lifecycle::Open => {
+                    pulls.insert(number, pull);
+                }
+                Ok(_) => {}
+                Err(error) if pull_local(error) => {}
+                Err(error) => return Err(error),
             }
         }
         Ok(Some(items.len() as u64))
@@ -265,7 +275,11 @@ impl<T: Transport> GithubClient<T> {
             .map(|pull| (pull, false))
             .chain(closed.iter().map(|pull| (pull, true)))
         {
-            let pull = self.pull_request(repository, *number)?;
+            let pull = match self.pull_request(repository, *number) {
+                Ok(pull) => pull,
+                Err(error) if pull_local(error) => continue,
+                Err(error) => return Err(error),
+            };
             if &pull.id != id {
                 return Err(ConnectionError::RepositoryChanged);
             }

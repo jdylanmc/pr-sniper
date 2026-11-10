@@ -567,6 +567,24 @@ fn malformed_entries_and_pages_skip_or_back_off_never_fail_the_poll() {
 }
 
 #[test]
+fn a_malformed_search_hit_or_tracked_pull_request_is_skipped_not_fatal() {
+    let mut broken = pr(10, 31, &[]);
+    broken["head"]["sha"] = json!("not a sha");
+    let client = GithubClient::new(Fake::new((1..=9).map(|n| pr(n, 31, &[])).chain([broken])));
+    let scope = ListingScope::Narrowed {
+        authors: vec!["31".into()],
+        reviewer: None,
+        mentions: false,
+    };
+    let polled = batch(&client, &scope, None, &[("100010".into(), 10)]).unwrap();
+    assert_eq!(numbers(&polled.pulls), (1..=9).collect::<Vec<_>>());
+    // The page counted: the pass ended instead of re-reading it forever.
+    assert!(polled
+        .cursor
+        .is_some_and(|cursor| cursor.passes == 1 && cursor.stalls == 0));
+}
+
+#[test]
 fn an_access_failure_on_the_listing_still_surfaces() {
     let client = GithubClient::new(Fake::new((1..=3).map(|n| pr(n, 30, &[]))));
     client.transport.fault("&page=1", response(401, json!({})));
@@ -589,12 +607,18 @@ fn a_review_past_the_whole_tree_and_files_caps_reads_only_its_changed_paths() {
     {
         let mut hub = client.transport.hub();
         let count = 3_000;
-        hub.changed_files = count + 1;
-        hub.files = (0..count)
+        // Listed: 2,999 of gen's and a copy of an unchanged file. Unlisted:
+        // gen's last and an added file.
+        hub.changed_files = count + 2;
+        hub.files = (0..count - 1)
             .map(|i| {
                 json!({"filename": format!("gen/f{i}"), "status": "modified",
                 "sha": sha(10_000 + i), "patch": "@@ -1 +1 @@\n-a\n+b"})
             })
+            .chain([
+                json!({"filename": "src/copy.rs", "previous_filename": "src/keep.rs",
+                "status": "copied", "sha": sha(5), "patch": "@@ -0,0 +1 @@\n+a"}),
+            ])
             .collect();
         let gen = |offset: u64| {
             tree(
@@ -608,8 +632,14 @@ fn a_review_past_the_whole_tree_and_files_caps_reads_only_its_changed_paths() {
         hub.trees.insert(sha(1), gen(20_000));
         hub.trees.insert(sha(2), gen(10_000));
         hub.trees.insert(sha(3), tree(vec![file("keep.rs", 5)]));
-        hub.trees
-            .insert(sha(4), tree(vec![file("keep.rs", 5), file("x.rs", 6)]));
+        hub.trees.insert(
+            sha(4),
+            tree(vec![
+                file("copy.rs", 5),
+                file("keep.rs", 5),
+                file("x.rs", 6),
+            ]),
+        );
         hub.trees.insert(
             MERGE_BASE.into(),
             tree(vec![dir("gen", 1), dir("same", 9), dir("src", 3)]),
@@ -620,19 +650,21 @@ fn a_review_past_the_whole_tree_and_files_caps_reads_only_its_changed_paths() {
         );
     }
     let context: ReviewContext = client.review_context(&repo(), 7, HEAD).unwrap();
-    assert_eq!(context.files.len(), 3_001);
-    let unlisted = context.files.last().unwrap();
-    assert_eq!(
-        (unlisted.path.as_str(), unlisted.status.as_str()),
-        ("src/x.rs", "added")
+    let unlisted: Vec<(&str, &str)> = context.files[3_000..]
+        .iter()
+        .map(|file| (file.path.as_str(), file.status.as_str()))
+        .collect();
+    assert_eq!(unlisted, [("gen/f2999", "modified"), ("src/x.rs", "added")]);
+    assert!(context.files[3_000..]
+        .iter()
+        .all(|file| file.patch.is_none()));
+    assert!(
+        context.files.iter().all(|file| file.status != "removed"),
+        "a copy source is no removal"
     );
-    assert!(unlisted.patch.is_none());
     assert_eq!(context.head["src/x.rs"].sha, sha(6));
     assert_eq!(context.base["gen/f0"].sha, sha(20_000));
-    assert!(
-        !context.head.contains_key("src/keep.rs"),
-        "unchanged: unread"
-    );
+    assert!(context.head.contains_key("src/keep.rs"));
     let log = client.transport.log();
     let unchanged = format!("/trees/{}", sha(9));
     assert!(log.iter().all(|path| !path.ends_with(&unchanged)));

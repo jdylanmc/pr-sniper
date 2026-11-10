@@ -825,19 +825,15 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
                         changed.extend(walked.into_iter().map(|file| file.path));
                     }
                 }
-                let mut before = changed.clone();
-                let mut after = changed;
+                // One path set for both sides: a path absent from either is
+                // absent from that revision, never just unread.
                 for file in &files {
-                    if file.status != "removed" {
-                        after.insert(file.path.clone());
-                    }
-                    if file.status != "added" {
-                        before.insert(file.previous_path.clone().unwrap_or(file.path.clone()));
-                    }
+                    changed.insert(file.path.clone());
+                    changed.extend(file.previous_path.clone());
                 }
                 (
-                    self.entries_at(&name, &base_revision, &before)?,
-                    self.entries_at(&name, &pull.head_sha, &after)?,
+                    self.entries_at(&name, &base_revision, &changed)?,
+                    self.entries_at(&name, &pull.head_sha, &changed)?,
                 )
             }
             Err(error) => return Err(error),
