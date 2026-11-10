@@ -3492,6 +3492,10 @@
   box-shadow: 0 1px 3px rgb(36 50 71 / 12%);
   cursor: pointer;
 }
+/* In a drill-in it leads the cards the same way, above their scroller. */
+.panel-shell .shared-resource-editor > #error:not([hidden]) {
+  margin: 0 0 12px;
+}
 .panel-shell .settings-window #error:not([hidden])::after {
   content: "\00d7";
   position: absolute;

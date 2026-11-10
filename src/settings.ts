@@ -52,7 +52,9 @@ import {
   type DoctrineCatalog,
   doctrineCatalogLabel,
   type ResourceEdit,
+  acceptReceipts,
   acceptResource,
+  configuration,
   DUCK_LIMITS,
   DUCK_RANGES,
   type DuckLimits,
@@ -570,10 +572,30 @@ export async function mountSettings(
     returnGenie.hidden = true;
     settingsBack.hidden = !options.embedded || section === "home";
   };
+  // A drill-in covers the page, so the page banner leads the open drill-in
+  // instead, above its scrolled cards; it returns home once none is open.
+  const errorHome = error.nextElementSibling!;
+  const placeError = () => {
+    const top = options.embedded
+      ? [
+          ...content.querySelectorAll<HTMLDialogElement>(
+            ":scope > .shared-resource-host > .shared-resource-editor[open]",
+          ),
+        ].pop()
+      : undefined;
+    const body = top?.querySelector<HTMLElement>(":scope > .dialog-body");
+    if (body) {
+      if (error.nextElementSibling !== body) body.before(error);
+      error.removeAttribute("inert");
+      error.removeAttribute("aria-hidden");
+    } else if (error.nextElementSibling !== errorHome) errorHome.before(error);
+  };
   const dialogs = createDialogs(
     content,
     () => {
       revision++;
+      // Runs before the drill-in opens or closes; place after it settles.
+      queueMicrotask(placeError);
       // Embedded Agents/Doctrines/Voices hide the savebar and its Reload, with
       // no other Reload (Repositories has its own). Once the last editor
       // closes on a clean draft there, re-read instead.
@@ -717,6 +739,8 @@ export async function mountSettings(
         result.settings.agents ?? [],
       );
       for (const settings of [saved, draft]) {
+        // Save writes monitoring receipts; this commit is their freshest copy.
+        acceptReceipts(settings, result.settings);
         if (
           catalogConflict &&
           (edit.kind === "doctrine" || edit.kind === "voice")
@@ -5442,7 +5466,12 @@ export async function mountSettings(
       externalPending = true;
       return;
     }
-    if (sameResource(state.settings, saved)) return;
+    // Receipts that Save writes are not configuration: they never stale a draft.
+    if (sameResource(configuration(state.settings), configuration(saved))) {
+      for (const settings of [saved, draft])
+        acceptReceipts(settings, state.settings);
+      return;
+    }
     if (!dirty() && !dialogs.hasOpen() && !catalogConflict) {
       applySnapshot(state);
       return;

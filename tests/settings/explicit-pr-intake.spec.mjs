@@ -711,3 +711,78 @@ test("failed post-Save PR read retains committed configuration and retry queues 
   await expect(editor.getByRole("alert")).toBeHidden();
   expect((await store("monitoring_snapshot")).jobs).toHaveLength(1);
 });
+
+// The native Store broadcasts every committed settings write, the editor's own
+// Save included.
+const committed = (page) =>
+  page.evaluate(async () => {
+    window.__appEvent("pr-sniper:settings-changed", { revision: 99 });
+    window.__appEvent("pr-sniper:state-changed", { revision: 99 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await window.__settingsIdle();
+  });
+
+test("an editor kept open after its own Save is not changed elsewhere; a real edit is", async ({
+  page,
+  store,
+}) => {
+  const { state } = await setup(page, store);
+  const editor = await enter(page);
+  await assign(page, editor);
+  // The post-Save PR read fails, as during a failing poll, so the editor stays.
+  state.responses[22]["/repos/orbit/one/pulls/302"] = response(
+    { message: "Not Found" },
+    404,
+  );
+  const save = editor.getByRole("button", {
+    name: "Save repository",
+    exact: true,
+  });
+  await save.click();
+  await expect(editor.getByRole("alert")).toContainText("PR #302");
+  const first = (await store("snapshot")).settings;
+  const id = first.repositories[0].id;
+  expect(first.repository_authorizations[id]).toBeTruthy();
+  await committed(page);
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(page.locator("[data-repository-reload]")).toHaveCount(0);
+
+  // A further edit saves over the receipt that Save itself wrote.
+  await editor
+    .getByRole("switch", { name: "Review drafts", exact: true })
+    .click();
+  state.responses = responses();
+  await save.click();
+  await expect(editor.locator("[data-explicit-pr-status]")).toHaveText(
+    /^PR #\d+ queued$/,
+  );
+  await committed(page);
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(editor.getByRole("alert")).toBeHidden();
+  const second = (await store("snapshot")).settings;
+  expect(second.repositories[0].review_drafts).toBe(true);
+  expect(second.repository_authorizations[id].version).not.toBe(
+    first.repository_authorizations[id].version,
+  );
+
+  // A real concurrent configuration edit still conflicts.
+  const current = second.repositories[0];
+  await store("save_resource", {
+    edit: {
+      kind: "repository",
+      id,
+      expected: current,
+      value: { ...current, cron: "*/7 * * * *" },
+    },
+  });
+  await committed(page);
+  await expect(page.locator("#error")).toHaveText("Changed elsewhere");
+  await editor
+    .getByRole("switch", { name: "Review drafts", exact: true })
+    .click();
+  await save.click();
+  await expect(editor.getByRole("alert")).toContainText("Resource changed");
+  expect((await store("snapshot")).settings.repositories[0].review_drafts).toBe(
+    true,
+  );
+});

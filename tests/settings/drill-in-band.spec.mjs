@@ -225,3 +225,65 @@ for (const browserViewport of [
       .toEqual(referenceClip);
   });
 }
+
+// A page banner shown over a drill-in renders whole: never under the drill-in,
+// never sliced by its band clip, never over its first card.
+for (const browserViewport of [
+  { width: 408, height: 744 },
+  { width: 408, height: 520 },
+]) {
+  test(`a drill-in banner renders whole above the first card at ${browserViewport.width}x${browserViewport.height}`, async ({
+    page,
+    store,
+  }) => {
+    await page.setViewportSize(browserViewport);
+    await seed(page, store);
+    const row = page.locator("[data-repository]").last();
+    await row.scrollIntoViewIfNeeded();
+    const name = await row.getAttribute("aria-label");
+    await row.click();
+    const editor = page.getByRole("dialog", { name, exact: true });
+    const body = editor.locator(".dialog-body");
+    const drafts = editor.getByRole("switch", { name: "Review drafts" });
+    await drafts.click();
+    const { settings } = await store("snapshot");
+    settings.review_inactivity_minutes = 11;
+    await store("seed_settings", settings);
+    await page.evaluate(async () => {
+      window.__appEvent("pr-sniper:settings-changed", { revision: 2 });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await window.__settingsIdle();
+    });
+    const banner = page.locator("#error");
+    await expect(banner).toHaveText("Changed elsewhere");
+
+    const whole = async () => {
+      const card = await geometry(body);
+      return banner.evaluate((element, cardTop) => {
+        const box = element.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        const painted = [box.top + 2, box.top + box.height / 2, box.bottom - 2]
+          .map((y) => document.elementFromPoint(x, y))
+          .every((hit) => element.contains(hit));
+        return { painted, gap: cardTop - box.bottom, height: box.height };
+      }, card.cardTop);
+    };
+    for (const scrollTop of [0, 60, 1e6]) {
+      await body.evaluate(
+        (element, top) => (element.scrollTop = top),
+        scrollTop,
+      );
+      await expect.poll(whole).toMatchObject({ painted: true });
+      const { gap, height } = await whole();
+      expect(height).toBeGreaterThan(20);
+      if (scrollTop === 0) expect(gap).toBeGreaterThanOrEqual(8);
+    }
+    await expect(banner).not.toHaveAttribute("aria-hidden", "true");
+    // Leaving the drill-in returns the banner to the page.
+    await page.locator("[data-panel-back]").click();
+    await expect(editor).toHaveCount(0);
+    await expect(
+      page.locator(".settings-window .settings-main > #error"),
+    ).toHaveCount(1);
+  });
+}
