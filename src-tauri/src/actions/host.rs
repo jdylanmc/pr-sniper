@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_errors::Source;
 use crate::{
     now_seconds,
     provider::{Action, RemoteRepository},
@@ -610,19 +611,26 @@ impl Coordinator {
                                 }
                                 store.save_actions(&ledger)?;
                             }
-                            return Err(error.message);
+                            // A failure saved on the effect shows on its PR.
+                            let visible = store
+                                .load_actions()?
+                                .effects
+                                .iter()
+                                .any(|e| e.id == effect.id && e.error.is_some());
+                            return if visible { Ok(()) } else { Err(error.message) };
                         }
                     }
                 }
                 crate::capacity::Coordinator::pump(&app)
             })();
-            if let Err(error) = work {
-                crate::report(&app, error);
-            }
-            match app.state::<Host>().actions.active.lock() {
-                Ok(mut active) => *active = false,
-                Err(_) => crate::report(&app, "Action coordination unavailable.".into()),
-            }
+            let cleared = match app.state::<Host>().actions.active.lock() {
+                Ok(mut active) => {
+                    *active = false;
+                    Ok(())
+                }
+                Err(_) => Err("Action coordination unavailable.".into()),
+            };
+            crate::settle(&app, Source::Actions, work.and(cleared));
         });
         Ok(())
     }

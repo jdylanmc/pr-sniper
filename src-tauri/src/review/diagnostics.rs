@@ -380,9 +380,11 @@ pub(crate) fn native(
                     }
                     .and(logged)
                 });
-            if let Err(error) = &result {
-                crate::report(&app, error.clone());
-            }
+            crate::settle(
+                &app,
+                crate::host_errors::Source::AttemptDiagnostics,
+                result.clone(),
+            );
             result
         }),
     )

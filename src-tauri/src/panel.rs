@@ -749,7 +749,7 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
         Ok(Some(value)) => value,
         Ok(None) => return,
         Err(error) => {
-            crate::report(&app, error);
+            crate::log_navigation(&error);
             return;
         }
     };
@@ -781,15 +781,12 @@ pub(crate) fn lost_focus(app: &tauri::AppHandle) {
                     Ok(())
                 })();
                 if let Err(error) = outcome {
-                    crate::report(&dismiss_app, error);
+                    crate::log_navigation(&error);
                 }
             })
             .is_err()
         {
-            crate::report(
-                &app,
-                "Panel dismissal could not reach the native UI thread.".into(),
-            );
+            crate::log_navigation("Panel dismissal could not reach the native UI thread.");
         }
     });
 }

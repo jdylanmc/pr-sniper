@@ -1,3 +1,4 @@
+use crate::host_errors::Source;
 use crate::{
     backpressure::{Backpressure, Scope},
     monitoring::{JobOperation, OperationState},
@@ -727,8 +728,11 @@ impl Coordinator {
 }
 
 pub(crate) fn launch_batch(app: &tauri::AppHandle, batch: Batch) {
+    if batch.errors.is_empty() {
+        crate::settle(app, Source::Capacity, Ok(()));
+    }
     for error in batch.errors {
-        crate::report(app, error);
+        crate::report(app, Source::Capacity, error);
     }
     for dispatch in batch.dispatched {
         match dispatch {
@@ -779,13 +783,14 @@ pub(crate) fn publication_gate_checked(store: &Store) -> Result<(), crate::publi
 }
 
 pub(crate) fn refill(app: &tauri::AppHandle, key: &WorkId, operation_id: &str) {
+    // A clean dispatch in `launch_batch` resolves; success here proves less.
     if let Err(error) = app
         .state::<crate::Host>()
         .ai
         .release(key, operation_id)
         .and_then(|()| Coordinator::pump(app))
     {
-        crate::report(app, error);
+        crate::report(app, Source::Capacity, error);
     }
 }
 
