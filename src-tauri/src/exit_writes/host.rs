@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_errors::Source;
 use crate::{monitoring::OperationFailure, now_seconds, provider::RemoteRepository, Host, Session};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
@@ -46,23 +47,21 @@ pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
             generation,
         };
         let tossed_before = write.phase == Phase::Tossed;
-        if let Err(error) = run(&mut env, &mut write) {
-            if !error.rate_limited() && error.kind == OperationFailure::Permanent {
-                crate::report(
-                    &app,
-                    "An exit's replies or resolutions were not written. Open the PR's review evidence."
-                        .into(),
-                );
+        let mut outcome = match run(&mut env, &mut write) {
+            Err(error)
+                if !error.rate_limited()
+                    && error.kind == OperationFailure::Permanent
+                    && !visible(&app, &write) =>
+            {
+                Err(error.message)
             }
-        }
+            _ => Ok(()),
+        };
         if !tossed_before && write.phase == Phase::Tossed {
-            if let Err(error) = requeue_tossed(&app, &write) {
-                crate::report(&app, error);
-            }
+            outcome = outcome.and(requeue_tossed(&app, &write));
         }
-        if let Err(error) = app.state::<Host>().mutations.release(&owner) {
-            crate::report(&app, error);
-        }
+        let released = app.state::<Host>().mutations.release(&owner);
+        crate::settle(&app, Source::ExitWrites, outcome.and(released));
     });
     Ok(())
 }
@@ -70,6 +69,16 @@ pub(crate) fn pump(app: &tauri::AppHandle, view: &Store) -> Result<(), String> {
 struct Native {
     app: tauri::AppHandle,
     generation: u64,
+}
+
+/// The store holds this exact failed write: Needs attention shows it on its PR.
+fn visible(app: &tauri::AppHandle, write: &ExitWrite) -> bool {
+    write.error.is_some()
+        && app.state::<Host>().store.lock().is_ok_and(|store| {
+            store
+                .load_feedback()
+                .is_ok_and(|ledger| ledger.exit_writes.iter().any(|saved| saved == write))
+        })
 }
 
 /// A tossed exit counts against the PR's toss budget and re-queues its review (AC-022).

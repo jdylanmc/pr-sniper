@@ -156,6 +156,31 @@ test("a card chosen right after a reopen holds before its first snapshot lands",
   );
 });
 
+test("a card chosen before the first panel state lands holds on a fresh panel", async ({
+  page,
+  store,
+  ipc,
+}) => {
+  const { state } = await queueFixture(store);
+  const hold = ipc.holdNext("panel_snapshot");
+  await page.goto("/");
+  await hold.arrived;
+  await page.locator("[data-queue-filter=attention]").click();
+  const kept = (entry) =>
+    (entry.job ?? entry.review?.job ?? entry).number === 9;
+  for (const key of ["jobs", "reviews", "publications"])
+    state[key] = state[key].filter(kept);
+  await store("seed_queue_state", state);
+  hold.release();
+  await page.evaluate(() => window.__settingsIdle());
+  await stateChanged(page);
+  await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  await expect(page.locator("[data-queue-filter=attention]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
 test("a notification navigation error never renders on Settings, even after repository saves", async ({
   page,
   store,

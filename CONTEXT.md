@@ -270,6 +270,10 @@ Verified service reachability loss, scoped to the GitHub or Copilot account. Que
 A rate limit (GitHub 403/429, Copilot/model 429) is a signal to wait, not a failure. No attempt spent, no failure count, no Park, never Needs attention. The provider account is gated in `backpressure.json` until Retry-After/reset, else 30s x2^n (cap 15 min, deterministic jitter); a success clears it. Queue shows a quiet clock row with the local resume time.
 _Avoid_: Rate-limit failure
 
+**Host error**:
+A background failure with no PR or screen of its own, shown in the Settings error banner. Typed by source (`host_errors::Source`); never inferred from text. One failing episode of a source is one occurrence with one id: dismissal hides it across reads, saves and reloads until the source recovers and fails again. The next success of the same kind clears it. Shown once per window; a Settings save or refresh never re-shows it. Failures saved on their PR (publication, exit write, reply, provider action) and panel navigation failures are never host errors.
+_Avoid_: Global error, app error
+
 **Read coverage**:
 Recorded count of changed files the agent read in full ("N of M files read"). Informational only: never rejects, fails or retries a review.
 _Avoid_: Coverage gate

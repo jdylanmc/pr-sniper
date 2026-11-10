@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_errors::Source;
 use crate::{
     monitoring::{self, PollTicket},
     now_seconds,
@@ -618,24 +619,42 @@ impl Coordinator {
                     cancelled,
                     cancelled_read: Arc::new(AtomicBool::new(false)),
                 };
-                super::publish(&mut native, &mut run)
+                let outcome = super::publish(&mut native, &mut run);
+                (outcome, run)
             })
             .await;
-            match outcome {
-                Ok(Err(error)) => crate::report(&app, error.message),
-                Err(_) => crate::report(&app, "Thread publication worker could not finish.".into()),
-                _ => {}
-            }
-            if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
-                crate::report(&app, error);
-            }
-            match app.state::<Host>().follow_ups.active.lock() {
-                Ok(mut active) => *active = None,
-                Err(_) => crate::report(&app, "Thread coordination unavailable.".into()),
+            let published = match outcome {
+                // A failure saved on the reply shows on its PR, not as a host error.
+                Ok((Err(error), run)) if !visible(&app, &run) => Err(error.message),
+                Ok(_) => Ok(()),
+                Err(_) => Err("Thread publication worker could not finish.".into()),
             };
+            let released = app.state::<Host>().mutations.release(&mutation_owner);
+            let cleared = match app.state::<Host>().follow_ups.active.lock() {
+                Ok(mut active) => {
+                    *active = None;
+                    Ok(())
+                }
+                Err(_) => Err("Thread coordination unavailable.".into()),
+            };
+            crate::settle(
+                &app,
+                Source::FollowUps,
+                published.and(released).and(cleared),
+            );
         });
         Ok(())
     }
+}
+
+/// The store holds this exact failed reply: its PR shows the failure.
+fn visible(app: &tauri::AppHandle, run: &FollowUp) -> bool {
+    run.error.is_some()
+        && app.state::<Host>().store.lock().is_ok_and(|store| {
+            store
+                .load_follow_ups()
+                .is_ok_and(|runs| runs.iter().any(|saved| saved == run))
+        })
 }
 
 fn save_to_store(store: &Store, run: &FollowUp) -> Result<(), String> {
