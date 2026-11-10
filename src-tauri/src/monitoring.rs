@@ -982,6 +982,23 @@ pub struct PollResult {
     pub listing: Option<crate::provider::ListingCursor>,
 }
 
+impl PollResult {
+    /// A throttled poll (ADR 0028): no pull request, only where the listing
+    /// resumes.
+    pub fn deferred(
+        connection: Connection,
+        listing: Option<crate::provider::ListingCursor>,
+    ) -> Self {
+        Self {
+            connection,
+            pull_requests: Vec::new(),
+            states: BTreeMap::new(),
+            facts: BTreeMap::new(),
+            listing,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExplicitAdmission {
     pub queued: bool,
@@ -3025,7 +3042,7 @@ impl Monitor {
         let passes = |cursor: Option<&crate::provider::ListingCursor>| {
             cursor.map_or(0, |cursor| cursor.passes)
         };
-        // A pass ended: every candidate and tracked PR was listed in it.
+        // A listing pass ended: every candidate was listed in it.
         let pass_ended = ticket.listing.is_none() && result.listing.is_none()
             || passes(result.listing.as_ref()) > passes(ticket.listing.as_ref());
         let listing = result.listing;
@@ -3057,8 +3074,17 @@ impl Monitor {
                     .filter(|p| path_facts.contains_key(&p.id) || result.facts.contains_key(&p.id))
                     .map(|p| p.id.clone()),
             );
+            // Tracked PRs leave only when observed closed: the by-ID rotation
+            // may not reach every one within a pass.
             if pass_ended {
-                path_facts.retain(|id, _| fact_pass.contains(id));
+                path_facts.retain(|id, _| {
+                    fact_pass.contains(id)
+                        || ticket
+                            .tracked
+                            .iter()
+                            .chain(&ticket.closed)
+                            .any(|(tracked, _)| tracked == id)
+                });
                 fact_pass.clear();
             }
         }

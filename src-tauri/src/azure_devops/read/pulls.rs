@@ -456,6 +456,7 @@ impl Client {
                 return Ok(PolledPullRequests {
                     pulls: pulls.into_values().collect(),
                     cursor: Some(next),
+                    throttled: true,
                 });
             }
         }
@@ -490,6 +491,7 @@ impl Client {
         Ok(PolledPullRequests {
             pulls: pulls.into_values().collect(),
             cursor: (next != ListingCursor::default()).then_some(next),
+            throttled: false,
         })
     }
 
@@ -537,21 +539,26 @@ impl Client {
                                 .saturating_mul(1_000),
                         );
                     }
-                    if pages == 0 || stated.is_some() {
-                        let retry = next.stalls.saturating_sub(1);
-                        next.retry_at = Some(now.saturating_add(crate::retry::TRANSIENT.wait(
-                            &key.id(),
-                            retry,
-                            stated,
-                        )));
-                    }
-                    return Ok(stated.is_some()
+                    let throttled = stated.is_some()
                         || matches!(
                             error,
                             ConnectionError::RateLimited
                                 | ConnectionError::RateLimitedAfter(_)
                                 | ConnectionError::RateLimitedWithContext { .. }
-                        ));
+                        );
+                    // Throttling waits like backpressure; other failures
+                    // back off only when no page was read.
+                    let retry = next.stalls.saturating_sub(1);
+                    let policy = if throttled {
+                        Some(crate::retry::BACKPRESSURE)
+                    } else {
+                        (pages == 0).then_some(crate::retry::TRANSIENT)
+                    };
+                    if let Some(policy) = policy {
+                        next.retry_at =
+                            Some(now.saturating_add(policy.wait(&key.id(), retry, stated)));
+                    }
+                    return Ok(throttled);
                 }
                 Err(error) => return Err(error),
             }

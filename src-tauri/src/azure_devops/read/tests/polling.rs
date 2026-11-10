@@ -107,6 +107,9 @@ fn poll(
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
     let (connection, polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
+    if polled.throttled {
+        return Ok(PollResult::deferred(connection, polled.cursor));
+    }
     let facts = crate::path_facts(&reader, &connection, &polled.pulls, ticket)?;
     Ok(PollResult {
         facts,
@@ -756,7 +759,7 @@ fn a_closed_tracked_pull_request_the_scope_cannot_list_is_probed_for_a_reopen() 
 }
 
 #[test]
-fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches() {
+fn path_facts_of_untracked_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches() {
     let (_root, store, mut monitor) = monitored();
     let mut settings = store.load_settings().unwrap();
     settings.repositories[0].paths = vec!["src/".into()];
@@ -765,21 +768,27 @@ fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches
     let wire = connected_wire();
     wire.json(
         &creator(BLAKE),
-        json!({"value": [raw_pull(1, BLAKE, 1, false), raw_pull(2, BLAKE, 2, false)]}),
+        json!({"value": [
+            raw_pull(1, BLAKE, 1, false),
+            raw_pull(2, BLAKE, 2, false),
+            raw_pull(3, BLAKE, 3, false),
+        ]}),
     );
-    for number in [1, 2] {
+    // PR 1 is gated out (untracked); 2 and 3 are admitted (tracked).
+    for (number, path) in [(1, "/docs/a.md"), (2, "/src/a.rs"), (3, "/src/b.rs")] {
         wire.json(
             &git(&format!("pullRequests/{number}/iterations?")),
             json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(number)}}]}),
         )
         .json(
             &git(&format!("pullRequests/{number}/iterations/1/changes?")),
-            json!({"changeEntries": [{"item": {"path": "/src/a.rs", "objectId": sha(50)}, "changeType": "edit"}]}),
+            json!({"changeEntries": [{"item": {"path": path, "objectId": sha(50)}, "changeType": "edit"}]}),
         );
     }
     let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
     let connected = result.as_ref().unwrap().connection.clone();
     monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(queued(&store), [2, 3]);
     let facts = |store: &Store| -> Vec<String> {
         store
             .load_monitoring_state()
@@ -789,9 +798,10 @@ fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches
             .map(|facts| facts.keys().cloned().collect())
             .unwrap_or_default()
     };
-    assert_eq!(facts(&store), ["1", "2"]);
+    assert_eq!(facts(&store), ["1", "2", "3"]);
 
-    // A pass over several batches: PR 1 is on no page of it, PR 2 is.
+    // A pass over several batches lists only PR 3: tracked PR 2 is not
+    // reached by ID in it.
     let open = |number: u64| {
         let raw: crate::azure_devops::read::pulls::RawPullRequest =
             serde_json::from_value(raw_pull(number, BLAKE, number as u32, false)).unwrap();
@@ -801,7 +811,7 @@ fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches
         let ticket = next_ticket(&mut monitor, &store, now);
         let result = PollResult {
             connection: connected.clone(),
-            pull_requests: vec![open(2)],
+            pull_requests: vec![open(3)],
             states: Default::default(),
             facts: Default::default(),
             listing: Some(crate::provider::ListingCursor {
@@ -813,7 +823,45 @@ fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches
         monitor.finish(&store, ticket, Ok(result), now).unwrap();
     };
     batch(NOW + 900, 1, 100);
-    assert_eq!(facts(&store), ["1", "2"], "kept until the pass ends");
+    assert_eq!(facts(&store), ["1", "2", "3"], "kept until the pass ends");
     batch(NOW + 1800, 2, 0);
-    assert_eq!(facts(&store), ["2"]);
+    assert_eq!(facts(&store), ["2", "3"], "tracked PRs keep theirs");
+}
+
+#[test]
+fn a_throttled_listing_commits_only_its_cursor_and_the_next_poll_resumes_there() {
+    let (_root, store, mut monitor) = monitored_with(json!({"mode": "all", "rules": []}));
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    let page = |from: u64| {
+        json!({"value": (from..from + 100).rev()
+            .map(|n| raw_pull(n, BLAKE, n as u32, false))
+            .collect::<Vec<_>>()})
+    };
+    wire.json(
+        &git("pullrequests?searchCriteria.status=active"),
+        page(2_901),
+    )
+    .json(
+        &git("pullrequests?searchCriteria.status=active"),
+        page(2_801),
+    )
+    .on(
+        &git("pullrequests?searchCriteria.status=active"),
+        Ok(status(429, None)),
+    );
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    let deferred = result.as_ref().unwrap();
+    assert!(
+        deferred.pull_requests.is_empty(),
+        "nothing unenriched is admitted"
+    );
+    let cursor = deferred.listing.clone().unwrap();
+    assert_eq!(cursor.skip, 200);
+    assert!(cursor.retry_at.is_some_and(|at| at >= NOW + 30));
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(health_failure(&monitor), None);
+    assert!(queued(&store).is_empty());
+    let next = next_ticket(&mut monitor, &store, NOW + 900);
+    assert_eq!(next.listing, Some(cursor));
 }

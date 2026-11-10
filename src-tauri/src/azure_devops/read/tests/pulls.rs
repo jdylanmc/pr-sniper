@@ -720,7 +720,8 @@ fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
             .poll_batch(&key, &tracked, &[], &ALL, None, NOW),
     )
     .unwrap();
-    assert_eq!(batch.pulls.len(), 300, "pages read so far are kept");
+    assert!(batch.throttled);
+    assert_eq!(batch.pulls.len(), 300);
     let cursor = batch.cursor.unwrap();
     assert_eq!((cursor.query, cursor.skip), (0, 300));
     assert_eq!(cursor.retry_at, Some(NOW + 1), "the stated wait holds");
