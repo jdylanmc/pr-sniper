@@ -534,7 +534,7 @@ export async function mountSettings(
   // A re-read sent before `saved` moved compares against the wrong baseline;
   // drop it and read again once idle.
   const supersedeExternalRead = () => {
-    if (externalReading !== externalRead) return;
+    if (!externalReading || externalReading !== externalRead) return;
     externalRead++;
     externalPending = true;
   };
