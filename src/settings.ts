@@ -529,6 +529,14 @@ export async function mountSettings(
   let catalogConflict = false;
   let externalPending = false;
   let externalRead = 0;
+  let externalReading = false;
+  // A re-read sent before `saved` moved compares against the wrong baseline;
+  // drop it and read again once idle.
+  const supersedeExternalRead = () => {
+    if (!externalReading) return;
+    externalRead++;
+    externalPending = true;
+  };
   let revision = 0;
   let routeGeneration = 0;
   app
@@ -749,6 +757,7 @@ export async function mountSettings(
     controls.forEach(({ control }) => (control.disabled = true));
     try {
       const result = await saveResource(edit, accountGeneration);
+      supersedeExternalRead();
       const accepted = clone(saved);
       acceptResource(accepted, clone(result.settings), edit);
       // The submitted edit proves only its own changes, not external Agent
@@ -5384,6 +5393,7 @@ export async function mountSettings(
             : undefined;
         }
       } else {
+        supersedeExternalRead();
         saved = clone(state.settings);
         draft = clone(saved);
         pendingPullRequests.clear();
@@ -5449,6 +5459,7 @@ export async function mountSettings(
         section === "github") &&
       content.querySelector(".account-connection") !== null &&
       sameResource(saved, state.settings);
+    supersedeExternalRead();
     saved = clone(state.settings);
     draft = clone(saved);
     if (!themePending) applyTheme(saved.theme);
@@ -5476,10 +5487,13 @@ export async function mountSettings(
     }
     const read = ++externalRead;
     let state: Snapshot;
+    externalReading = true;
     try {
       state = await invoke<Snapshot>("snapshot");
     } catch {
       return;
+    } finally {
+      externalReading = false;
     }
     if (read !== externalRead || !state.settings || !app.isConnected) return;
     if (busy || startupPending) {
