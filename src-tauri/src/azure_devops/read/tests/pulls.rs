@@ -589,6 +589,8 @@ fn pull_request_reads_keep_the_shared_failure_types() {
 /// the listing request with that index instead.
 #[derive(Default)]
 struct Listing {
+    /// Its own organization: a throttling hold never reaches other tests.
+    organization: String,
     open: Mutex<Vec<u64>>,
     fail: Mutex<BTreeMap<usize, Response>>,
     skips: Mutex<Vec<u64>>,
@@ -596,9 +598,23 @@ struct Listing {
 
 impl Listing {
     fn new(open: impl IntoIterator<Item = u64>) -> Arc<Self> {
-        let listing = Arc::new(Self::default());
+        Self::of("contoso", open)
+    }
+
+    fn of(organization: &str, open: impl IntoIterator<Item = u64>) -> Arc<Self> {
+        let listing = Arc::new(Self {
+            organization: organization.into(),
+            ..Self::default()
+        });
         listing.set(open);
         listing
+    }
+
+    fn key(&self) -> RepositoryKey {
+        RepositoryKey {
+            organization: self.organization.clone(),
+            ..key()
+        }
     }
 
     fn set(&self, open: impl IntoIterator<Item = u64>) {
@@ -614,7 +630,7 @@ impl Listing {
             Arc::new(FakeTokens::default()),
             Arc::clone(self) as Arc<dyn Transport>,
             TenantId::parse(TENANT).unwrap(),
-            "Contoso",
+            &self.organization,
         )
     }
 
@@ -667,17 +683,18 @@ fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
     let mut seen = BTreeSet::new();
     let mut cursor: Option<ListingCursor> = None;
     for poll in 1.. {
-        let batch = block(
-            listing
-                .client()
-                .poll_batch(&key(), &[], &ALL, cursor.as_ref(), NOW),
-        )
-        .unwrap();
+        let batch =
+            block(
+                listing
+                    .client()
+                    .poll_batch(&key(), &[], &[], &ALL, cursor.as_ref(), NOW),
+            )
+            .unwrap();
         assert!(listing.skips().len() <= 10, "one bounded batch per poll");
         listing.skips.lock().unwrap().clear();
         seen.extend(numbers(&batch));
         cursor = batch.cursor;
-        if cursor.is_none() {
+        if cursor.as_ref().is_some_and(|c| c.passes == 1) {
             assert_eq!(poll, 6);
             break;
         }
@@ -687,36 +704,50 @@ fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
 
 #[test]
 fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
-    let listing = Listing::new(1..=1_500);
+    let listing = Listing::of("throttled", 1..=1_500);
+    let key = listing.key();
     listing
         .fail
         .lock()
         .unwrap()
-        .insert(3, status(429, Some("12")));
-    let batch = block(listing.client().poll_batch(&key(), &[], &ALL, None, NOW)).unwrap();
+        .insert(3, status(429, Some("1")));
+    // The tracked pull request is not read while the organization waits:
+    // the listing transport refuses any other request.
+    let tracked = [("7".to_string(), 7)];
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key, &tracked, &[], &ALL, None, NOW),
+    )
+    .unwrap();
     assert_eq!(batch.pulls.len(), 300, "pages read so far are kept");
     let cursor = batch.cursor.unwrap();
     assert_eq!((cursor.query, cursor.skip), (0, 300));
-    assert_eq!(cursor.retry_at, Some(NOW + 12), "the stated wait holds");
+    assert_eq!(cursor.retry_at, Some(NOW + 1), "the stated wait holds");
 
     // Within the wait: no listing read and no failure.
     listing.skips.lock().unwrap().clear();
     let held = block(
         listing
             .client()
-            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW + 5),
+            .poll_batch(&key, &[], &[], &ALL, Some(&cursor), NOW),
     )
     .unwrap();
     assert!(held.pulls.is_empty() && listing.skips().is_empty());
     assert_eq!(held.cursor.as_ref(), Some(&cursor));
 
-    // After it: the head page, then 300 less the overlap; never from 0.
-    let batch = block(
-        listing
-            .client()
-            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW + 12),
-    )
-    .unwrap();
+    // After it (the organization's hold paused inline): the head page, then
+    // 300 less the overlap; never from 0.
+    let batch = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(
+            listing
+                .client()
+                .poll_batch(&key, &[], &[], &ALL, Some(&cursor), NOW + 1),
+        )
+        .unwrap();
     assert_eq!(listing.skips()[..3], [0, 280, 380]);
     assert!(numbers(&batch).contains(&1_220));
     assert_eq!(batch.cursor.unwrap().retry_at, None);
@@ -739,7 +770,7 @@ fn a_listing_that_fails_before_any_page_backs_off_and_keeps_its_place() {
     let batch = block(
         listing
             .client()
-            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW),
+            .poll_batch(&key(), &[], &[], &ALL, Some(&cursor), NOW),
     )
     .unwrap();
     let next = batch.cursor.unwrap();
@@ -750,7 +781,12 @@ fn a_listing_that_fails_before_any_page_backs_off_and_keeps_its_place() {
 #[test]
 fn a_listing_that_shifts_between_polls_never_fails_or_misses_a_pull_request() {
     let listing = Listing::new(1..=1_500);
-    let batch = block(listing.client().poll_batch(&key(), &[], &ALL, None, NOW)).unwrap();
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &[], &ALL, None, NOW),
+    )
+    .unwrap();
     let mut seen = numbers(&batch);
     let cursor = batch.cursor.unwrap();
     assert_eq!(cursor.skip, 1_000);
@@ -761,10 +797,14 @@ fn a_listing_that_shifts_between_polls_never_fails_or_misses_a_pull_request() {
     let batch = block(
         listing
             .client()
-            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW),
+            .poll_batch(&key(), &[], &[], &ALL, Some(&cursor), NOW),
     )
     .unwrap();
-    assert!(batch.cursor.is_none(), "the pass completes");
+    assert_eq!(
+        batch.cursor.as_ref().unwrap().passes,
+        1,
+        "the pass completes"
+    );
     seen.extend(numbers(&batch));
     for number in open {
         assert!(seen.contains(&number), "{number} missed");
@@ -793,12 +833,12 @@ fn a_narrowed_scope_lists_one_query_per_author_and_the_reviewer_only() {
         // Azure DevOps detects no mentions: never a reason to list everything.
         mentions: true,
     };
-    let batch = block(client.poll_batch(&key(), &[], &scope, None, NOW)).unwrap();
+    let batch = block(client.poll_batch(&key(), &[], &[], &scope, None, NOW)).unwrap();
     assert_eq!(
         batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
         [7, 8, 9]
     );
-    assert!(batch.cursor.is_none());
+    assert_eq!(batch.cursor.unwrap().passes, 1);
     let urls = wire.urls();
     assert_eq!(urls.len(), 3, "{urls:?}");
     assert!(urls
@@ -819,9 +859,10 @@ fn explicit_and_tracked_reads_never_list_the_repository() {
         reviewer: None,
         mentions: false,
     };
-    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &nothing, None, NOW)).unwrap();
+    let batch =
+        block(client.poll_batch(&key(), &[("7".into(), 7)], &[], &nothing, None, NOW)).unwrap();
     assert_eq!(batch.pulls.len(), 1);
-    assert_eq!(batch.cursor, None);
+    assert_eq!(batch.cursor.unwrap().passes, 1);
     assert_eq!(wire.urls().len(), 1);
     assert!(wire.urls()[0].contains("/pullrequests/7?"));
 }
@@ -831,7 +872,7 @@ fn a_tracked_pull_request_is_read_even_when_the_listing_fails() {
     let (_, wire, client) = fakes();
     wire.on(&git("pullrequests?"), Ok(status(500, None)))
         .json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 7, false));
-    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &ALL, None, NOW)).unwrap();
+    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &[], &ALL, None, NOW)).unwrap();
     assert_eq!(
         batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
         [7]
@@ -849,7 +890,7 @@ fn access_failures_on_the_listing_still_surface() {
         wire.on(&git("pullrequests?"), Ok(response.clone()))
             .on(&git("pullrequests?"), Ok(response));
         assert_eq!(
-            block(client.poll_batch(&key(), &[], &ALL, None, NOW)),
+            block(client.poll_batch(&key(), &[], &[], &ALL, None, NOW)),
             Err(expected)
         );
     }

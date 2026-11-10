@@ -90,10 +90,13 @@ pub trait PullRequestReader {
     /// One poll's batch of `scope` from `cursor`, plus tracked pull requests
     /// (ADR 0028). Scale is never a failure. By default the whole listing in
     /// one poll.
+    /// `closed`: tracked pull requests last seen closed, probed for a reopen
+    /// when the scope may not list them.
     fn poll_batch(
         &self,
         repository: &RemoteRepository,
         tracked: &[(String, u64)],
+        _closed: &[(String, u64)],
         _scope: &ListingScope,
         _cursor: Option<&ListingCursor>,
         _now: i64,

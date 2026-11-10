@@ -1951,6 +1951,7 @@ fn poll_repository(
     let polled = reader.poll_batch(
         &connection.repository,
         &ticket.tracked,
+        &ticket.closed,
         &monitoring::listing_scope(ticket),
         ticket.listing.as_ref(),
         now,

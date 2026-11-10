@@ -678,6 +678,9 @@ pub struct PollCursor {
     /// Where the batched listing pass resumes (ADR 0028).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing: Option<crate::provider::ListingCursor>,
+    /// Pull requests with path facts listed during the current pass.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fact_pass: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -873,6 +876,8 @@ pub struct PollTicket {
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
     pub tracked: Vec<(String, u64)>,
+    /// Tracked pull requests last seen closed: probed for a reopen.
+    pub closed: Vec<(String, u64)>,
     /// When the ticket was prepared, before any fetch: what it observes is no
     /// newer than this, so tracked observations are stamped with it.
     pub prepared_at: i64,
@@ -1659,6 +1664,12 @@ impl Monitor {
                             &ticket.provider_account_id,
                             &ticket.provider_repository_id,
                         );
+                        ticket.closed = closed_for(
+                            &queue,
+                            &ticket.repository_id,
+                            &ticket.provider_account_id,
+                            &ticket.provider_repository_id,
+                        );
                         ticket.paths.facts = self
                             .state
                             .path_facts
@@ -1844,6 +1855,7 @@ impl Monitor {
             account_generation: 0,
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
+            closed: Vec::new(),
             prepared_at: read_at,
             sequence: next_observation(),
             paths: configuration.path_ticket(),
@@ -2654,6 +2666,7 @@ impl Monitor {
                 account_generation: 0,
                 assignments: health.scan_assignments.clone(),
                 tracked: Vec::new(),
+                closed: Vec::new(),
                 prepared_at: now,
                 sequence: next_observation(),
                 paths: configuration.path_ticket(),
@@ -3009,9 +3022,20 @@ impl Monitor {
         let previous_pr_states = pr_states.clone();
         let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
-        // A pass read whole in this poll lists every candidate and tracked PR.
-        let complete = ticket.listing.is_none() && result.listing.is_none();
+        let passes = |cursor: Option<&crate::provider::ListingCursor>| {
+            cursor.map_or(0, |cursor| cursor.passes)
+        };
+        // A pass ended: every candidate and tracked PR was listed in it.
+        let pass_ended = ticket.listing.is_none() && result.listing.is_none()
+            || passes(result.listing.as_ref()) > passes(ticket.listing.as_ref());
         let listing = result.listing;
+        let mut fact_pass = self
+            .state
+            .cursors
+            .get(&ticket.health_key)
+            .filter(|cursor| cursor.trigger_policy == ticket.trigger_policy)
+            .map(|cursor| cursor.fact_pass.clone())
+            .unwrap_or_default();
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
         let mut path_facts = self
@@ -3020,10 +3044,23 @@ impl Monitor {
             .get(&ticket.repository_id)
             .cloned()
             .unwrap_or_default();
-        // A complete pass lists every candidate and tracked PR: facts of
-        // others are gone.
-        if explicit_pull_id.is_none() && complete {
-            path_facts.retain(|id, _| pulls.iter().any(|p| &p.id == id));
+        // Facts of PRs closed now, or not listed during a whole pass, are gone.
+        if explicit_pull_id.is_none() {
+            path_facts.retain(|id, _| {
+                !pulls
+                    .iter()
+                    .any(|p| &p.id == id && p.state != Lifecycle::Open)
+            });
+            fact_pass.extend(
+                pulls
+                    .iter()
+                    .filter(|p| path_facts.contains_key(&p.id) || result.facts.contains_key(&p.id))
+                    .map(|p| p.id.clone()),
+            );
+            if pass_ended {
+                path_facts.retain(|id, _| fact_pass.contains(id));
+                fact_pass.clear();
+            }
         }
         path_facts.extend(result.facts);
         if path_facts.is_empty() {
@@ -3475,6 +3512,7 @@ impl Monitor {
                     updated_after: newest
                         .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
                     listing,
+                    fact_pass,
                 },
             );
         }
@@ -3615,6 +3653,28 @@ fn tracked_for(
         )
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        .collect()
+}
+
+/// Tracked pull requests observed closed (not merged): a reopen can bring
+/// them back.
+fn closed_for(
+    queue: &QueueState,
+    configuration_id: &str,
+    account_id: &str,
+    repository_id: &str,
+) -> Vec<(String, u64)> {
+    queue
+        .tracked
+        .iter()
+        .filter(|p| {
+            p.lifecycle == Lifecycle::Closed
+                && p.terminal_observed
+                && p.configuration_id == configuration_id
+                && p.account_id == account_id
+                && p.repository_id == repository_id
+        })
+        .map(|p| (p.pull_request_id.clone(), p.number))
         .collect()
 }
 
@@ -5489,6 +5549,7 @@ mod admission_tests {
             account_generation: 0,
             assignments: Vec::new(),
             tracked: Vec::new(),
+            closed: Vec::new(),
             prepared_at: 0,
             sequence: 0,
             paths,

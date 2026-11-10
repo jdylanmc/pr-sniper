@@ -331,6 +331,13 @@ pub struct ListingCursor {
     /// Tracked pull requests up to this number were read this pass.
     #[serde(default)]
     pub tracked_after: u64,
+    /// Closed tracked pull requests up to this number were probed for a
+    /// reopen this pass.
+    #[serde(default)]
+    pub closed_after: u64,
+    /// Listing passes completed; counts up.
+    #[serde(default)]
+    pub passes: u64,
     /// Consecutive polls whose listing could not read a page.
     #[serde(default)]
     pub stalls: u32,

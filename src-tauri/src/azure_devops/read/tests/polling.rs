@@ -707,3 +707,113 @@ fn a_failing_listing_never_fails_the_check_of_a_tracked_pull_request() {
         assert_eq!(tracked[0].head_sha, sha(10 + attempt as u32));
     }
 }
+
+#[test]
+fn a_closed_tracked_pull_request_the_scope_cannot_list_is_probed_for_a_reopen() {
+    let (_root, store, mut monitor) = monitored_with(json!({"mode": "filtered", "rules": [
+        {"kind": "assigned", "enabled": true}
+    ]}));
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    let mut assigned = raw_pull(7, BLAKE, 7, false);
+    assigned["reviewers"] = json!([{"id": AVERY, "displayName": "Avery Example"}]);
+    wire.json(&reviewer(AVERY), json!({"value": [assigned]}));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+
+    // Abandoned, after Avery left the reviewers: observed closed by ID.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
+    let wire = connected_wire();
+    let mut abandoned = raw_pull(7, BLAKE, 7, false);
+    abandoned["status"] = json!("abandoned");
+    abandoned["closedDate"] = json!("2026-10-21T09:00:00Z");
+    wire.json(&reviewer(AVERY), json!({"value": []}))
+        .json(&git("pullrequests/7?"), abandoned);
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW + 900).unwrap();
+    let tracked = store.load_queue_state().unwrap().tracked;
+    assert_eq!(tracked[0].lifecycle, crate::provider::Lifecycle::Closed);
+
+    // Reactivated with a push: no listing query finds it; the probe does.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 1800);
+    assert!(ticket.tracked.is_empty());
+    assert_eq!(ticket.closed, [("7".to_string(), 7)]);
+    let wire = connected_wire();
+    wire.json(&reviewer(AVERY), json!({"value": []}))
+        .json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 9, false));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW + 1800).unwrap();
+    let tracked = store.load_queue_state().unwrap().tracked;
+    assert_eq!(
+        (tracked[0].lifecycle.clone(), tracked[0].head_sha.clone()),
+        (crate::provider::Lifecycle::Open, sha(9))
+    );
+    assert!(store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .any(|job| job.number == 7 && job.head_sha == sha(9) && !crate::monitoring::retired(job)));
+}
+
+#[test]
+fn path_facts_of_pull_requests_gone_from_a_whole_pass_are_evicted_across_batches() {
+    let (_root, store, mut monitor) = monitored();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].paths = vec!["src/".into()];
+    store.save_settings(&settings).unwrap();
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    wire.json(
+        &creator(BLAKE),
+        json!({"value": [raw_pull(1, BLAKE, 1, false), raw_pull(2, BLAKE, 2, false)]}),
+    );
+    for number in [1, 2] {
+        wire.json(
+            &git(&format!("pullRequests/{number}/iterations?")),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(number)}}]}),
+        )
+        .json(
+            &git(&format!("pullRequests/{number}/iterations/1/changes?")),
+            json!({"changeEntries": [{"item": {"path": "/src/a.rs", "objectId": sha(50)}, "changeType": "edit"}]}),
+        );
+    }
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    let connected = result.as_ref().unwrap().connection.clone();
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    let facts = |store: &Store| -> Vec<String> {
+        store
+            .load_monitoring_state()
+            .unwrap()
+            .path_facts
+            .get(ID)
+            .map(|facts| facts.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(facts(&store), ["1", "2"]);
+
+    // A pass over several batches: PR 1 is on no page of it, PR 2 is.
+    let open = |number: u64| {
+        let raw: crate::azure_devops::read::pulls::RawPullRequest =
+            serde_json::from_value(raw_pull(number, BLAKE, number as u32, false)).unwrap();
+        raw.into_pull_request(&key()).unwrap()
+    };
+    let mut batch = |now: i64, passes: u64, skip: u64| {
+        let ticket = next_ticket(&mut monitor, &store, now);
+        let result = PollResult {
+            connection: connected.clone(),
+            pull_requests: vec![open(2)],
+            states: Default::default(),
+            facts: Default::default(),
+            listing: Some(crate::provider::ListingCursor {
+                skip,
+                passes,
+                ..Default::default()
+            }),
+        };
+        monitor.finish(&store, ticket, Ok(result), now).unwrap();
+    };
+    batch(NOW + 900, 1, 100);
+    assert_eq!(facts(&store), ["1", "2"], "kept until the pass ends");
+    batch(NOW + 1800, 2, 0);
+    assert_eq!(facts(&store), ["2"]);
+}

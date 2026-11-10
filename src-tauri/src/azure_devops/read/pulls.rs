@@ -21,6 +21,8 @@ const BATCH_PAGES: u64 = 10;
 const RESUME_OVERLAP: u64 = 20;
 /// Tracked pull requests missing from a batch read on their own per poll.
 const TRACKED_BATCH: usize = 200;
+/// Closed tracked pull requests probed for a reopen per poll.
+const CLOSED_BATCH: usize = 20;
 /// Azure DevOps has no mention detection (`CommentReader::top_comments` is
 /// empty), so Mentioning me never admits and never widens a listing.
 const DETECTS_MENTIONS: bool = false;
@@ -275,6 +277,25 @@ fn tree_too_large(error: ConnectionError) -> bool {
     )
 }
 
+/// Up to `budget` of `ids` (sorted by number), resuming after number
+/// `after` and wrapping; with the number to resume after next time (0: all
+/// were read).
+fn rotate(ids: &[(String, u64)], after: u64, budget: usize) -> (Vec<(String, u64)>, u64) {
+    let start = ids.partition_point(|(_, number)| *number <= after);
+    let chosen: Vec<_> = ids[start..]
+        .iter()
+        .chain(&ids[..start])
+        .take(budget)
+        .cloned()
+        .collect();
+    let next = if ids.len() > budget {
+        chosen.last().map_or(0, |(_, number)| *number)
+    } else {
+        0
+    };
+    (chosen, next)
+}
+
 /// A tree entry of one object kind (`blob`, or `commit` for a submodule).
 fn entry(path: &str, kind: &str, sha: &str) -> TreeEntry {
     TreeEntry {
@@ -404,14 +425,17 @@ impl Client {
     }
 
     /// One poll's batch (ADR 0028): up to `BATCH_PAGES` listing pages of
-    /// `scope` from `cursor`, then tracked pull requests the batch missed.
-    /// Scale is never a failure: a listing read that fails for a reason a
-    /// later poll can clear ends the batch where it stopped; only access,
-    /// identity and repository failures surface.
+    /// `scope` from `cursor`, then tracked pull requests the batch missed and
+    /// a slice of closed ones (a reopen the scope may not list). Scale is
+    /// never a failure: a listing read that fails for a reason a later poll
+    /// can clear ends the batch where it stopped; only access, identity and
+    /// repository failures surface. A throttled listing ends the poll's
+    /// reads: the organization waits.
     pub async fn poll_batch(
         &self,
         key: &RepositoryKey,
         tracked: &[(String, u64)],
+        closed: &[(String, u64)],
         scope: &ListingScope,
         cursor: Option<&ListingCursor>,
         now: i64,
@@ -425,35 +449,44 @@ impl Client {
         let mut pulls = BTreeMap::new();
         if next.retry_at.is_none_or(|at| now >= at) {
             next.retry_at = None;
-            self.list_batch(key, &queries, &mut next, &mut pulls, now)
+            let throttled = self
+                .list_batch(key, &queries, &mut next, &mut pulls, now)
                 .await?;
+            if throttled {
+                return Ok(PolledPullRequests {
+                    pulls: pulls.into_values().collect(),
+                    cursor: Some(next),
+                });
+            }
         }
-        let mut missing: Vec<_> = tracked
+        let missing = |ids: &[(String, u64)]| {
+            let mut ids: Vec<(String, u64)> = ids
+                .iter()
+                .filter(|(id, _)| !pulls.values().any(|pull: &PullRequest| &pull.id == id))
+                .cloned()
+                .collect();
+            ids.sort_by_key(|(_, number)| *number);
+            ids.dedup();
+            ids
+        };
+        let (open, closed) = (missing(tracked), missing(closed));
+        let (open, tracked_after) = rotate(&open, next.tracked_after, TRACKED_BATCH);
+        let (closed, closed_after) = rotate(&closed, next.closed_after, CLOSED_BATCH);
+        (next.tracked_after, next.closed_after) = (tracked_after, closed_after);
+        for ((id, number), reopen) in open
             .iter()
-            .filter(|(id, _)| !pulls.values().any(|pull: &PullRequest| &pull.id == id))
-            .collect();
-        missing.sort_by_key(|(_, number)| *number);
-        missing.dedup();
-        // Past the budget, heartbeat reads rotate by number across polls.
-        let start = missing.partition_point(|(_, number)| *number <= next.tracked_after);
-        let rotated: Vec<_> = missing[start..]
-            .iter()
-            .chain(&missing[..start])
-            .take(TRACKED_BATCH)
-            .copied()
-            .collect();
-        for (id, number) in &rotated {
+            .map(|pull| (pull, false))
+            .chain(closed.iter().map(|pull| (pull, true)))
+        {
             let pull = self.pull_request(key, *number).await?;
             if &pull.id != id {
                 return Err(ConnectionError::RepositoryChanged);
             }
-            pulls.insert(pull.number, pull);
+            // A closed probe matters only when it reopened.
+            if !reopen || pull.state == Lifecycle::Open {
+                pulls.insert(pull.number, pull);
+            }
         }
-        next.tracked_after = if missing.len() > TRACKED_BATCH {
-            rotated.last().map_or(0, |(_, number)| *number)
-        } else {
-            0
-        };
         Ok(PolledPullRequests {
             pulls: pulls.into_values().collect(),
             cursor: (next != ListingCursor::default()).then_some(next),
@@ -467,7 +500,7 @@ impl Client {
         next: &mut ListingCursor,
         pulls: &mut BTreeMap<u64, PullRequest>,
         now: i64,
-    ) -> Result<(), ConnectionError> {
+    ) -> Result<bool, ConnectionError> {
         // Listings are newest first: when a pass resumes, the head page shows
         // pull requests opened since it began.
         let mut head = next.skip > 0;
@@ -497,6 +530,13 @@ impl Client {
                         0
                     };
                     let stated = stated_wait(error);
+                    if let Some(seconds) = stated {
+                        self.pacer.hold(
+                            u64::try_from(seconds)
+                                .unwrap_or_default()
+                                .saturating_mul(1_000),
+                        );
+                    }
                     if pages == 0 || stated.is_some() {
                         let retry = next.stalls.saturating_sub(1);
                         next.retry_at = Some(now.saturating_add(crate::retry::TRANSIENT.wait(
@@ -505,7 +545,13 @@ impl Client {
                             stated,
                         )));
                     }
-                    return Ok(());
+                    return Ok(stated.is_some()
+                        || matches!(
+                            error,
+                            ConnectionError::RateLimited
+                                | ConnectionError::RateLimitedAfter(_)
+                                | ConnectionError::RateLimitedWithContext { .. }
+                        ));
                 }
                 Err(error) => return Err(error),
             }
@@ -514,8 +560,9 @@ impl Client {
         if next.query >= queries.len() {
             next.query = 0;
             next.skip = 0;
+            next.passes += 1;
         }
-        Ok(())
+        Ok(false)
     }
 
     pub async fn pull_request(
@@ -1018,13 +1065,16 @@ impl PullRequestReader for Reader {
         &self,
         repository: &RemoteRepository,
         tracked: &[(String, u64)],
+        closed: &[(String, u64)],
         scope: &ListingScope,
         cursor: Option<&ListingCursor>,
         now: i64,
     ) -> Result<PolledPullRequests, ConnectionError> {
         let key = self.key(repository)?;
-        self.runtime
-            .block_on(self.client.poll_batch(&key, tracked, scope, cursor, now))
+        self.runtime.block_on(
+            self.client
+                .poll_batch(&key, tracked, closed, scope, cursor, now),
+        )
     }
 
     fn pull_request(
