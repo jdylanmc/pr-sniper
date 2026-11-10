@@ -1,6 +1,7 @@
 pub mod credential_records;
 pub mod http;
 pub mod intake;
+mod listing;
 #[cfg(target_os = "macos")]
 pub mod macos_keychain;
 #[cfg(windows)]

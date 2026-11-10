@@ -161,18 +161,27 @@ pub(crate) fn scan(
             pull_request_id: pull.id.clone(),
             number: pull.number,
         };
-        let comments = client.top_comments(
+        // A discussion too large or moving while read is skipped on this PR
+        // this poll, never failing the repository scan (ADR 0028).
+        let comments = match client.top_comments(
             &RemoteRepository {
                 id: binding.repository_id.clone(),
                 name: binding.repository_name.clone(),
             },
             binding.number,
-        )?;
+        ) {
+            Ok(comments) => Some(comments),
+            Err(error) if skipped_discussion(error) => {
+                crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let cursor = cursors
             .iter()
             .find(|cursor| cursor.binding.key("") == binding.key(""));
         pull.mentioned = cursor.is_some_and(|cursor| cursor.comments_initialized)
-            && comments.iter().any(|comment| {
+            && comments.iter().flatten().any(|comment| {
                 comment.eligible_other_user(&identity.id)
                     && comment.mentions(&identity.login, &identity.id)
                     && cursor.is_none_or(|cursor| !cursor.comments.contains(&comment.id))
@@ -197,7 +206,9 @@ pub(crate) fn scan(
                 Err(error) => return Err(error),
             }
         }
-        result.mentions.push((binding, comments));
+        if let Some(comments) = comments {
+            result.mentions.push((binding, comments));
+        }
     }
     Ok(result)
 }
@@ -1184,5 +1195,11 @@ fn cancel_in_store(
 /// One pull request's discussion that is skipped, not fatal, for the
 /// repository: malformed, or past a provider or host size limit (ADR 0028).
 fn skipped_discussion(error: provider::ConnectionError) -> bool {
-    error.is_invalid_response() || error == provider::ConnectionError::LimitExceeded
+    error.is_invalid_response()
+        || matches!(
+            error,
+            provider::ConnectionError::LimitExceeded
+                | provider::ConnectionError::IncompleteRead
+                | provider::ConnectionError::RevisionChanged
+        )
 }
