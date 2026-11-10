@@ -1939,14 +1939,20 @@ fn start_lifecycle_refresh(app: &tauri::AppHandle) {
 fn poll_repository(
     reader: &(impl RepositoryReader + PullRequestReader + ?Sized),
     ticket: &monitoring::PollTicket,
-) -> Result<(Connection, Vec<PullRequest>), ConnectionError> {
+    now: i64,
+) -> Result<(Connection, provider::PolledPullRequests), ConnectionError> {
     let connection = reader.connect(&ticket.name, Some(&ticket.provider_account_id))?;
     if connection.repository.id != ticket.provider_repository_id {
         return Err(ConnectionError::RepositoryChanged);
     }
-    let pull_requests =
-        reader.poll_tracked_pull_requests(&connection.repository, &ticket.tracked)?;
-    Ok((connection, pull_requests))
+    let polled = reader.poll_batch(
+        &connection.repository,
+        &ticket.tracked,
+        &monitoring::listing_scope(ticket),
+        ticket.listing.as_ref(),
+        now,
+    )?;
+    Ok((connection, polled))
 }
 
 /// Path facts of an explicitly requested open pull request.
@@ -2046,7 +2052,9 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                 if identity.id != ticket_for_poll.provider_account_id {
                     return Err(ConnectionError::WrongIdentity);
                 }
-                let (connection, mut pull_requests) = poll_repository(&*client, &ticket_for_poll)?;
+                let (connection, polled) =
+                    poll_repository(&*client, &ticket_for_poll, ticket_for_poll.prepared_at)?;
+                let mut pull_requests = polled.pulls;
                 let follow_ups = follow_up::host::scan(
                     &app,
                     &ticket_for_poll,
@@ -2062,6 +2070,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                         pull_requests,
                         states,
                         facts,
+                        listing: polled.cursor,
                     },
                     follow_ups,
                 ))
@@ -5583,6 +5592,7 @@ mod github_auth_tests {
     fn monitoring_result() -> PollResult {
         PollResult {
             facts: Default::default(),
+            listing: None,
             states: Default::default(),
             connection: Connection {
                 identity: identity("22", "current-login"),

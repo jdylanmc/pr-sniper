@@ -5,17 +5,25 @@
 
 use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
-    ChangedFile, ConnectionError, Lifecycle, Listing, Person, ProviderResponse, PullRequest,
-    PullRequestReader, RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff,
-    TreeEntry,
+    ChangedFile, ConnectionError, Lifecycle, Listing, ListingCursor, ListingScope, Person,
+    PolledPullRequests, ProviderResponse, PullRequest, PullRequestReader, RemoteRepository,
+    RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 const PAGE_SIZE: u64 = 100;
-/// Active pull requests read per repository before the listing is cut off.
-const MAX_PULL_REQUESTS: u64 = 5_000;
+/// Listing pages one poll reads; the pass resumes on the next poll (ADR 0028).
+const BATCH_PAGES: u64 = 10;
+/// Pull requests re-read when a pass resumes: closures since the last poll
+/// move later ones forward by as many places.
+const RESUME_OVERLAP: u64 = 20;
+/// Tracked pull requests missing from a batch read on their own per poll.
+const TRACKED_BATCH: usize = 200;
+/// Azure DevOps has no mention detection (`CommentReader::top_comments` is
+/// empty), so Mentioning me never admits and never widens a listing.
+const DETECTS_MENTIONS: bool = false;
 const CHANGES_PAGE_SIZE: u64 = 1_000;
 /// Files diffed for review; later files get no patch, like GitHub's.
 const MAX_PATCH_FILES: usize = 300;
@@ -194,6 +202,140 @@ impl RawPullRequest {
     }
 }
 
+/// One server-side query of a listing scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Query<'a> {
+    All,
+    Creator(&'a str),
+    Reviewer(&'a str),
+}
+
+/// The queries whose union holds every pull request `scope` may admit.
+fn queries(scope: &ListingScope) -> Vec<Query<'_>> {
+    match scope {
+        ListingScope::All => vec![Query::All],
+        ListingScope::Narrowed { mentions: true, .. } if DETECTS_MENTIONS => vec![Query::All],
+        ListingScope::Narrowed {
+            authors, reviewer, ..
+        } => {
+            // Only identity IDs can be authors or reviewers here; others
+            // match no Azure DevOps pull request, listed or not.
+            let identity = |id: &&str| {
+                crate::azure_devops::tenant::TenantId::parse(id)
+                    .is_some_and(|parsed| parsed.as_str() == *id)
+            };
+            let authors: BTreeSet<&str> = authors
+                .iter()
+                .map(String::as_str)
+                .filter(identity)
+                .collect();
+            authors
+                .into_iter()
+                .map(Query::Creator)
+                .chain(reviewer.as_deref().filter(identity).map(Query::Reviewer))
+                .collect()
+        }
+    }
+}
+
+/// Adds a page's open pull requests not seen yet. A pull request that does
+/// not parse is skipped, not fatal: it cannot be reviewed either, and one
+/// such pull request must not stop a listing of thousands.
+fn collect(
+    key: &RepositoryKey,
+    page: Vec<Value>,
+    pulls: &mut BTreeMap<u64, PullRequest>,
+) -> Result<(), ConnectionError> {
+    for value in page {
+        let Ok(raw) = serde_json::from_value::<RawPullRequest>(value) else {
+            continue;
+        };
+        match raw.into_pull_request(key) {
+            Ok(pull) if pull.state == Lifecycle::Open => {
+                pulls.entry(pull.number).or_insert(pull);
+            }
+            Ok(_) => {}
+            Err(ConnectionError::RepositoryChanged) => {
+                return Err(ConnectionError::RepositoryChanged)
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A whole-tree read that a very large repository cannot serve: past the
+/// body cap, or not downloaded within the request timeout (which the
+/// transport reports as a lost connection). A real outage fails the next
+/// read anyway.
+fn tree_too_large(error: ConnectionError) -> bool {
+    matches!(
+        error,
+        ConnectionError::LimitExceeded | ConnectionError::Network | ConnectionError::Timeout
+    )
+}
+
+/// Review trees of only the changed files (ADR 0028), from the blob IDs the
+/// iteration changes carry: head holds what the PR leaves, base what it
+/// changed. Without a named earlier blob, a changed file has no base side.
+fn changed_trees(
+    entries: &[(ChangedFile, Option<String>)],
+) -> (BTreeMap<String, TreeEntry>, BTreeMap<String, TreeEntry>) {
+    let blob = |path: &str, sha: &str| TreeEntry {
+        path: path.to_owned(),
+        mode: "100644".into(),
+        sha: sha.to_owned(),
+        kind: "blob".into(),
+    };
+    let (mut head, mut base) = (BTreeMap::new(), BTreeMap::new());
+    for (file, original) in entries {
+        if file.status != "removed" {
+            head.insert(file.path.clone(), blob(&file.path, &file.sha));
+        }
+        if file.status != "added" {
+            let path = file.previous_path.as_deref().unwrap_or(&file.path);
+            if let Some(original) = original {
+                base.insert(path.to_owned(), blob(path, original));
+            }
+        }
+    }
+    (head, base)
+}
+
+/// Whether a listing read failed for a reason a later poll can clear.
+/// Access, identity and repository failures, and a refused query, surface.
+fn resumable(error: ConnectionError) -> bool {
+    !matches!(
+        error,
+        ConnectionError::WrongIdentity
+            | ConnectionError::MissingCli
+            | ConnectionError::BrokenCli
+            | ConnectionError::SignedOut
+            | ConnectionError::MissingReadPermission
+            | ConnectionError::RepositoryUnavailable
+            | ConnectionError::MissingScope
+            | ConnectionError::ScopeUnverified
+            | ConnectionError::OrganizationPolicyDenied
+            | ConnectionError::OrganizationPolicyDeniedWithMissingScope
+            | ConnectionError::ProviderRejected
+            | ConnectionError::InvalidRepository
+            | ConnectionError::RepositoryChanged
+            | ConnectionError::Configuration
+    ) && !matches!(error, ConnectionError::ProviderRejectedStatus(status) if status != 408)
+}
+
+fn stated_wait(error: ConnectionError) -> Option<i64> {
+    match error {
+        ConnectionError::RateLimitedAfter(seconds)
+        | ConnectionError::ProviderFailureAfter(seconds) => Some(seconds),
+        ConnectionError::RateLimitedWithContext {
+            retry_after_seconds,
+            ..
+        } => retry_after_seconds,
+        _ => None,
+    }
+}
+
 impl Client {
     pub(super) fn git_url(
         &self,
@@ -222,49 +364,167 @@ impl Client {
         }
     }
 
-    /// Every active pull request, drafts included, in stable creation order.
-    /// A pull request seen twice across pages means the listing moved.
+    /// Every active pull request, drafts included, by number. Pages that
+    /// moved while read are de-duplicated; nothing is capped.
     pub async fn active_pull_requests(
         &self,
         key: &RepositoryKey,
     ) -> Result<Vec<PullRequest>, ConnectionError> {
         self.owns(key)?;
-        let mut pulls = Vec::new();
-        let mut seen = HashSet::new();
-        let top = PAGE_SIZE.to_string();
+        let mut pulls = BTreeMap::new();
         let mut skip = 0;
         loop {
-            if skip >= MAX_PULL_REQUESTS {
-                return Err(ConnectionError::LimitExceeded);
-            }
-            let skip_text = skip.to_string();
-            let url = self.git_url(
-                key,
-                &["pullrequests"],
-                &[
-                    ("searchCriteria.status", "active"),
-                    ("$top", &top),
-                    ("$skip", &skip_text),
-                ],
-            );
-            let (list, _): (List<RawPullRequest>, _) =
-                self.get(ProviderResponse::PullRequests, url).await?;
-            let count = list.value.len() as u64;
-            for raw in list.value {
-                let pull = raw
-                    .into_pull_request(key)
-                    .map_err(|error| error.from_response(ProviderResponse::PullRequests))?;
-                if pull.state != Lifecycle::Open || !seen.insert(pull.number) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                pulls.push(pull);
-            }
+            let page = self.active_page(key, Query::All, skip).await?;
+            let count = page.len() as u64;
+            collect(key, page, &mut pulls)?;
             if count < PAGE_SIZE {
-                pulls.sort_by_key(|pull| pull.number);
-                return Ok(pulls);
+                return Ok(pulls.into_values().collect());
             }
             skip += count;
         }
+    }
+
+    /// One page of active pull requests of `query`, newest first, unparsed.
+    async fn active_page(
+        &self,
+        key: &RepositoryKey,
+        query: Query<'_>,
+        skip: u64,
+    ) -> Result<Vec<Value>, ConnectionError> {
+        let (top, skip) = (PAGE_SIZE.to_string(), skip.to_string());
+        let mut criteria = match query {
+            Query::All => Vec::new(),
+            Query::Creator(id) => vec![("searchCriteria.creatorId", id)],
+            Query::Reviewer(id) => vec![("searchCriteria.reviewerId", id)],
+        };
+        criteria.extend([
+            ("searchCriteria.status", "active"),
+            ("$top", top.as_str()),
+            ("$skip", skip.as_str()),
+        ]);
+        let url = self.git_url(key, &["pullrequests"], &criteria);
+        let (list, _): (List<Value>, _) = self.get(ProviderResponse::PullRequests, url).await?;
+        if list.value.len() as u64 > PAGE_SIZE {
+            return Err(ConnectionError::MalformedResponse(
+                ProviderResponse::PullRequests,
+            ));
+        }
+        Ok(list.value)
+    }
+
+    /// One poll's batch (ADR 0028): up to `BATCH_PAGES` listing pages of
+    /// `scope` from `cursor`, then tracked pull requests the batch missed.
+    /// Scale is never a failure: a listing read that fails for a reason a
+    /// later poll can clear ends the batch where it stopped; only access,
+    /// identity and repository failures surface.
+    pub async fn poll_batch(
+        &self,
+        key: &RepositoryKey,
+        tracked: &[(String, u64)],
+        scope: &ListingScope,
+        cursor: Option<&ListingCursor>,
+        now: i64,
+    ) -> Result<PolledPullRequests, ConnectionError> {
+        self.owns(key)?;
+        let queries = queries(scope);
+        let mut next = cursor
+            .filter(|cursor| cursor.query < queries.len().max(1))
+            .cloned()
+            .unwrap_or_default();
+        let mut pulls = BTreeMap::new();
+        if next.retry_at.is_none_or(|at| now >= at) {
+            next.retry_at = None;
+            self.list_batch(key, &queries, &mut next, &mut pulls, now)
+                .await?;
+        }
+        let mut missing: Vec<_> = tracked
+            .iter()
+            .filter(|(id, _)| !pulls.values().any(|pull: &PullRequest| &pull.id == id))
+            .collect();
+        missing.sort_by_key(|(_, number)| *number);
+        missing.dedup();
+        // Past the budget, heartbeat reads rotate by number across polls.
+        let start = missing.partition_point(|(_, number)| *number <= next.tracked_after);
+        let rotated: Vec<_> = missing[start..]
+            .iter()
+            .chain(&missing[..start])
+            .take(TRACKED_BATCH)
+            .copied()
+            .collect();
+        for (id, number) in &rotated {
+            let pull = self.pull_request(key, *number).await?;
+            if &pull.id != id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            pulls.insert(pull.number, pull);
+        }
+        next.tracked_after = if missing.len() > TRACKED_BATCH {
+            rotated.last().map_or(0, |(_, number)| *number)
+        } else {
+            0
+        };
+        Ok(PolledPullRequests {
+            pulls: pulls.into_values().collect(),
+            cursor: (next != ListingCursor::default()).then_some(next),
+        })
+    }
+
+    async fn list_batch(
+        &self,
+        key: &RepositoryKey,
+        queries: &[Query<'_>],
+        next: &mut ListingCursor,
+        pulls: &mut BTreeMap<u64, PullRequest>,
+        now: i64,
+    ) -> Result<(), ConnectionError> {
+        // Listings are newest first: when a pass resumes, the head page shows
+        // pull requests opened since it began.
+        let mut head = next.skip > 0;
+        next.skip = next.skip.saturating_sub(RESUME_OVERLAP);
+        let mut pages = 0;
+        while next.query < queries.len() && pages < BATCH_PAGES {
+            let skip = if head { 0 } else { next.skip };
+            match self.active_page(key, queries[next.query], skip).await {
+                Ok(page) => {
+                    pages += 1;
+                    let count = page.len() as u64;
+                    collect(key, page, pulls)?;
+                    if std::mem::take(&mut head) {
+                        continue;
+                    }
+                    if count < PAGE_SIZE {
+                        next.query += 1;
+                        next.skip = 0;
+                    } else {
+                        next.skip += count;
+                    }
+                }
+                Err(error) if resumable(error) => {
+                    next.stalls = if pages == 0 {
+                        next.stalls.saturating_add(1)
+                    } else {
+                        0
+                    };
+                    let stated = stated_wait(error);
+                    if pages == 0 || stated.is_some() {
+                        let retry = next.stalls.saturating_sub(1);
+                        next.retry_at = Some(now.saturating_add(crate::retry::TRANSIENT.wait(
+                            &key.id(),
+                            retry,
+                            stated,
+                        )));
+                    }
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        next.stalls = 0;
+        if next.query >= queries.len() {
+            next.query = 0;
+            next.skip = 0;
+        }
+        Ok(())
     }
 
     pub async fn pull_request(
@@ -366,6 +626,23 @@ impl Client {
         iteration: u64,
         compare_to: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError> {
+        Ok(self
+            .iteration_change_entries(key, number, iteration, compare_to)
+            .await?
+            .into_iter()
+            .map(|(file, _)| file)
+            .collect())
+    }
+
+    /// Like `iteration_changes_since`, each file with its blob before the
+    /// change (`originalObjectId`) when the provider names one.
+    async fn iteration_change_entries(
+        &self,
+        key: &RepositoryKey,
+        number: u64,
+        iteration: u64,
+        compare_to: u64,
+    ) -> Result<Vec<(ChangedFile, Option<String>)>, ConnectionError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawItem {
@@ -442,20 +719,27 @@ impl Client {
                 if status == "renamed" && previous_path.is_none() {
                     return Err(ConnectionError::IncompleteRead);
                 }
+                let original = item
+                    .original_object_id
+                    .as_deref()
+                    .and_then(|id| commit(id).ok());
                 let sha = if status == "removed" {
                     item.original_object_id.or(item.object_id)
                 } else {
                     item.object_id
                 };
-                files.push(ChangedFile {
-                    path,
-                    previous_path,
-                    status: status.into(),
-                    additions: 0,
-                    deletions: 0,
-                    changes: 0,
-                    sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
-                });
+                files.push((
+                    ChangedFile {
+                        path,
+                        previous_path,
+                        status: status.into(),
+                        additions: 0,
+                        deletions: 0,
+                        changes: 0,
+                        sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
+                    },
+                    original,
+                ));
             }
             // `nextSkip` absent or 0 ends the listing; one that does not
             // advance would end it short.
@@ -668,6 +952,19 @@ impl PullRequestReader for Reader {
         Ok(pulls)
     }
 
+    fn poll_batch(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+        scope: &ListingScope,
+        cursor: Option<&ListingCursor>,
+        now: i64,
+    ) -> Result<PolledPullRequests, ConnectionError> {
+        let key = self.key(repository)?;
+        self.runtime
+            .block_on(self.client.poll_batch(&key, tracked, scope, cursor, now))
+    }
+
     fn pull_request(
         &self,
         repository: &RemoteRepository,
@@ -801,12 +1098,22 @@ impl PullRequestReader for Reader {
                 .ok_or(ConnectionError::MalformedResponse(
                     ProviderResponse::Iterations,
                 ))?;
-            let changes = self
+            let entries = self
                 .client
-                .iteration_changes(&key, number, iteration.id)
+                .iteration_change_entries(&key, number, iteration.id, 0)
                 .await?;
-            let head_tree = self.client.tree(&key, head).await?;
-            let base_tree = self.client.tree(&key, &base_revision).await?;
+            let whole = async {
+                Ok::<_, ConnectionError>((
+                    self.client.tree(&key, head).await?,
+                    self.client.tree(&key, &base_revision).await?,
+                ))
+            };
+            let (head_tree, base_tree) = match whole.await {
+                Ok(trees) => trees,
+                Err(error) if tree_too_large(error) => changed_trees(&entries),
+                Err(error) => return Err(error),
+            };
+            let changes: Vec<ChangedFile> = entries.into_iter().map(|(file, _)| file).collect();
             let mut files = Vec::with_capacity(changes.len());
             for (index, file) in changes.iter().enumerate() {
                 let patch = if index < MAX_PATCH_FILES {

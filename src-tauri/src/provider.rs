@@ -87,6 +87,22 @@ pub trait PullRequestReader {
         repository: &RemoteRepository,
         tracked: &[(String, u64)],
     ) -> Result<Vec<PullRequest>, ConnectionError>;
+    /// One poll's batch of `scope` from `cursor`, plus tracked pull requests
+    /// (ADR 0028). Scale is never a failure. By default the whole listing in
+    /// one poll.
+    fn poll_batch(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+        _scope: &ListingScope,
+        _cursor: Option<&ListingCursor>,
+        _now: i64,
+    ) -> Result<PolledPullRequests, ConnectionError> {
+        Ok(PolledPullRequests {
+            pulls: self.poll_tracked_pull_requests(repository, tracked)?,
+            cursor: None,
+        })
+    }
     fn pull_request(
         &self,
         repository: &RemoteRepository,

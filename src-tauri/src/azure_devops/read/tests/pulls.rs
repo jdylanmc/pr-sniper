@@ -1,5 +1,8 @@
 use super::*;
-use crate::provider::{Lifecycle, PullRequest, PullRequestReader, TreeEntry};
+use crate::provider::{
+    Lifecycle, ListingCursor, ListingScope, PullRequest, PullRequestReader, TreeEntry,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 const TEAM: &str = "00000000-0000-0000-0000-0000000000d1";
 
@@ -89,21 +92,19 @@ fn polls_active_pull_requests_across_pages_with_the_source_commit_as_revision() 
 }
 
 #[test]
-fn a_listing_that_moves_or_names_another_repository_is_refused() {
+fn a_listing_that_moves_is_deduplicated_and_one_naming_another_repository_is_refused() {
     let (_, wire, client) = fakes();
     let page: Vec<Value> = (1..=100)
         .map(|n| raw_pull(n, BLAKE, n as u32, false))
         .collect();
-    // A new pull request shifted the pages: one is seen twice.
+    // A new pull request shifted the pages: one is seen twice, kept once.
     wire.json(&git("pullrequests?"), json!({"value": page}))
         .json(
             &git("pullrequests?"),
             json!({"value": [raw_pull(100, BLAKE, 100, false)]}),
         );
-    assert_eq!(
-        block(client.active_pull_requests(&key())),
-        Err(ConnectionError::IncompleteRead)
-    );
+    let pulls = block(client.active_pull_requests(&key())).unwrap();
+    assert_eq!(pulls.len(), 100);
 
     let (_, wire, client) = fakes();
     let mut moved = raw_pull(1, BLAKE, 1, false);
@@ -114,16 +115,16 @@ fn a_listing_that_moves_or_names_another_repository_is_refused() {
         Err(ConnectionError::RepositoryChanged)
     );
 
+    // One pull request that does not parse is skipped, not fatal.
     let (_, wire, client) = fakes();
     let mut short = raw_pull(1, BLAKE, 1, false);
     short["lastMergeSourceCommit"]["commitId"] = json!("abc");
-    wire.json(&git("pullrequests?"), json!({"value": [short]}));
-    assert_eq!(
-        block(client.active_pull_requests(&key())),
-        Err(ConnectionError::MalformedResponse(
-            crate::provider::ProviderResponse::PullRequests
-        ))
+    wire.json(
+        &git("pullrequests?"),
+        json!({"value": [short, raw_pull(2, BLAKE, 2, false)]}),
     );
+    let pulls = block(client.active_pull_requests(&key())).unwrap();
+    assert_eq!(pulls.iter().map(|p| p.number).collect::<Vec<_>>(), [2]);
 
     let (_, wire, client) = fakes();
     let other = RepositoryKey {
@@ -581,4 +582,325 @@ fn pull_request_reads_keep_the_shared_failure_types() {
             "{expected:?}"
         );
     }
+}
+
+/// A repository's active listing served by `$skip`/`$top`, newest first, as
+/// Azure DevOps lists it. `open` may change between polls; `fail` answers
+/// the listing request with that index instead.
+#[derive(Default)]
+struct Listing {
+    open: Mutex<Vec<u64>>,
+    fail: Mutex<BTreeMap<usize, Response>>,
+    skips: Mutex<Vec<u64>>,
+}
+
+impl Listing {
+    fn new(open: impl IntoIterator<Item = u64>) -> Arc<Self> {
+        let listing = Arc::new(Self::default());
+        listing.set(open);
+        listing
+    }
+
+    fn set(&self, open: impl IntoIterator<Item = u64>) {
+        let mut open: Vec<u64> = open.into_iter().collect();
+        open.sort_unstable_by(|a, b| b.cmp(a));
+        *self.open.lock().unwrap() = open;
+        self.skips.lock().unwrap().clear();
+        self.fail.lock().unwrap().clear();
+    }
+
+    fn client(self: &Arc<Self>) -> Client {
+        Client::new(
+            Arc::new(FakeTokens::default()),
+            Arc::clone(self) as Arc<dyn Transport>,
+            TenantId::parse(TENANT).unwrap(),
+            "Contoso",
+        )
+    }
+
+    fn skips(&self) -> Vec<u64> {
+        self.skips.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Transport for Listing {
+    async fn send(&self, request: &Request, _: &AccessToken) -> Result<Response, NetworkError> {
+        let url = url::Url::parse(&request.url).unwrap();
+        assert!(url.path().ends_with("/pullrequests"), "{url}");
+        let query = |name: &str| {
+            url.query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.parse::<u64>().unwrap())
+                .unwrap()
+        };
+        let (skip, top) = (query("$skip"), query("$top"));
+        let index = {
+            let mut skips = self.skips.lock().unwrap();
+            skips.push(skip);
+            skips.len() - 1
+        };
+        if let Some(response) = self.fail.lock().unwrap().remove(&index) {
+            return Ok(response);
+        }
+        let open = self.open.lock().unwrap();
+        let page: Vec<Value> = open
+            .iter()
+            .skip(skip as usize)
+            .take(top as usize)
+            .map(|&n| raw_pull(n, BLAKE, n as u32, false))
+            .collect();
+        Ok(ok(json!({ "value": page })))
+    }
+}
+
+fn numbers(batch: &crate::provider::PolledPullRequests) -> BTreeSet<u64> {
+    batch.pulls.iter().map(|p| p.number).collect()
+}
+
+const NOW: i64 = 1_800_000_000;
+const ALL: ListingScope = ListingScope::All;
+
+#[test]
+fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
+    let listing = Listing::new(1..=5_150);
+    let mut seen = BTreeSet::new();
+    let mut cursor: Option<ListingCursor> = None;
+    for poll in 1.. {
+        let batch = block(
+            listing
+                .client()
+                .poll_batch(&key(), &[], &ALL, cursor.as_ref(), NOW),
+        )
+        .unwrap();
+        assert!(listing.skips().len() <= 10, "one bounded batch per poll");
+        listing.skips.lock().unwrap().clear();
+        seen.extend(numbers(&batch));
+        cursor = batch.cursor;
+        if cursor.is_none() {
+            assert_eq!(poll, 6);
+            break;
+        }
+    }
+    assert_eq!(seen, (1..=5_150).collect());
+}
+
+#[test]
+fn a_throttled_page_ends_the_batch_and_the_next_poll_resumes_there() {
+    let listing = Listing::new(1..=1_500);
+    listing
+        .fail
+        .lock()
+        .unwrap()
+        .insert(3, status(429, Some("12")));
+    let batch = block(listing.client().poll_batch(&key(), &[], &ALL, None, NOW)).unwrap();
+    assert_eq!(batch.pulls.len(), 300, "pages read so far are kept");
+    let cursor = batch.cursor.unwrap();
+    assert_eq!((cursor.query, cursor.skip), (0, 300));
+    assert_eq!(cursor.retry_at, Some(NOW + 12), "the stated wait holds");
+
+    // Within the wait: no listing read and no failure.
+    listing.skips.lock().unwrap().clear();
+    let held = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW + 5),
+    )
+    .unwrap();
+    assert!(held.pulls.is_empty() && listing.skips().is_empty());
+    assert_eq!(held.cursor.as_ref(), Some(&cursor));
+
+    // After it: the head page, then 300 less the overlap; never from 0.
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW + 12),
+    )
+    .unwrap();
+    assert_eq!(listing.skips()[..3], [0, 280, 380]);
+    assert!(numbers(&batch).contains(&1_220));
+    assert_eq!(batch.cursor.unwrap().retry_at, None);
+}
+
+#[test]
+fn a_listing_that_fails_before_any_page_backs_off_and_keeps_its_place() {
+    let listing = Listing::new(1..=5_000);
+    let cursor = ListingCursor {
+        skip: 4_000,
+        ..ListingCursor::default()
+    };
+    for index in 0..2 {
+        listing
+            .fail
+            .lock()
+            .unwrap()
+            .insert(index, status(500, None));
+    }
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW),
+    )
+    .unwrap();
+    let next = batch.cursor.unwrap();
+    assert_eq!((next.skip, next.stalls), (3_980, 1));
+    assert!(next.retry_at.is_some_and(|at| at > NOW));
+}
+
+#[test]
+fn a_listing_that_shifts_between_polls_never_fails_or_misses_a_pull_request() {
+    let listing = Listing::new(1..=1_500);
+    let batch = block(listing.client().poll_batch(&key(), &[], &ALL, None, NOW)).unwrap();
+    let mut seen = numbers(&batch);
+    let cursor = batch.cursor.unwrap();
+    assert_eq!(cursor.skip, 1_000);
+    // Before poll 2: five close (two not read yet) and three open.
+    let closed = [1_490, 1_200, 900, 400, 350];
+    let open: Vec<u64> = (1..=1_503).filter(|n| !closed.contains(n)).collect();
+    listing.set(open.clone());
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &ALL, Some(&cursor), NOW),
+    )
+    .unwrap();
+    assert!(batch.cursor.is_none(), "the pass completes");
+    seen.extend(numbers(&batch));
+    for number in open {
+        assert!(seen.contains(&number), "{number} missed");
+    }
+}
+
+#[test]
+fn a_narrowed_scope_lists_one_query_per_author_and_the_reviewer_only() {
+    let (_, wire, client) = fakes();
+    let creator = |id: &str| git(&format!("pullrequests?searchCriteria.creatorId={id}"));
+    wire.json(
+        &creator(BLAKE),
+        json!({"value": [raw_pull(7, BLAKE, 7, false)]}),
+    )
+    .json(
+        &creator(CASEY),
+        json!({"value": [raw_pull(8, CASEY, 8, false)]}),
+    )
+    .json(
+        &git(&format!("pullrequests?searchCriteria.reviewerId={AVERY}")),
+        json!({"value": [raw_pull(7, BLAKE, 7, false), raw_pull(9, CASEY, 9, false)]}),
+    );
+    let scope = ListingScope::Narrowed {
+        authors: vec![CASEY.into(), BLAKE.into(), BLAKE.into(), "12345".into()],
+        reviewer: Some(AVERY.into()),
+        // Azure DevOps detects no mentions: never a reason to list everything.
+        mentions: true,
+    };
+    let batch = block(client.poll_batch(&key(), &[], &scope, None, NOW)).unwrap();
+    assert_eq!(
+        batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
+        [7, 8, 9]
+    );
+    assert!(batch.cursor.is_none());
+    let urls = wire.urls();
+    assert_eq!(urls.len(), 3, "{urls:?}");
+    assert!(urls
+        .iter()
+        .all(|url| url.contains("searchCriteria.creatorId=")
+            || url.contains("searchCriteria.reviewerId=")));
+    assert!(urls
+        .iter()
+        .all(|url| url.contains("searchCriteria.status=active")));
+}
+
+#[test]
+fn explicit_and_tracked_reads_never_list_the_repository() {
+    let (_, wire, client) = fakes();
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 7, false));
+    let nothing = ListingScope::Narrowed {
+        authors: Vec::new(),
+        reviewer: None,
+        mentions: false,
+    };
+    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &nothing, None, NOW)).unwrap();
+    assert_eq!(batch.pulls.len(), 1);
+    assert_eq!(batch.cursor, None);
+    assert_eq!(wire.urls().len(), 1);
+    assert!(wire.urls()[0].contains("/pullrequests/7?"));
+}
+
+#[test]
+fn a_tracked_pull_request_is_read_even_when_the_listing_fails() {
+    let (_, wire, client) = fakes();
+    wire.on(&git("pullrequests?"), Ok(status(500, None)))
+        .json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 7, false));
+    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &ALL, None, NOW)).unwrap();
+    assert_eq!(
+        batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
+        [7]
+    );
+    assert_eq!(batch.cursor.unwrap().stalls, 1);
+}
+
+#[test]
+fn access_failures_on_the_listing_still_surface() {
+    for (response, expected) in [
+        (status(401, None), ConnectionError::SignedOut),
+        (status(403, None), ConnectionError::MissingReadPermission),
+    ] {
+        let (_, wire, client) = fakes();
+        wire.on(&git("pullrequests?"), Ok(response.clone()))
+            .on(&git("pullrequests?"), Ok(response));
+        assert_eq!(
+            block(client.poll_batch(&key(), &[], &ALL, None, NOW)),
+            Err(expected)
+        );
+    }
+}
+
+#[test]
+fn a_review_of_a_repository_too_large_for_whole_trees_reads_only_its_changes() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    let blob = |body: &[u8]| {
+        Ok(Response {
+            status: 200,
+            body: body.to_vec(),
+            ..Response::default()
+        })
+    };
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/src/main.rs", "objectId": sha(11), "originalObjectId": sha(12)}, "changeType": "edit"},
+                {"item": {"path": "/src/new.rs", "objectId": sha(13)}, "changeType": "add"}
+            ]}),
+        )
+        // The whole tree times out.
+        .on(&git("items?"), Err(NetworkError))
+        .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(13))), blob(b"fn new() {}\n"));
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(
+        context.files[0].patch.as_deref(),
+        Some("@@ -1 +1 @@\n-fn old() {}\n+fn main() {}")
+    );
+    assert_eq!(
+        context.files[1].patch.as_deref(),
+        Some("@@ -0,0 +1 @@\n+fn new() {}")
+    );
+    assert_eq!(
+        context.head.keys().collect::<Vec<_>>(),
+        ["src/main.rs", "src/new.rs"]
+    );
+    assert_eq!(context.base.keys().collect::<Vec<_>>(), ["src/main.rs"]);
+    assert!(
+        !wire.urls().iter().any(|url| url.contains("/pullrequests?")),
+        "a review never lists other pull requests"
+    );
 }

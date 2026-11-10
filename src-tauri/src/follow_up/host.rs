@@ -116,7 +116,7 @@ pub(crate) fn scan(
             .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin.proof, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(error) if error.is_invalid_response() => {
+            Err(error) if skipped_discussion(error) => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -135,7 +135,7 @@ pub(crate) fn scan(
             .ok_or(provider::ConnectionError::IncompleteRead)?;
         let threads = match client.owned_threads_at(&origin, &pull.head_sha) {
             Ok(threads) => threads,
-            Err(error) if error.is_invalid_response() => {
+            Err(error) if skipped_discussion(error) => {
                 crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 continue;
             }
@@ -188,8 +188,9 @@ pub(crate) fn scan(
                 &pull.head_sha,
             ) {
                 Ok(threads) => result.threads.push((binding.clone(), threads)),
-                // A malformed discussion on one PR must not fail the repository scan.
-                Err(error) if error.is_invalid_response() => {
+                // A malformed or oversize discussion on one PR must not fail
+                // the repository scan (ADR 0028).
+                Err(error) if skipped_discussion(error) => {
                     crate::record(app, crate::DiagnosticEvent::ThreadSkipped);
                 }
                 Err(error) => return Err(error),
@@ -1159,4 +1160,10 @@ fn cancel_in_store(
         };
     }
     store.save_follow_ups(&runs)
+}
+
+/// One pull request's discussion that is skipped, not fatal, for the
+/// repository: malformed, or past a provider or host size limit (ADR 0028).
+fn skipped_discussion(error: provider::ConnectionError) -> bool {
+    error.is_invalid_response() || error == provider::ConnectionError::LimitExceeded
 }

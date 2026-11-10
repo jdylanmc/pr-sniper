@@ -205,6 +205,7 @@ fn read(
         pull_requests: pulls,
         states: Default::default(),
         facts,
+        listing: None,
     });
     (ticket, result)
 }

@@ -302,3 +302,47 @@ impl PullRequest {
         }
     }
 }
+
+/// Which open pull requests a poll lists (ADR 0028). Admission still decides
+/// every listed pull request; a scope only skips ones it can never admit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListingScope {
+    /// Every open pull request.
+    All,
+    /// Pull requests created by one of `authors` or with `reviewer` among
+    /// their reviewers. `mentions`: a mention can also admit; a provider that
+    /// detects mentions must then list every open pull request. Nothing set:
+    /// nothing is listed, only tracked pull requests are read.
+    Narrowed {
+        authors: Vec<String>,
+        reviewer: Option<String>,
+        mentions: bool,
+    },
+}
+
+/// Where a batched listing pass resumes on the next poll.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListingCursor {
+    /// Index of the scope's query the pass is in.
+    pub query: usize,
+    /// Pull requests of that query already read.
+    pub skip: u64,
+    /// Tracked pull requests up to this number were read this pass.
+    #[serde(default)]
+    pub tracked_after: u64,
+    /// Consecutive polls whose listing could not read a page.
+    #[serde(default)]
+    pub stalls: u32,
+    /// The listing waits until then (shared retry policy); tracked reads go on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
+}
+
+/// One poll's read: open pull requests of this batch plus tracked ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PolledPullRequests {
+    pub pulls: Vec<PullRequest>,
+    /// `None`: the pass is complete; the next poll starts a new one.
+    pub cursor: Option<ListingCursor>,
+}

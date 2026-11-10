@@ -675,6 +675,9 @@ pub struct PollCursor {
     pub repository_id: String,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    /// Where the batched listing pass resumes (ADR 0028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<crate::provider::ListingCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -864,6 +867,8 @@ pub struct PollTicket {
     pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    /// Where this poll's listing batch resumes (ADR 0028).
+    pub listing: Option<crate::provider::ListingCursor>,
     pub activation_version: String,
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
@@ -968,6 +973,8 @@ pub struct PollResult {
     pub states: BTreeMap<String, crate::github::state::PrSnapshot>,
     /// Path facts read this poll, by pull request id.
     pub facts: BTreeMap<String, crate::paths::PathFacts>,
+    /// Where the next poll's listing resumes; `None`: the pass is complete.
+    pub listing: Option<crate::provider::ListingCursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1832,6 +1839,7 @@ impl Monitor {
                 .clone()
                 .ok_or("Repository watch settings are invalid.")?,
             updated_after: None,
+            listing: None,
             activation_version: activation.version.clone(),
             account_generation: 0,
             assignments: configuration.assignments.clone(),
@@ -1851,6 +1859,7 @@ impl Monitor {
                 facts: facts.into_iter().map(|f| (pull.id.clone(), f)).collect(),
                 pull_requests: vec![pull],
                 states: BTreeMap::new(),
+                listing: None,
             },
             now,
             Some(&pull_id),
@@ -2639,6 +2648,7 @@ impl Monitor {
                 watched_authors: configuration.watched_authors.clone(),
                 admission: configuration.admission.clone(),
                 trigger_policy: policy_key.clone(),
+                listing: cursor.as_ref().and_then(|cursor| cursor.listing.clone()),
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
                 activation_version: activation.version.clone(),
                 account_generation: 0,
@@ -2999,6 +3009,9 @@ impl Monitor {
         let previous_pr_states = pr_states.clone();
         let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
+        // A pass read whole in this poll lists every candidate and tracked PR.
+        let complete = ticket.listing.is_none() && result.listing.is_none();
+        let listing = result.listing;
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
         let mut path_facts = self
@@ -3007,8 +3020,9 @@ impl Monitor {
             .get(&ticket.repository_id)
             .cloned()
             .unwrap_or_default();
-        // A full poll lists every open and tracked PR: facts of others are gone.
-        if explicit_pull_id.is_none() {
+        // A complete pass lists every candidate and tracked PR: facts of
+        // others are gone.
+        if explicit_pull_id.is_none() && complete {
             path_facts.retain(|id, _| pulls.iter().any(|p| &p.id == id));
         }
         path_facts.extend(result.facts);
@@ -3460,6 +3474,7 @@ impl Monitor {
                     trigger_policy: ticket.trigger_policy.clone(),
                     updated_after: newest
                         .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                    listing,
                 },
             );
         }
@@ -3531,6 +3546,30 @@ fn eligibility(
         requested_reviewer,
         admitted: watched_author || all_authors || requested_reviewer || pull.mentioned,
         mention_bypass: pull.mentioned,
+    }
+}
+
+/// Pull requests the ticket's poll must list (ADR 0028): a superset of what
+/// `eligibility` can admit. Legacy rules admit a watched author, a requested
+/// reviewer (with reviewer assignment) or a mention; no watched author is
+/// every author.
+pub(crate) fn listing_scope(ticket: &PollTicket) -> crate::provider::ListingScope {
+    use crate::provider::ListingScope;
+    match &ticket.admission {
+        Some(admission) => admission.listing_scope(&ticket.provider_account_id),
+        None if ticket.watched_authors.is_empty() => ListingScope::All,
+        None => ListingScope::Narrowed {
+            authors: ticket
+                .watched_authors
+                .iter()
+                .map(|author| author.id.clone())
+                .collect(),
+            reviewer: ticket
+                .policy
+                .reviewer_assignment
+                .then(|| ticket.provider_account_id.clone()),
+            mentions: true,
+        },
     }
 }
 
@@ -5445,6 +5484,7 @@ mod admission_tests {
             admission: configuration.admission,
             trigger_policy: configuration.trigger_policy.unwrap(),
             updated_after: None,
+            listing: None,
             activation_version: String::new(),
             account_generation: 0,
             assignments: Vec::new(),

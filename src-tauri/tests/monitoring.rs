@@ -230,6 +230,7 @@ fn poll_result_for(
     PollResult {
         states: Default::default(),
         facts: Default::default(),
+        listing: None,
         connection: Connection {
             identity: Identity {
                 id: account_id.into(),

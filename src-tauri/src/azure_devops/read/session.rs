@@ -806,6 +806,17 @@ impl PullRequestReader for Session {
         self.0.poll_tracked_pull_requests(repository, tracked)
     }
 
+    fn poll_batch(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+        scope: &crate::provider::ListingScope,
+        cursor: Option<&crate::provider::ListingCursor>,
+        now: i64,
+    ) -> Result<crate::provider::PolledPullRequests, ConnectionError> {
+        self.0.poll_batch(repository, tracked, scope, cursor, now)
+    }
+
     fn pull_request(
         &self,
         repository: &RemoteRepository,

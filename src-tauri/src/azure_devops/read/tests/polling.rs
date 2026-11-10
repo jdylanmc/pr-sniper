@@ -34,6 +34,14 @@ fn raw_pull(number: u64, author: &str, source: u32, draft: bool) -> Value {
 /// A monitored Azure DevOps repository that admits Blake's pull requests,
 /// enabled through the same resource save as Settings.
 fn monitored() -> (tempfile::TempDir, Store, Monitor) {
+    monitored_with(json!({"mode": "filtered", "rules": [
+        {"kind": "include_users", "enabled": true,
+         "users": [{"id": BLAKE, "login": "Blake Example"}]}
+    ]}))
+}
+
+/// A monitored Azure DevOps repository with `admission`.
+fn monitored_with(admission: Value) -> (tempfile::TempDir, Store, Monitor) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().to_path_buf());
     let mut settings = store.load_settings().unwrap();
@@ -49,10 +57,7 @@ fn monitored() -> (tempfile::TempDir, Store, Monitor) {
         "id": ID, "provider": "azure_devops", "name": "contoso/Web/app", "enabled": false,
         "cron": "*/15 * * * *",
         "provider_account_id": AVERY, "provider_repository_id": key().id(),
-        "admission": {"mode": "filtered", "rules": [
-            {"kind": "include_users", "enabled": true,
-             "users": [{"id": BLAKE, "login": "Blake Example"}]}
-        ]},
+        "admission": admission,
         "assignments": [{
             "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "agent_id": AGENT,
             "schedule": {"kind": "interval", "minutes": 5, "timezone": "UTC"},
@@ -101,12 +106,13 @@ fn poll(
         .build()
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
-    let (connection, pull_requests) = crate::poll_repository(&reader, ticket)?;
-    let facts = crate::path_facts(&reader, &connection, &pull_requests, ticket)?;
+    let (connection, polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
+    let facts = crate::path_facts(&reader, &connection, &polled.pulls, ticket)?;
     Ok(PollResult {
         facts,
+        listing: polled.cursor,
         connection,
-        pull_requests,
+        pull_requests: polled.pulls,
         states: Default::default(),
     })
 }
@@ -462,4 +468,242 @@ fn a_credential_failure_waits_for_sign_in_without_another_attempt() {
             .len(),
         1
     );
+}
+
+fn connected_wire() -> Arc<FakeWire> {
+    let wire = Arc::new(FakeWire::default());
+    wire.json(
+        &format!("{ORG}/_apis/connectionData"),
+        identity_body(AVERY, "Avery Example"),
+    )
+    .json(
+        &format!("{ORG}/Web/_apis/git/repositories/app?"),
+        raw_repository(REPO, "app", "Web"),
+    );
+    wire
+}
+
+fn creator(id: &str) -> String {
+    git(&format!("pullrequests?searchCriteria.creatorId={id}"))
+}
+
+fn reviewer(id: &str) -> String {
+    git(&format!("pullrequests?searchCriteria.reviewerId={id}"))
+}
+
+/// The whole active listing of a very large repository: `count` drafts,
+/// newest first, in pages of 100.
+fn huge_listing(wire: &FakeWire, count: u64, ready: &[(u64, &str)]) {
+    let numbers: Vec<u64> = (1..=count).rev().collect();
+    for chunk in numbers.chunks(100) {
+        let page: Vec<Value> = chunk
+            .iter()
+            .map(|&n| match ready.iter().find(|(r, _)| *r == n) {
+                Some((_, author)) => raw_pull(n, author, n as u32, false),
+                None => raw_pull(n, CASEY, n as u32, true),
+            })
+            .collect();
+        wire.json(
+            &git("pullrequests?searchCriteria.status=active"),
+            json!({ "value": page }),
+        );
+    }
+}
+
+fn queued(store: &Store) -> Vec<u64> {
+    let mut numbers: Vec<_> = store
+        .load_queue()
+        .unwrap()
+        .iter()
+        .filter(|job| !crate::monitoring::retired(job))
+        .map(|job| job.number)
+        .collect();
+    numbers.sort();
+    numbers
+}
+
+fn health_failure(monitor: &Monitor) -> Option<String> {
+    monitor
+        .snapshot()
+        .into_iter()
+        .find_map(|health| health.last_failure)
+}
+
+#[test]
+fn include_users_over_a_very_large_repository_lists_only_their_pull_requests() {
+    let (_root, store, mut monitor) = monitored();
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    // More than 5,000 active pull requests; reading them all is never needed.
+    huge_listing(&wire, 5_100, &[(4_242, BLAKE)]);
+    wire.json(
+        &creator(BLAKE),
+        json!({"value": [raw_pull(4_242, BLAKE, 42, false)]}),
+    );
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(queued(&store), [4_242]);
+    assert_eq!(health_failure(&monitor), None);
+    let listings: Vec<_> = wire
+        .urls()
+        .into_iter()
+        .filter(|url| url.contains("/pullrequests?"))
+        .collect();
+    assert_eq!(listings.len(), 1, "{listings:?}");
+    assert!(listings[0].contains(&format!("searchCriteria.creatorId={BLAKE}")));
+}
+
+#[test]
+fn narrowed_listings_keep_exclude_users_and_first_match_order() {
+    for (rules, admitted) in [
+        // Exclude before include: Blake is rejected although included.
+        (
+            json!([
+                {"kind": "exclude_users", "enabled": true,
+                 "users": [{"id": BLAKE, "login": "Blake Example"}]},
+                {"kind": "include_users", "enabled": true,
+                 "users": [{"id": BLAKE, "login": "Blake Example"},
+                           {"id": CASEY, "login": "Casey Example"}]}
+            ]),
+            vec![2],
+        ),
+        // Include before exclude: the include admits first.
+        (
+            json!([
+                {"kind": "include_users", "enabled": true,
+                 "users": [{"id": BLAKE, "login": "Blake Example"},
+                           {"id": CASEY, "login": "Casey Example"}]},
+                {"kind": "exclude_users", "enabled": true,
+                 "users": [{"id": BLAKE, "login": "Blake Example"}]}
+            ]),
+            vec![1, 2],
+        ),
+    ] {
+        let (_root, store, mut monitor) =
+            monitored_with(json!({"mode": "filtered", "rules": rules}));
+        let ticket = next_ticket(&mut monitor, &store, NOW);
+        let wire = connected_wire();
+        wire.json(
+            &creator(BLAKE),
+            json!({"value": [raw_pull(1, BLAKE, 1, false)]}),
+        )
+        .json(
+            &creator(CASEY),
+            json!({"value": [raw_pull(2, CASEY, 2, false)]}),
+        );
+        let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+        monitor.finish(&store, ticket, result, NOW).unwrap();
+        assert_eq!(queued(&store), admitted);
+        assert!(wire
+            .urls()
+            .iter()
+            .filter(|url| url.contains("/pullrequests?"))
+            .all(|url| url.contains("searchCriteria.creatorId=")));
+    }
+}
+
+#[test]
+fn assigned_lists_by_reviewer_and_a_tracked_pull_request_stays_monitored_after_it_leaves() {
+    let (_root, store, mut monitor) = monitored_with(json!({"mode": "filtered", "rules": [
+        {"kind": "assigned", "enabled": true}
+    ]}));
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    let mut assigned = raw_pull(7, BLAKE, 7, false);
+    assigned["reviewers"] = json!([{"id": AVERY, "displayName": "Avery Example"}]);
+    wire.json(&reviewer(AVERY), json!({"value": [assigned]}));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(queued(&store), [7]);
+    assert!(wire
+        .urls()
+        .iter()
+        .filter(|url| url.contains("/pullrequests?"))
+        .all(|url| url.contains(&format!("searchCriteria.reviewerId={AVERY}"))));
+
+    // Avery is removed as reviewer and the author pushes: the narrowed query
+    // no longer lists it, but the tracked pull request is read on its own.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
+    assert_eq!(ticket.tracked, [("7".to_string(), 7)]);
+    let wire = connected_wire();
+    wire.json(&reviewer(AVERY), json!({"value": []}))
+        .json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 8, false));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW + 900).unwrap();
+    let tracked = store.load_queue_state().unwrap().tracked;
+    assert_eq!(
+        (
+            tracked[0].number,
+            tracked[0].iteration,
+            tracked[0].head_sha.clone()
+        ),
+        (7, 2, sha(8))
+    );
+}
+
+#[test]
+fn all_mode_over_a_very_large_repository_admits_by_batch_and_never_fails() {
+    let (_root, store, mut monitor) = monitored_with(json!({"mode": "all", "rules": []}));
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    // 5,100 active pull requests; 5,000 is read in the first batch, 30 later.
+    huge_listing(&wire, 5_100, &[(5_000, BLAKE), (30, BLAKE)]);
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    let cursor = result.as_ref().unwrap().listing.clone().unwrap();
+    assert_eq!(cursor.skip, 1_000);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    // Admitted before the pass completes, with no repository failure.
+    assert_eq!(queued(&store), [5_000]);
+    assert_eq!(health_failure(&monitor), None);
+    assert!(monitor
+        .snapshot()
+        .into_iter()
+        .all(|health| health.operation.is_none_or(|op| !op.parked())));
+    // The next poll resumes where this one stopped.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
+    assert_eq!(ticket.listing, Some(cursor));
+}
+
+#[test]
+fn a_failing_listing_never_fails_the_check_of_a_tracked_pull_request() {
+    let (_root, store, mut monitor) = monitored();
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let wire = connected_wire();
+    wire.json(
+        &creator(BLAKE),
+        json!({"value": [raw_pull(1, BLAKE, 1, false)]}),
+    );
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(queued(&store), [1]);
+
+    for (attempt, failure) in [
+        Ok(status(500, None)),
+        Err(NetworkError),
+        Ok(Response {
+            status: 200,
+            oversize: true,
+            ..Response::default()
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let now = NOW + 900 * (attempt as i64 + 1);
+        let ticket = next_ticket(&mut monitor, &store, now);
+        let wire = connected_wire();
+        for _ in 0..3 {
+            wire.on(&creator(BLAKE), failure.clone());
+        }
+        wire.json(
+            &git("pullrequests/1?"),
+            raw_pull(1, BLAKE, 10 + attempt as u32, false),
+        );
+        let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
+        assert!(result.is_ok(), "{attempt}: {:?}", result.as_ref().err());
+        monitor.finish(&store, ticket, result, now).unwrap();
+        assert_eq!(health_failure(&monitor), None);
+        let tracked = store.load_queue_state().unwrap().tracked;
+        assert_eq!(tracked[0].head_sha, sha(10 + attempt as u32));
+    }
 }
