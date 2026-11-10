@@ -7,8 +7,9 @@ public Windows installer (`pr-sniper-0.5.2-x64-setup.exe`,
 `windows-manifest.json` and `WINDOWS-SHA256SUMS`) is published on
 [v0.5.2](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.5.2). Future
 signed Windows releases ([#62](https://github.com/jdylanmc/pr-sniper/issues/62))
-and public Chocolatey moderation approval
-([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
+and public Chocolatey acceptance
+([#64](https://github.com/jdylanmc/pr-sniper/issues/64): approval receipt,
+public-feed upgrade and uninstall proof) remain open.
 The owner resumed public-distribution preparation on 2026-10-08 and explicitly
 approved unsigned initial public releases, deferring paid signing. Chocolatey
 moderation has approved public versions since 0.5.5
