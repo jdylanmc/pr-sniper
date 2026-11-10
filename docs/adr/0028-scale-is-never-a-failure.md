@@ -32,7 +32,7 @@ An Azure DevOps poll paged through every active PR and failed with `LimitExceede
 ## Consequences
 
 - A filter matching a few PRs on a very large repository polls in a few requests.
-- All mode on a very large repository admits over several polls; new PRs show on the next poll.
+- All mode on a very large repository admits over several polls; new PRs show on the next poll. On GitHub that head page is also each new PR's first observation, so its mention baseline is set as before (≤ 100 PRs opened per poll).
 - A listing that keeps failing retries forever with capped backoff and is not shown as a failure.
 - On a very large Azure DevOps repository a review's tools see the changed files, not the whole tree.
 - Follow-ups: Azure DevOps thread reads per admitted PR are unpaged; tree-too-large state is not remembered between reviews; GitHub's Settings metadata read still reads every PR, closed ones too; a GitHub PR past 1,000 top comments or review threads gets no mention or thread observation.
