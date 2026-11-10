@@ -9,8 +9,9 @@ part of this delivery.
 The later authorized Windows follow-up has an
 [unsigned installer/Chocolatey candidate lane](windows-packaging.md).
 It does not change this macOS workflow, published asset set or tap ownership.
-Windows public signing, publication and Chocolatey moderation are still blocked
-on explicit external prerequisites; an unsigned CI artifact is not a release.
+Releases publish an unsigned Windows installer and an approved Chocolatey
+package; Windows public signing is still deferred. An unsigned CI artifact is
+not a release.
 
 **Published:** see the [latest release](https://github.com/jdylanmc/pr-sniper/releases/latest).
 The first, [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1),
@@ -281,13 +282,12 @@ signing, Apple notarization or a working Homebrew installation.
 After explicit first-tag authorization and successful release:
 
 ```sh
-brew tap jdylanmc/pr-sniper
-brew trust --cask jdylanmc/pr-sniper/pr-sniper
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
 
-Homebrew 7 requires `brew trust` before it loads the tap's cask; older Homebrew
-has no `brew trust` and needs only the install command.
+The fully qualified name taps `jdylanmc/pr-sniper` and records trust for this
+cask only. A short name (`brew install --cask pr-sniper`) on an untrusted tap
+fails; Homebrew 7 does not prompt.
 
 Verify the downloaded version/checksum, Developer ID/team signature, stapled
 ticket and Gatekeeper acceptance without disabling quarantine or security
