@@ -76,9 +76,7 @@ impl Coordinator {
         }
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            if let Err(error) = run(&app) {
-                crate::report(&app, error);
-            }
+            crate::settle(&app, crate::host_errors::Source::Notifications, run(&app));
             app.state::<Host>()
                 .notifications
                 .active

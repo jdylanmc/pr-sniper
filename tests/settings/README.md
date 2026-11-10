@@ -823,3 +823,7 @@ dispatch, preparation/intent/receipt/reconciliation helpers and the GitHub
 transport adapter with deterministic responses. The restricted-runtime fixture
 answers an actual external-tool request for a changed file before emitting a
 final full-review result. No test approves or merges a live PR.
+
+`host-errors.spec.mjs` raises typed host errors with the bridge's
+`fixture_host_error`. The bridge keeps the real `host_errors::Board` beside the
+Store and answers `dismiss_error` and `snapshot` from it, as the native host does.

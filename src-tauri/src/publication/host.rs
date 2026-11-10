@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_errors::Source;
 use crate::{
     now_seconds,
     provider::{CommentCapability, ProviderReads, RemoteRepository},
@@ -270,30 +271,38 @@ impl Coordinator {
                 failures: Arc::new(FailureRouting::default()),
             };
             let outcome = execute(&mut environment, &mut run);
-            if outcome.is_err()
+            let warning = if outcome.is_err()
                 || environment
                     .failures
                     .infrastructure_failed
                     .load(Ordering::SeqCst)
             {
-                let warning = app
-                    .state::<Host>()
+                app.state::<Host>()
                     .store
                     .lock()
                     .ok()
                     .map_or(Some(INFRASTRUCTURE_WARNING), |store| {
                         environment.failures.host_warning(&store, &run)
-                    });
-                if let Some(warning) = warning {
-                    crate::report(&app, warning.into());
-                }
-            }
+                    })
+            } else {
+                None
+            };
+            // A failure saved on the run shows on its PR, not as a host error.
+            crate::settle(
+                &app,
+                Source::Publication,
+                warning.map_or(Ok(()), |warning| Err(warning.into())),
+            );
             if let Err(error) = app.state::<Host>().mutations.release(&mutation_owner) {
-                crate::report(&app, error);
+                crate::report(&app, Source::Publication, error);
             }
             match app.state::<Host>().publications.active.lock() {
                 Ok(mut active) => *active = None,
-                Err(_) => crate::report(&app, "Publication coordination unavailable.".into()),
+                Err(_) => crate::report(
+                    &app,
+                    Source::Publication,
+                    "Publication coordination unavailable.".into(),
+                ),
             };
         });
         Ok(())
@@ -545,9 +554,7 @@ fn record_diagnostic(
         .lock()
         .map_err(|_| "Publication diagnostic storage unavailable.".to_string())
         .and_then(|store| store.record_attempt_decision(operation_id, event));
-    if let Err(error) = result {
-        crate::report(app, error);
-    }
+    crate::settle(app, Source::AttemptDiagnostics, result);
 }
 
 impl Environment for Native {

@@ -116,7 +116,11 @@ interface Snapshot {
   isolated: boolean;
   login_registration: "absent" | "registered" | "invalid" | null;
   error: string | null;
+  /** Occurrence id when `error` is a background host error. */
+  error_id?: number | null;
 }
+// Host error occurrences already shown in this webview; redraws never re-show them.
+const shownHostErrors = new Set<number>();
 type Section =
   | "home"
   | "accounts"
@@ -598,20 +602,37 @@ export async function mountSettings(
     !!draft &&
     !sameResource(globalPreferences(draft), globalPreferences(saved));
   let errorTimer: ReturnType<typeof setTimeout> | undefined;
+  let bannerHostError: number | undefined;
   const showError = (message: string) => {
     const label = terseError(message, true);
-    if (label === null) return;
+    if (label === null) return false;
+    bannerHostError = undefined;
     error.textContent = label;
     error.title = message;
     error.setAttribute("aria-description", message);
     error.hidden = false;
     clearTimeout(errorTimer);
     errorTimer = setTimeout(() => (error.hidden = true), 8000);
+    return true;
   };
-  error.addEventListener("click", () => (error.hidden = true));
+  error.addEventListener("click", () => {
+    error.hidden = true;
+    if (bannerHostError === undefined) return;
+    void invoke("dismiss_error", { id: bannerHostError }).catch(() => {});
+    bannerHostError = undefined;
+  });
   const clearError = () => {
     error.hidden = true;
     error.textContent = "";
+    bannerHostError = undefined;
+  };
+  // A background host error shows once per occurrence; a click dismisses it.
+  const showSnapshotError = (state: Snapshot) => {
+    if (!state.error) return;
+    if (state.error_id == null) return showError(state.error);
+    if (shownHostErrors.has(state.error_id)) return;
+    shownHostErrors.add(state.error_id);
+    if (showError(state.error)) bannerHostError = state.error_id;
   };
   const repositories = () => draft.repositories ?? [];
   const scheduleSummaries = new Map<string, string>();
@@ -5232,7 +5253,8 @@ export async function mountSettings(
           }
           snapshot = { ...fresh, doctrine_catalog: snapshot.doctrine_catalog };
           if (!fresh.settings) snapshot.login_registration = null;
-          if (fresh.error) errors.push(fresh.error);
+          // Only this read's own failure; background host errors are not this change's.
+          if (fresh.error && fresh.error_id == null) errors.push(fresh.error);
           else if (!fresh.settings) errors.push("Unavailable");
         } catch {
           snapshot.login_registration = null;
@@ -5346,7 +5368,7 @@ export async function mountSettings(
         conflict = false;
       }
       catalogConflict = false;
-      if (state.error) showError(state.error);
+      showSnapshotError(state);
     } catch {
       showError("Reload failed");
     } finally {
@@ -5409,7 +5431,7 @@ export async function mountSettings(
     draft = clone(saved);
     if (!themePending) applyTheme(saved.theme);
     conflict = false;
-    if (state.error) showError(state.error);
+    showSnapshotError(state);
     if (retainAccounts) {
       changed();
       window.dispatchEvent(new Event("pr-sniper:refresh-provider-accounts"));
