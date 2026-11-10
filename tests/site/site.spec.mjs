@@ -244,7 +244,7 @@ test("the hero copies the install command", async ({
   await expect(page.locator("#announcer")).toHaveText("Copied");
   if (browserName === "chromium") {
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-      "brew tap jdylanmc/pr-sniper && brew trust --cask jdylanmc/pr-sniper/pr-sniper && brew install --cask jdylanmc/pr-sniper/pr-sniper",
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
     );
   }
 });
@@ -703,7 +703,7 @@ for (const thematic of [false, true]) {
     const buttons = install.locator(".copy");
     await expect(buttons).toHaveCount(4);
     const expected = [
-      "brew tap jdylanmc/pr-sniper && brew trust --cask jdylanmc/pr-sniper/pr-sniper && brew install --cask jdylanmc/pr-sniper/pr-sniper",
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
       'open -a "PR Sniper"',
       "brew upgrade --cask pr-sniper",
       "brew uninstall --cask pr-sniper",
@@ -795,10 +795,10 @@ for (const thematic of [false, true]) {
     await macTab.click();
     await expect(page.locator("html")).toHaveAttribute("data-os", "macos");
     await expect(page.locator(".hero-cmd code")).toHaveText(
-      "brew tap jdylanmc/pr-sniper && brew trust --cask jdylanmc/pr-sniper/pr-sniper && brew install --cask jdylanmc/pr-sniper/pr-sniper",
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
     );
     await expect(page.locator(".info .cmd code")).toHaveText(
-      "brew tap jdylanmc/pr-sniper && brew trust --cask jdylanmc/pr-sniper/pr-sniper && brew install --cask jdylanmc/pr-sniper/pr-sniper",
+      "brew install --cask jdylanmc/pr-sniper/pr-sniper",
     );
     await expect(page.locator("#info-host")).toHaveText(
       "macOS 13.5+ · Apple Silicon",

@@ -38,14 +38,12 @@ PR queues grow. Agents read diffs fast and never get bored. Humans should read P
 **macOS** (Apple Silicon, macOS 13.5+):
 
 ```sh
-brew tap jdylanmc/pr-sniper
-brew trust --cask jdylanmc/pr-sniper/pr-sniper
 brew install --cask jdylanmc/pr-sniper/pr-sniper
 ```
 
-Homebrew 7 refuses casks from untrusted taps; older Homebrew has no `brew trust` and needs only the install command.
+The full name taps `jdylanmc/pr-sniper` and trusts only this cask.
 
-Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanmc/pr-sniper/releases). Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater.
+Or download the signed, notarized `pr-sniper-VERSION-aarch64-apple-darwin.zip` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `SHA256SUMS` digest. Quit the app before `brew upgrade --cask pr-sniper`. Homebrew owns updates; no in-app updater.
 
 **Windows** (Windows 10/11 x64):
 
@@ -53,15 +51,17 @@ Or download the signed, notarized ZIP from [Releases](https://github.com/jdylanm
 choco install pr-sniper
 ```
 
-While the initial Chocolatey Community Repository submission is pending moderation, or to install without Chocolatey, install the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), download `pr-sniper-VERSION-x64-setup.exe` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `WINDOWS-SHA256SUMS` digest before running. Quit the app before `choco upgrade pr-sniper`. Chocolatey owns updates once approved; no in-app updater. Details: [docs/releases.md](docs/releases.md), [docs/windows-packaging.md](docs/windows-packaging.md).
+Chocolatey installs the WebView2 runtime dependency. Quit the app before `choco upgrade pr-sniper`. Chocolatey owns updates; no in-app updater.
+
+Without Chocolatey: install the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), download `pr-sniper-VERSION-x64-setup.exe` from [Releases](https://github.com/jdylanmc/pr-sniper/releases) and verify its `WINDOWS-SHA256SUMS` digest before running. Details: [docs/releases.md](docs/releases.md), [docs/windows-packaging.md](docs/windows-packaging.md).
 
 ## Quick start
 
 1. Open **Settings > Accounts**. Connect a GitHub account or Azure DevOps via Azure CLI (**Git Repository**) and a Copilot account (**AI Tooling**). Browser sign-in, no pasted tokens.
-2. Add a repository. Pick its GitHub or Azure DevOps account.
-3. Pick admission: **All** or **Filtered**.
+2. **Settings > Repositories**: **+ URL** or browse an account. Pick its GitHub or Azure DevOps account.
+3. Pick admission: **All pull requests**, **Filtered pull requests** or **Explicit PRs only**.
 4. Create an Agent (Copilot account + model). Assign it to the repo. Set **Permissions**. Mark one assignment **Primary** to let it reply.
-5. Enable the repo. Watch **Queue**.
+5. Turn on **Monitor this repository**. Watch **Queue**.
 
 ## Safety model
 
