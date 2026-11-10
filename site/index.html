@@ -164,7 +164,7 @@
               </button>
             </div>
             <p class="os-note dim" data-os-pane="windows" hidden>
-              Pending Chocolatey moderation · use
+              No Chocolatey? Use
               <a href="https://github.com/jdylanmc/pr-sniper/releases"
                 >GitHub Releases</a
               >
@@ -293,7 +293,7 @@
                       </button>
                     </div>
                     <p class="os-note" data-os-pane="windows" hidden>
-                      Pending initial Chocolatey moderation · install from
+                      No Chocolatey? Use
                       <a href="https://github.com/jdylanmc/pr-sniper/releases"
                         >GitHub Releases</a
                       >
@@ -301,7 +301,7 @@
                         href="https://developer.microsoft.com/microsoft-edge/webview2/"
                         >WebView2</a
                       >
-                      required) while moderation completes.
+                      required).
                     </p>
                   </div>
                   <p class="hero-actions">
@@ -816,7 +816,10 @@
                         Homebrew. No Homebrew? Get at
                         <a href="https://brew.sh">brew.sh</a>.
                       </li>
-                      <li>Homebrew before 7: drop <code>brew trust</code>.</li>
+                      <li>
+                        <code>brew trust</code> unknown? Run
+                        <code>brew update</code> first.
+                      </li>
                     </ul>
                     <ul class="bullets" data-os-pane="windows" hidden>
                       <li>Windows 10 or 11 (x64).</li>
@@ -838,11 +841,7 @@
                       One command. Tap repository, trust cask, install app.
                     </p>
                     <p data-os-pane="windows" hidden>
-                      One command (pending initial Chocolatey moderation; use
-                      <a href="https://github.com/jdylanmc/pr-sniper/releases"
-                        >GitHub Releases</a
-                      >
-                      below while moderation completes).
+                      One command. Install WebView2 dependency, install app.
                     </p>
                     <div class="cmd">
                       <code
@@ -887,15 +886,20 @@
                         account (AI Tooling). Browser sign-in. No pasted tokens.
                       </li>
                       <li>
-                        Add repository. Pick GitHub or Azure DevOps account.
-                        Pick admission: All or Filtered.
+                        <b>Settings › Repositories</b>: <b>+ URL</b> or browse
+                        an account. Pick GitHub or Azure DevOps account. Pick
+                        admission: All, Filtered or Explicit PRs only.
                       </li>
                       <li>
                         Create Agent (Copilot account and model). Assign to
                         repository. Set Permissions. Mark one assignment
                         Primary.
                       </li>
-                      <li>Enable repository. Watch Queue.</li>
+                      <li>Monitor repository. Watch Queue.</li>
+                      <li>
+                        Optional: <b>Settings › Preferences › Copilot CLI</b> ›
+                        Install. Restart Copilot CLI.
+                      </li>
                     </ol>
                   </li>
                   <li>
@@ -961,10 +965,12 @@
                   HOMEBREW
                 </h3>
                 <p data-os-pane="macos">
-                  Get signed, notarized ZIP from
+                  Download signed, notarized
+                  <code>pr-sniper-VERSION-aarch64-apple-darwin.zip</code> from
                   <a href="https://github.com/jdylanmc/pr-sniper/releases"
                     >GitHub Releases</a
-                  >. Unzip. Move PR Sniper to Applications. Update by hand.
+                  >. Verify its <code>SHA256SUMS</code> digest. Unzip. Move PR
+                  Sniper to Applications. Update by hand.
                 </p>
                 <h3 data-os-pane="windows" hidden>
                   <span class="prompt" aria-hidden="true">&gt; </span>NO

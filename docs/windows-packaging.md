@@ -10,9 +10,11 @@ signed Windows releases ([#62](https://github.com/jdylanmc/pr-sniper/issues/62))
 and public Chocolatey moderation approval
 ([#64](https://github.com/jdylanmc/pr-sniper/issues/64)) remain open.
 The owner resumed public-distribution preparation on 2026-10-08 and explicitly
-approved unsigned initial public releases, deferring paid signing. No publicly
-approved Chocolatey package (`choco-publicly-approved.json`) is established yet;
-until Chocolatey moderation approves the package, install from GitHub Releases.
+approved unsigned initial public releases, deferring paid signing. Chocolatey
+moderation has approved public versions since 0.5.5
+([package](https://community.chocolatey.org/packages/pr-sniper)), so
+`choco install pr-sniper` works. Release assets carry no
+`choco-publicly-approved.json` receipt yet.
 
 ## Delivery status
 

@@ -54,7 +54,7 @@ Static landing page at <https://jdylanmc.github.io/pr-sniper/>. Plain HTML, CSS 
 
 - `pages.yml` copies `site/`, `CHANGELOG.md` and the v2 prototype's runtime files (to `demo/`) into one artifact and deploys it on pushes to `main` that touch `site/**`, `prototypes/v2/**`, `CHANGELOG.md`, `tests/site/**` or the workflow, and on manual runs.
 - Needs **Settings › Pages › Source: GitHub Actions** once. Until then the deploy job fails at `configure-pages`.
-- The shown version is hardcoded in `site/index.html`; a test fails when it drifts from `package.json`.
+- The shown version is hardcoded in `site/index.html`. Release automation (`scripts/changesets.mjs release`) bumps it; a test fails when it drifts from `package.json`.
 
 ## Fonts
 

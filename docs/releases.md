@@ -9,8 +9,9 @@ part of this delivery.
 The later authorized Windows follow-up has an
 [unsigned installer/Chocolatey candidate lane](windows-packaging.md).
 It does not change this macOS workflow, published asset set or tap ownership.
-Windows public signing, publication and Chocolatey moderation are still blocked
-on explicit external prerequisites; an unsigned CI artifact is not a release.
+Releases publish an unsigned Windows installer and an approved Chocolatey
+package; Windows public signing is still deferred. An unsigned CI artifact is
+not a release.
 
 **Published:** see the [latest release](https://github.com/jdylanmc/pr-sniper/releases/latest).
 The first, [v0.1.1](https://github.com/jdylanmc/pr-sniper/releases/tag/v0.1.1),
