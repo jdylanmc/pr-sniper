@@ -449,6 +449,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                 });
                 let id = queue::item_id(&job);
                 queue::Item {
+                    rest: None,
                     incomplete_files: None,
                     skipped: Vec::new(),
                     dismiss_token: None,
@@ -1041,6 +1042,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             exit_writes: vec![],
             pr_states: Default::default(),
             items: vec![queue::Item {
+                rest: None,
                 incomplete_files: None,
                 skipped: Vec::new(),
                 dismiss_token: None,

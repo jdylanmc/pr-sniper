@@ -1634,3 +1634,40 @@ fn a_replaced_assignment_gets_new_work_without_reusing_the_previous_agents_pass(
         queue::State::Queued
     );
 }
+
+#[test]
+fn a_reviewed_iteration_rests_until_a_new_head_supersedes_it() {
+    let (_fixture, store, mut monitor) = configured(1);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let first = store.load_queue().unwrap().remove(0);
+    let settings = store.load_settings().unwrap();
+    store.save_reviews(&[completed(&settings, &first)]).unwrap();
+    for at in [NOW + 10, NOW + 20] {
+        scan(&mut monitor, &store, vec![pull('a')], at);
+        assert_eq!(store.load_queue().unwrap(), vec![first.clone()]);
+        let item = &queue::snapshot(&store, monitor.snapshot()).unwrap().items[0];
+        assert!(!matches!(
+            item.state,
+            queue::State::Stale | queue::State::StaleAfterPublication
+        ));
+        assert_eq!(item.rest, None);
+    }
+    scan(&mut monitor, &store, vec![pull('c')], NOW + 30);
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs[1].work.as_ref().unwrap().iteration, 2);
+    let snapshot = queue::snapshot(&store, monitor.snapshot()).unwrap();
+    let old = snapshot
+        .items
+        .iter()
+        .find(|i| i.id == queue::item_id(&first))
+        .unwrap();
+    assert_eq!(old.rest, Some(queue::rest::Rest::Superseded));
+    let new = snapshot
+        .items
+        .iter()
+        .find(|i| i.id == queue::item_id(&jobs[1]))
+        .unwrap();
+    assert_eq!(new.state, queue::State::Queued);
+    assert_eq!(new.rest, None);
+}
