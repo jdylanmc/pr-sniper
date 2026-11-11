@@ -32,7 +32,7 @@ PR_SNIPER_DATA_DIR="$(mktemp -d)" PR_SNIPER_KEYCHAIN_SERVICE="com.jdylanmc.pr-sn
 | `state/follow-ups.json`                                                             | Frozen reply input/output, operation budgets, attempted mutation, reply receipt                |
 | `state/feedback.json`                                                               | Owned roots, current-head observations, missing-root errors, closure tombstones                |
 | `state/retention.json`                                                              | Terminal-cleanup journal                                                                       |
-| `state/result-index.json`, `state/result-index-pending.json`                        | Summary index for paging; rebuild-pending flag                                                 |
+| `state/result-index.json`, `state/result-index-pending.json`                        | Summary index for paging (with outcomes); rebuild-pending flag                                 |
 | `state/diagnostics.jsonl` (+ `diagnostics.previous.jsonl`), `state/attempts*.jsonl` | Logs: [diagnostics.md](diagnostics.md)                                                         |
 
 - Legacy arrays and older shapes stay readable. Review/publication keys, receipts and old queue destinations survive adoption. Embedded originating reviews prevent replay when an older queue or review file is missing.

@@ -25,6 +25,29 @@ pub(crate) struct Candidate {
     pub(crate) publication: Option<Publication>,
 }
 
+/// Comment publication is off for this result: nothing to publish, or its
+/// assignment lacks the Comment grant, and no batch exists.
+pub(crate) fn local_only(
+    settings: &crate::storage::Settings,
+    review: &crate::review::ReviewRun,
+    publication: Option<&crate::publication::Publication>,
+) -> bool {
+    publication.is_none()
+        && (review
+            .result
+            .as_ref()
+            .is_some_and(|r| !crate::publication::writes_comments(r))
+            || !settings
+                .repositories
+                .iter()
+                .find(|r| r.id == review.job.configuration_id)
+                .is_some_and(|r| {
+                    r.assignments
+                        .iter()
+                        .any(|a| a.id == review.assignment_id && a.comment)
+                }))
+}
+
 pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
     let settings = store.load_settings()?;
     let jobs = store.load_queue()?;
@@ -80,10 +103,7 @@ pub(crate) fn candidates(store: &Store) -> Result<Vec<Candidate>, String> {
                 policy = Err("A newer local review attempt superseded this result.".into());
             }
             Candidate {
-                local_only: publication.is_none() && (
-                    review.result.as_ref().is_some_and(|r| !crate::publication::writes_comments(r))
-                    || !settings.repositories.iter().find(|r|r.id==review.job.configuration_id)
-                        .is_some_and(|r|r.assignments.iter().any(|a|a.id==review.assignment_id&&a.comment))),
+                local_only: local_only(&settings, review, publication),
                 automatic: policy.as_ref().copied().unwrap_or(false),
                 blocked: policy.err(),
                 publication: publication.cloned(),

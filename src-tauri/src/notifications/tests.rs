@@ -423,6 +423,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
         follow_ups: vec![],
         exit_writes: vec![],
         pr_states: Default::default(),
+        outcomes: Default::default(),
         items: (0..count)
             .map(|iteration| {
                 let mut job = job();
@@ -1040,6 +1041,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             follow_ups: vec![],
             exit_writes: vec![],
             pr_states: Default::default(),
+            outcomes: Default::default(),
             items: vec![queue::Item {
                 incomplete_files: None,
                 skipped: Vec::new(),
@@ -1110,6 +1112,7 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
         follow_ups: vec![],
         exit_writes: vec![],
         pr_states: Default::default(),
+        outcomes: Default::default(),
         items: vec![],
     };
     let frames = frames(&snapshot);

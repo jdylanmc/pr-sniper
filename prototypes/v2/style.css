@@ -1309,12 +1309,19 @@ button:disabled {
   margin: 14px 0;
 }
 .filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   padding: 7px 10px;
   color: var(--text-slate-5a6e80);
   background: var(--bg-neutral-ffffff);
   border: 1px solid var(--line-slate-dce3e9);
   border-radius: 20px;
+}
+.filter-chip .icon {
+  width: 13px;
+  height: 13px;
 }
 .filter-chip[aria-pressed="true"] {
   background: var(--navy);

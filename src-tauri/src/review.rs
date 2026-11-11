@@ -2,6 +2,7 @@ pub(crate) mod diagnostics;
 pub mod duck;
 pub mod findings;
 pub(crate) mod host;
+pub mod outcome;
 pub(crate) mod packet_run;
 pub(crate) mod runtime;
 pub(crate) mod teammates;
