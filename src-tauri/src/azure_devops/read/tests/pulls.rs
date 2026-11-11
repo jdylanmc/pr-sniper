@@ -216,6 +216,38 @@ fn reads_changed_files_of_the_latest_iteration() {
     assert!(changes[1].contains("%24skip=3"));
 }
 
+#[test]
+fn a_deleted_file_without_an_item_path_is_named_by_its_original_path() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"changeTrackingId": 1, "changeId": 1, "item": {"objectId": sha(10), "originalObjectId": sha(11), "path": "/src/kept.rs"}, "changeType": "edit"},
+                {"changeTrackingId": 2, "changeId": 2, "originalPath": "/src/gone.test.ts", "item": {"originalObjectId": sha(12), "path": null}, "changeType": "delete"},
+            ]}),
+        );
+    let reader = reader(&wire, &runtime).unwrap();
+    let files = reader.pull_request_files(&remote(), 7).unwrap();
+    let summary: Vec<_> = files
+        .iter()
+        .map(|file| (file.path.as_str(), file.status.as_str(), file.sha.clone()))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("src/kept.rs", "modified", sha(10)),
+            ("src/gone.test.ts", "removed", sha(12)),
+        ]
+    );
+}
+
 fn pull_at(head: u32) -> PullRequest {
     PullRequest {
         mentioned: false,
