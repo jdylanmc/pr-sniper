@@ -338,11 +338,11 @@ fn publication_cause(
 
 /// An effect the read-back has not observed yet is pending verification while its
 /// bounded retry is live; it fails only once the operation parks.
-pub(crate) fn publication_failed(publication: &publication::Publication) -> bool {
+fn publication_failed(publication: &publication::Publication) -> bool {
     failed(&publication.operation) || (!publication.uncertain && publication.error.is_some())
 }
 
-fn failed(operation: &monitoring::JobOperation) -> bool {
+pub(crate) fn failed(operation: &monitoring::JobOperation) -> bool {
     matches!(
         operation.state,
         OperationState::Failed | OperationState::ManualRetry

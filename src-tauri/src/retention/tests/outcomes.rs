@@ -199,6 +199,8 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             Some(expected),
             "{settlement:?}"
         );
+        // Its `primary_final` row agrees with the run's row.
+        assert_eq!(evidence.final_review(&ledger.finals[0]), expected);
     }
     // An `lgtm` whose own thread resolutions failed never acts.
     let sign_off = with_exit(
@@ -241,6 +243,19 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             actions: &none,
         };
         assert_eq!(evidence.run(&run, false), Some(expected));
+    }
+    // A saved error with a retry ahead (paused, backing off) is still Pending.
+    publication.phase = crate::publication::Phase::Pending;
+    publication.error = Some("Automation paused.".into());
+    for state in [OperationState::Interrupted, OperationState::Queued] {
+        publication.operation.state = state;
+        publication.operation.next_attempt_at = Some(NOW + 60);
+        let evidence = Evidence {
+            publications: std::slice::from_ref(&publication),
+            exit_writes: &[],
+            actions: &none,
+        };
+        assert_eq!(evidence.run(&run, false), Some(Outcome::Pending));
     }
     // A parked publication (no retry scheduled) failed, whatever its phase.
     for (phase, state) in [
@@ -412,4 +427,44 @@ fn an_older_index_without_outcomes_is_backfilled_from_saved_reviews() {
     assert_eq!(upgraded.results[0].outcome, Some(Outcome::Report));
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved["version"], json!(4));
+}
+
+#[test]
+fn a_revision_takes_its_latest_run_and_a_teammate_report_never_hides_it() {
+    let (_root, store, _monitor) = fixture();
+    let job = store.load_queue().unwrap()[0].clone();
+    let run = |id: &str, exit: ExitOutcome| {
+        let mut run = with_exit(&store, &job, exit);
+        run.operation.id = id.into();
+        run
+    };
+    let wait = run(
+        "wait",
+        ExitOutcome::Wait {
+            reason: WaitReason::Ci,
+        },
+    );
+    let outcome = |reviews: &[ReviewRun]| {
+        store.save_reviews(reviews).unwrap();
+        page(
+            &store,
+            PageRequest {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .results[0]
+            .outcome
+    };
+    // Local-only findings (nothing to publish) after a wait: the later run wins.
+    assert_eq!(
+        outcome(&[wait.clone(), run("comments", comments())]),
+        Some(Outcome::Report)
+    );
+    // A teammate report after it does not.
+    assert_eq!(
+        outcome(&[wait, run("report", ExitOutcome::SubmitReport)]),
+        Some(Outcome::Waiting)
+    );
 }

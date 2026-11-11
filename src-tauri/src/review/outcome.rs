@@ -2,7 +2,7 @@
 //! the provider effect or publication it caused. Never read from text.
 
 use crate::{
-    actions::{packet::Settlement, EffectState, Ledger},
+    actions::{packet::Settlement, EffectState, FinalReview, Ledger},
     exit_writes::{ExitWrite, Phase as WritePhase},
     exits::{ExitOutcome, LgtmAction},
     follow_up::{FollowUp, Phase as FollowPhase},
@@ -112,8 +112,9 @@ impl Evidence<'_> {
         if publication.is_some_and(|p| p.phase == PublicationPhase::Discarded) {
             return Outcome::Report;
         }
-        // Parked like the Queue's failed publication: no retry is scheduled.
-        if publication.is_some_and(crate::queue::publication_failed) {
+        // Parked: no retry is scheduled. A saved error alone (paused, backing off)
+        // is not a failure.
+        if publication.is_some_and(|p| crate::queue::failed(&p.operation)) {
             return Outcome::Failed;
         }
         if publication.is_some_and(|p| {
@@ -142,6 +143,12 @@ impl Evidence<'_> {
                     .is_some_and(|p| p.run_id == run.operation.id)
             })
             .collect();
+        self.packet_finals(&finals, &run.operation.id)
+    }
+
+    /// The packet finals an approve or `lgtm` run (`run_id`) created: effects,
+    /// then its sign-off write, then why the final settled.
+    fn packet_finals(&self, finals: &[&FinalReview], run_id: &str) -> Outcome {
         let decided = self.effects(|e| finals.iter().any(|f| f.id == e.final_id));
         if let Some(outcome) = decided.filter(|o| *o != Outcome::Pending) {
             return outcome;
@@ -151,7 +158,7 @@ impl Evidence<'_> {
             .exit_writes
             .iter()
             .rev()
-            .find(|w| w.review_operation_id == run.operation.id);
+            .find(|w| w.review_operation_id == run_id);
         if write.is_some_and(|w| matches!(w.phase, WritePhase::Failed | WritePhase::Tossed)) {
             return Outcome::Failed;
         }
@@ -183,12 +190,17 @@ impl Evidence<'_> {
         }
     }
 
-    /// Outcome of a legacy primary final review record: history only, so with
-    /// no confirmed effect it went to a human.
-    pub fn final_review(&self, id: &str) -> Outcome {
-        self.effects(|e| e.final_id == id)
-            .filter(|o| *o != Outcome::Pending)
-            .unwrap_or(Outcome::ReadyForHuman)
+    /// Outcome of a primary final record: a packet final reads like the run
+    /// that created it; a legacy one (history only) with no confirmed effect
+    /// went to a human.
+    pub fn final_review(&self, record: &FinalReview) -> Outcome {
+        match &record.packet {
+            Some(packet) => self.packet_finals(&[record], &packet.run_id),
+            None => self
+                .effects(|e| e.final_id == record.id)
+                .filter(|o| *o != Outcome::Pending)
+                .unwrap_or(Outcome::ReadyForHuman),
+        }
     }
 
     /// A PR row: only a confirmed Approve or merge PR Sniper made.
@@ -286,7 +298,7 @@ pub(crate) fn project(
         {
             outcomes.insert(
                 format!("primary_final:{}", final_review.id),
-                evidence.final_review(&final_review.id),
+                evidence.final_review(final_review),
             );
         }
         if let Some(outcome) = evidence.item(&item.id) {

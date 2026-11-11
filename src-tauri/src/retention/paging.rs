@@ -361,7 +361,7 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
 }
 
 /// Each PR revision's outcome: its latest completed review's, a teammate
-/// report only when nothing else completed, and a confirmed Approve or merge
+/// `submit_report` only when nothing else completed, and a confirmed Approve or merge
 /// on the PR wins.
 fn outcomes(
     store: &Store,
@@ -386,7 +386,11 @@ fn outcomes(
             continue;
         };
         let id = crate::queue::item_id(&run.job);
-        if outcome != Outcome::Report || !result.contains_key(&id) {
+        // A teammate report never hides the primary's outcome.
+        let teammate = run.result.as_ref().is_some_and(|r| {
+            matches!(r.output.exit, Some(crate::exits::ExitOutcome::SubmitReport))
+        });
+        if !teammate || !result.contains_key(&id) {
             result.insert(id, outcome);
         }
     }
