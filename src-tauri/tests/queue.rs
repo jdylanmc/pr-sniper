@@ -1432,3 +1432,38 @@ fn a_real_failure_never_rests() {
     seed(&store, std::slice::from_ref(&run), &[]);
     assert_eq!(rest(&store), (State::Failed, None));
 }
+
+#[test]
+fn a_pending_human_question_keeps_a_stale_item_out_of_rest() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let origin = published(&run);
+    seed(
+        &store,
+        std::slice::from_ref(&run),
+        std::slice::from_ref(&origin),
+    );
+    let follow: FollowUp = follow_up::decode_runs(&serde_json::to_vec(&json!([{
+        "id":"follow-1","key":"key","publication_id":origin.id,"review":run,
+        "thread":{"id":"thread-1","resolved":false,"can_reply":true,"comments":[]},
+        "trigger_id":"99","phase":"human_input_required","analysis":null,"publication":null,"history":[],
+        "manual_start":true,"confirmed":false,"automatic_publication":false,"cancelled":false,
+        "error":null,"result":null,"body":null,"uncertain":false,"receipt":null
+    }])).unwrap()).unwrap().remove(0);
+    store.save_follow_ups(&[follow]).unwrap();
+    assert_eq!(rest(&store), (State::WaitingForHuman, None));
+    // Base moved, same head: stale, but the question still needs the human.
+    let mut moved = run.job.clone();
+    moved.observed_base_sha = Some("c".repeat(40));
+    store.save_queue(std::slice::from_ref(&moved)).unwrap();
+    assert_eq!(rest(&store), (State::StaleAfterPublication, None));
+    store.save_follow_ups(&[]).unwrap();
+    assert_eq!(
+        rest(&store),
+        (
+            State::StaleAfterPublication,
+            Some(queue::rest::Rest::AwaitingChange)
+        )
+    );
+}

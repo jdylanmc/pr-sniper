@@ -90,8 +90,8 @@ fn classify(settings: &Settings, snapshot: &Snapshot, item: &Item) -> Rest {
     }
 }
 
-/// Unsettled stale work (e.g. an uncertain publication) never rests: it
-/// stays in Needs attention for reconciliation, as it stays undismissable.
+/// Unsettled stale work (e.g. an uncertain publication) and a pending human
+/// decision on the same PR never rest: they stay in Needs attention.
 pub(super) fn project(store: &Store, snapshot: &mut Snapshot) -> Result<(), String> {
     let settings = store.load_settings()?;
     let actions = store.load_actions()?;
@@ -100,6 +100,7 @@ pub(super) fn project(store: &Store, snapshot: &mut Snapshot) -> Result<(), Stri
         .iter()
         .map(|item| {
             (matches!(item.state, State::Stale | State::StaleAfterPublication)
+                && !item.decision_behind_stale
                 && !super::dismissal::unsettled(item, snapshot, &actions))
             .then(|| classify(&settings, snapshot, item))
         })
