@@ -842,3 +842,19 @@ fn a_malformed_response_names_the_response_it_came_from() {
         "the wire cause stays a plain string"
     );
 }
+
+#[test]
+fn a_held_out_pull_request_drops_its_owned_feedback_observations() {
+    let mut scan = crate::follow_up::host::Scan {
+        feedback: vec![crate::follow_up::host::Observed {
+            origin: publication(),
+            head: sha(3),
+            threads: vec![],
+        }],
+        ..Default::default()
+    };
+    scan.hold_back(&[("8".into(), 8)]);
+    assert_eq!(scan.feedback.len(), 1, "another pull request is kept");
+    scan.hold_back(&[("7".into(), 7)]);
+    assert!(scan.feedback.is_empty());
+}
