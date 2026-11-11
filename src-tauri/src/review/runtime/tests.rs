@@ -2517,3 +2517,50 @@ mod check_logs {
             .is_some_and(Failure::rate_limited));
     }
 }
+
+#[test]
+fn a_scoped_secondary_reads_changes_only_in_scope_but_source_anywhere() {
+    let mut context = context(true);
+    let notes = TreeEntry {
+        path: "notes.md".into(),
+        mode: "100644".into(),
+        sha: "d".repeat(40),
+        kind: "blob".into(),
+    };
+    context.head.insert("notes.md".into(), notes.clone());
+    context.base.insert("notes.md".into(), notes);
+    context.files.push(ReviewFile {
+        path: "notes.md".into(),
+        previous_path: None,
+        status: "modified".into(),
+        patch: Some("@@ -1 +1 @@\n-old\n+answer\n".into()),
+    });
+    crate::paths::restrict(&mut context, &["!**/*.md".into()]);
+    let tools = ReadTools::new(
+        None,
+        context,
+        Arc::new(GithubClient::new(Text("answer\n".into()))),
+        "example/repo".into(),
+        Arc::new(|| Ok(())),
+    );
+    assert!(tools
+        .execute("read_changes", json!({"path":"notes.md","part":"patch"}))
+        .is_err());
+    assert!(tools
+        .execute("read_changes", json!({"path":"source.rs","part":"after"}))
+        .is_ok());
+    let found = tools
+        .execute("search_code", json!({"query":"answer"}))
+        .unwrap();
+    assert!(found["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|m| m["path"] == "source.rs"));
+    assert_eq!(
+        tools
+            .execute("read_source", json!({"side":"head","path":"notes.md"}))
+            .unwrap()["content"],
+        "answer\n"
+    );
+}

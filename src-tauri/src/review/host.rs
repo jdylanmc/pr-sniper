@@ -767,13 +767,16 @@ async fn execute_attempt(
                             .map_err(Failure::permanent)?;
                         snapshot_gate(&settings, &preparation_run.job, &snapshot)?;
                     }
-                    let context = client
-                        .review_context(
-                            &repo,
-                            preparation_run.job.number,
-                            &preparation_run.job.head_sha,
-                        )
-                        .map_err(Failure::from)?;
+                    let context = super::packet_run::scoped(
+                        &preparation_run,
+                        client
+                            .review_context(
+                                &repo,
+                                preparation_run.job.number,
+                                &preparation_run.job.head_sha,
+                            )
+                            .map_err(Failure::from)?,
+                    );
                     let client: Arc<dyn crate::provider::ProviderReads + Send + Sync> =
                         Arc::from(client);
                     let packet = {
