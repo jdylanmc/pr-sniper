@@ -199,15 +199,16 @@ fn read(
             comment: CommentCapability::Available,
         },
     };
-    let pulls = vec![pull];
+    let mut pulls = vec![pull];
     let client = GithubClient::new(wire.clone());
-    let result = crate::path_facts(&client, &connection, &pulls, &ticket).map(|facts| PollResult {
-        connection,
-        pull_requests: pulls,
-        states: Default::default(),
-        facts,
-        listing: None,
-    });
+    let result =
+        crate::path_facts(&client, &connection, &mut pulls, &ticket).map(|(facts, _)| PollResult {
+            connection,
+            pull_requests: pulls,
+            states: Default::default(),
+            facts,
+            listing: None,
+        });
     (ticket, result)
 }
 
@@ -723,28 +724,26 @@ fn a_verdict_read_with_old_secondary_paths_never_skips_under_new_ones() {
 }
 
 #[test]
-fn a_push_racing_the_path_read_requeues_the_poll_without_a_failure() {
+fn a_push_racing_the_path_read_holds_that_pr_until_the_next_poll() {
     let (_root, store, mut monitor) = configured(&["src/"], &[]);
     let wire = Wire::default();
     // Listed at a, but the detail read already sees b.
     wire.head('b', &["src/a.rs"]);
     let (ticket, result) = read(&mut monitor, &store, &wire, pull('a'), NOW);
-    assert!(matches!(
-        result,
-        Err(crate::provider::ConnectionError::RevisionChanged)
-    ));
+    let read = result.as_ref().unwrap();
+    assert!(read.pull_requests.is_empty() && read.facts.is_empty());
     monitor.finish(&store, ticket, result, NOW + 1).unwrap();
     let health = monitor
         .snapshot()
         .into_iter()
         .find(|h| h.repository_id == REPO)
         .unwrap();
-    let operation = health.operation.unwrap();
-    assert_eq!(operation.state, OperationState::Queued);
-    assert_eq!(operation.failure, None);
-    assert_eq!(operation.attempt_count, 0);
-    assert!(operation.next_attempt_at.is_some());
+    assert_eq!(health.last_failure, None);
+    assert!(health.last_success.is_some());
     assert!(waiting(&store, 'a').is_empty() && waiting(&store, 'b').is_empty());
+    // The next poll lists it at b and admits it.
+    scan(&mut monitor, &store, &wire, 'b', NOW + 10);
+    assert!(!waiting(&store, 'b').is_empty());
 }
 
 #[test]
