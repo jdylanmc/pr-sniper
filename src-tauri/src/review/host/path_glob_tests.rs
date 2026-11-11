@@ -1000,3 +1000,37 @@ fn an_incremental_secondary_review_is_scoped_too() {
     let scoped = packet_run::scoped(&teammate, review_context('c', &files));
     assert_eq!(changed(&scoped), ["src/a.ts", "src/d.ts"]);
 }
+
+#[test]
+fn changing_a_secondarys_paths_makes_its_run_stale_but_not_the_primarys() {
+    let (_root, store, mut monitor) = configured(&[], &["!**/*.md"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/b.md", "src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    crate::review::validate_execution_selection(&store, &teammate).unwrap();
+    let save = |paths: &[&str]| {
+        let mut settings = store.load_settings().unwrap();
+        let assignment = settings.repositories[0]
+            .assignments
+            .iter_mut()
+            .find(|a| a.id == TEAMMATE)
+            .unwrap();
+        assignment.paths = paths.iter().map(|p| p.to_string()).collect();
+        store.save_settings(&settings).unwrap();
+    };
+    save(&["!**/*.md", "!docs/"]);
+    let stale = crate::review::validate_execution_selection(&store, &teammate).unwrap_err();
+    assert_eq!(
+        stale.message,
+        "Agent configuration changed; explicitly retry."
+    );
+    save(&["!**/*.md"]);
+    crate::review::validate_execution_selection(&store, &teammate).unwrap();
+    complete(&store, &teammate.operation.id, Ok(report()), NOW + 3).unwrap();
+
+    // A sibling's Paths never touch the primary's run.
+    let primary = started(&store, PRIMARY, 'a', NOW + 4);
+    save(&["src/"]);
+    crate::review::validate_execution_selection(&store, &primary).unwrap();
+}

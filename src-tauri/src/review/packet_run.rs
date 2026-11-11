@@ -50,21 +50,9 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
     })
 }
 
-/// A secondary's path scope (ADR 0027): its saved globs. The primary has
-/// none and reviews everything the repository gate admits.
+/// The run's path scope, as captured in its selection.
 pub(crate) fn scope(run: &ReviewRun) -> &[String] {
-    run.selection
-        .configuration
-        .as_ref()
-        .filter(|config| !config.authority.primary)
-        .and_then(|config| {
-            config
-                .repository
-                .assignments
-                .iter()
-                .find(|a| a.id == run.assignment_id)
-        })
-        .map_or(&[], |assignment| assignment.paths.as_slice())
+    run.selection.scope(&run.assignment_id)
 }
 
 /// `context` as `run` may review it: a secondary sees only the changed files
