@@ -27,7 +27,7 @@ fn removed_account_is_not_restored_after_a_native_keychain_restart() {
     let restarted = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
         "{namespace}.ai"
     )));
-    let state = GithubAuth::restore_accounts(&restarted, ProviderId::copilot()).unwrap();
+    let state = GithubAuth::restore_accounts(&Arc::new(restarted), ProviderId::copilot()).unwrap();
     assert!(state.accounts.is_empty());
 }
 
@@ -59,7 +59,7 @@ fn disconnected_identity_survives_native_keychain_restart_without_touching_repos
     let restarted = RotationSafeStore::new(NativeCredentialStore::with_service(format!(
         "{namespace}.ai"
     )));
-    let state = GithubAuth::restore_accounts(&restarted, ProviderId::copilot()).unwrap();
+    let state = GithubAuth::restore_accounts(&Arc::new(restarted), ProviderId::copilot()).unwrap();
     let view = serde_json::to_value(state.copilot_view()).unwrap();
     let repository_pair = repo
         .load(&repo_account.provider_account_id())
@@ -156,6 +156,8 @@ struct FakeBackend {
     release_save: tokio::sync::Notify,
     release_clear: tokio::sync::Notify,
     identity_failure: Mutex<Option<GithubAuthFailure>>,
+    refused_identities: std::sync::atomic::AtomicUsize,
+    refresh_failure: Mutex<Option<GithubAuthFailure>>,
     model_calls: Mutex<Vec<String>>,
     fail_models: AtomicBool,
     held_model_account: Mutex<Option<String>>,
@@ -226,6 +228,9 @@ impl Backend for FakeBackend {
     async fn refresh(&self, pair: &TokenPair) -> Result<TokenPair, GithubAuthFailure> {
         let id = pair.access_token();
         self.refreshes.lock().unwrap().push(id.into());
+        if let Some(failure) = *self.refresh_failure.lock().unwrap() {
+            return Err(failure);
+        }
         if id == "101" && self.hold_refresh.load(Ordering::SeqCst) {
             let _pending = PendingIdentity(self.dropped_refresh.clone());
             self.entered_refresh.notify_one();
@@ -238,6 +243,15 @@ impl Backend for FakeBackend {
         self.identities.lock().unwrap().push(id.into());
         if let Some(failure) = *self.identity_failure.lock().unwrap() {
             return Err(failure);
+        }
+        if self
+            .refused_identities
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(GithubAuthFailure::Expired);
         }
         if id == "101" && self.hold_identity.load(Ordering::SeqCst) {
             let _pending = PendingIdentity(self.dropped_identity.clone());
@@ -667,7 +681,13 @@ async fn cancelled_rotation_still_reports_failed_persistence_but_stale_generatio
 
 #[tokio::test]
 async fn transient_identity_failures_do_not_erase_verified_sign_in() {
-    for failure in [GithubAuthFailure::Network, GithubAuthFailure::Provider] {
+    for failure in [
+        GithubAuthFailure::Network,
+        GithubAuthFailure::Provider,
+        GithubAuthFailure::Timeout,
+        GithubAuthFailure::RateLimited,
+        GithubAuthFailure::InvalidResponse,
+    ] {
         let integration = fake_integration();
         let original = account_view(&integration, "101");
         *integration.backend.identity_failure.lock().unwrap() = Some(failure);
@@ -697,6 +717,62 @@ async fn transient_identity_failures_do_not_erase_verified_sign_in() {
         ["101"]
     );
     assert_eq!(account_view(&integration, "101"), original);
+}
+
+#[tokio::test]
+async fn a_refused_live_token_is_refreshed_once_before_the_account_expires() {
+    // Refused once, refresh works: stays connected without a human.
+    let integration = fake_integration();
+    integration
+        .backend
+        .refused_identities
+        .store(1, Ordering::SeqCst);
+    let operation = integration
+        .operation("101", Instant::now() + OPERATION_LIMIT)
+        .unwrap();
+    assert!(integration.credential("101", &operation).await.is_ok());
+    assert_eq!(account_view(&integration, "101")["state"], "connected");
+    assert_eq!(
+        integration.backend.refreshes.lock().unwrap().as_slice(),
+        ["101"]
+    );
+    assert_eq!(
+        integration.backend.identities.lock().unwrap().as_slice(),
+        ["101", "101"]
+    );
+
+    // Refused, and the refresh cannot reach GitHub: transient, still connected.
+    for failure in [GithubAuthFailure::Network, GithubAuthFailure::Provider] {
+        let integration = fake_integration();
+        integration
+            .backend
+            .refused_identities
+            .store(1, Ordering::SeqCst);
+        *integration.backend.refresh_failure.lock().unwrap() = Some(failure);
+        let operation = integration
+            .operation("101", Instant::now() + OPERATION_LIMIT)
+            .unwrap();
+        assert!(integration.credential("101", &operation).await.is_err());
+        assert_eq!(account_view(&integration, "101")["state"], "connected");
+    }
+
+    // GitHub rejects the refresh, or refuses the fresh token too: expired.
+    for (refusals, refresh) in [(1, Some(GithubAuthFailure::Expired)), (2, None)] {
+        let integration = fake_integration();
+        integration
+            .backend
+            .refused_identities
+            .store(refusals, Ordering::SeqCst);
+        *integration.backend.refresh_failure.lock().unwrap() = refresh;
+        let operation = integration
+            .operation("101", Instant::now() + OPERATION_LIMIT)
+            .unwrap();
+        assert!(integration.credential("101", &operation).await.is_err());
+        let view = account_view(&integration, "101");
+        assert_eq!(view["state"], "reconnect_required");
+        assert_eq!(view["reason"], "expired");
+        assert_eq!(integration.backend.refreshes.lock().unwrap().len(), 1);
+    }
 }
 
 #[tokio::test]

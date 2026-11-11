@@ -301,12 +301,7 @@ impl<B: Backend> Integration<B> {
                         auth.accounts.get(id),
                         Some(GithubAccountState::Connected(_))
                     );
-                    if !was_verified
-                        || !matches!(
-                            reason,
-                            GithubAuthFailure::Network | GithubAuthFailure::Provider
-                        )
-                    {
+                    if !was_verified || !reason.retryable_without_reconnect() {
                         auth.set_failure(id, *reason);
                     }
                 }
@@ -347,31 +342,33 @@ impl<B: Backend> Integration<B> {
             if pair.refresh_is_expired(SystemTime::now()) {
                 return Ok(Err(GithubAuthFailure::Expired));
             }
+            let mut refreshed = false;
             if pair.access_is_expired(SystemTime::now()) {
                 operation.check()?;
                 // Once sent, finish rotation and persist the returned pair even
                 // if cancelled. Keep the account lease until that transaction
                 // ends; cancellation must not strand a rotated refresh token.
-                let refreshed = tokio::time::timeout_at(
-                    operation.deadline.into(),
-                    self.backend.refresh(&pair),
-                )
-                .await
-                .map_err(|_| {
-                    "Copilot operation timed out during credential refresh. Retry or reconnect."
-                })?;
-                pair = match refreshed {
+                pair = match self.rotate(&key, &pair, operation).await? {
                     Ok(pair) => pair,
                     Err(reason) => return Ok(Err(reason)),
                 };
-                if let Err(reason) = self.backend.save_pair(key, pair.clone()).await {
-                    return Ok(Err(reason));
-                }
-                operation.check()?;
+                refreshed = true;
             }
-            let identity = match operation.wait_result(self.backend.identity(&pair)).await? {
-                Ok(identity) => identity,
-                Err(reason) => return Ok(Err(reason)),
+            let identity = loop {
+                match operation.wait_result(self.backend.identity(&pair)).await? {
+                    Ok(identity) => break identity,
+                    // GitHub refused a token we hold as live: refresh once.
+                    // Only a refused refresh or a refused fresh token expires.
+                    Err(GithubAuthFailure::Expired) if !refreshed => {
+                        operation.check()?;
+                        pair = match self.rotate(&key, &pair, operation).await? {
+                            Ok(pair) => pair,
+                            Err(reason) => return Ok(Err(reason)),
+                        };
+                        refreshed = true;
+                    }
+                    Err(reason) => return Ok(Err(reason)),
+                }
             };
             if identity.id != id {
                 return Ok(Err(GithubAuthFailure::WrongIdentity));
@@ -400,6 +397,31 @@ impl<B: Backend> Integration<B> {
                 Err(error)
             }
         }
+    }
+
+    /// Refreshes and saves `pair`. A refresh once sent finishes and persists
+    /// even if the operation is cancelled.
+    async fn rotate(
+        &self,
+        key: &ProviderAccountId,
+        pair: &TokenPair,
+        operation: &Operation,
+    ) -> Result<Result<TokenPair, GithubAuthFailure>, String> {
+        let refreshed =
+            tokio::time::timeout_at(operation.deadline.into(), self.backend.refresh(pair))
+                .await
+                .map_err(|_| {
+                    "Copilot operation timed out during credential refresh. Retry or reconnect."
+                })?;
+        let pair = match refreshed {
+            Ok(pair) => pair,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        if let Err(reason) = self.backend.save_pair(key.clone(), pair.clone()).await {
+            return Ok(Err(reason));
+        }
+        operation.check()?;
+        Ok(Ok(pair))
     }
 
     fn require_credential_connection(&self, id: &str) -> Result<(), String> {
