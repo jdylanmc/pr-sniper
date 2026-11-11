@@ -1948,15 +1948,31 @@ fn poll_repository(
     if connection.repository.id != ticket.provider_repository_id {
         return Err(ConnectionError::RepositoryChanged);
     }
-    let polled = reader.poll_batch(
+    // Held out of the last poll: read by ID wherever the listing resumes.
+    let mut tracked = ticket.tracked.clone();
+    tracked.extend(ticket.listing.iter().flat_map(|c| c.held.iter().cloned()));
+    let mut polled = reader.poll_batch(
         &connection.repository,
-        &ticket.tracked,
+        &tracked,
         &ticket.closed,
         &monitoring::listing_scope(ticket),
         ticket.listing.as_ref(),
         now,
     )?;
+    if let Some(cursor) = polled.cursor.as_mut() {
+        cursor.held.clear();
+    }
     Ok((connection, polled))
+}
+
+/// The poll's cursor, holding `held` for the next poll.
+fn hold(
+    cursor: Option<provider::ListingCursor>,
+    held: Vec<(String, u64)>,
+) -> Option<provider::ListingCursor> {
+    let mut cursor = cursor.unwrap_or_default();
+    cursor.held = held;
+    (cursor != provider::ListingCursor::default()).then_some(cursor)
 }
 
 /// Path facts of an explicitly requested open pull request.
@@ -1984,15 +2000,16 @@ pub(crate) fn explicit_facts(
 /// admitted, re-read only when their head or an input changed. A pull request
 /// whose own reads fail as malformed, too large or moved while read is held
 /// out of this poll and read again on the next (ADR 0028); the rest are
-/// admitted. Returns the facts and how many pull requests were held out.
+/// admitted. Returns the facts and the held-out (id, number) pairs.
+#[allow(clippy::type_complexity)]
 fn path_facts(
     reader: &(impl PullRequestReader + ?Sized),
     connection: &Connection,
     pull_requests: &mut Vec<PullRequest>,
     ticket: &monitoring::PollTicket,
-) -> Result<(BTreeMap<String, paths::PathFacts>, usize), ConnectionError> {
+) -> Result<(BTreeMap<String, paths::PathFacts>, Vec<(String, u64)>), ConnectionError> {
     let mut facts = BTreeMap::new();
-    let mut skipped = std::collections::BTreeSet::new();
+    let mut skipped = Vec::new();
     for pull in pull_requests.iter().filter(|pull| {
         pull.state == provider::Lifecycle::Open
             && (!pull.draft || ticket.paths.review_drafts)
@@ -2009,13 +2026,13 @@ fn path_facts(
                 facts.insert(pull.id.clone(), read);
             }
             Err(error) if error.skips_pull_request() => {
-                skipped.insert(pull.id.clone());
+                skipped.push((pull.id.clone(), pull.number));
             }
             Err(error) => return Err(error),
         }
     }
-    pull_requests.retain(|pull| !skipped.contains(&pull.id));
-    Ok((facts, skipped.len()))
+    pull_requests.retain(|pull| !skipped.iter().any(|(id, _)| id == &pull.id));
+    Ok((facts, skipped))
 }
 
 /// One batched state read for every tracked open pull request: the heartbeat
@@ -2078,9 +2095,9 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     &mut pull_requests,
                     &connection.identity,
                 )?;
-                let (facts, skipped) =
+                let (facts, held) =
                     path_facts(&*client, &connection, &mut pull_requests, &ticket_for_poll)?;
-                for _ in 0..skipped {
+                for _ in &held {
                     record(&app, DiagnosticEvent::PathFactsSkipped);
                 }
                 let states =
@@ -2091,7 +2108,7 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                         pull_requests,
                         states,
                         facts,
-                        listing: polled.cursor,
+                        listing: hold(polled.cursor, held),
                     },
                     follow_ups,
                 ))

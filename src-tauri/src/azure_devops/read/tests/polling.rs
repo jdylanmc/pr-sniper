@@ -107,10 +107,10 @@ fn poll(
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
     let (connection, mut polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
-    let (facts, _) = crate::path_facts(&reader, &connection, &mut polled.pulls, ticket)?;
+    let (facts, held) = crate::path_facts(&reader, &connection, &mut polled.pulls, ticket)?;
     Ok(PollResult {
         facts,
-        listing: polled.cursor,
+        listing: crate::hold(polled.cursor, held),
         connection,
         pull_requests: polled.pulls,
         states: Default::default(),
@@ -277,7 +277,7 @@ fn one_pull_request_with_malformed_changes_waits_and_the_rest_are_admitted() {
     let edit = json!({"item": {"path": "/src/a.rs", "objectId": sha(50)}, "changeType": "edit"});
     // An entry with neither an item path nor an earlier one names no file.
     let unnamed = json!({"item": {"path": null, "objectId": sha(51)}, "changeType": "edit"});
-    let wire_for = |second: &Value| {
+    let wire_for = |second: &Value, listing: &Value| {
         let wire = signed_in_wire(listing.clone());
         for number in 1..=3u32 {
             let changes = if number == 2 { second } else { &edit };
@@ -306,7 +306,7 @@ fn one_pull_request_with_malformed_changes_waits_and_the_rest_are_admitted() {
     let ticket = next_ticket(&mut monitor, &store, NOW);
     let result = poll(
         Arc::new(FakeTokens::default()),
-        &wire_for(&unnamed),
+        &wire_for(&unnamed, &listing),
         &ticket,
     );
     monitor.finish(&store, ticket, result, NOW).unwrap();
@@ -315,9 +315,13 @@ fn one_pull_request_with_malformed_changes_waits_and_the_rest_are_admitted() {
     assert!(health.last_success.is_some());
     assert_eq!(health.last_failure, None);
 
-    // Readable again: the held-out pull request is admitted on the next poll.
+    // Readable again, and read by ID though the listing has moved past it:
+    // the held-out pull request is admitted on the next poll.
     let ticket = next_ticket(&mut monitor, &store, NOW + 900);
-    let result = poll(Arc::new(FakeTokens::default()), &wire_for(&edit), &ticket);
+    let moved_on = json!({"value": [raw_pull(1, BLAKE, 1, false), raw_pull(3, BLAKE, 3, false)]});
+    let wire = wire_for(&edit, &moved_on);
+    wire.json(&git("pullrequests/2?"), raw_pull(2, BLAKE, 2, false));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket);
     monitor.finish(&store, ticket, result, NOW + 900).unwrap();
     assert_eq!(numbers(), [1, 2, 3]);
 }

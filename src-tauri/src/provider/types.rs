@@ -359,6 +359,10 @@ pub struct ListingCursor {
     /// be served whole (GitHub's search cap).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wide: bool,
+    /// Pull requests (id, number) whose path facts could not be read: read
+    /// by ID on the next poll, like tracked ones, wherever the listing is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<(String, u64)>,
 }
 
 /// One poll's read: open pull requests of this batch plus tracked ones.
