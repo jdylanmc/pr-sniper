@@ -1238,9 +1238,11 @@ fn finish(
         .receipt
         .as_ref()
         .ok_or_else(|| Failure::permanent("No confirmed reply receipt."))?;
+    let now = env.now()?;
     let operation = run.publication.as_mut().unwrap();
     operation.confirmed_receipt = Some(receipt.clone());
     operation.state = OperationState::Completed;
+    operation.completed_at = Some(now);
     operation.next_attempt_at = None;
     operation.failure = None;
     run.phase = if gate.is_some() {
