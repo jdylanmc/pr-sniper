@@ -32,7 +32,7 @@ Typed, from the completed exit and its confirmed effect (`review::outcome`). Nev
 | `waiting`             | `wait`                                                                                       |
 | `report`              | teammate `submit_report`; local-only findings; quiet reply                                   |
 | `pending`             | exit completed, effect or publication not confirmed yet                                      |
-| `failed`              | effect refused, stale, dequeued or cancelled; publication stopped or unresolved              |
+| `failed`              | effect refused, stale, dequeued or cancelled; publication stale, stopped or unresolved       |
 
 - A result row takes its iteration's latest completed run; a report only when nothing else completed. A confirmed Approve or merge on the PR wins.
 - A panic never completes a run: it stays in Queue > Needs attention, not Reviewed.

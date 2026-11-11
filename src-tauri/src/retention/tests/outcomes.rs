@@ -185,6 +185,8 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         (crate::publication::Phase::Pending, Outcome::Pending),
         (crate::publication::Phase::Published, Outcome::Commented),
         (crate::publication::Phase::Stopped, Outcome::Failed),
+        // Stopped before publishing: the head or base moved.
+        (crate::publication::Phase::Stale, Outcome::Failed),
         (crate::publication::Phase::Discarded, Outcome::Report),
     ] {
         publication.phase = phase;

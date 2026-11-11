@@ -115,7 +115,7 @@ impl Evidence<'_> {
         if publication.is_some_and(|p| {
             matches!(
                 p.phase,
-                PublicationPhase::Stopped | PublicationPhase::Unresolved
+                PublicationPhase::Stale | PublicationPhase::Stopped | PublicationPhase::Unresolved
             )
         }) || write.is_some_and(|w| matches!(w.phase, WritePhase::Failed | WritePhase::Tossed))
         {
