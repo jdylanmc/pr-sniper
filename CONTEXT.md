@@ -330,7 +330,7 @@ Queue state. Follow-up needs human judgment, findings remain local, or some find
 _Avoid_: Needs attention (that term is the failure group)
 
 **Stale**:
-Review superseded by a new head or base. Stale after publication is the same condition on a **Publication**: receipt kept, labeled stale, no publish against a different diff. Base move without new head needs explicit Review again. Never in Needs attention, its count or notifications: rests with a typed reason (superseded, awaiting change, closed, merged, repository removed or disabled, account unbound, not admitted) until the PR changes; the next head starts a new Iteration. Projection only: upgrade reclassifies saved items; history, receipts and dismissals stay.
+Review superseded by a new head or base. Stale after publication is the same condition on a **Publication**: receipt kept, labeled stale, no publish against a different diff. Base move without new head needs explicit Review again. Settled stale work is never in Needs attention, its count or notifications: rests with a typed reason (superseded, awaiting change, closed, merged, repository removed or disabled, account unbound, not admitted) until the PR changes; the next head starts a new Iteration. Unsettled work (uncertain or in-flight) stays in Needs attention for reconciliation. Closed/merged reason follows the tracked PR lifecycle, not older closed Iterations. Projection only: upgrade reclassifies saved items; history, receipts and dismissals stay.
 _Avoid_: Outdated review
 
 **Dismiss stale review**:

@@ -1671,3 +1671,36 @@ fn a_reviewed_iteration_rests_until_a_new_head_supersedes_it() {
     assert_eq!(new.state, queue::State::Queued);
     assert_eq!(new.rest, None);
 }
+
+#[test]
+fn a_reopened_pr_with_a_new_head_rests_superseded_not_closed() {
+    let (_fixture, store, mut monitor) = configured(1);
+    scan(&mut monitor, &store, vec![pull('a')], NOW);
+    let mut closed = pull('a');
+    closed.state = Lifecycle::Closed;
+    scan(&mut monitor, &store, vec![closed], NOW + 10);
+    scan(&mut monitor, &store, vec![pull('a')], NOW + 20);
+    let reopened = store.load_queue().unwrap().remove(1);
+    assert_eq!(
+        reopened.work.as_ref().unwrap().trigger,
+        WorkTrigger::Reopened
+    );
+    let settings = store.load_settings().unwrap();
+    store
+        .save_reviews(&[completed(&settings, &reopened)])
+        .unwrap();
+    scan(&mut monitor, &store, vec![pull('c')], NOW + 30);
+    let jobs = store.load_queue().unwrap();
+    assert_eq!(jobs[0].waiting, monitoring::WAITING_CLOSED);
+    let snapshot = queue::snapshot(&store, monitor.snapshot()).unwrap();
+    let item = snapshot
+        .items
+        .iter()
+        .find(|i| i.id == queue::item_id(&reopened))
+        .unwrap();
+    assert!(matches!(
+        item.state,
+        queue::State::Stale | queue::State::StaleAfterPublication
+    ));
+    assert_eq!(item.rest, Some(queue::rest::Rest::Superseded));
+}

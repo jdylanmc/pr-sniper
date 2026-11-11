@@ -379,7 +379,7 @@ export const queueItem = z
     failed_operation: failedOperation.nullable(),
     remedy: remedy.nullable(),
     dismiss_token: z.string().nullable(),
-    // Why a stale item rests outside Needs attention; null unless stale.
+    // Why a settled stale item rests outside Needs attention; null otherwise.
     rest: z
       .enum([
         "superseded",

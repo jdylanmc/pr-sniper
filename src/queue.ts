@@ -335,8 +335,6 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
         !item.dismissed &&
         !item.rest &&
         ![
-          "stale",
-          "stale_after_publication",
           "queued",
           "reviewing",
           "awaiting_publication",

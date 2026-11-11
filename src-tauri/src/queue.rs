@@ -142,7 +142,7 @@ pub struct SkippedReview {
 
 #[derive(Clone, Serialize)]
 pub struct Item {
-    /// Set on every stale item: it rests outside Needs attention.
+    /// Set on settled stale items: they rest outside Needs attention.
     pub rest: Option<rest::Rest>,
     pub dismiss_token: Option<String>,
     pub dismissed: bool,
@@ -230,7 +230,7 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let mut snapshot = normal_snapshot(store, health)?;
     crate::actions::project(store, &mut snapshot)?;
-    rest::project(&store.load_settings()?, &mut snapshot);
+    rest::project(store, &mut snapshot)?;
     dismissal::project(store, &mut snapshot)?;
     retry_all::project(store, &mut snapshot)?;
     Ok(snapshot)

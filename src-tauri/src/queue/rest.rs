@@ -3,7 +3,12 @@
 //! closed PR, removed repository or unbound account retires it. Projection
 //! only; dismissals, history and receipts are untouched.
 use super::{Item, Snapshot, State};
-use crate::{monitoring, provider::Lifecycle, retention::Binding, storage::Settings};
+use crate::{
+    monitoring,
+    provider::Lifecycle,
+    retention::Binding,
+    storage::{Settings, Store},
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -29,28 +34,25 @@ fn iteration(item: &Item) -> Option<u64> {
 fn classify(settings: &Settings, snapshot: &Snapshot, item: &Item) -> Rest {
     let job = &item.job;
     let binding = Binding::job(job);
-    let lifecycle = |waiting: &str| match waiting {
-        monitoring::WAITING_MERGED => Some(Rest::Merged),
-        monitoring::WAITING_CLOSED => Some(Rest::Closed),
-        _ => None,
-    };
     let tracked = snapshot
         .tracked
         .iter()
         .filter(|pr| Binding::tracked(pr) == binding);
-    if let Some(rest) = snapshot
-        .jobs
-        .iter()
-        .filter(|other| binding.matches(other))
-        .find_map(|other| lifecycle(&other.waiting))
-        .or_else(|| {
-            tracked.clone().find_map(|pr| match pr.lifecycle {
-                Lifecycle::Merged => Some(Rest::Merged),
-                Lifecycle::Closed => Some(Rest::Closed),
-                Lifecycle::Open => None,
-            })
-        })
-    {
+    // The tracked record is the PR's current lifecycle; a reopened PR keeps
+    // its closed jobs, so only this item's own job speaks when untracked.
+    let ended = match tracked.clone().next() {
+        Some(pr) => match pr.lifecycle {
+            Lifecycle::Merged => Some(Rest::Merged),
+            Lifecycle::Closed => Some(Rest::Closed),
+            Lifecycle::Open => None,
+        },
+        None => match job.waiting.as_str() {
+            monitoring::WAITING_MERGED => Some(Rest::Merged),
+            monitoring::WAITING_CLOSED => Some(Rest::Closed),
+            _ => None,
+        },
+    };
+    if let Some(rest) = ended {
         return rest;
     }
     let repository = settings
@@ -88,16 +90,22 @@ fn classify(settings: &Settings, snapshot: &Snapshot, item: &Item) -> Rest {
     }
 }
 
-pub(super) fn project(settings: &Settings, snapshot: &mut Snapshot) {
+/// Unsettled stale work (e.g. an uncertain publication) never rests: it
+/// stays in Needs attention for reconciliation, as it stays undismissable.
+pub(super) fn project(store: &Store, snapshot: &mut Snapshot) -> Result<(), String> {
+    let settings = store.load_settings()?;
+    let actions = store.load_actions()?;
     let rests: Vec<_> = snapshot
         .items
         .iter()
         .map(|item| {
-            matches!(item.state, State::Stale | State::StaleAfterPublication)
-                .then(|| classify(settings, snapshot, item))
+            (matches!(item.state, State::Stale | State::StaleAfterPublication)
+                && !super::dismissal::unsettled(item, snapshot, &actions))
+            .then(|| classify(&settings, snapshot, item))
         })
         .collect();
     for (item, rest) in snapshot.items.iter_mut().zip(rests) {
         item.rest = rest;
     }
+    Ok(())
 }

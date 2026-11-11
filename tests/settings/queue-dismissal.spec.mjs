@@ -176,6 +176,7 @@ test("dismissal cannot cross an account boundary or dismiss current non-stale wo
 });
 
 test("uncertain publication resurfaces a dismissed stale entry and cannot be dismissed", async ({
+  page,
   store,
 }) => {
   const fixture = await staleFixture(store, true);
@@ -186,7 +187,14 @@ test("uncertain publication resurfaces a dismissed stale entry and cannot be dis
   const unsafe = await item(store);
   expect(unsafe.dismissed).toBe(false);
   expect(unsafe.dismiss_token).toBeNull();
+  expect(unsafe.rest).toBeNull();
   await expect(dismiss(store, old)).rejects.toContain("unsettled");
+  await page.goto("/?panel=1");
+  await showQueueGroup(page, "attention");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(
+    page.locator('[data-queue-group="attention"] .queue-item'),
+  ).toContainText("Fix reconnect race");
   const snapshot = await store("monitoring_snapshot");
   expect(snapshot.publications[0].publication.uncertain).toBe(true);
   expect(snapshot.publications[0].publication.receipts).toEqual(
@@ -195,6 +203,7 @@ test("uncertain publication resurfaces a dismissed stale entry and cannot be dis
 });
 
 test("an original uncertain action remains intact and prevents stale dismissal", async ({
+  page,
   store,
 }) => {
   const fixture = await staleFixture(store);
@@ -253,7 +262,14 @@ test("an original uncertain action remains intact and prevents stale dismissal",
   const unsafe = await item(store);
   expect(unsafe.dismissed).toBe(false);
   expect(unsafe.dismiss_token).toBeNull();
+  expect(unsafe.rest).toBeNull();
   await expect(dismiss(store, old)).rejects.toContain("unsettled");
+  await page.goto("/?panel=1");
+  await showQueueGroup(page, "attention");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(
+    page.locator('[data-queue-group="attention"] .queue-item'),
+  ).toContainText("Fix reconnect race");
   expect(unsafe.action_status.effects[0]).toMatchObject(effect);
 });
 
