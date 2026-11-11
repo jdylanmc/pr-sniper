@@ -129,6 +129,17 @@ impl ConnectionError {
         matches!(self, Self::InvalidResponse | Self::MalformedResponse(_))
     }
 
+    /// A read of one pull request that says nothing about the repository and
+    /// that a later poll may clear: malformed, too large, cut short or moved
+    /// while read. That pull request is skipped, never the poll (ADR 0028).
+    pub fn skips_pull_request(self) -> bool {
+        self.is_invalid_response()
+            || matches!(
+                self,
+                Self::LimitExceeded | Self::IncompleteRead | Self::RevisionChanged
+            )
+    }
+
     /// Names `response` as the origin of an `InvalidResponse`; others pass.
     pub fn from_response(self, response: ProviderResponse) -> Self {
         match self {

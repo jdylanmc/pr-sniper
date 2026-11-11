@@ -1981,14 +1981,18 @@ pub(crate) fn explicit_facts(
 }
 
 /// Path facts (ADR 0027) for open pull requests that are tracked or would be
-/// admitted, re-read only when their head or an input changed.
+/// admitted, re-read only when their head or an input changed. A pull request
+/// whose own reads fail as malformed, too large or moved while read is held
+/// out of this poll and read again on the next (ADR 0028); the rest are
+/// admitted. Returns the facts and how many pull requests were held out.
 fn path_facts(
     reader: &(impl PullRequestReader + ?Sized),
     connection: &Connection,
-    pull_requests: &[PullRequest],
+    pull_requests: &mut Vec<PullRequest>,
     ticket: &monitoring::PollTicket,
-) -> Result<BTreeMap<String, paths::PathFacts>, ConnectionError> {
+) -> Result<(BTreeMap<String, paths::PathFacts>, usize), ConnectionError> {
     let mut facts = BTreeMap::new();
+    let mut skipped = std::collections::BTreeSet::new();
     for pull in pull_requests.iter().filter(|pull| {
         pull.state == provider::Lifecycle::Open
             && (!pull.draft || ticket.paths.review_drafts)
@@ -2000,12 +2004,18 @@ fn path_facts(
         if previous.is_some_and(|f| f.current(pull, &plan)) {
             continue;
         }
-        facts.insert(
-            pull.id.clone(),
-            paths::read_facts(reader, &connection.repository, pull, &plan, previous)?,
-        );
+        match paths::read_facts(reader, &connection.repository, pull, &plan, previous) {
+            Ok(read) => {
+                facts.insert(pull.id.clone(), read);
+            }
+            Err(error) if error.skips_pull_request() => {
+                skipped.insert(pull.id.clone());
+            }
+            Err(error) => return Err(error),
+        }
     }
-    Ok(facts)
+    pull_requests.retain(|pull| !skipped.contains(&pull.id));
+    Ok((facts, skipped.len()))
 }
 
 /// One batched state read for every tracked open pull request: the heartbeat
@@ -2068,7 +2078,11 @@ fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
                     &mut pull_requests,
                     &connection.identity,
                 )?;
-                let facts = path_facts(&*client, &connection, &pull_requests, &ticket_for_poll)?;
+                let (facts, skipped) =
+                    path_facts(&*client, &connection, &mut pull_requests, &ticket_for_poll)?;
+                for _ in 0..skipped {
+                    record(&app, DiagnosticEvent::PathFactsSkipped);
+                }
                 let states =
                     tracked_states(&*client, &connection, &pull_requests, &ticket_for_poll)?;
                 Ok((

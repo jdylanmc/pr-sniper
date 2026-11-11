@@ -1195,11 +1195,5 @@ fn cancel_in_store(
 /// One pull request's discussion that is skipped, not fatal, for the
 /// repository: malformed, or past a provider or host size limit (ADR 0028).
 fn skipped_discussion(error: provider::ConnectionError) -> bool {
-    error.is_invalid_response()
-        || matches!(
-            error,
-            provider::ConnectionError::LimitExceeded
-                | provider::ConnectionError::IncompleteRead
-                | provider::ConnectionError::RevisionChanged
-        )
+    error.skips_pull_request()
 }

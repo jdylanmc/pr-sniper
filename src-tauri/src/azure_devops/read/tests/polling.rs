@@ -106,8 +106,8 @@ fn poll(
         .build()
         .unwrap();
     let reader = open(tokens, wire, &runtime)?;
-    let (connection, polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
-    let facts = crate::path_facts(&reader, &connection, &polled.pulls, ticket)?;
+    let (connection, mut polled) = crate::poll_repository(&reader, ticket, ticket.prepared_at)?;
+    let (facts, _) = crate::path_facts(&reader, &connection, &mut polled.pulls, ticket)?;
     Ok(PollResult {
         facts,
         listing: polled.cursor,
@@ -261,6 +261,65 @@ fn the_paths_gate_reads_iteration_changes_and_keeps_out_other_prs() {
         .map(|j| j.number)
         .collect();
     assert_eq!(numbers, [1], "only the PR with an admitted path is queued");
+}
+
+#[test]
+fn one_pull_request_with_malformed_changes_waits_and_the_rest_are_admitted() {
+    let (_root, store, mut monitor) = monitored();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].paths = vec!["src/".into()];
+    store.save_settings(&settings).unwrap();
+    let listing = json!({"value": [
+        raw_pull(1, BLAKE, 1, false),
+        raw_pull(2, BLAKE, 2, false),
+        raw_pull(3, BLAKE, 3, false),
+    ]});
+    let edit = json!({"item": {"path": "/src/a.rs", "objectId": sha(50)}, "changeType": "edit"});
+    // An entry with neither an item path nor an earlier one names no file.
+    let unnamed = json!({"item": {"path": null, "objectId": sha(51)}, "changeType": "edit"});
+    let wire_for = |second: &Value| {
+        let wire = signed_in_wire(listing.clone());
+        for number in 1..=3u32 {
+            let changes = if number == 2 { second } else { &edit };
+            wire.json(
+                &git(&format!("pullRequests/{number}/iterations?")),
+                json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(number)}}]}),
+            )
+            .json(
+                &git(&format!("pullRequests/{number}/iterations/1/changes?")),
+                json!({"changeEntries": [changes]}),
+            );
+        }
+        wire
+    };
+    let numbers = || {
+        let mut numbers: Vec<_> = store
+            .load_queue()
+            .unwrap()
+            .iter()
+            .map(|j| j.number)
+            .collect();
+        numbers.sort();
+        numbers
+    };
+
+    let ticket = next_ticket(&mut monitor, &store, NOW);
+    let result = poll(
+        Arc::new(FakeTokens::default()),
+        &wire_for(&unnamed),
+        &ticket,
+    );
+    monitor.finish(&store, ticket, result, NOW).unwrap();
+    assert_eq!(numbers(), [1, 3]);
+    let health = monitor.snapshot().remove(0);
+    assert!(health.last_success.is_some());
+    assert_eq!(health.last_failure, None);
+
+    // Readable again: the held-out pull request is admitted on the next poll.
+    let ticket = next_ticket(&mut monitor, &store, NOW + 900);
+    let result = poll(Arc::new(FakeTokens::default()), &wire_for(&edit), &ticket);
+    monitor.finish(&store, ticket, result, NOW + 900).unwrap();
+    assert_eq!(numbers(), [1, 2, 3]);
 }
 
 /// The cause a repository poll parks with after failing every attempt it
