@@ -33,8 +33,10 @@ export interface Repository {
   review_preset?: string;
   /** Include draft pull requests in review. Absent = off. */
   review_drafts?: boolean;
-  /** Path gate, ANDed with admission: include globs and `!` excludes. */
+  /** Path globs: include globs and `!` excludes. */
   paths?: string[];
+  /** How `paths` combine with admission. Absent = `and` (gate). */
+  paths_mode?: "and" | "or";
 }
 
 /** One path glob, as `paths::validate` checks it; `""` when valid. */

@@ -17,6 +17,23 @@ use std::collections::{BTreeMap, HashSet};
 /// migrated include + exclude list fits.
 pub const MAX_PATTERNS: usize = 2 * MAX_VALUES_PER_RULE;
 
+/// How repository `paths` combine with admission (ADR 0029).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathsMode {
+    /// Gate: admitted by the rules and touching the paths.
+    #[default]
+    And,
+    /// Also: admitted by the rules, or touching the paths. Paths never block.
+    Or,
+}
+
+impl PathsMode {
+    pub fn is_and(&self) -> bool {
+        *self == Self::And
+    }
+}
+
 /// Validates one path list; `owner` names it in errors.
 pub fn validate(patterns: &[String], owner: &str) -> Result<(), String> {
     if patterns.len() > MAX_PATTERNS {
@@ -186,6 +203,12 @@ impl PathFacts {
     /// The gate keeps this revision out of the queue.
     pub fn gated_out(&self, pull: &PullRequest) -> bool {
         self.at(pull) && self.incomplete.is_none() && !self.admitted
+    }
+
+    /// `gate` selects a changed file of this revision. Parked facts admit:
+    /// the PR then waits for a human, never missed.
+    pub fn gate_admits(&self, pull: &PullRequest, gate: &[String]) -> bool {
+        self.at(pull) && self.admitted && (self.incomplete.is_some() || self.gate == gate)
     }
 
     /// Changed files the provider cannot list in full at this revision.

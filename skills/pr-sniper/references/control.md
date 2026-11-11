@@ -118,11 +118,12 @@ enabled add fails). Azure DevOps repositories: `provider:"azure_devops"`,
 by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote (own PRs only with `actions.include_self`; a policy refusal parks, never retried); approve-and-merge is refused (`unsupported_provider_action`). Then enable the human-requested
 scope in a later save. Repository schedules are five-field cron in the saved IANA time zone.
 Path globs (ADR 0027): repository
-`paths` gate admission (AND); a secondary assignment's `paths` decide whether
+`paths` gate admission (AND); `paths_mode:"or"` makes them admit too (rules or a
+matching file; Exclude users still rejects; no effect in Explicit; ADR 0029); a secondary assignment's `paths` decide whether
 it reviews a revision (files changed since its last review). Include patterns
 plus `!pattern` excludes, last match wins, at most 200 of 1–256 characters.
 A primary with `paths` is rejected; legacy `include_paths`/`exclude_paths`
-admission rules are rejected. Empty or absent: no gate, every revision. A `watch` of a revision the gate rejects fails `paths_gate` and starts nothing, even with `review_again`.
+admission rules are rejected. Empty or absent: no gate, every revision. A `watch` of a revision the AND gate rejects fails `paths_gate` and starts nothing, even with `review_again`.
 No generic settings replacement/import, credentials, authentication or shell
 operations exist. Unknown fields and operation names are rejected.
 

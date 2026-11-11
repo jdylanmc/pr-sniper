@@ -6,7 +6,7 @@ Admission path rules (Include paths, Exclude paths) were ordinary first-match ru
 
 ## Decision
 
-- **Repository gate**: `Repository.paths`. AND gate on top of admission (All, Filtered, Explicit and explicit intake). Empty = no gate.
+- **Repository gate**: `Repository.paths`. AND gate on top of admission (All, Filtered, Explicit and explicit intake). Empty = no gate. `paths_mode: "or"` makes them admit instead of gate ([ADR 0029](0029-paths-or-admission.md)).
 - **Secondary trigger**: `Assignment.paths` on a non-primary assignment. The primary has none (validation rejects it): it reviews everything the gate admits.
 - Syntax (`src-tauri/src/paths.rs`): include patterns plus `!pattern` excludes, gitignore-style. Per file, the last matching pattern wins; a list of only excludes starts from "everything". A PR matches when any changed file (either name of a rename) is selected. Pattern syntax reuses admission (`glob_matches`, `MAX_PATTERN_LENGTH`); a list holds up to `2 × MAX_VALUES_PER_RULE` (200) so both migrated path rules fit.
 - Migration: enabled path rules move into the gate (includes, then `!excludes`), disabled ones vanish, both kinds leave admission. A Filtered repository whose only enabled rules were path rules, one an include, becomes All. Idempotent on every load; monitoring state is kept. Path rule kinds still deserialize, but saves reject them.

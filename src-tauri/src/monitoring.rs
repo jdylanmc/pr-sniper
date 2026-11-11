@@ -890,6 +890,8 @@ pub struct PollTicket {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathTicket {
     pub gate: Vec<String>,
+    /// OR mode (ADR 0029): `gate` also admits and never blocks.
+    pub also: bool,
     /// Secondary assignments with globs: (assignment id, patterns).
     pub secondaries: Vec<(String, Vec<String>)>,
     pub review_drafts: bool,
@@ -1053,6 +1055,8 @@ struct ConfiguredSchedule {
     review_drafts: bool,
     /// Repository gate globs.
     paths: Vec<String>,
+    /// `Repository::paths_also_admit`.
+    paths_also: bool,
     /// Secondary assignments with globs: (assignment id, patterns).
     secondary_paths: Vec<(String, Vec<String>)>,
 }
@@ -1061,6 +1065,7 @@ impl ConfiguredSchedule {
     fn path_ticket(&self) -> PathTicket {
         PathTicket {
             gate: self.paths.clone(),
+            also: self.paths_also,
             secondaries: self.secondary_paths.clone(),
             review_drafts: self.review_drafts,
             ..PathTicket::default()
@@ -1160,6 +1165,7 @@ impl Monitor {
             policy.reviewer_assignment,
             admission.as_ref(),
             &repository.paths,
+            repository.paths_also_admit(),
         )?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
@@ -1815,7 +1821,7 @@ impl Monitor {
         if expected.assignments.is_empty() {
             return Err("Assign a saved Agent before queueing this pull request.".into());
         }
-        if facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
+        if !expected.paths_also_admit() && facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
             return Ok(ExplicitAdmission {
                 queued: false,
                 message: format!(
@@ -3094,15 +3100,18 @@ impl Monitor {
             }
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let facts = path_facts.get(&pull.id);
-            let gated_out = facts.is_some_and(|f| f.gated_out(&pull));
+            // AND: the paths gate this revision. OR: they only admit (ADR 0029).
+            let gated_out = !ticket.paths.also && facts.is_some_and(|f| f.gated_out(&pull));
             let incomplete = facts.and_then(|f| f.incomplete_for(&pull));
-            let eligibility = eligibility(
+            let mut eligibility = eligibility(
                 &ticket.watched_authors,
                 ticket.admission.as_ref(),
                 &ticket.policy,
                 &result.connection.identity.id,
                 &pull,
             );
+            eligibility.admitted |= path_candidate(ticket, &pull)
+                && facts.is_some_and(|f| f.gate_admits(&pull, &ticket.paths.gate));
             let bound = |job: &QueueJob| {
                 job.provider == provider_key(&ticket.provider)
                     && (job.configuration_id == ticket.repository_id
@@ -3602,6 +3611,11 @@ fn eligibility(
 /// every author.
 pub(crate) fn listing_scope(ticket: &PollTicket) -> crate::provider::ListingScope {
     use crate::provider::ListingScope;
+    // OR mode (ADR 0029): any author's PR touching the paths can qualify, and
+    // no provider filters open PRs by path, so only every open PR is a superset.
+    if ticket.paths.also {
+        return ListingScope::All;
+    }
     match &ticket.admission {
         Some(admission) => admission.listing_scope(&ticket.provider_account_id),
         None if ticket.watched_authors.is_empty() => ListingScope::All,
@@ -3629,6 +3643,55 @@ pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
         pull,
     )
     .admitted
+}
+
+/// Path-fact reads a poll spends on untracked PRs only OR-mode paths could
+/// admit (ADR 0029). The rest wait for a later poll of the pass; read facts
+/// persist per revision, so successive polls converge.
+pub(crate) const PATH_CANDIDATE_READS: usize = 100;
+
+/// An open PR the rules do not admit but OR-mode paths could: its path
+/// facts decide. Exclude users beats a path match.
+pub(crate) fn path_candidate(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket.paths.also
+        && !ticket
+            .admission
+            .as_ref()
+            .is_some_and(|a| a.excludes(&ticket.provider_account_id, pull))
+}
+
+/// Open pull requests whose path facts this poll reads: tracked or admitted
+/// ones, plus in OR mode up to `PATH_CANDIDATE_READS` path candidates,
+/// newest first. Facts current for the revision and inputs are reused.
+pub(crate) fn fact_reads<'a>(
+    ticket: &PollTicket,
+    pull_requests: &'a [PullRequest],
+) -> Vec<&'a PullRequest> {
+    let mut open: Vec<_> = pull_requests
+        .iter()
+        .filter(|pull| pull.state == Lifecycle::Open && (!pull.draft || ticket.paths.review_drafts))
+        .filter(|pull| {
+            let plan = ticket.paths.plan(&pull.id);
+            !ticket
+                .paths
+                .facts
+                .get(&pull.id)
+                .is_some_and(|f| f.current(pull, &plan))
+        })
+        .collect();
+    open.sort_by_key(|pull| std::cmp::Reverse(pull.number));
+    let mut candidates = PATH_CANDIDATE_READS;
+    open.retain(|pull| {
+        if ticket.tracked.iter().any(|(id, _)| id == &pull.id) || scan_admits(ticket, pull) {
+            return true;
+        }
+        if candidates == 0 || !path_candidate(ticket, pull) {
+            return false;
+        }
+        candidates -= 1;
+        true
+    });
+    open
 }
 
 fn tracked_for(
@@ -3786,6 +3849,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             policy.reviewer_assignment,
             admission.as_ref(),
             &repository.paths,
+            repository.paths_also_admit(),
         )
         .ok();
         let binding = repository.account_binding();
@@ -3827,6 +3891,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
                 .collect(),
             review_drafts: repository.review_drafts,
             paths: repository.paths.clone(),
+            paths_also: repository.paths_also_admit(),
             secondary_paths: repository
                 .assignments
                 .iter()
@@ -4562,6 +4627,7 @@ fn trigger_policy(
     reviewer_assignment: bool,
     admission: Option<&AdmissionConfig>,
     gate: &[String],
+    also: bool,
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
@@ -4572,8 +4638,14 @@ fn trigger_policy(
     // An empty gate keeps the key unchanged.
     match (admission, gate) {
         (None, []) => serde_json::to_string(&(authors, reviewer_assignment)),
+        (None, gate) if also => {
+            serde_json::to_string(&(authors, reviewer_assignment, "paths_or", gate))
+        }
         (None, gate) => serde_json::to_string(&(authors, reviewer_assignment, "paths", gate)),
         (Some(admission), []) => serde_json::to_string(&("admission", admission)),
+        (Some(admission), gate) if also => {
+            serde_json::to_string(&("admission", admission, "paths_or", gate))
+        }
         (Some(admission), gate) => serde_json::to_string(&("admission", admission, "paths", gate)),
     }
     .map_err(|_| ConnectionError::Configuration)
@@ -5563,6 +5635,117 @@ mod admission_tests {
             sequence: 0,
             paths,
         }
+    }
+
+    #[test]
+    fn paths_or_lists_every_open_pr_and_and_keeps_the_narrowed_listing() {
+        use crate::paths::PathsMode;
+        use crate::provider::ListingScope;
+        let team = serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]},
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "13", "login": "x"}]}
+        ]});
+        let mut configured = settings(team);
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let and = ticket_for(&configured);
+        assert!(!and.paths.also);
+        // AND: the author listing stays a superset of what the rules admit.
+        assert!(matches!(listing_scope(&and), ListingScope::Narrowed { .. }));
+        assert!(!path_candidate(&and, &pull("12", &[], false, &[])));
+        configured.repositories[0].paths_mode = PathsMode::Or;
+        let or = ticket_for(&configured);
+        assert!(or.paths.also);
+        assert_ne!(or.trigger_policy, and.trigger_policy);
+        // OR: any author's PR touching the paths can qualify.
+        assert_eq!(listing_scope(&or), ListingScope::All);
+        assert!(path_candidate(&or, &pull("12", &[], false, &[])));
+        // Exclude users beats a path match.
+        assert!(!path_candidate(&or, &pull("13", &[], false, &[])));
+        // No paths, or Explicit: no path admission, the listing narrows again.
+        let mut empty = configured.clone();
+        empty.repositories[0].paths.clear();
+        assert!(!ticket_for(&empty).paths.also);
+        assert!(matches!(
+            listing_scope(&ticket_for(&empty)),
+            ListingScope::Narrowed { .. }
+        ));
+        configured.repositories[0].admission.as_mut().unwrap().mode = AdmissionMode::Explicit;
+        let explicit = ticket_for(&configured);
+        assert!(!explicit.paths.also);
+        assert!(matches!(
+            listing_scope(&explicit),
+            ListingScope::Narrowed { .. }
+        ));
+    }
+
+    #[test]
+    fn paths_or_reads_a_bounded_batch_of_candidate_facts_newest_first() {
+        let mut configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]},
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "13", "login": "x"}]}
+        ]}));
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let numbered = |number: u64, author: &str| {
+            let mut pull = pull(author, &[], false, &[]);
+            pull.number = number;
+            pull.id = number.to_string();
+            pull
+        };
+        let mut pulls: Vec<_> = (1..=PATH_CANDIDATE_READS as u64 + 50)
+            .map(|n| numbered(n, "12"))
+            .collect();
+        pulls.push(numbered(1_000, "11"));
+        pulls.push(numbered(1_001, "13"));
+        let ids = |ticket: &PollTicket| -> Vec<String> {
+            fact_reads(ticket, &pulls)
+                .iter()
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        // AND: only what the rules admit.
+        assert_eq!(ids(&ticket_for(&configured)), ["1000"]);
+        configured.repositories[0].paths_mode = crate::paths::PathsMode::Or;
+        let mut or = ticket_for(&configured);
+        let read = ids(&or);
+        // The admitted PR, then the newest candidates up to the budget; never
+        // the excluded author.
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 1);
+        assert_eq!(read[0], "1000");
+        assert_eq!(read[1], (PATH_CANDIDATE_READS as u64 + 50).to_string());
+        assert!(!read.contains(&"1001".to_string()));
+        // Facts kept for a revision are reused: the next poll moves on.
+        for pull in pulls.iter().filter(|p| read.contains(&p.id)) {
+            or.paths.facts.insert(
+                pull.id.clone(),
+                crate::paths::PathFacts {
+                    head_sha: pull.head_sha.clone(),
+                    base_sha: pull.base_sha.clone(),
+                    incomplete: None,
+                    tried: Vec::new(),
+                    gate: or.paths.gate.clone(),
+                    admitted: false,
+                    secondaries: Default::default(),
+                },
+            );
+        }
+        let next = ids(&or);
+        assert_eq!(next.len(), 50);
+        assert!(next.iter().all(|id| !read.contains(id)));
+    }
+
+    #[test]
+    fn repositories_without_paths_mode_are_and_and_round_trip_unchanged() {
+        let configured = settings(serde_json::json!({"mode": "all", "rules": []}));
+        let repository = &configured.repositories[0];
+        assert_eq!(repository.paths_mode, crate::paths::PathsMode::And);
+        let saved = serde_json::to_value(repository).unwrap();
+        assert!(saved.get("paths_mode").is_none());
+        let mut or = repository.clone();
+        or.paths_mode = crate::paths::PathsMode::Or;
+        let saved = serde_json::to_value(&or).unwrap();
+        assert_eq!(saved["paths_mode"], "or");
+        let back: crate::storage::Repository = serde_json::from_value(saved).unwrap();
+        assert_eq!(back, or);
     }
 
     #[test]

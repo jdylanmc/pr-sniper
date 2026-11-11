@@ -270,36 +270,42 @@
         } else if (globMatches(pattern, path)) selected = true;
       return selected;
     });
-  // The repository Paths gate ANDs with admission.
-  const admits = (repo, review) =>
-    pathsMatch(
+  // Repository Paths: AND gates admission; OR also admits (Exclude users
+  // still wins; no effect in Explicit or without paths).
+  const admits = (repo, review) => {
+    const touched = pathsMatch(
       repo.paths ?? [],
       (review.files ?? []).map((file) => file.path),
-    ) && admittedByRules(repo, review);
+    );
+    const ruled = admittedByRules(repo, review);
+    if (
+      repo.pathsMode !== "or" ||
+      !repo.paths?.length ||
+      repo.admission.mode === "explicit"
+    )
+      return touched && ruled;
+    return ruled || (touched && firstRule(repo, review) !== "exclude_users");
+  };
   // Enabled rules run in order; the first one that matches decides.
+  const firstRule = (repo, review) => {
+    for (const rule of repo.admission.rules) {
+      if (!rule.enabled) continue;
+      const users = rule.users ?? [];
+      if (
+        (rule.kind === "assigned" && review.reviewRequested === true) ||
+        (rule.kind === "mentioned" && review.mentioned === true) ||
+        (rule.kind.endsWith("_users") && users.includes(review.author))
+      )
+        return rule.kind;
+    }
+    return null;
+  };
   const admittedByRules = (repo, review) => {
     const admission = repo.admission;
     if (admission.mode === "all") return true;
     if (admission.mode === "explicit") return false;
-    for (const rule of admission.rules) {
-      if (!rule.enabled) continue;
-      const users = rule.users ?? [];
-      switch (rule.kind) {
-        case "assigned":
-          if (review.reviewRequested === true) return true;
-          break;
-        case "mentioned":
-          if (review.mentioned === true) return true;
-          break;
-        case "include_users":
-          if (users.includes(review.author)) return true;
-          break;
-        case "exclude_users":
-          if (users.includes(review.author)) return false;
-          break;
-      }
-    }
-    return false;
+    const kind = firstRule(repo, review);
+    return kind !== null && kind !== "exclude_users";
   };
   const trustedAuthor = (repo, author) =>
     repo.admission.mode === "filtered" &&

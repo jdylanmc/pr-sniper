@@ -4301,8 +4301,11 @@ export async function mountSettings(
         modal.querySelector("[data-filter-summary]")!.textContent =
           a.mode === "filtered" ? `${on} on` : "";
         const paths = repository.paths?.length ?? 0;
+        const or = repository.paths_mode === "or" && a.mode !== "explicit";
         modal.querySelector("[data-paths-summary]")!.textContent = paths
-          ? String(paths)
+          ? or
+            ? `Or \u00b7 ${paths}`
+            : String(paths)
           : "";
       };
       explicitInput.onchange = () => {
@@ -4460,6 +4463,34 @@ export async function mountSettings(
 
       function renderPaths() {
         view.replaceChildren();
+        // And: paths gate the rules. Or: paths also admit (ADR 0029).
+        // Explicit admits only explicit intake, so the gate applies.
+        const join = document.createElement("section");
+        join.className = "repository-group paths-mode";
+        const explicit = admission().mode === "explicit";
+        const value = repository.paths_mode === "or" ? "or" : "and";
+        join.innerHTML = `<div class="paths-mode-line"><span>Rules</span><div class="paths-mode-choices" role="radiogroup" aria-label="Rules with paths" data-value="${value}">${(
+          [
+            ["and", "And", "Rules and paths"],
+            ["or", "Or", "Rules or paths"],
+          ] as const
+        )
+          .map(
+            ([mode, label, name]) =>
+              `<label class="segment"><input type="radio" name="paths-mode" value="${mode}" aria-label="${name}" ${mode === value ? "checked" : ""} ${explicit ? "disabled" : ""} /><span>${label}</span></label>`,
+          )
+          .join("")}</div></div>`;
+        const choices = join.querySelector<HTMLElement>(".paths-mode-choices")!;
+        for (const input of join.querySelectorAll<HTMLInputElement>(
+          "input[name=paths-mode]",
+        ))
+          input.onchange = () => {
+            if (input.value === "or") repository.paths_mode = "or";
+            else delete repository.paths_mode;
+            choices.dataset.value = input.value;
+            changed();
+          };
+        view.append(join);
         const group = document.createElement("section");
         group.className = "repository-group";
         group.dataset.repositoryPaths = "";

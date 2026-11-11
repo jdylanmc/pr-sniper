@@ -263,6 +263,14 @@ impl AdmissionConfig {
         self.decide(account_id, pull).admitted()
     }
 
+    /// The first matching rule is Exclude users: a path match cannot admit
+    /// this PR in OR mode (ADR 0029).
+    pub fn excludes(&self, account_id: &str, pull: &PullRequest) -> bool {
+        self.mode == AdmissionMode::Filtered
+            && self.decide(account_id, pull)
+                == Decision::Reject(Some(AdmissionRuleKind::ExcludeUsers))
+    }
+
     /// Pull requests a poll must list so that `decide` sees every one it can
     /// admit (ADR 0028). `decide` admits only through an enabled Assigned
     /// (the account reviews), Mentioned (a mention) or Include users (the

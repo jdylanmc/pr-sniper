@@ -1980,8 +1980,8 @@ pub(crate) fn explicit_facts(
     paths::read_facts(reader, &target.connection.repository, pull, &plan, previous).map(Some)
 }
 
-/// Path facts (ADR 0027) for open pull requests that are tracked or would be
-/// admitted, re-read only when their head or an input changed.
+/// Path facts (ADR 0027) for the pull requests `monitoring::fact_reads`
+/// selects, re-read only when their head or an input changed.
 fn path_facts(
     reader: &(impl PullRequestReader + ?Sized),
     connection: &Connection,
@@ -1989,17 +1989,9 @@ fn path_facts(
     ticket: &monitoring::PollTicket,
 ) -> Result<BTreeMap<String, paths::PathFacts>, ConnectionError> {
     let mut facts = BTreeMap::new();
-    for pull in pull_requests.iter().filter(|pull| {
-        pull.state == provider::Lifecycle::Open
-            && (!pull.draft || ticket.paths.review_drafts)
-            && (ticket.tracked.iter().any(|(id, _)| id == &pull.id)
-                || monitoring::scan_admits(ticket, pull))
-    }) {
+    for pull in monitoring::fact_reads(ticket, pull_requests) {
         let plan = ticket.paths.plan(&pull.id);
         let previous = ticket.paths.facts.get(&pull.id);
-        if previous.is_some_and(|f| f.current(pull, &plan)) {
-            continue;
-        }
         facts.insert(
             pull.id.clone(),
             paths::read_facts(reader, &connection.repository, pull, &plan, previous)?,
@@ -5612,6 +5604,7 @@ mod github_auth_tests {
         settings.repositories.push(Repository {
             review_drafts: false,
             paths: Vec::new(),
+            paths_mode: Default::default(),
             id: "00000000-0000-4000-8000-000000000001".into(),
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),
