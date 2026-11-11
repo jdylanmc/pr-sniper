@@ -129,6 +129,17 @@ impl ConnectionError {
         matches!(self, Self::InvalidResponse | Self::MalformedResponse(_))
     }
 
+    /// A read of one pull request that says nothing about the repository and
+    /// that a later poll may clear: malformed, too large, cut short or moved
+    /// while read. That pull request is skipped, never the poll (ADR 0028).
+    pub fn skips_pull_request(self) -> bool {
+        self.is_invalid_response()
+            || matches!(
+                self,
+                Self::LimitExceeded | Self::IncompleteRead | Self::RevisionChanged
+            )
+    }
+
     /// Names `response` as the origin of an `InvalidResponse`; others pass.
     pub fn from_response(self, response: ProviderResponse) -> Self {
         match self {
@@ -348,6 +359,10 @@ pub struct ListingCursor {
     /// be served whole (GitHub's search cap).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wide: bool,
+    /// Pull requests (id, number) whose path facts could not be read: read
+    /// by ID on the next poll, like tracked ones, wherever the listing is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<(String, u64)>,
 }
 
 /// One poll's read: open pull requests of this batch plus tracked ones.
