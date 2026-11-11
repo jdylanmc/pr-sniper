@@ -8,6 +8,7 @@ use crate::{
 
 fn with_exit(store: &Store, job: &QueueJob, exit: ExitOutcome) -> ReviewRun {
     let mut run = completed(store, job);
+    run.operation.id = format!("run-{}", job.pull_request_id);
     run.result.as_mut().unwrap().output.exit = Some(exit);
     run
 }
@@ -98,10 +99,16 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
     let (_root, store, _monitor) = fixture();
     let job = store.load_queue().unwrap()[0].clone();
     let none = Ledger::default();
+    // Every run here shares one operation id; it still awaits adoption.
+    let adoptable =
+        std::collections::HashSet::from([with_exit(&store, &job, ExitOutcome::SubmitReport)
+            .operation
+            .id]);
     let plain = Evidence {
         publications: &[],
         exit_writes: &[],
         actions: &none,
+        adoptable: &adoptable,
     };
     let outcome = |exit: ExitOutcome| plain.run(&with_exit(&store, &job, exit), false);
     assert_eq!(
@@ -135,6 +142,15 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         },
     );
     assert_eq!(plain.run(&approve, false), Some(Outcome::Pending));
+    // Never adoptable (state moved or PR closed first): it can never act.
+    let gone = std::collections::HashSet::new();
+    let unadoptable = Evidence {
+        publications: &[],
+        exit_writes: &[],
+        actions: &none,
+        adoptable: &gone,
+    };
+    assert_eq!(unadoptable.run(&approve, false), Some(Outcome::Failed));
     for (effects, expected) in [
         (vec![("approve", "prepared")], Outcome::Pending),
         (vec![("approve", "confirmed")], Outcome::Approved),
@@ -149,6 +165,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             publications: &[],
             exit_writes: &[],
             actions: &ledger,
+            adoptable: &adoptable,
         };
         assert_eq!(evidence.run(&approve, false), Some(expected), "{effects:?}");
         // Another run's final never confirms this one.
@@ -171,6 +188,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         publications: &[],
         exit_writes: &[],
         actions: &ledger,
+        adoptable: &adoptable,
     };
     assert_eq!(
         evidence.run(&merge, false),
@@ -193,6 +211,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             publications: &[],
             exit_writes: &[],
             actions: &ledger,
+            adoptable: &adoptable,
         };
         assert_eq!(
             evidence.run(&approve, false),
@@ -220,8 +239,22 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         publications: &[],
         exit_writes: std::slice::from_ref(&write),
         actions: &ledger,
+        adoptable: &adoptable,
     };
     assert_eq!(evidence.run(&sign_off, false), Some(Outcome::Failed));
+    // A Ready sign-off whose own resolutions failed is Failed too.
+    let ready = with_exit(
+        &store,
+        &job,
+        ExitOutcome::Lgtm {
+            comment: String::new(),
+            resolve_own_threads: vec!["thread".into()],
+            action: LgtmAction::Ready,
+            dismissed_teammate_findings: vec![],
+        },
+    );
+    assert_eq!(evidence.run(&ready, false), Some(Outcome::Failed));
+    assert_eq!(plain.run(&ready, false), Some(Outcome::ReadyForHuman));
 
     // Comments count once published, never on the exit alone.
     let run = with_exit(&store, &job, comments());
@@ -241,6 +274,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             publications: std::slice::from_ref(&publication),
             exit_writes: &[],
             actions: &none,
+            adoptable: &adoptable,
         };
         assert_eq!(evidence.run(&run, false), Some(expected));
     }
@@ -254,6 +288,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             publications: std::slice::from_ref(&publication),
             exit_writes: &[],
             actions: &none,
+            adoptable: &adoptable,
         };
         assert_eq!(evidence.run(&run, false), Some(Outcome::Pending));
     }
@@ -271,6 +306,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             publications: std::slice::from_ref(&publication),
             exit_writes: &[],
             actions: &none,
+            adoptable: &adoptable,
         };
         assert_eq!(evidence.run(&run, false), Some(Outcome::Failed));
     }
@@ -280,6 +316,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         publications: &[],
         exit_writes: std::slice::from_ref(&write),
         actions: &none,
+        adoptable: &adoptable,
     };
     assert_eq!(evidence.run(&run, false), Some(Outcome::Commented));
     write.phase = WritePhase::Failed;
@@ -287,6 +324,7 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         publications: &[],
         exit_writes: std::slice::from_ref(&write),
         actions: &none,
+        adoptable: &adoptable,
     };
     assert_eq!(evidence.run(&run, false), Some(Outcome::Failed));
 
@@ -466,5 +504,40 @@ fn a_revision_takes_its_latest_run_and_a_teammate_report_never_hides_it() {
     assert_eq!(
         outcome(&[wait, run("report", ExitOutcome::SubmitReport)]),
         Some(Outcome::Waiting)
+    );
+}
+
+#[test]
+fn a_reply_kept_local_is_a_report_and_one_with_the_reply_grant_waits_to_publish() {
+    let (_root, store, _monitor) = fixture();
+    let (_, _, mut follow) = evidence(&store);
+    follow.phase = FollowPhase::WaitingPublication;
+    follow.publication = None;
+    follow.result = Some(
+        serde_json::from_value(json!({
+            "output":{"decision":"reply","body":"Fixed in the latest push.",
+                "new_information":"","reason":"","evidence":[]},
+            "session_id":"session","model":"model","runtime_version":"fixture",
+            "input_tokens":1,"output_tokens":1,"tool_calls":1
+        }))
+        .unwrap(),
+    );
+    let configuration = follow.context.selection.configuration.as_mut().unwrap();
+    configuration.authority.reply = false;
+    assert_eq!(
+        crate::review::outcome::follow_up(&follow),
+        Some(Outcome::Report)
+    );
+    follow
+        .context
+        .selection
+        .configuration
+        .as_mut()
+        .unwrap()
+        .authority
+        .reply = true;
+    assert_eq!(
+        crate::review::outcome::follow_up(&follow),
+        Some(Outcome::Pending)
     );
 }

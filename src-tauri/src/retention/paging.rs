@@ -371,10 +371,12 @@ fn outcomes(
     actions: &crate::actions::Ledger,
 ) -> Result<BTreeMap<String, Outcome>, String> {
     let settings = store.load_settings()?;
+    let adoptable = crate::actions::adoptable_runs(store, actions)?;
     let evidence = crate::review::outcome::Evidence {
         publications,
         exit_writes: &feedback.exit_writes,
         actions,
+        adoptable: &adoptable,
     };
     let mut result: BTreeMap<String, Outcome> = BTreeMap::new();
     for run in reviews {

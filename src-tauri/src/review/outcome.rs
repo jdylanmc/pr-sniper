@@ -52,6 +52,8 @@ pub struct Evidence<'a> {
     pub publications: &'a [Publication],
     pub exit_writes: &'a [ExitWrite],
     pub actions: &'a Ledger,
+    /// Approve and sign-off runs `actions::packet::adopt` can still turn into a final.
+    pub adoptable: &'a std::collections::HashSet<String>,
 }
 
 impl Evidence<'_> {
@@ -70,6 +72,7 @@ impl Evidence<'_> {
                 self.approval(run)
             }
             Some(ExitOutcome::Lgtm { action, .. }) => match action {
+                LgtmAction::Ready if self.sign_off_failed(run) => Outcome::Failed,
                 LgtmAction::Ready => Outcome::ReadyForHuman,
                 LgtmAction::Approve | LgtmAction::Merge => self.approval(run),
             },
@@ -83,6 +86,19 @@ impl Evidence<'_> {
                 _ => Outcome::ReadyForHuman,
             },
         })
+    }
+
+    /// The run's own exit write (an `lgtm`'s thread resolutions) stopped.
+    fn sign_off_failed(&self, run: &ReviewRun) -> bool {
+        self.write(&run.operation.id)
+            .is_some_and(|w| matches!(w.phase, WritePhase::Failed | WritePhase::Tossed))
+    }
+
+    fn write(&self, run_id: &str) -> Option<&ExitWrite> {
+        self.exit_writes
+            .iter()
+            .rev()
+            .find(|w| w.review_operation_id == run_id)
     }
 
     fn publication(&self, run: &ReviewRun) -> Option<&Publication> {
@@ -143,6 +159,10 @@ impl Evidence<'_> {
                     .is_some_and(|p| p.run_id == run.operation.id)
             })
             .collect();
+        if finals.is_empty() && !self.adoptable.contains(&run.operation.id) {
+            // Never adopted and never will be: the state moved or the PR closed first.
+            return Outcome::Failed;
+        }
         self.packet_finals(&finals, &run.operation.id)
     }
 
@@ -154,11 +174,7 @@ impl Evidence<'_> {
             return outcome;
         }
         // An `lgtm` resolving its own threads first.
-        let write = self
-            .exit_writes
-            .iter()
-            .rev()
-            .find(|w| w.review_operation_id == run_id);
+        let write = self.write(run_id);
         if write.is_some_and(|w| matches!(w.phase, WritePhase::Failed | WritePhase::Tossed)) {
             return Outcome::Failed;
         }
@@ -245,6 +261,10 @@ impl Evidence<'_> {
 /// Outcome of a completed reply or mention conversation.
 pub fn follow_up(follow: &FollowUp) -> Option<Outcome> {
     follow.result.as_ref()?;
+    // A reply without the Reply grant stays local; it is never published.
+    if follow.captured_local_response() {
+        return Some(Outcome::Report);
+    }
     Some(match follow.phase {
         FollowPhase::Published | FollowPhase::StaleAfterPublication => Outcome::Commented,
         FollowPhase::Quiet => Outcome::Report,
@@ -264,10 +284,12 @@ pub(crate) fn project(
 ) -> Result<(), String> {
     let publications = store.load_publications()?;
     let actions = store.load_actions()?;
+    let adoptable = crate::actions::adoptable_runs(store, &actions)?;
     let evidence = Evidence {
         publications: &publications,
         exit_writes: &snapshot.exit_writes,
         actions: &actions,
+        adoptable: &adoptable,
     };
     let mut outcomes = std::collections::BTreeMap::new();
     for candidate in &snapshot.reviews {

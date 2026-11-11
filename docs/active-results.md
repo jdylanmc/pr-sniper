@@ -23,16 +23,16 @@ Request (cursors start `null`):
 
 Typed, from the completed exit and its confirmed effect (`review::outcome`). Never from text. The Reviewed tab shows the same value per row and filters by it.
 
-| Outcome               | From                                                                                                                                                            |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `approved_and_merged` | `approve_and_merge` / `lgtm` merge: merge effect confirmed                                                                                                      |
-| `approved`            | `approve_pull_request` / `lgtm` approve: Approve vote confirmed, or settled done (approval already on the head)                                                 |
-| `commented`           | `leave_comments`: batch published or exit writes done; reply published                                                                                          |
-| `ready_for_human`     | `ready_for_human`; `lgtm` without approve authority (final settled `no_authority`); reply needing input; human merged first; legacy final                       |
-| `waiting`             | `wait`                                                                                                                                                          |
-| `report`              | teammate `submit_report`; local-only findings; quiet reply                                                                                                      |
-| `pending`             | exit completed, effect or publication not confirmed yet                                                                                                         |
-| `failed`              | effect refused, stale, dequeued or cancelled; final settled moved, revoked or refused; sign-off writes failed; publication parked, stale, stopped or unresolved |
+| Outcome               | From                                                                                                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approved_and_merged` | `approve_and_merge` / `lgtm` merge: merge effect confirmed                                                                                                                                                          |
+| `approved`            | `approve_pull_request` / `lgtm` approve: Approve vote confirmed, or settled done (approval already on the head)                                                                                                     |
+| `commented`           | `leave_comments`: batch published or exit writes done; reply published                                                                                                                                              |
+| `ready_for_human`     | `ready_for_human`; `lgtm` without approve authority (final settled `no_authority`); reply needing input; human merged first; legacy final                                                                           |
+| `waiting`             | `wait`                                                                                                                                                                                                              |
+| `report`              | teammate `submit_report`; local-only findings; quiet reply; reply kept local (no Reply grant)                                                                                                                       |
+| `pending`             | exit completed, effect or publication not confirmed yet                                                                                                                                                             |
+| `failed`              | effect refused, stale, dequeued or cancelled; final settled moved, revoked or refused; approve run no longer adoptable; sign-off writes failed (`lgtm` ready too); publication parked, stale, stopped or unresolved |
 
 - A result row takes its iteration's latest completed run; a teammate `submit_report` only when nothing else completed. A confirmed Approve or merge on the PR wins. A `primary_final` row reads like the run that created it.
 - A panic never completes a run: it stays in Queue > Needs attention, not Reviewed.
