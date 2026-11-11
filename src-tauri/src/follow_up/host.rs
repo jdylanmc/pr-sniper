@@ -34,6 +34,19 @@ pub(crate) struct Scan {
     pub(crate) threads: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
 }
 
+impl Scan {
+    /// Drops the discussion observations of `held` pull requests (held out
+    /// of the poll, ADR 0028): their cursors stay put, so a mention that
+    /// would admit one still admits it when it is read.
+    pub(crate) fn hold_back(&mut self, held: &[(String, u64)]) {
+        let kept = |binding: &crate::feedback::MentionBinding| {
+            !held.iter().any(|(id, _)| id == &binding.pull_request_id)
+        };
+        self.mentions.retain(|(binding, _)| kept(binding));
+        self.threads.retain(|(binding, _)| kept(binding));
+    }
+}
+
 pub(crate) fn scan(
     app: &tauri::AppHandle,
     ticket: &PollTicket,

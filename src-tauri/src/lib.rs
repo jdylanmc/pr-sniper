@@ -1840,7 +1840,12 @@ fn finish_monitored_ticket(
         monitor.discard_account_result(&store, &accounts, ticket, now)
     } else {
         let (result, observations) = match result {
-            Ok((result, observations)) => (Ok(result), observations),
+            Ok((result, mut observations)) => {
+                if let Some(cursor) = &result.listing {
+                    observations.hold_back(&cursor.held);
+                }
+                (Ok(result), observations)
+            }
             Err(error) => (Err(error), follow_up::host::Scan::default()),
         };
         monitor.finish_with_admission(&store, &accounts, ticket, result, now, |store, ticket| {
@@ -5747,6 +5752,66 @@ mod github_auth_tests {
                 files: Vec::new(),
             }],
         }
+    }
+
+    #[test]
+    fn a_held_out_pull_request_keeps_its_mention_unseen() {
+        let (_root, store, mut monitor, auth) = monitoring_fixture();
+        let accounts = auth.monitoring_accounts();
+        let ticket = monitor
+            .prepare_checks_with_accounts(&store, &accounts, 1_800_000_000, true)
+            .unwrap()
+            .remove(0);
+        let binding = |id: &str, number| crate::feedback::MentionBinding {
+            configuration_id: ticket.repository_id.clone(),
+            account_id: "22".into(),
+            account_login: "current-login".into(),
+            repository_id: ticket.provider_repository_id.clone(),
+            repository_name: ticket.name.clone(),
+            pull_request_id: id.into(),
+            number,
+        };
+        let mention = |id: &str| crate::provider::TopComment {
+            id: id.into(),
+            body: "@current-login please review".into(),
+            author_id: Some("11".into()),
+            author_login: Some("author".into()),
+            created_at: "2026-09-25T10:00:00Z".into(),
+            updated_at: "2026-09-25T10:00:00Z".into(),
+        };
+        let mut result = monitoring_result();
+        // PR 2 was held out of this poll; PR 1 was read.
+        result.listing = Some(crate::provider::ListingCursor {
+            held: vec![("2".into(), 2)],
+            ..Default::default()
+        });
+        let scan = crate::follow_up::host::Scan {
+            mentions: vec![
+                (binding("1", 1), vec![mention("c1")]),
+                (binding("2", 2), vec![mention("c2")]),
+            ],
+            ..Default::default()
+        };
+        let store = Mutex::new(store);
+        finish_monitored_ticket(
+            &Mutex::new(BTreeMap::new()),
+            &Mutex::new(auth),
+            &store,
+            &Mutex::new(monitor),
+            ticket,
+            Ok((result, scan)),
+            1_800_000_001,
+        )
+        .unwrap();
+        let ledger = store.lock().unwrap().load_feedback().unwrap();
+        let seen = |id: &str| {
+            ledger
+                .conversation_cursors
+                .iter()
+                .any(|c| c.binding.pull_request_id == id && !c.comments.is_empty())
+        };
+        assert!(seen("1"));
+        assert!(!seen("2"));
     }
 
     #[test]
