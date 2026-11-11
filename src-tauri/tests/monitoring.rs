@@ -4276,6 +4276,28 @@ fn a_parked_poll_retries_once_per_occurrence_of_its_own_repository() {
 }
 
 #[test]
+fn scanning_one_repository_keeps_a_due_retry_for_another_parked_repository() {
+    let (_root, store, mut monitor) = two_schedules();
+    let rejected = || Err(ConnectionError::ProviderRejectedStatus(422));
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let _ = monitor.finish(&store, ticket, rejected(), HOUR + 11);
+    }
+    assert!(operation_for(&monitor, REPOSITORY_NAME).parked());
+    let parked = operation_for(&monitor, REPOSITORY_NAME).id;
+    // The 15-minute repository is due exactly when the other one is scanned.
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 900,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+    assert_ne!(operation_for(&monitor, REPOSITORY_NAME).id, parked);
+}
+
+#[test]
 fn a_credential_park_waits_for_reconnect_through_its_repository_occurrences() {
     let (_root, store, mut monitor) = two_schedules();
     for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {

@@ -2394,21 +2394,21 @@ impl Monitor {
                 }
             }
             // A parked repository poll retries once per occurrence of its own
-            // schedule (credentials wait for a reconnect); a requested scan retries its own.
+            // schedule (credentials wait for a reconnect); a requested scan
+            // also retries its own, without consuming another repository's due retry.
             let occurrence_due =
                 !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
             let restart = !health.in_flight
                 && health.operation.as_ref().is_some_and(|operation| {
+                    let scheduled_retry =
+                        occurrence_due && operation.failure != Some(OperationFailure::Credentials);
                     operation.offline_since.is_none()
                         && operation.parked()
                         && match parked {
                             ParkedPolls::Keep => false,
-                            ParkedPolls::ScheduledRun => {
-                                occurrence_due
-                                    && operation.failure != Some(OperationFailure::Credentials)
-                            }
+                            ParkedPolls::ScheduledRun => scheduled_retry,
                             ParkedPolls::Requested(scan) => {
-                                scan.requests(&configuration.repository_id)
+                                scan.requests(&configuration.repository_id) || scheduled_retry
                             }
                         }
                 });
