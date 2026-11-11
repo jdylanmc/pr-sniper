@@ -1715,3 +1715,23 @@ fn legacy_signed_corrections_and_comments_stay_ours() {
         assert!(!own_comment(&ids, &signed("reviewer")));
     }
 }
+
+#[test]
+fn signed_and_older_unsigned_marked_inline_comments_stay_ours() {
+    let ids = won_t_fix_contract(None).identities;
+    let marker = "<!-- pr-sniper:comment:00000000-0000-0000-0000-000000000000:0 -->";
+    for body in [
+        format!("Finding.\n\n{marker}\n\n{}", crate::exit_writes::SIGNATURE),
+        // Published before inline comments were signed: the marker alone proves it.
+        format!("Finding.\n\n{marker}"),
+    ] {
+        let comment = |author: &str| CommentFact {
+            id: "inline".into(),
+            author: author.into(),
+            author_id: Some(author.into()),
+            body: body.clone(),
+        };
+        assert!(own_comment(&ids, &comment("bot")));
+        assert!(!own_comment(&ids, &comment("reviewer")));
+    }
+}
