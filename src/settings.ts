@@ -824,15 +824,32 @@ export async function mountSettings(
     value: clone(value),
   });
 
-  function repositoryMonitoringDetail(repository: Repository): string {
-    if (
-      repositoryAccountsState !== "ready" ||
-      !githubAccounts.some(
+  function repositoryAccountConnected(repository: Repository) {
+    if (repository.provider === "azure_devops")
+      return !!repositoryAccountLogin(repository as ConfiguredRepository);
+    return (
+      repositoryAccountsState === "ready" &&
+      githubAccounts.some(
         (a) =>
           a.account_id === repository.provider_account_id &&
           a.state === "connected",
       )
-    )
+    );
+  }
+
+  /** Saved, enabled, assigned, connected and not paused: a Scan can queue work. */
+  function repositoryScannable(repository: Repository) {
+    return (
+      repository.enabled &&
+      !!repository.assignments?.length &&
+      repositoryAccountConnected(repository) &&
+      !!repositoryAutomation &&
+      !repositoryAutomation.paused
+    );
+  }
+
+  function repositoryMonitoringDetail(repository: Repository): string {
+    if (!repositoryAccountConnected(repository))
       return repository.enabled
         ? "Reconnect account"
         : "Disabled / Reconnect account";
@@ -3982,9 +3999,7 @@ export async function mountSettings(
       const ready =
         !!committed &&
         sameResource(repository, committed) &&
-        ["Active", "Waiting for capacity"].includes(
-          repositoryMonitoringDetail(committed),
-        );
+        repositoryScannable(committed);
       const busy = scanSending || scanning;
       // aria-disabled, not disabled: an in-flight press keeps its focus.
       scan.setAttribute("aria-disabled", String(busy || !ready));

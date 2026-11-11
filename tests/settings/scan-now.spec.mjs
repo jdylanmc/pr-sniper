@@ -23,16 +23,28 @@ const repositories = [
   [two, "fixture/two", "44", "200", true],
   [off, "fixture/off", "22", "300", false],
 ];
+const AVERY = "00000000-0000-0000-0000-000000000001";
+const azure = "abababab-abab-4bab-8bab-abababababab";
+const azureRepositories = [
+  [
+    azure,
+    "contoso/Web/app",
+    AVERY,
+    "contoso/00000000-0000-0000-0000-0000000000b1/00000000-0000-0000-0000-0000000000c1",
+    true,
+    "azure_devops",
+  ],
+];
 
 // Enabled, saved repositories with matching monitoring authorizations, plus
 // idle health as the scheduler leaves it between occurrences.
-async function seed(store) {
+async function seed(store, configured = repositories) {
   const settings = (await store("snapshot")).settings;
   settings.agents = [reviewer];
-  settings.repositories = repositories.map(
-    ([id, name, account, repository, enabled]) => ({
+  settings.repositories = configured.map(
+    ([id, name, account, repository, enabled, provider = "github"]) => ({
       id,
-      provider: "github",
+      provider,
       name,
       enabled,
       provider_account_id: account,
@@ -41,7 +53,7 @@ async function seed(store) {
     }),
   );
   settings.repository_authorizations = Object.fromEntries(
-    repositories
+    configured
       .filter(([, , , , enabled]) => enabled)
       .map(([id, name, account, repository]) => [
         id,
@@ -61,7 +73,7 @@ async function seed(store) {
     follow_ups: [],
     monitoring: {
       health: Object.fromEntries(
-        repositories.map(([id, name, account, repository, enabled]) => [
+        configured.map(([id, name, account, repository, enabled]) => [
           id,
           {
             repository_id: id,
@@ -205,4 +217,54 @@ test("repository Scan queues only that saved repository and never a draft or dis
   expect(await store("repository_scans")).toEqual([one]);
   await back(modal);
   await expect(page.locator(`[data-repository="${one}"]`)).toBeFocused();
+});
+
+test("repository Scan queues a connected Azure DevOps repository", async ({
+  page,
+  store,
+}) => {
+  await seed(store, azureRepositories);
+  await recordScans(page);
+  await page.addInitScript((AVERY) => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    const setup = {
+      cli: { state: "ready", version: "2.90.0" },
+      minimum: "2.54.0",
+      installer: "homebrew",
+      organization: {
+        state: "tenant_known",
+        name: "contoso",
+        tenant: "00000000-0000-0000-0000-00000000000a",
+      },
+      account: {
+        state: "connected",
+        identity: {
+          id: AVERY,
+          display_name: "Avery Example",
+          unique_name: "avery@contoso.example",
+        },
+      },
+      checking: false,
+    };
+    window.__TAURI_INTERNALS__.invoke = (command, args) =>
+      command.startsWith("azure_devops_")
+        ? window.__settingsTrack(Promise.resolve(structuredClone(setup)))
+        : original(command, args);
+  }, AVERY);
+  await providerFixture(page, store);
+  await repositoryPage(page, store);
+  await page.locator(`[data-repository="${azure}"]`).click();
+  const modal = page.getByRole("dialog", {
+    name: "contoso/Web/app",
+    exact: true,
+  });
+  const scan = modal.getByRole("button", {
+    name: "Scan contoso/Web/app",
+    exact: true,
+  });
+  await expect(scan).toBeEnabled();
+  await scan.click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect(await scans(page)).toEqual([["scan_repository", azure]]);
+  expect(await store("repository_scans")).toEqual([azure]);
 });
