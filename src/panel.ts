@@ -977,11 +977,23 @@ export async function mountPanel(app: HTMLElement) {
         initial_attempt_at?: number;
       } | null,
     ) => operation?.completed_at ?? operation?.initial_attempt_at ?? 0;
+    // Latest completion per review key and per item: an item's review_keys
+    // name only its newest pass, which may not have completed.
     const reviewedAt = new Map<string, number>();
+    const itemAt = new Map<string, number>();
+    const latest = (
+      times: Map<string, number>,
+      key: string | undefined,
+      at: number,
+    ) => {
+      if (key) times.set(key, Math.max(at, times.get(key) ?? 0));
+    };
     for (const review of snapshot.reviews ?? [])
       if (review.run?.operation.state === "completed") {
         const at = finished(review.run.operation);
-        reviewedAt.set(review.key, at);
+        latest(reviewedAt, review.key, at);
+        latest(itemAt, review.job.work?.item_id, at);
+        latest(itemAt, review.run.job?.work?.item_id, at);
         ranked.push({
           at,
           pass: (review.run.job ?? review.job).work?.pass_ordinal ?? 0,
@@ -1035,6 +1047,9 @@ export async function mountPanel(app: HTMLElement) {
           // The PR's own row sits with its latest completed review.
           at: Math.max(
             finalAt,
+            ...[item.id, ...(item.aliases ?? [])].map(
+              (id) => itemAt.get(id) ?? 0,
+            ),
             ...item.review_keys.map((key) => reviewedAt.get(key) ?? 0),
           ),
           pass: 0,

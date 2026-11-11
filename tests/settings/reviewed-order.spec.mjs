@@ -19,12 +19,13 @@ function pass(fixture, number, ordinal, started, completed) {
   if (completed !== undefined) run.operation.completed_at = completed;
   run.job.work = {
     id,
-    item_id: `item-${number}-${ordinal}`,
+    item_id: `item-${number}`,
     iteration_id: `iteration-${number}`,
     iteration: 1,
     agent_id: fixture.settings.agents[0].id,
     enqueue_order: number * 10 + ordinal,
     pass_ordinal: ordinal,
+    state_seq: ordinal,
     trigger: "admission",
     admission: {
       watched_author: true,
@@ -55,15 +56,43 @@ test("Reviewed lists newest completions first, newest pass first, whatever the q
     pass(fixture, 11, 2, recent, recent + 200),
     pass(fixture, 10, 1, recent, recent + 200),
   ];
+  // A merged PR whose newest pass never ran: its row still sits with its
+  // latest completed pass, not at the bottom.
+  const done = pass(fixture, 12, 1, recent, recent + 300);
+  const pending = pass(fixture, 12, 2, recent + 400).job;
+  for (const job of [done.job, pending]) job.waiting = "merged";
+  runs.push(done);
+  const tracked = [
+    {
+      provider: done.job.provider,
+      configuration_id: done.job.configuration_id,
+      account_id: done.job.account_id,
+      repository_id: done.job.repository_id,
+      pull_request_id: done.job.pull_request_id,
+      number: 12,
+      head_sha: done.job.head_sha,
+      lifecycle: "merged",
+      terminal_observed: true,
+      iteration_id: "iteration-12",
+      item_id: "item-12",
+      iteration: 1,
+      admission: done.job.work.admission,
+      admitted_at: 100,
+      observed_at: 120,
+    },
+  ];
   const seed = (jobs) =>
     store("seed_queue_state", {
       ...fixture.state,
-      jobs,
+      jobs: [...jobs, pending],
       reviews: runs,
       publications: [],
       follow_ups: [],
+      tracked,
     });
   const expected = [
+    "normal:work-12-1",
+    "item:item-12",
     "normal:work-11-2",
     "normal:work-8-2",
     "normal:work-10-1",
@@ -86,7 +115,11 @@ test("Reviewed lists newest completions first, newest pass first, whatever the q
   // detection time); completed reviews keep their places.
   await seed(
     runs
-      .map((run) => ({ ...run.job, waiting: "human_start", detected_at: 999 }))
+      .map((run) => ({
+        ...run.job,
+        waiting: run.job.number === 12 ? "merged" : "human_start",
+        detected_at: 999,
+      }))
       .reverse(),
   );
   await page.reload();
