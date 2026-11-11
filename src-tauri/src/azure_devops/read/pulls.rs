@@ -23,6 +23,8 @@ const RESUME_OVERLAP: u64 = 20;
 /// empty), so Mentioning me never admits and never widens a listing.
 const DETECTS_MENTIONS: bool = false;
 const CHANGES_PAGE_SIZE: u64 = 1_000;
+/// Assumed fallback base blobs remembered for content reads.
+const ASSUMED_LIMIT: usize = 10_000;
 /// Files diffed for review; later files get no patch, like GitHub's.
 const MAX_PATCH_FILES: usize = 300;
 
@@ -282,6 +284,13 @@ fn entry(path: &str, kind: &str, sha: &str) -> TreeEntry {
         kind: kind.to_owned(),
     }
 }
+
+/// Head tree, base tree and base paths assumed to be blobs.
+type ChangedTrees = (
+    BTreeMap<String, TreeEntry>,
+    BTreeMap<String, TreeEntry>,
+    BTreeSet<String>,
+);
 
 /// One changed file with its earlier object (`originalObjectId`) when the
 /// provider names one, and its object kind.
@@ -744,13 +753,16 @@ impl Client {
     /// Review trees of only the changed files (ADR 0028): head holds what
     /// the PR leaves, base what it changed. An earlier object the iteration
     /// changes do not name is read at `base`.
+    /// A kept file's earlier kind is read whenever its head is not a blob;
+    /// a blob head assumes a blob base, and those assumed paths are returned.
     async fn changed_trees(
         &self,
         key: &RepositoryKey,
         entries: &[ChangeEntry],
         base: &str,
-    ) -> Result<(BTreeMap<String, TreeEntry>, BTreeMap<String, TreeEntry>), ConnectionError> {
+    ) -> Result<ChangedTrees, ConnectionError> {
         let (mut head_tree, mut base_tree) = (BTreeMap::new(), BTreeMap::new());
+        let mut assumed = BTreeSet::new();
         for ChangeEntry {
             file,
             original,
@@ -764,14 +776,18 @@ impl Client {
             let before = match (file.status.as_str(), original) {
                 ("added", _) => None,
                 ("removed", _) => Some(entry(path, kind, &file.sha)),
-                (_, Some(original)) => Some(entry(path, kind, original)),
-                (_, None) => Some(self.item(key, path, base).await?),
+                (_, Some(original)) if kind == "blob" => {
+                    assumed.insert(path.to_owned());
+                    Some(entry(path, kind, original))
+                }
+                // A gitlink head may replace a file: the base kind is read.
+                (_, _) => Some(self.item(key, path, base).await?),
             };
             if let Some(before) = before {
                 base_tree.insert(path.to_owned(), before);
             }
         }
-        Ok((head_tree, base_tree))
+        Ok((head_tree, base_tree, assumed))
     }
 
     /// One tree entry at `commit_id` by repository-relative path.
@@ -844,6 +860,30 @@ impl Reader {
             Ok(bytes) if bytes.len() <= diff::MAX_SIDE_BYTES => Ok(Side::Blob(bytes)),
             Ok(_) | Err(ConnectionError::LimitExceeded) => Ok(Side::Other),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Records assumed fallback base blobs for `file_content` (bounded).
+    fn remember(
+        &self,
+        key: &RepositoryKey,
+        base_tree: &BTreeMap<String, TreeEntry>,
+        assumed: &BTreeSet<String>,
+        base: &str,
+    ) {
+        let Ok(mut known) = self.assumed.lock() else {
+            return;
+        };
+        if known.len() > ASSUMED_LIMIT {
+            known.clear();
+        }
+        for path in assumed {
+            if let Some(entry) = base_tree.get(path) {
+                known.insert(
+                    (key.id(), entry.sha.clone()),
+                    (path.clone(), base.to_owned()),
+                );
+            }
         }
     }
 
@@ -1115,22 +1155,9 @@ impl PullRequestReader for Reader {
                     self.client.tree(&key, &base_revision).await?,
                 ))
             };
-            // Fallback base entries take the head's object kind; a PR can
-            // change it (a submodule replaced by a file).
-            let mut unverified = BTreeSet::new();
-            let (head_tree, mut base_tree) = match whole.await {
-                Ok(trees) => trees,
+            let (head_tree, mut base_tree, mut assumed) = match whole.await {
+                Ok((head, base)) => (head, base, BTreeSet::new()),
                 Err(error) if tree_too_large(error) => {
-                    unverified.extend(entries.iter().filter_map(|change| {
-                        let kept = !matches!(change.file.status.as_str(), "added" | "removed");
-                        (kept && change.original.is_some()).then(|| {
-                            change
-                                .file
-                                .previous_path
-                                .clone()
-                                .unwrap_or_else(|| change.file.path.clone())
-                        })
-                    }));
                     self.client
                         .changed_trees(&key, &entries, &base_revision)
                         .await?
@@ -1143,9 +1170,8 @@ impl PullRequestReader for Reader {
                 let patch = if index < MAX_PATCH_FILES {
                     let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
                     let old = match self.side(&key, base_tree.get(base_path)).await {
-                        // A failed read of an unverified base entry: read its
-                        // real kind; a non-blob has no patch side.
-                        Err(error) if unverified.contains(base_path) => {
+                        // An assumed blob that does not read: its real kind.
+                        Err(error) if assumed.remove(base_path) => {
                             let entry = self.client.item(&key, base_path, &base_revision).await?;
                             if entry.kind == "blob" {
                                 return Err(error);
@@ -1153,7 +1179,11 @@ impl PullRequestReader for Reader {
                             base_tree.insert(base_path.to_owned(), entry);
                             Side::Other
                         }
-                        other => other?,
+                        Ok(side) => {
+                            assumed.remove(base_path);
+                            side
+                        }
+                        Err(error) => return Err(error),
                     };
                     let new = self.side(&key, head_tree.get(&file.path)).await?;
                     match (old, new) {
@@ -1172,6 +1202,8 @@ impl PullRequestReader for Reader {
                     patch,
                 });
             }
+            // Past the patch budget, a content read settles the kind.
+            self.remember(&key, &base_tree, &assumed, &base_revision);
             Ok(ReviewContext {
                 files,
                 pull: PullRequest {
@@ -1190,7 +1222,27 @@ impl PullRequestReader for Reader {
             return Ok(json!({"kind": entry.kind, "sha": entry.sha, "mode": entry.mode}));
         }
         let key = self.key_of(repository)?;
-        let bytes = self.runtime.block_on(self.client.blob(&key, &entry.sha))?;
+        let bytes = match self.runtime.block_on(self.client.blob(&key, &entry.sha)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let assumed = self
+                    .assumed
+                    .lock()
+                    .map_err(|_| error)?
+                    .get(&(key.id(), entry.sha.clone()))
+                    .cloned();
+                let Some((path, base)) = assumed else {
+                    return Err(error);
+                };
+                let real = self
+                    .runtime
+                    .block_on(self.client.item(&key, &path, &base))?;
+                if real.kind == "blob" {
+                    return Err(error);
+                }
+                return Ok(json!({"kind": real.kind, "sha": real.sha, "mode": real.mode}));
+            }
+        };
         let size = bytes.len();
         match String::from_utf8(bytes) {
             Ok(text) if !text.contains('\0') => {

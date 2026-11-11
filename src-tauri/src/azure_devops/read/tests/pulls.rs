@@ -973,6 +973,11 @@ fn changed_file_trees_read_unnamed_earlier_blobs_and_keep_deletions_and_submodul
             &git("items?path=%2Fsrc%2Fmain.rs"),
             json!({"objectId": sha(12), "gitObjectType": "blob", "path": "/src/main.rs"}),
         )
+        // A gitlink head: its base kind is read.
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(16), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        )
         .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
         .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
         .on(&git(&format!("blobs/{}?", sha(14))), blob(b"gone\n"));
@@ -1054,4 +1059,103 @@ fn a_submodule_replaced_by_a_file_reviews_from_changed_file_trees() {
         ("commit", "160000")
     );
     assert_eq!(context.head["vendor/lib"].kind, "blob");
+}
+
+/// A review of PR 7 at `sha(2)` whose whole trees are oversize, with
+/// `changes` as its iteration changes.
+fn fallback_review(changes: Vec<Value>) -> Arc<FakeWire> {
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({ "changeEntries": changes }),
+        )
+        .on(
+            &git("items?scopePath"),
+            Ok(Response {
+                status: 200,
+                oversize: true,
+                ..Response::default()
+            }),
+        );
+    wire
+}
+
+fn blob_reply(body: &[u8]) -> Reply {
+    Ok(Response {
+        status: 200,
+        body: body.to_vec(),
+        ..Response::default()
+    })
+}
+
+#[test]
+fn a_file_replaced_by_a_submodule_keeps_its_base_file() {
+    let runtime = runtime();
+    let wire = fallback_review(vec![json!(
+        {"item": {"path": "/vendor/lib", "objectId": sha(15), "originalObjectId": sha(16), "gitObjectType": "commit"}, "changeType": "edit"}
+    )]);
+    wire.json(
+        &git("items?path=%2Fvendor%2Flib"),
+        json!({"objectId": sha(16), "gitObjectType": "blob", "path": "/vendor/lib"}),
+    )
+    .on(
+        &git(&format!("blobs/{}?", sha(16))),
+        blob_reply(b"was a file\n"),
+    );
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    let (head, base) = (&context.head["vendor/lib"], &context.base["vendor/lib"]);
+    assert_eq!(
+        (head.kind.as_str(), head.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(
+        (base.kind.as_str(), base.mode.as_str(), base.sha.clone()),
+        ("blob", "100644", sha(16))
+    );
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(15)))));
+}
+
+#[test]
+fn a_submodule_replaced_by_a_file_past_the_patch_budget_reads_as_a_submodule() {
+    let runtime = runtime();
+    let mut changes: Vec<Value> = (0..300)
+        .map(|n| json!({"item": {"path": format!("/src/f{n}.rs"), "objectId": sha(50)}, "changeType": "add"}))
+        .collect();
+    changes.push(json!(
+        {"item": {"path": "/vendor/lib", "objectId": sha(17), "originalObjectId": sha(18), "gitObjectType": "blob"}, "changeType": "edit"}
+    ));
+    let wire = fallback_review(changes);
+    for _ in 0..300 {
+        wire.on(&git(&format!("blobs/{}?", sha(50))), blob_reply(b"x\n"));
+    }
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(context.files[300].patch, None);
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(18)))));
+    // A later before-content read settles the real kind.
+    wire.on(&git(&format!("blobs/{}?", sha(18))), Ok(status(404, None)))
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(18), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        );
+    let before = reader
+        .file_content(&key().id(), &context.base["vendor/lib"])
+        .unwrap();
+    assert_eq!(
+        (before["kind"].as_str(), before["mode"].as_str()),
+        (Some("commit"), Some("160000"))
+    );
 }
