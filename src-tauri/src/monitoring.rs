@@ -1138,6 +1138,21 @@ impl Monitor {
         self.state.health.values().cloned().collect()
     }
 
+    /// Enabled repositories with a scan pending or in flight; a new request
+    /// for one of them only coalesces.
+    pub fn scanning(&self) -> Vec<String> {
+        let mut ids: Vec<_> = self
+            .state
+            .health
+            .values()
+            .filter(|h| h.enabled && (h.in_flight || h.scan_pending))
+            .map(|h| h.repository_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn activation_context(
         settings: &Settings,
         repository_id: &str,
@@ -1599,17 +1614,53 @@ impl Monitor {
         now: i64,
         check_now: bool,
     ) -> Result<Vec<PollTicket>, String> {
+        let scan = if check_now {
+            Scan::All
+        } else {
+            Scan::Scheduled
+        };
+        self.prepare_scan_with_accounts(store, accounts, now, scan)
+    }
+
+    pub fn prepare_scan(
+        &mut self,
+        store: &Store,
+        now: i64,
+        scan: Scan<'_>,
+    ) -> Result<Vec<PollTicket>, String> {
+        let settings = store.load_settings()?;
+        let accounts = configured_accounts(&settings);
+        self.prepare_scan_with_accounts(store, &accounts, now, scan)
+    }
+
+    /// Starts due polls plus any `scan` requests. A requested scan uses each
+    /// repository's saved configuration and every gate a scheduled run does.
+    pub fn prepare_scan_with_accounts(
+        &mut self,
+        store: &Store,
+        accounts: &BTreeMap<String, AccountAvailability>,
+        now: i64,
+        scan: Scan<'_>,
+    ) -> Result<Vec<PollTicket>, String> {
+        let settings = store.load_settings()?;
+        if let Scan::Repository(id) = scan {
+            match settings.repositories.iter().find(|r| r.id == id) {
+                None => return Err("Repository is not configured.".into()),
+                Some(repository) if !repository.enabled => {
+                    return Err("Repository is not monitored.".into())
+                }
+                Some(_) => {}
+            }
+        }
         if store.load_automation()?.paused {
             return Ok(Vec::new());
         }
-        let settings = store.load_settings()?;
         let previous = self.state.clone();
         let previous_leases = self.leases.clone();
         let configured = configured_schedules(&settings);
-        let parked = if check_now {
-            ParkedPolls::CheckNow
-        } else {
-            ParkedPolls::ScheduledRun
+        let parked = match scan {
+            Scan::Scheduled => ParkedPolls::ScheduledRun,
+            scan => ParkedPolls::Requested(scan),
         };
         self.restore_saved_authorizations(&settings);
         self.reconcile_activations(&configured);
@@ -1635,7 +1686,7 @@ impl Monitor {
             return Err(error);
         }
         let gates = store.load_backpressure()?;
-        let mut tickets = self.begin(&configured, &gates, &connectivity, now, check_now);
+        let mut tickets = self.begin(&configured, &gates, &connectivity, now, scan);
         // Tracked PRs come from the full queue plus review evidence. Most ticks
         // start no poll, so read that history only for tickets that start.
         if !tickets.is_empty() {
@@ -2104,7 +2155,7 @@ impl Monitor {
         configured: &[ConfiguredSchedule],
         accounts: &BTreeMap<String, AccountAvailability>,
         now: i64,
-        parked: ParkedPolls,
+        parked: ParkedPolls<'_>,
     ) {
         // Collapse legacy assignment health without losing its retry budget.
         for configuration in configured {
@@ -2343,7 +2394,7 @@ impl Monitor {
                 }
             }
             // A parked repository poll retries once per occurrence of its own
-            // schedule (credentials wait for a reconnect); Check Now retries any.
+            // schedule (credentials wait for a reconnect); a requested scan retries its own.
             let occurrence_due =
                 !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
             let restart = !health.in_flight
@@ -2356,7 +2407,9 @@ impl Monitor {
                                 occurrence_due
                                     && operation.failure != Some(OperationFailure::Credentials)
                             }
-                            ParkedPolls::CheckNow => true,
+                            ParkedPolls::Requested(scan) => {
+                                scan.requests(&configuration.repository_id)
+                            }
                         }
                 });
             if restart {
@@ -2518,7 +2571,7 @@ impl Monitor {
         gates: &crate::backpressure::Backpressure,
         connectivity: &crate::connectivity::Connectivity,
         now: i64,
-        check_now: bool,
+        scan: Scan<'_>,
     ) -> Vec<PollTicket> {
         let mut checking_repositories: HashSet<_> = self.leases.keys().cloned().collect();
         let mut tickets = Vec::new();
@@ -2528,6 +2581,7 @@ impl Monitor {
             let Some(health) = self.state.health.get_mut(&configuration.health_key) else {
                 continue;
             };
+            let check_now = scan.requests(&configuration.repository_id);
             if health.scan_pending {
                 if check_now && health.in_flight {
                     health.scan_requested = true;
@@ -3868,13 +3922,35 @@ fn awaits_scheduled_run(health: &ScheduleHealth) -> bool {
         })
 }
 
+/// Which repositories a check polls outside their schedules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scan<'a> {
+    /// Only repositories whose own occurrence is due.
+    Scheduled,
+    /// Check Now: every enabled repository, plus any due occurrence.
+    All,
+    /// One enabled repository by configuration ID, plus any due occurrence.
+    Repository(&'a str),
+}
+
+impl Scan<'_> {
+    fn requests(self, repository_id: &str) -> bool {
+        match self {
+            Scan::Scheduled => false,
+            Scan::All => true,
+            Scan::Repository(id) => id == repository_id,
+        }
+    }
+}
+
 /// Whether this check may restart parked repository polls.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ParkedPolls {
+enum ParkedPolls<'a> {
     Keep,
     /// Each repository whose own occurrence is due.
     ScheduledRun,
-    CheckNow,
+    /// Each repository the scan requests.
+    Requested(Scan<'a>),
 }
 
 fn unavailable_health(health: &mut ScheduleHealth, failure: &str) {

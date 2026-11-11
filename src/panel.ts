@@ -74,6 +74,8 @@ const stateIcons: Record<string, string> = {
   Superseded: "M7 7h10M7 12h10M7 17h6",
 };
 
+const scanIcon = "M20 11a8 8 0 0 0-14-4M4 4v4h4M4 13a8 8 0 0 0 14 4m2 3v-4h-4";
+
 const cleanIcon = "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5";
 
 const genieIcon =
@@ -114,7 +116,7 @@ export async function mountPanel(app: HTMLElement) {
     <p class="panel-error" role="alert" data-panel-error hidden></p>
     <div class="panel-content">
       <div data-panel-view="monitor"></div>
-      <section data-panel-view="running" hidden><div data-running-list></div></section>
+      <section data-panel-view="running" hidden><div data-running-list></div><div class="scan-band"><button type="button" class="scan-pill" data-scan-all aria-label="Scan all repositories" title="Scan all repositories" aria-disabled="true" data-scanning="false">${icon(scanIcon)}<span>Scan</span></button></div></section>
       <section data-panel-view="reviewed" hidden></section>
       <div data-panel-view="settings" hidden></div>
       <div data-panel-view="genie" hidden></div>
@@ -207,6 +209,7 @@ export async function mountPanel(app: HTMLElement) {
     genie: app.querySelector<HTMLElement>('[data-panel-view="genie"]')!,
     changelog: app.querySelector<HTMLElement>('[data-panel-view="changelog"]')!,
   };
+  const scanAll = app.querySelector<HTMLButtonElement>("[data-scan-all]")!;
   let changelogOpen = false;
   let lastState: PanelSnapshot | undefined;
   function renderChangelog() {
@@ -260,6 +263,9 @@ export async function mountPanel(app: HTMLElement) {
   let intent = 0;
   let snapshot: MonitoringSnapshot | undefined;
   let automation: AutomationSnapshot | undefined;
+  // A scan request holds the pill busy until a fresh snapshot shows its polls.
+  let scanRequest: "sending" | "sent" | undefined;
+  let scanTimer: ReturnType<typeof setTimeout> | undefined;
   let navigating = Promise.resolve();
   let navigationOrigin: string | undefined;
   let lastVisible = false;
@@ -375,6 +381,8 @@ export async function mountPanel(app: HTMLElement) {
     },
     onSnapshot: (value) => {
       snapshot = value;
+      if (scanRequest === "sent") scanRequest = undefined;
+      drawScan();
       if (reopened && value?.items) {
         reopened = false;
         dropEmptyChoice(value.items);
@@ -384,6 +392,7 @@ export async function mountPanel(app: HTMLElement) {
     },
     onAutomation: (value) => {
       automation = value;
+      drawScan();
       app.dataset.automationUnavailable = String(!value);
       const runningCount = app.querySelector<HTMLElement>(
         "[data-running-count]",
@@ -566,6 +575,38 @@ export async function mountPanel(app: HTMLElement) {
     if (queueFilter && !counts[queueFilter] && items.length)
       queueFilter = undefined;
   }
+  function drawScan() {
+    const health = snapshot?.health ?? [];
+    const scanning =
+      !!scanRequest ||
+      health.some((h) => h.enabled && (h.in_flight || h.scan_pending));
+    const scannable = health.some((h) => h.enabled && h.schedule_available);
+    // aria-disabled, not disabled: an in-flight press keeps its focus.
+    scanAll.setAttribute(
+      "aria-disabled",
+      String(scanning || !scannable || !automation || automation.paused),
+    );
+    scanAll.dataset.scanning = String(scanning);
+  }
+  scanAll.onclick = async () => {
+    if (scanAll.getAttribute("aria-disabled") === "true") return;
+    scanRequest = "sending";
+    drawScan();
+    try {
+      await invoke("check_now");
+      scanRequest = "sent";
+      clearTimeout(scanTimer);
+      scanTimer = setTimeout(() => {
+        if (scanRequest !== "sent") return;
+        scanRequest = undefined;
+        drawScan();
+      }, 3000);
+    } catch (cause) {
+      scanRequest = undefined;
+      showError(typeof cause === "string" ? cause : "Failed");
+    }
+    drawScan();
+  };
   function drawSummary() {
     const summary = app.querySelector<HTMLElement>("[data-panel-summary]")!;
     const queue = route.tab === "queue";

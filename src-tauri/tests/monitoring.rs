@@ -12,7 +12,7 @@ use pr_sniper_lib::{
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
         Monitor, MonitoringActivation, MonitoringError, MonitoringState, OperationFailure,
-        OperationState, PollResult, CONFIGURATION_SAVE_REQUIRED, WAITING_AI_CAPACITY,
+        OperationState, PollResult, Scan, CONFIGURATION_SAVE_REQUIRED, WAITING_AI_CAPACITY,
         WAITING_BINDING_CHANGED, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
         WAITING_SUPERSEDED,
     },
@@ -4055,7 +4055,25 @@ fn two_schedules() -> (tempfile::TempDir, Store, Monitor) {
 }
 
 fn polled_names(monitor: &mut Monitor, store: &Store, at: i64, check_now: bool) -> Vec<String> {
-    let tickets = monitor.prepare_checks(store, at, check_now).unwrap();
+    let scan = if check_now {
+        Scan::All
+    } else {
+        Scan::Scheduled
+    };
+    scanned_names(monitor, store, at, scan)
+}
+
+fn scanned_names(monitor: &mut Monitor, store: &Store, at: i64, scan: Scan<'_>) -> Vec<String> {
+    let tickets = monitor.prepare_scan(store, at, scan).unwrap();
+    finish_names(monitor, store, at, tickets)
+}
+
+fn finish_names(
+    monitor: &mut Monitor,
+    store: &Store,
+    at: i64,
+    tickets: Vec<pr_sniper_lib::monitoring::PollTicket>,
+) -> Vec<String> {
     let mut names: Vec<_> = tickets.iter().map(|t| t.name.clone()).collect();
     for ticket in tickets {
         let result = if ticket.name == REPOSITORY_NAME {
@@ -4110,6 +4128,97 @@ fn check_now_polls_every_enabled_repository_and_keeps_each_schedule() {
         polled_names(&mut monitor, &store, HOUR + 900, false),
         vec![REPOSITORY_NAME]
     );
+}
+
+#[test]
+fn scanning_one_repository_polls_only_it_and_keeps_every_schedule() {
+    let (_root, store, mut monitor) = two_schedules();
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 10,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME]
+    );
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 3_600);
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 900, false),
+        vec![REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn scanning_a_disabled_or_unknown_repository_is_refused_and_enables_nothing() {
+    let (_root, store, mut monitor) = two_schedules();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[1].enabled = false;
+    set_settings(&store, &settings);
+    for id in [SECOND_KEY, "00000000-0000-4000-8000-00000000ffff"] {
+        assert!(monitor
+            .prepare_scan(&store, HOUR + 10, Scan::Repository(id))
+            .is_err());
+    }
+    assert!(!store.load_settings().unwrap().repositories[1].enabled);
+    assert!(!store.load_monitoring_state().unwrap().health[SECOND_KEY].scan_pending);
+}
+
+#[test]
+fn a_repository_scan_waits_for_pause_and_backpressure() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 10, scan)
+        .unwrap()
+        .is_empty());
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let mut gates = pr_sniper_lib::backpressure::Backpressure::default();
+    let until = gates.signal(
+        pr_sniper_lib::backpressure::Scope::github(ACCOUNT_ID),
+        Some(60),
+        "scan",
+        HOUR + 20,
+    );
+    store.save_backpressure(&gates).unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 20, scan)
+        .unwrap()
+        .is_empty());
+    assert!(store.load_monitoring_state().unwrap().health[SECOND_KEY].scan_pending);
+    // The requested scan runs once the account wait ends, still only for it.
+    assert_eq!(
+        polled_names(&mut monitor, &store, until, false),
+        vec![SECOND_NAME]
+    );
+}
+
+#[test]
+fn a_repository_scan_coalesces_with_its_poll_in_flight() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    let running = monitor.prepare_scan(&store, HOUR + 10, scan).unwrap();
+    assert_eq!(running.len(), 1);
+    for at in [HOUR + 11, HOUR + 12] {
+        assert!(monitor.prepare_scan(&store, at, scan).unwrap().is_empty());
+    }
+    assert_eq!(
+        finish_names(&mut monitor, &store, HOUR + 13, running),
+        vec![SECOND_NAME]
+    );
+    // Repeated requests during the poll collapse into one follow-up.
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 14, false),
+        vec![SECOND_NAME]
+    );
+    assert!(polled_names(&mut monitor, &store, HOUR + 15, false).is_empty());
 }
 
 #[test]

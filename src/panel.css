@@ -1882,3 +1882,48 @@ body:has(.panel-shell) {
   width: 11px;
   height: 11px;
 }
+/* Running: Scan pill in an opaque band pinned to the bottom of the scroller. */
+.panel-content > [data-panel-view="running"]:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding-bottom: 0;
+}
+.scan-band {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding: 8px 0 14px;
+  background: var(--panel-mist);
+}
+.scan-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 16px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--panel-accent);
+  color: var(--text-on-accent-navy);
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgb(36 50 71 / 35%);
+}
+.scan-pill[aria-disabled="true"] {
+  opacity: 0.55;
+  box-shadow: none;
+  cursor: default;
+}
+.scan-pill[data-scanning="true"] .panel-icon {
+  animation: work-turn 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-pill[data-scanning="true"] .panel-icon {
+    animation: none;
+  }
+}

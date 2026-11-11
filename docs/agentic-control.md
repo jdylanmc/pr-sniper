@@ -65,6 +65,7 @@
 | PR-only setup                | Explicit PR admission, never repository-wide review                      |
 | New repository               | Choose accounts/model; optional SOLID + Security → Maintainer preset     |
 | Disabled repository          | Explicit failure; choose scope and enable deliberately                   |
+| Scan now (`check_now`)       | Queues admitted PRs now; all enabled repos or one `repository_id`        |
 | Closed app                   | Background launch; explicit pause remains                                |
 | Configuration edit           | Revision/expected-value checks; references and grants validated natively |
 | Lost response                | Keep request ID and timestamp; inspect receipt, never blind retry        |

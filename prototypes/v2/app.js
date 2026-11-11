@@ -644,13 +644,12 @@ function runningPage() {
     ...queued(),
     ...state.reviews.filter((review) => review.state === "waiting_on_ci"),
   ];
-  return `<div class="page-scroll" data-scroll="running">${
+  return `<div class="page-scroll has-fab" data-scroll="running">${
     rows.length
       ? `<ol class="work-list" aria-label="Agent work queue">${rows.map((review) => workRow(review, "running")).join("")}</ol>`
       : quietEmpty("activity", "No agent work")
-  }
-    <button class="quiet-action wide check-demo" data-action="detect" ${disabled(!state.monitoring)}>Simulate a repository check</button>
-  </div>`;
+  }</div>
+    <button type="button" class="floating-pill" data-action="detect" aria-label="Scan all repositories" title="Scan all repositories" ${disabled(!state.monitoring)}>${icon("refresh")}Scan</button>`;
 }
 
 function reviewedPage() {
@@ -1139,7 +1138,7 @@ function repoEditor(id) {
   const plain = (action, label, extra = "") =>
     `<button type="button" class="plain-row ${extra}" data-action="${action}" data-id="${esc(id ?? "")}" ${extra.includes("danger") && !id ? "hidden" : ""}>${label}</button>`;
   return `<div class="page-scroll" data-scroll="repo-editor"><form data-form="repo" data-id="${esc(id ?? "")}" class="editor-form repo-form">
-    <section class="group-card">${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}${row("Review drafts", `<input type="checkbox" class="switch" name="reviewDrafts" aria-label="Review drafts" ${checked(repo.reviewDrafts)} />`)}</section>
+    <section class="group-card"><div class="card-title"><h2>${esc(repo.name)}</h2><button type="button" class="pill-small" data-action="detect" aria-label="Scan ${esc(repo.name)}" title="Scan ${esc(repo.name)}" ${disabled(!state.monitoring || !id || !saved?.enabled || !!route().draft)}>${icon("refresh")}Scan</button></div>${row("Monitor", `<input type="checkbox" class="switch" name="enabled" aria-label="Monitor this repository" ${checked(repo.enabled)} />`)}${row("Review drafts", `<input type="checkbox" class="switch" name="reviewDrafts" aria-label="Review drafts" ${checked(repo.reviewDrafts)} />`)}</section>
     <section class="group-card admission-group">${row("Explicit PRs only", `<input type="checkbox" class="switch" name="admissionExplicit" aria-label="Explicit PRs only" ${checked(repo.admission.mode === "explicit")} />`)}${row("All pull requests", `<input type="checkbox" class="switch" name="admissionAll" aria-label="All pull requests" ${checked(repo.admission.mode === "all")} />`)}<button type="button" class="kv-row kv-link" data-action="open-filters"><span>Filtered pull requests</span><span class="kv-value" data-filter-summary></span>${icon("chevron")}</button><button type="button" class="kv-row kv-link" data-action="open-paths"><span>Paths</span><span class="kv-value" data-paths-summary></span>${icon("chevron")}</button></section>
     <section class="group-card"><div class="card-title"><h2>Agents on this repository</h2><button type="button" class="pill-small" data-action="assign-agent">${icon("plus")}Assign agent</button></div>
       <select class="picker" data-picker="agents" aria-label="Assign agent" hidden></select><div data-list="agents"></div></section>

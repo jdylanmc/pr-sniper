@@ -292,6 +292,33 @@ test("MCP retry_all is one identified native mutation with counts", async () => 
   }
 });
 
+test("MCP check_now scans every repository or only the named one", async () => {
+  const f = await fixture("modern");
+  try {
+    const { tools } = await f.client.listTools();
+    const tool = tools.find((entry) => entry.name === "check_now");
+    assert(tool.inputSchema.properties.repository_id);
+    assert(!tool.inputSchema.required.includes("repository_id"));
+    const repository = randomUUID();
+    for (const scope of [{}, { repository_id: repository }]) {
+      const identity = (
+        await f.client.callTool({ name: "prepare_request", arguments: {} })
+      ).structuredContent;
+      await f.client.callTool({
+        name: "check_now",
+        arguments: { ...identity, ...scope },
+      });
+      assert.deepEqual(f.calls.at(-1), {
+        operation: "check_now",
+        ...identity,
+        ...scope,
+      });
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("MCP watch preserves exact scope, pause, override and explicit rerun intent", async () => {
   const f = await fixture("modern");
   try {

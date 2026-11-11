@@ -1780,7 +1780,7 @@ fn finish_committed_settings(
 fn prepare_monitoring_checks(
     host: &Host,
     now: i64,
-    immediate: bool,
+    scan: monitoring::Scan<'_>,
 ) -> Result<Vec<monitoring::PollTicket>, String> {
     let generations = host
         .github_generations
@@ -1796,7 +1796,7 @@ fn prepare_monitoring_checks(
         .monitor
         .lock()
         .map_err(|_| "Monitoring is unavailable.")?;
-    let mut tickets = monitor.prepare_checks_with_accounts(&store, &accounts, now, immediate)?;
+    let mut tickets = monitor.prepare_scan_with_accounts(&store, &accounts, now, scan)?;
     for ticket in &mut tickets {
         ticket.account_generation = generations
             .get(&ticket.provider_account_id)
@@ -2031,11 +2031,20 @@ fn tracked_states(
 }
 
 fn start_checks(app: &tauri::AppHandle, immediate: bool) -> Result<(), String> {
+    let scan = if immediate {
+        monitoring::Scan::All
+    } else {
+        monitoring::Scan::Scheduled
+    };
+    start_scan(app, scan)
+}
+
+pub(crate) fn start_scan(app: &tauri::AppHandle, scan: monitoring::Scan<'_>) -> Result<(), String> {
     let host = app.state::<Host>();
     if host.quitting.load(Ordering::SeqCst) {
         return Err("PR Sniper is quitting.".into());
     }
-    let tickets = prepare_monitoring_checks(&host, now_seconds()?, immediate)?;
+    let tickets = prepare_monitoring_checks(&host, now_seconds()?, scan)?;
     start_lifecycle_refresh(app);
     for ticket in tickets {
         let app = app.clone();
@@ -2138,6 +2147,25 @@ async fn check_now(app: tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || start_checks(&app, true))
         .await
         .map_err(|_| "The immediate repository check could not start.".to_string())?
+}
+
+/// Scans one monitored repository now with its saved configuration.
+#[tauri::command]
+async fn scan_repository(app: tauri::AppHandle, repository_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        start_scan(&app, monitoring::Scan::Repository(&repository_id))
+    })
+    .await
+    .map_err(|_| "The repository scan could not start.".to_string())?
+}
+
+#[tauri::command]
+fn repository_scans(host: State<'_, Host>) -> Result<Vec<String>, String> {
+    let monitor = host
+        .monitor
+        .lock()
+        .map_err(|_| "Monitoring is unavailable.")?;
+    Ok(monitor.scanning())
 }
 
 #[tauri::command]
@@ -5106,6 +5134,8 @@ pub fn run() {
             follow_up::host::start_follow_up,
             follow_up::host::cancel_follow_up,
             check_now,
+            scan_repository,
+            repository_scans,
             monitoring_activation_status,
             monitoring_setup_review,
         ])
