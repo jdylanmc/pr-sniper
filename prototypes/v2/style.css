@@ -3996,3 +3996,10 @@ input.switch:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Repository Scan shares the Monitor row. */
+.kv-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
