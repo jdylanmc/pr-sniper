@@ -594,8 +594,12 @@ pub(crate) fn credential_error(message: &str) -> bool {
 
 fn verification_error(reason: GithubAuthFailure) -> String {
     match reason {
-        GithubAuthFailure::Network => "Cannot reach GitHub to verify this Copilot identity. Retry.",
-        GithubAuthFailure::Provider => {
+        GithubAuthFailure::Network | GithubAuthFailure::Timeout => {
+            "Cannot reach GitHub to verify this Copilot identity. Retry."
+        }
+        GithubAuthFailure::Provider
+        | GithubAuthFailure::RateLimited
+        | GithubAuthFailure::InvalidResponse => {
             "GitHub could not verify this Copilot identity. Retry or reconnect."
         }
         GithubAuthFailure::WrongIdentity => WRONG_IDENTITY,

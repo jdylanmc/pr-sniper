@@ -694,7 +694,13 @@ async fn transient_identity_failures_do_not_erase_verified_sign_in() {
         let operation = integration
             .operation("101", Instant::now() + OPERATION_LIMIT)
             .unwrap();
-        assert!(integration.credential("101", &operation).await.is_err());
+        let error = integration.credential("101", &operation).await.unwrap_err();
+        assert!(!credential_error(&error), "{failure:?}: {error}");
+        assert!(matches!(
+            crate::review::Failure::operation(error).kind,
+            crate::monitoring::OperationFailure::Network
+                | crate::monitoring::OperationFailure::Provider
+        ));
         assert_eq!(account_view(&integration, "101"), original);
         assert_eq!(account_view(&integration, "101")["state"], "connected");
         assert!(account_view(&integration, "101").get("warning").is_none());
@@ -741,8 +747,15 @@ async fn a_refused_live_token_is_refreshed_once_before_the_account_expires() {
         ["101", "101"]
     );
 
-    // Refused, and the refresh cannot reach GitHub: transient, still connected.
-    for failure in [GithubAuthFailure::Network, GithubAuthFailure::Provider] {
+    // Refused, and the refresh fails transiently: still connected, and the
+    // caller is not told to sign in again.
+    for failure in [
+        GithubAuthFailure::Network,
+        GithubAuthFailure::Provider,
+        GithubAuthFailure::Timeout,
+        GithubAuthFailure::RateLimited,
+        GithubAuthFailure::InvalidResponse,
+    ] {
         let integration = fake_integration();
         integration
             .backend
@@ -752,7 +765,13 @@ async fn a_refused_live_token_is_refreshed_once_before_the_account_expires() {
         let operation = integration
             .operation("101", Instant::now() + OPERATION_LIMIT)
             .unwrap();
-        assert!(integration.credential("101", &operation).await.is_err());
+        let error = integration.credential("101", &operation).await.unwrap_err();
+        assert!(!credential_error(&error), "{failure:?}: {error}");
+        assert!(matches!(
+            crate::review::Failure::operation(error).kind,
+            crate::monitoring::OperationFailure::Network
+                | crate::monitoring::OperationFailure::Provider
+        ));
         assert_eq!(account_view(&integration, "101")["state"], "connected");
     }
 
