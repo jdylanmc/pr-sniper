@@ -30,6 +30,29 @@ pub struct PacketApproval {
     /// Approved; the merge waits for the author to update the branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_pending: Option<MergePending>,
+    /// Why the record settled; absent while unsettled and on older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<Settlement>,
+}
+
+/// Typed reason a packet final stopped watching. Reviewed reads it as the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Settlement {
+    /// Every wanted action is done (including an approval already on the head).
+    Done,
+    /// The PR closed or its state moved before the actions finished.
+    Moved,
+    /// The sign-off's own thread resolutions stopped.
+    SignOffStopped,
+    /// Red CI or a discussion change revoked the sign-off before any effect.
+    Revoked,
+    /// The provider refused the vote.
+    Refused,
+    /// An effect was rejected or went stale; the review is re-queued.
+    Failed,
+    /// No approve or merge authority: handed to a human.
+    NoAuthority,
 }
 
 /// Typed outcome: approved; merge pending on `reason`; waiting for the author.
@@ -370,6 +393,7 @@ pub fn adopt(store: &Store, item_id: &str) -> Result<(), String> {
                 merge,
                 settled: false,
                 merge_pending: None,
+                settlement: None,
             }),
         });
         changed = true;
@@ -691,13 +715,13 @@ pub fn settle(
             .is_none_or(|r| r.state_seq != approval.state_seq)
             || observation.head != job.head_sha;
         if observation.state != "OPEN" || moved {
-            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            settle_as(&mut ledger.finals[index], Settlement::Moved);
             changed = true;
             continue;
         }
         if sign_off_written(store, run)?.is_some_and(|reason| reason != PENDING_SIGN_OFF) {
             // The exit write tosses and re-queues itself; nothing more to watch here.
-            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            settle_as(&mut ledger.finals[index], Settlement::SignOffStopped);
             changed = true;
             continue;
         }
@@ -721,7 +745,7 @@ pub fn settle(
                 .is_none_or(|w| w.terminal())
         {
             let seq = approval.state_seq;
-            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            settle_as(&mut ledger.finals[index], Settlement::Revoked);
             changed = true;
             revoked.push((Binding::job(&job), seq));
             continue;
@@ -736,7 +760,7 @@ pub fn settle(
             .any(|e| e.refused(&run.basis.repository.provider))
         {
             // A provider refusal is final: no re-review would change it.
-            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            settle_as(&mut ledger.finals[index], Settlement::Refused);
             changed = true;
             continue;
         }
@@ -749,7 +773,7 @@ pub fn settle(
         }
         let permissions = &run.basis.permissions;
         if !permissions.approve && !permissions.merge {
-            ledger.finals[index].packet.as_mut().unwrap().settled = true;
+            settle_as(&mut ledger.finals[index], Settlement::NoAuthority);
             changed = true;
             continue;
         }
@@ -796,7 +820,7 @@ pub fn settle(
         store.save_pr_states(&states)?;
     }
     for (index, job) in failed {
-        ledger.finals[index].packet.as_mut().unwrap().settled = true;
+        settle_as(&mut ledger.finals[index], Settlement::Failed);
         changed = true;
         consume::toss_and_requeue(store, &job, &ledger.finals[index].execution, now)?;
     }
@@ -804,6 +828,13 @@ pub fn settle(
         store.save_actions(&ledger)?;
     }
     Ok(ready_to_consume)
+}
+
+fn settle_as(record: &mut FinalReview, settlement: Settlement) {
+    if let Some(packet) = record.packet.as_mut() {
+        packet.settled = true;
+        packet.settlement = Some(settlement);
+    }
 }
 
 pub fn mark_settled(store: &Store, final_id: &str) -> Result<(), String> {
@@ -815,6 +846,7 @@ pub fn mark_settled(store: &Store, final_id: &str) -> Result<(), String> {
         .and_then(|f| f.packet.as_mut())
     {
         approval.settled = true;
+        approval.settlement = Some(Settlement::Done);
         store.save_actions(&ledger)?;
     }
     Ok(())

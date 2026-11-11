@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    actions::{Basis, Effect, FinalReview, Ledger, PacketApproval},
+    actions::{Basis, Effect, FinalReview, Ledger, PacketApproval, Settlement},
     exit_writes::{Phase as WritePhase, StepState},
     exits::{ExitOutcome, LgtmAction, WaitReason},
     review::outcome::{Evidence, Outcome},
@@ -83,6 +83,7 @@ fn approval(store: &Store, run: &ReviewRun, effects: &[(&str, &str)]) -> Ledger 
             merge: false,
             settled: false,
             merge_pending: None,
+            settlement: None,
         }),
     };
     Ledger {
@@ -176,6 +177,50 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
         Some(Outcome::ApprovedAndMerged)
     );
 
+    // A settled final with no effect still ends the run.
+    for (settled, settlement, expected) in [
+        (false, None, Outcome::Pending),
+        (true, Some(Settlement::Done), Outcome::Approved),
+        (true, Some(Settlement::NoAuthority), Outcome::ReadyForHuman),
+        (true, Some(Settlement::Revoked), Outcome::Failed),
+        (true, Some(Settlement::Moved), Outcome::Failed),
+    ] {
+        let mut ledger = approval(&store, &approve, &[]);
+        let packet = ledger.finals[0].packet.as_mut().unwrap();
+        packet.settled = settled;
+        packet.settlement = settlement;
+        let evidence = Evidence {
+            publications: &[],
+            exit_writes: &[],
+            actions: &ledger,
+        };
+        assert_eq!(
+            evidence.run(&approve, false),
+            Some(expected),
+            "{settlement:?}"
+        );
+    }
+    // An `lgtm` whose own thread resolutions failed never acts.
+    let sign_off = with_exit(
+        &store,
+        &job,
+        ExitOutcome::Lgtm {
+            comment: String::new(),
+            resolve_own_threads: vec!["thread".into()],
+            action: LgtmAction::Approve,
+            dismissed_teammate_findings: vec![],
+        },
+    );
+    let ledger = approval(&store, &sign_off, &[]);
+    let mut write = exit_write(&job, WritePhase::Failed, StepState::Planned);
+    write.review_operation_id = sign_off.operation.id.clone();
+    let evidence = Evidence {
+        publications: &[],
+        exit_writes: std::slice::from_ref(&write),
+        actions: &ledger,
+    };
+    assert_eq!(evidence.run(&sign_off, false), Some(Outcome::Failed));
+
     // Comments count once published, never on the exit alone.
     let run = with_exit(&store, &job, comments());
     assert_eq!(plain.run(&run, false), Some(Outcome::Pending));
@@ -196,6 +241,23 @@ fn each_exit_maps_to_the_outcome_it_completed_and_confirmed() {
             actions: &none,
         };
         assert_eq!(evidence.run(&run, false), Some(expected));
+    }
+    // A parked publication (no retry scheduled) failed, whatever its phase.
+    for (phase, state) in [
+        (crate::publication::Phase::Preparing, OperationState::Failed),
+        (
+            crate::publication::Phase::Pending,
+            OperationState::ManualRetry,
+        ),
+    ] {
+        publication.phase = phase;
+        publication.operation.state = state;
+        let evidence = Evidence {
+            publications: std::slice::from_ref(&publication),
+            exit_writes: &[],
+            actions: &none,
+        };
+        assert_eq!(evidence.run(&run, false), Some(Outcome::Failed));
     }
     let mut write = exit_write(&job, WritePhase::Completed, StepState::Done);
     write.review_operation_id = run.operation.id.clone();

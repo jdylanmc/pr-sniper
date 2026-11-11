@@ -2,7 +2,7 @@
 //! the provider effect or publication it caused. Never read from text.
 
 use crate::{
-    actions::{EffectState, Ledger},
+    actions::{packet::Settlement, EffectState, Ledger},
     exit_writes::{ExitWrite, Phase as WritePhase},
     exits::{ExitOutcome, LgtmAction},
     follow_up::{FollowUp, Phase as FollowPhase},
@@ -112,6 +112,10 @@ impl Evidence<'_> {
         if publication.is_some_and(|p| p.phase == PublicationPhase::Discarded) {
             return Outcome::Report;
         }
+        // Parked like the Queue's failed publication: no retry is scheduled.
+        if publication.is_some_and(crate::queue::publication_failed) {
+            return Outcome::Failed;
+        }
         if publication.is_some_and(|p| {
             matches!(
                 p.phase,
@@ -137,16 +141,54 @@ impl Evidence<'_> {
                     .as_ref()
                     .is_some_and(|p| p.run_id == run.operation.id)
             })
-            .map(|f| f.id.as_str())
             .collect();
-        self.effects(|e| finals.contains(&e.final_id.as_str()))
-            .unwrap_or(Outcome::Pending)
+        let decided = self.effects(|e| finals.iter().any(|f| f.id == e.final_id));
+        if let Some(outcome) = decided.filter(|o| *o != Outcome::Pending) {
+            return outcome;
+        }
+        // An `lgtm` resolving its own threads first.
+        let write = self
+            .exit_writes
+            .iter()
+            .rev()
+            .find(|w| w.review_operation_id == run.operation.id);
+        if write.is_some_and(|w| matches!(w.phase, WritePhase::Failed | WritePhase::Tossed)) {
+            return Outcome::Failed;
+        }
+        let Some(packet) = finals.last().and_then(|f| f.packet.as_ref()) else {
+            return Outcome::Pending;
+        };
+        if !packet.settled {
+            return Outcome::Pending;
+        }
+        match packet.settlement {
+            Some(Settlement::Done) => Outcome::Approved,
+            Some(Settlement::NoAuthority) => Outcome::ReadyForHuman,
+            Some(
+                Settlement::Moved
+                | Settlement::SignOffStopped
+                | Settlement::Revoked
+                | Settlement::Refused
+                | Settlement::Failed,
+            ) => Outcome::Failed,
+            // Settled by an older build: only its permissions are on record.
+            None if !finals
+                .last()
+                .is_some_and(|f| f.basis.permissions.approve || f.basis.permissions.merge) =>
+            {
+                Outcome::ReadyForHuman
+            }
+            None if write.is_some_and(|w| w.consumed) => Outcome::Approved,
+            None => Outcome::Failed,
+        }
     }
 
-    /// Outcome of a legacy primary final review record.
+    /// Outcome of a legacy primary final review record: history only, so with
+    /// no confirmed effect it went to a human.
     pub fn final_review(&self, id: &str) -> Outcome {
         self.effects(|e| e.final_id == id)
-            .unwrap_or(Outcome::Pending)
+            .filter(|o| *o != Outcome::Pending)
+            .unwrap_or(Outcome::ReadyForHuman)
     }
 
     /// A PR row: only a confirmed Approve or merge PR Sniper made.
