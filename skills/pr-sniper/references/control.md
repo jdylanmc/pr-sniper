@@ -119,7 +119,10 @@ by identity GUID plus display name; their pull requests are polled, admitted, re
 scope in a later save. Repository schedules are five-field cron in the saved IANA time zone.
 Path globs (ADR 0027): repository
 `paths` gate admission (AND); a secondary assignment's `paths` decide whether
-it reviews a revision (files changed since its last review). Include patterns
+it reviews a revision (files changed since its last review) and scope what it
+reviews: only matching changed files reach its packet, `read_changes`,
+`search_code`, comments and report findings (others refused `out_of_scope`);
+`read_source` reads any file. `["!**/*.md"]` = every file except Markdown. Include patterns
 plus `!pattern` excludes, last match wins, at most 200 of 1–256 characters.
 A primary with `paths` is rejected; legacy `include_paths`/`exclude_paths`
 admission rules are rejected. Empty or absent: no gate, every revision. A `watch` of a revision the gate rejects fails `paths_gate` and starts nothing, even with `review_again`.
