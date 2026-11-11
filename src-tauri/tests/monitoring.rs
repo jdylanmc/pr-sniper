@@ -4302,6 +4302,7 @@ fn gate_facts(pull: &PullRequest, matched: bool) -> pr_sniper_lib::paths::PathFa
         tried: Vec::new(),
         gate: vec!["src/**".into()],
         admitted: matched,
+        whole: false,
         secondaries: BTreeMap::new(),
     }
 }

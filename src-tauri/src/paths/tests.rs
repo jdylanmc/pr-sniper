@@ -202,6 +202,7 @@ type SecondaryInput<'a> = (&'a str, &'a [&'a str], Option<&'a str>);
 fn plan(gate: &[&str], secondaries: &[SecondaryInput]) -> Plan {
     Plan {
         gate: strings(gate),
+        whole: false,
         secondaries: secondaries
             .iter()
             .map(|(id, patterns, since)| SecondaryPlan {
@@ -375,6 +376,34 @@ fn incomplete_listing_climbs_to_a_tree_diff_before_parking() {
             Strategy::ScopedTreeDiff
         ]
     );
+}
+
+#[test]
+fn a_revision_that_runs_regardless_of_the_gate_parks_on_a_scoped_negative() {
+    // OR mode, rule-admitted (ADR 0029): a scoped walk with no match cannot
+    // stand in for the complete list the review reads.
+    let or = Plan {
+        whole: true,
+        ..plan(&["src/"], &[])
+    };
+    let scoped_negative = || {
+        Stub::new(vec![])
+            .incomplete(3_500)
+            .tree(Ok(TreeDiff::Truncated))
+            .tree(Ok(TreeDiff::Complete(files(&["docs/a.md"]))))
+    };
+    let facts = read(&scoped_negative(), &or, None).unwrap();
+    assert_eq!(facts.incomplete_for(&pull()), Some(3_500));
+    // A path-only candidate keeps the scoped verdict: it never runs on it.
+    let and = plan(&["src/"], &[]);
+    let gated_out = read(&scoped_negative(), &and, None).unwrap();
+    assert!(gated_out.gated_out(&pull()));
+    assert!(gated_out.current(&pull(), &and));
+    // A negative cached without `whole` is re-read once the revision may run.
+    assert!(!gated_out.current(&pull(), &or));
+    let complete = read(&Stub::new(files(&["docs/a.md"])), &or, None).unwrap();
+    assert!(complete.whole && !complete.admitted && complete.incomplete.is_none());
+    assert!(complete.current(&pull(), &or) && complete.current(&pull(), &and));
 }
 
 #[test]

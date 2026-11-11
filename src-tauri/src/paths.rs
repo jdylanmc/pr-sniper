@@ -140,6 +140,10 @@ pub struct PathFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate: Vec<String>,
     pub admitted: bool,
+    /// Taken for a plan that runs the revision without a gate match
+    /// (`Plan::whole`): a negative verdict rests on the complete list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
     /// Secondary assignments with globs, by assignment id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secondaries: BTreeMap<String, SecondaryFacts>,
@@ -159,6 +163,9 @@ pub struct SecondaryFacts {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     pub gate: Vec<String>,
+    /// The revision may run without a gate match (OR mode, ADR 0029): a
+    /// scoped walk cannot decide it, so an incomplete list parks it.
+    pub whole: bool,
     pub secondaries: Vec<SecondaryPlan>,
 }
 
@@ -179,6 +186,7 @@ impl PathFacts {
             tried,
             gate: Vec::new(),
             admitted: true,
+            whole: false,
             secondaries: BTreeMap::new(),
         }
     }
@@ -193,6 +201,8 @@ impl PathFacts {
         self.at(pull)
             && (self.incomplete.is_some()
                 || self.gate == plan.gate
+                    // A negative taken without `whole` may rest on a scoped walk.
+                    && (self.admitted || self.whole || !plan.whole)
                     && plan.secondaries.iter().all(|s| {
                         self.secondaries
                             .get(&s.assignment_id)
@@ -409,8 +419,9 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
             },
         );
     }
-    // Admitted on a list a review cannot see in full: no review starts.
-    if let Some(stuck) = whole.partial.filter(|_| admitted) {
+    // Admitted, or run regardless of the gate, on a list a review cannot see
+    // in full: no review starts.
+    if let Some(stuck) = whole.partial.filter(|_| admitted || plan.whole) {
         return Ok(parked(stuck));
     }
     Ok(PathFacts {
@@ -420,6 +431,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
         tried: Vec::new(),
         gate: plan.gate.clone(),
         admitted,
+        whole: plan.whole,
         secondaries,
     })
 }

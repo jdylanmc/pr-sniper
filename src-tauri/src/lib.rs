@@ -1972,7 +1972,11 @@ pub(crate) fn explicit_facts(
     else {
         return Ok(None);
     };
-    let plan = paths.plan(&pull.id);
+    // OR mode: explicit intake runs without a gate match (ADR 0029).
+    let plan = paths::Plan {
+        whole: paths.also,
+        ..paths.plan(&pull.id)
+    };
     let previous = paths.facts.get(&pull.id);
     if previous.is_some_and(|f| f.current(pull, &plan)) {
         return Ok(previous.cloned());
@@ -1990,7 +1994,7 @@ fn path_facts(
 ) -> Result<BTreeMap<String, paths::PathFacts>, ConnectionError> {
     let mut facts = BTreeMap::new();
     for pull in monitoring::fact_reads(ticket, pull_requests) {
-        let plan = ticket.paths.plan(&pull.id);
+        let plan = monitoring::fact_plan(ticket, pull);
         let previous = ticket.paths.facts.get(&pull.id);
         facts.insert(
             pull.id.clone(),

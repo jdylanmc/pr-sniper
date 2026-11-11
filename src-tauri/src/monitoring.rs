@@ -906,6 +906,7 @@ impl PathTicket {
         let reviewed = self.reviewed.get(pull_request_id);
         crate::paths::Plan {
             gate: self.gate.clone(),
+            whole: false,
             secondaries: self
                 .secondaries
                 .iter()
@@ -3660,6 +3661,16 @@ pub(crate) fn path_candidate(ticket: &PollTicket, pull: &PullRequest) -> bool {
             .is_some_and(|a| a.excludes(&ticket.provider_account_id, pull))
 }
 
+/// The facts plan for `pull`. In OR mode a tracked or rule-admitted revision
+/// runs without a gate match, so its facts need the complete list.
+pub(crate) fn fact_plan(ticket: &PollTicket, pull: &PullRequest) -> crate::paths::Plan {
+    crate::paths::Plan {
+        whole: ticket.paths.also
+            && (ticket.tracked.iter().any(|(id, _)| id == &pull.id) || scan_admits(ticket, pull)),
+        ..ticket.paths.plan(&pull.id)
+    }
+}
+
 /// Open pull requests whose path facts this poll reads: tracked or admitted
 /// ones, plus in OR mode up to `PATH_CANDIDATE_READS` path candidates,
 /// newest first. Facts current for the revision and inputs are reused.
@@ -3671,7 +3682,7 @@ pub(crate) fn fact_reads<'a>(
         .iter()
         .filter(|pull| pull.state == Lifecycle::Open && (!pull.draft || ticket.paths.review_drafts))
         .filter(|pull| {
-            let plan = ticket.paths.plan(&pull.id);
+            let plan = fact_plan(ticket, pull);
             !ticket
                 .paths
                 .facts
@@ -5715,6 +5726,7 @@ mod admission_tests {
         assert!(!read.contains(&"1001".to_string()));
         // Facts kept for a revision are reused: the next poll moves on.
         for pull in pulls.iter().filter(|p| read.contains(&p.id)) {
+            let whole = fact_plan(&or, pull).whole;
             or.paths.facts.insert(
                 pull.id.clone(),
                 crate::paths::PathFacts {
@@ -5724,6 +5736,7 @@ mod admission_tests {
                     tried: Vec::new(),
                     gate: or.paths.gate.clone(),
                     admitted: false,
+                    whole,
                     secondaries: Default::default(),
                 },
             );
@@ -5731,6 +5744,30 @@ mod admission_tests {
         let next = ids(&or);
         assert_eq!(next.len(), 50);
         assert!(next.iter().all(|id| !read.contains(id)));
+    }
+
+    #[test]
+    fn paths_or_needs_the_complete_list_for_revisions_that_run_without_a_match() {
+        let mut configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]}
+        ]}));
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let team = pull("11", &[], false, &[]);
+        let mut tracked = pull("12", &[], false, &[]);
+        tracked.id = "tracked".into();
+        let candidate = pull("12", &[], false, &[]);
+        let mut and = ticket_for(&configured);
+        and.tracked.push((tracked.id.clone(), tracked.number));
+        // AND: a gate-out never runs, so a scoped verdict may decide it.
+        assert!([&team, &tracked].iter().all(|p| !fact_plan(&and, p).whole));
+        configured.repositories[0].paths_mode = crate::paths::PathsMode::Or;
+        let mut or = ticket_for(&configured);
+        or.tracked.push((tracked.id.clone(), tracked.number));
+        // OR: rule-admitted and tracked revisions run without a match.
+        assert!(fact_plan(&or, &team).whole);
+        assert!(fact_plan(&or, &tracked).whole);
+        // A path-only candidate runs only on a match.
+        assert!(!fact_plan(&or, &candidate).whole);
     }
 
     #[test]
