@@ -1034,3 +1034,60 @@ fn changing_a_secondarys_paths_makes_its_run_stale_but_not_the_primarys() {
     save(&["src/"]);
     crate::review::validate_execution_selection(&store, &primary).unwrap();
 }
+
+#[test]
+fn a_secondarys_changed_paths_discard_its_unpublished_output() {
+    let (_root, store, mut monitor) = configured(&[], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["README.md", "src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    complete(&store, &teammate.operation.id, Ok(report()), NOW + 3).unwrap();
+    let review = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation.id == teammate.operation.id)
+        .unwrap();
+    let job = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| review.matches_job(j))
+        .unwrap();
+    let mut pending =
+        crate::publication::Publication::new(review.clone(), true, true, NOW + 4).unwrap();
+    pending.batch = Some(crate::publication::Batch {
+        commit_id: sha('a'),
+        body: "marker".into(),
+        comments: vec![],
+        unmappable: vec![],
+    });
+    let gate = |settings: &Settings| {
+        crate::publication::evaluate_gate(
+            settings,
+            &pending,
+            Some(&job),
+            &pull('a'),
+            true,
+            true,
+            false,
+        )
+    };
+    let settings = store.load_settings().unwrap();
+    crate::publication::automatic_policy(&settings, &review, &job).unwrap();
+    assert!(!gate(&settings).discard);
+
+    // Saved after completion, before publication: the output is stale.
+    let mut changed = settings.clone();
+    changed.repositories[0]
+        .assignments
+        .iter_mut()
+        .find(|a| a.id == TEAMMATE)
+        .unwrap()
+        .paths = vec!["!**/*.md".into()];
+    assert!(crate::publication::automatic_policy(&changed, &review, &job).is_err());
+    let stale = gate(&changed);
+    assert!(stale.discard);
+    assert!(stale.stop.is_some());
+}
