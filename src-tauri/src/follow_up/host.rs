@@ -18,9 +18,9 @@ use std::sync::{
 use tauri::Manager;
 
 pub(crate) struct Observed {
-    origin: Publication,
-    head: String,
-    threads: Vec<Thread>,
+    pub(crate) origin: Publication,
+    pub(crate) head: String,
+    pub(crate) threads: Vec<Thread>,
 }
 
 #[derive(Default)]
@@ -35,15 +35,20 @@ pub(crate) struct Scan {
 }
 
 impl Scan {
-    /// Drops the discussion observations of `held` pull requests (held out
-    /// of the poll, ADR 0028): their cursors stay put, so a mention that
-    /// would admit one still admits it when it is read.
+    /// Drops every observation of `held` pull requests (held out of the
+    /// poll, ADR 0028): their cursors and owned feedback stay put until they
+    /// are read, so a mention still admits one, and feedback observed at a
+    /// head the poll did not commit never fails the repository.
     pub(crate) fn hold_back(&mut self, held: &[(String, u64)]) {
-        let kept = |binding: &crate::feedback::MentionBinding| {
-            !held.iter().any(|(id, _)| id == &binding.pull_request_id)
-        };
-        self.mentions.retain(|(binding, _)| kept(binding));
-        self.threads.retain(|(binding, _)| kept(binding));
+        let kept = |id: &str| !held.iter().any(|(held, _)| held == id);
+        self.mentions
+            .retain(|(binding, _)| kept(&binding.pull_request_id));
+        self.threads
+            .retain(|(binding, _)| kept(&binding.pull_request_id));
+        self.feedback
+            .retain(|observed| kept(&observed.origin.review.job.pull_request_id));
+        self.retained
+            .retain(|observed| kept(&observed.origin.proof.pull_request_id));
     }
 }
 

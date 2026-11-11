@@ -52,7 +52,7 @@ Complete changed-file list ladder; first complete wins, no file-count limit of o
 - The review reads the same list: GitHub past 3,000 files keeps the listed files' patches and adds the rest of the merge-base tree diff without a patch (no addressable line). A whole tree GitHub truncates: the review's trees hold only the changed paths, read level by level, and the unlisted rest comes from the step 3 walk over every differing subtree (cut off: listed files only). Azure DevOps reviews every iteration change; past 300 files, no patch.
 - An incremental read that cannot complete falls back to the whole-PR list (may run, never misses).
 - Rate limits and network failures retry under the poll's retry policy. No read failure decides a gate, a skip or a park.
-- One PR whose reads are malformed, too large, cut short or moved while read waits for the next poll (`PathFactsSkipped`), which reads it by ID (`ListingCursor::held`) wherever the listing resumes; its mention and thread cursors wait with it; the rest are admitted and the poll succeeds. Azure DevOps: a deleted file may have no item path (`"path": null`); its `originalPath` names it.
+- One PR whose reads are malformed, too large, cut short or moved while read waits for the next poll (`PathFactsSkipped`), which reads it by ID (`ListingCursor::held`) wherever the listing resumes; its mention, thread and owned-feedback observations wait with it; the rest are admitted and the poll succeeds. Azure DevOps: a deleted file may have no item path (`"path": null`); its `originalPath` names it.
 
 ## Heartbeat (PR state)
 
