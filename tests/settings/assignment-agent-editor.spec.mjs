@@ -1009,7 +1009,10 @@ test("repository Paths And/Or saves, reloads and is disabled in Explicit", async
   await expect(and).toBeChecked();
   await expect(or).toBeEnabled();
   await addPathPattern(paths, "src/**");
-  await or.check();
+  // Keyboard choice: the pill keeps focus; nothing redraws under it.
+  await and.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(or).toBeChecked();
   await expect(or).toBeFocused();
   await assignmentBack(page, repository);
   await expect(repository.locator("[data-open-paths]")).toBeFocused();
