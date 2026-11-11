@@ -43,6 +43,8 @@ pub enum DiagnosticEvent {
     NotificationOpened,
     NotificationActivated,
     ThreadSkipped,
+    /// One pull request's path facts could not be read; it waits a poll.
+    PathFactsSkipped,
     HostPanic,
 }
 

@@ -13,7 +13,7 @@ Reference for scheduled detection, admission rules, the read-only GitHub connect
 - Retry: transient failures back off (5s·2^n, cap 5m, full jitter; `src-tauri/src/retry.rs`), 3 failed attempts, then park. Window 15 min. Credential/permission failures park immediately. A parked poll is requeued at its repository's next occurrence (once per occurrence); credential failures wait for reconnect.
 - A revision changing during a poll requeues that same poll after 30 seconds without spending an attempt or showing a failure. Saved PRs, cursors and the last successful poll stay unchanged until a complete fresh read.
 - Rate limit (403/429): not a failure. The poll waits until Retry-After/reset, else seeded full jitter in [30s, 30s x2^n] (cap 15m, `retry::BACKPRESSURE`); no attempt spent, no failure shown. Other repos on the same account wait too, whatever their schedule (`backpressure.json`, survives restart). A successful read clears it. Parked home: Queue > **Needs attention** ([review-queue.md](review-queue.md)).
-- Schedule health keeps pending/success/failure per account/repo read in `monitoring_snapshot`; no Status screen.
+- Schedule health keeps pending/success/failure per account/repo read in `monitoring_snapshot`; no Status screen. A malformed read names its response in `last_failure`, e.g. `InvalidResponse(IterationChanges)`.
 - Detection never clones, executes repo code, mutates GitHub or publishes.
 
 ## Admission
@@ -52,7 +52,8 @@ Complete changed-file list ladder; first complete wins, no file-count limit of o
 - A scoped list (step 3) can keep a PR out; one it admits parks (step 4), since the review needs every file.
 - The review reads the same list: GitHub past 3,000 files keeps the listed files' patches and adds the rest of the merge-base tree diff without a patch (no addressable line). A whole tree GitHub truncates: the review's trees hold only the changed paths, read level by level, and the unlisted rest comes from the step 3 walk over every differing subtree (cut off: listed files only). Azure DevOps reviews every iteration change; past 300 files, no patch.
 - An incremental read that cannot complete falls back to the whole-PR list (may run, never misses).
-- Rate limits, network failures and raced reads retry under the poll's retry policy; they never decide a gate, skip or park.
+- Rate limits and network failures retry under the poll's retry policy. No read failure decides a gate, a skip or a park.
+- One PR whose reads are malformed, too large, cut short or moved while read waits for the next poll (`PathFactsSkipped`), which reads it by ID (`ListingCursor::held`) wherever the listing resumes; its mention, thread and owned-feedback observations wait with it; the rest are admitted and the poll succeeds. Azure DevOps: a deleted file may have no item path (`"path": null`); its `originalPath` names it.
 
 ## Heartbeat (PR state)
 

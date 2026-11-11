@@ -3677,7 +3677,7 @@ pub(crate) fn fact_plan(ticket: &PollTicket, pull: &PullRequest) -> crate::paths
 }
 
 /// Open pull requests whose path facts this poll reads: tracked, closed (a
-/// reopen resumes them) or admitted ones, plus in OR mode up to
+/// reopen resumes them), held or admitted ones, plus in OR mode up to
 /// `PATH_CANDIDATE_READS` path candidates, newest first. Facts current for
 /// the revision and inputs are reused.
 pub(crate) fn fact_reads<'a>(
@@ -3699,7 +3699,12 @@ pub(crate) fn fact_reads<'a>(
     open.sort_by_key(|pull| std::cmp::Reverse(pull.number));
     let mut candidates = PATH_CANDIDATE_READS;
     open.retain(|pull| {
-        if previously_admitted(ticket, pull) || scan_admits(ticket, pull) {
+        // Held out of the last poll (ADR 0028): read again, outside the budget.
+        let held = ticket
+            .listing
+            .as_ref()
+            .is_some_and(|c| c.held.iter().any(|(id, _)| id == &pull.id));
+        if held || previously_admitted(ticket, pull) || scan_admits(ticket, pull) {
             return true;
         }
         if candidates == 0 || !path_candidate(ticket, pull) {
@@ -4572,9 +4577,8 @@ pub(crate) fn check_error(error: ConnectionError) -> MonitoringError {
 fn connection_error_code(error: ConnectionError) -> &'static str {
     match error {
         ConnectionError::WrongIdentity => "WrongIdentity",
-        ConnectionError::InvalidResponse | ConnectionError::MalformedResponse(_) => {
-            "InvalidResponse"
-        }
+        ConnectionError::InvalidResponse => "InvalidResponse",
+        ConnectionError::MalformedResponse(response) => malformed_response_code(response),
         ConnectionError::MissingCli => "MissingCli",
         ConnectionError::BrokenCli => "BrokenCli",
         ConnectionError::SignedOut => "SignedOut",
@@ -4602,6 +4606,29 @@ fn connection_error_code(error: ConnectionError) -> &'static str {
         ConnectionError::InvalidRepository => "InvalidRepository",
         ConnectionError::RepositoryChanged => "RepositoryChanged",
         ConnectionError::Configuration => "Configuration",
+    }
+}
+
+/// An `InvalidResponse` code that names the read it came from.
+fn malformed_response_code(response: crate::provider::ProviderResponse) -> &'static str {
+    use crate::provider::ProviderResponse as R;
+    match response {
+        R::Identity => "InvalidResponse(Identity)",
+        R::Projects => "InvalidResponse(Projects)",
+        R::Repositories => "InvalidResponse(Repositories)",
+        R::Repository => "InvalidResponse(Repository)",
+        R::PullRequests => "InvalidResponse(PullRequests)",
+        R::PullRequest => "InvalidResponse(PullRequest)",
+        R::Iterations => "InvalidResponse(Iterations)",
+        R::IterationChanges => "InvalidResponse(IterationChanges)",
+        R::Tree => "InvalidResponse(Tree)",
+        R::Threads => "InvalidResponse(Threads)",
+        R::Thread => "InvalidResponse(Thread)",
+        R::Comment => "InvalidResponse(Comment)",
+        R::Statuses => "InvalidResponse(Statuses)",
+        R::PolicyEvaluations => "InvalidResponse(PolicyEvaluations)",
+        R::Reviewers => "InvalidResponse(Reviewers)",
+        R::People => "InvalidResponse(People)",
     }
 }
 
@@ -5329,6 +5356,18 @@ mod read_diagnostic_tests {
     }
 
     #[test]
+    fn a_malformed_check_names_the_read_in_its_health_code() {
+        let code = |error| check_error(error).health_failure().to_owned();
+        assert_eq!(
+            code(ConnectionError::MalformedResponse(
+                crate::provider::ProviderResponse::IterationChanges
+            )),
+            "InvalidResponse(IterationChanges)"
+        );
+        assert_eq!(code(ConnectionError::InvalidResponse), "InvalidResponse");
+    }
+
+    #[test]
     fn legacy_transient_check_messages_map_to_their_typed_causes() {
         let message = |error| match check_error(error) {
             MonitoringError::Recoverable { message, .. } => message,
@@ -5750,6 +5789,15 @@ mod admission_tests {
         let next = ids(&or);
         assert_eq!(next.len(), 50);
         assert!(next.iter().all(|id| !read.contains(id)));
+        // A candidate held out of the last poll is read outside the budget.
+        or.paths.facts.clear();
+        or.listing = Some(crate::provider::ListingCursor {
+            held: vec![("1".into(), 1)],
+            ..Default::default()
+        });
+        let read = ids(&or);
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 2);
+        assert!(read.contains(&"1".to_string()));
     }
 
     #[test]

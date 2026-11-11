@@ -19,7 +19,7 @@
 - Path facts decide OR exactly as the gate: per revision, the same complete-list ladder, persisted per PR (`path_facts`). A parked list (incomplete) admits and parks for a human: never missed.
 - **Completeness**: a scoped tree diff may keep only a path-only candidate out. A tracked, reopened, rule-admitted or explicit revision runs without a match (`paths::Plan::whole`), so a scoped negative parks it like a match; negatives cached without `whole` are re-read.
 - **Listing (ADR 0028)**: the narrowed author/reviewer listing is a superset only of what the rules admit. In OR any author's PR touching `paths` qualifies, and neither GitHub search nor Azure DevOps `searchCriteria` filters open PRs by changed path, so OR lists every open PR (`ListingScope::All`, batched, resumable). AND keeps the narrowed listing.
-- **Fact budget**: besides tracked and rule-admitted PRs, a poll reads facts for at most `PATH_CANDIDATE_READS` (100) other open PRs, newest first, skipping excluded authors (`monitoring::fact_reads`). Facts persist per revision, so successive polls of a pass cover the rest; rate limits and failures keep ADR 0028's retry and backpressure.
+- **Fact budget**: besides tracked, closed, held (ADR 0028) and rule-admitted PRs, a poll reads facts for at most `PATH_CANDIDATE_READS` (100) other open PRs, newest first, skipping excluded authors (`monitoring::fact_reads`). Facts persist per revision, so successive polls of a pass cover the rest; rate limits and failures keep ADR 0028's retry and backpressure.
 - The mode is part of the trigger key: switching it resets the listing cursor and invalidates queued work like any admission change.
 
 ## Consequences
