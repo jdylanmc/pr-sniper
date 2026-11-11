@@ -379,6 +379,19 @@ export const queueItem = z
     failed_operation: failedOperation.nullable(),
     remedy: remedy.nullable(),
     dismiss_token: z.string().nullable(),
+    // Why a stale item rests outside Needs attention; null unless stale.
+    rest: z
+      .enum([
+        "superseded",
+        "awaiting_change",
+        "closed",
+        "merged",
+        "repository_removed",
+        "repository_disabled",
+        "account_unbound",
+        "not_admitted",
+      ])
+      .nullable(),
     resume_at: z.number().nullable(),
     exit: exitName.nullable(),
     progress: progress.nullable(),
