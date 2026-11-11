@@ -3069,11 +3069,7 @@ impl Monitor {
             if pass_ended {
                 path_facts.retain(|id, _| {
                     fact_pass.contains(id)
-                        || ticket
-                            .tracked
-                            .iter()
-                            .chain(&ticket.closed)
-                            .any(|(tracked, _)| tracked == id)
+                        || ticket.tracked.iter().any(|(tracked, _)| tracked == id)
                 });
                 fact_pass.clear();
             }
@@ -3661,19 +3657,29 @@ pub(crate) fn path_candidate(ticket: &PollTicket, pull: &PullRequest) -> bool {
             .is_some_and(|a| a.excludes(&ticket.provider_account_id, pull))
 }
 
-/// The facts plan for `pull`. In OR mode a tracked or rule-admitted revision
-/// runs without a gate match, so its facts need the complete list.
+/// Admitted before: tracked, or observed closed (a reopen resumes it).
+fn previously_admitted(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket
+        .tracked
+        .iter()
+        .chain(&ticket.closed)
+        .any(|(id, _)| id == &pull.id)
+}
+
+/// The facts plan for `pull`. In OR mode a previously or rule-admitted
+/// revision runs without a gate match, so its facts need the complete list.
 pub(crate) fn fact_plan(ticket: &PollTicket, pull: &PullRequest) -> crate::paths::Plan {
     crate::paths::Plan {
         whole: ticket.paths.also
-            && (ticket.tracked.iter().any(|(id, _)| id == &pull.id) || scan_admits(ticket, pull)),
+            && (previously_admitted(ticket, pull) || scan_admits(ticket, pull)),
         ..ticket.paths.plan(&pull.id)
     }
 }
 
-/// Open pull requests whose path facts this poll reads: tracked or admitted
-/// ones, plus in OR mode up to `PATH_CANDIDATE_READS` path candidates,
-/// newest first. Facts current for the revision and inputs are reused.
+/// Open pull requests whose path facts this poll reads: tracked, closed (a
+/// reopen resumes them) or admitted ones, plus in OR mode up to
+/// `PATH_CANDIDATE_READS` path candidates, newest first. Facts current for
+/// the revision and inputs are reused.
 pub(crate) fn fact_reads<'a>(
     ticket: &PollTicket,
     pull_requests: &'a [PullRequest],
@@ -3693,7 +3699,7 @@ pub(crate) fn fact_reads<'a>(
     open.sort_by_key(|pull| std::cmp::Reverse(pull.number));
     let mut candidates = PATH_CANDIDATE_READS;
     open.retain(|pull| {
-        if ticket.tracked.iter().any(|(id, _)| id == &pull.id) || scan_admits(ticket, pull) {
+        if previously_admitted(ticket, pull) || scan_admits(ticket, pull) {
             return true;
         }
         if candidates == 0 || !path_candidate(ticket, pull) {
@@ -5768,6 +5774,24 @@ mod admission_tests {
         assert!(fact_plan(&or, &tracked).whole);
         // A path-only candidate runs only on a match.
         assert!(!fact_plan(&or, &candidate).whole);
+        // A closed PR admitted by paths alone resumes on reopen: it needs the
+        // complete list and its facts are read whatever the candidate budget.
+        let mut reopened = pull("12", &[], false, &[]);
+        reopened.id = "reopened".into();
+        or.closed.push((reopened.id.clone(), reopened.number));
+        assert!(fact_plan(&or, &reopened).whole);
+        let mut pulls: Vec<_> = (2..=PATH_CANDIDATE_READS as u64 + 1)
+            .map(|n| {
+                let mut newer = pull("12", &[], false, &[]);
+                newer.number = n;
+                newer.id = n.to_string();
+                newer
+            })
+            .collect();
+        pulls.push(reopened.clone());
+        let read = fact_reads(&or, &pulls);
+        assert!(read.iter().any(|p| p.id == reopened.id));
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 1);
     }
 
     #[test]
