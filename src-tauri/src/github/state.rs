@@ -174,30 +174,31 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
     })
 }
 
-impl<T: QueryTransport> PullRequestStateReader for GithubClient<T> {
-    /// One PR, read fresh. Used at consume time and after own writes.
-    fn pr_snapshot(
-        &self,
-        repo: &RemoteRepository,
-        number: u64,
-    ) -> Result<PrSnapshot, ConnectionError> {
-        self.pr_snapshots(repo, &[number])?
-            .remove(&number)
-            .ok_or(ConnectionError::IncompleteRead)
-    }
-
-    /// Heartbeat read: up to `BATCH` PRs per GraphQL request via aliases.
-    /// A PR the provider no longer returns is absent from the map.
-    fn pr_snapshots(
+impl<T: QueryTransport> GithubClient<T> {
+    /// Snapshots of `numbers`. `strict`: any unreadable PR fails the read;
+    /// otherwise it is absent, so one PR (more than a page of checks, a
+    /// GraphQL error on it, a body past the transport cap) never fails a
+    /// repository's heartbeat (ADR 0028).
+    fn snapshots(
         &self,
         repo: &RemoteRepository,
         numbers: &[u64],
+        strict: bool,
     ) -> Result<BTreeMap<u64, PrSnapshot>, ConnectionError> {
         let name = crate::storage::canonical_repository(&repo.name)
             .map_err(|_| ConnectionError::InvalidRepository)?;
         let (owner, name_part) = name
             .split_once('/')
             .ok_or(ConnectionError::InvalidRepository)?;
+        let unreadable = |error: ConnectionError| {
+            !strict
+                && matches!(
+                    error,
+                    ConnectionError::IncompleteRead
+                        | ConnectionError::InvalidResponse
+                        | ConnectionError::LimitExceeded
+                )
+        };
         let mut result = BTreeMap::new();
         for chunk in numbers.chunks(BATCH) {
             let fields: String = chunk
@@ -207,7 +208,22 @@ impl<T: QueryTransport> PullRequestStateReader for GithubClient<T> {
             let query = format!(
                 "query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{databaseId {fields}}}}} {FRAGMENT}"
             );
-            let value = self.graph(&query, json!({"owner":owner,"name":name_part}))?;
+            let value = match self.graph(&query, json!({"owner":owner,"name":name_part})) {
+                Ok(value) => value,
+                // One PR's error fails its whole batch: read each alone.
+                Err(error) if unreadable(error) && chunk.len() > 1 => {
+                    for number in chunk {
+                        match self.snapshots(repo, &[*number], false) {
+                            Ok(one) => result.extend(one),
+                            Err(error) if unreadable(error) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    continue;
+                }
+                Err(error) if unreadable(error) => continue,
+                Err(error) => return Err(error),
+            };
             let repository = &value["repository"];
             if repository["databaseId"].as_u64().map(|id| id.to_string()) != Some(repo.id.clone())
                 && repository["databaseId"].as_str() != Some(repo.id.as_str())
@@ -219,14 +235,40 @@ impl<T: QueryTransport> PullRequestStateReader for GithubClient<T> {
                 if pull.is_null() {
                     continue;
                 }
-                let snapshot = parse(pull)?;
-                if snapshot.number != *number {
-                    return Err(ConnectionError::InvalidResponse);
-                }
+                let snapshot = match parse(pull) {
+                    Ok(snapshot) if snapshot.number == *number => snapshot,
+                    Ok(_) => return Err(ConnectionError::InvalidResponse),
+                    Err(error) if unreadable(error) => continue,
+                    Err(error) => return Err(error),
+                };
                 result.insert(*number, snapshot);
             }
         }
         Ok(result)
+    }
+}
+
+impl<T: QueryTransport> PullRequestStateReader for GithubClient<T> {
+    /// One PR, read fresh. Used at consume time and after own writes.
+    fn pr_snapshot(
+        &self,
+        repo: &RemoteRepository,
+        number: u64,
+    ) -> Result<PrSnapshot, ConnectionError> {
+        self.snapshots(repo, &[number], true)?
+            .remove(&number)
+            .ok_or(ConnectionError::IncompleteRead)
+    }
+
+    /// Heartbeat read: up to `BATCH` PRs per GraphQL request via aliases.
+    /// A PR the provider no longer returns, or that cannot be read whole, is
+    /// absent from the map.
+    fn pr_snapshots(
+        &self,
+        repo: &RemoteRepository,
+        numbers: &[u64],
+    ) -> Result<BTreeMap<u64, PrSnapshot>, ConnectionError> {
+        self.snapshots(repo, numbers, false)
     }
 }
 
@@ -459,5 +501,84 @@ mod tests {
         let mut edited = arrived(true);
         edited.threads.last_mut().unwrap().comments[0].body = "Edited.".into();
         assert!(marks.external(&edited, &own, &recorded));
+    }
+
+    struct Graph;
+
+    impl super::super::provider::Transport for Graph {
+        fn get(&self, path: &str) -> Result<super::super::provider::Response, ConnectionError> {
+            panic!("unexpected read: {path}")
+        }
+    }
+
+    fn node(number: u64, checks: usize) -> Value {
+        let contexts: Vec<Value> = (0..checks.min(100))
+            .map(|i| json!({"__typename": "StatusContext", "context": format!("c{i}"), "state": "SUCCESS"}))
+            .collect();
+        json!({
+            "fullDatabaseId": 100 + number, "number": number, "title": "t", "body": "",
+            "state": "OPEN", "isDraft": false, "mergeable": "MERGEABLE", "reviewDecision": null,
+            "baseRefOid": "b", "headRefOid": "h", "headRefName": "feature",
+            "baseRef": {"branchProtectionRule": null},
+            "labels": {"nodes": []},
+            "latestOpinionatedReviews": {"nodes": []},
+            "comments": {"totalCount": 0, "nodes": []},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup":
+                {"contexts": {"totalCount": checks, "nodes": contexts}}}}]},
+            "reviewThreads": {"totalCount": 0, "nodes": []}
+        })
+    }
+
+    impl QueryTransport for Graph {
+        fn query(
+            &self,
+            query: &str,
+            _: Value,
+        ) -> Result<super::super::provider::Response, ConnectionError> {
+            // 4's discussion is past the body cap, alone or batched.
+            if query.contains("p4:") {
+                return Err(ConnectionError::LimitExceeded);
+            }
+            let mut repository = json!({"databaseId": 100});
+            let mut errors = Vec::new();
+            for number in 1..=3 {
+                if query.contains(&format!("p{number}:")) {
+                    // 2 has more checks than one page; 3 errors on its own.
+                    repository[format!("p{number}")] = if number == 3 {
+                        errors.push(json!({"type": "SERVICE_UNAVAILABLE"}));
+                        Value::Null
+                    } else {
+                        node(number, if number == 2 { 150 } else { 1 })
+                    };
+                }
+            }
+            let mut body = json!({"data": {"repository": repository}});
+            if !errors.is_empty() {
+                body["errors"] = Value::Array(errors);
+            }
+            Ok(super::super::provider::Response {
+                status: 200,
+                headers: Default::default(),
+                body: serde_json::to_vec(&body).unwrap(),
+            })
+        }
+    }
+
+    #[test]
+    fn one_unreadable_pull_request_never_fails_the_heartbeat_of_the_rest() {
+        let client = GithubClient::new(Graph);
+        let repo = RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        };
+        let read = client.pr_snapshots(&repo, &[1, 2, 3]).unwrap();
+        assert_eq!(read.keys().copied().collect::<Vec<_>>(), [1]);
+        let read = client.pr_snapshots(&repo, &[1, 4]).unwrap();
+        assert_eq!(read.keys().copied().collect::<Vec<_>>(), [1]);
+        // A single fresh read stays strict.
+        assert_eq!(
+            client.pr_snapshot(&repo, 2),
+            Err(ConnectionError::IncompleteRead)
+        );
     }
 }

@@ -1014,6 +1014,10 @@ pub struct Reader {
     client: Client,
     runtime: tokio::runtime::Handle,
     identity: Person,
+    /// Changed-file fallback base entries assumed to be blobs (ADR 0028):
+    /// (repository, object ID) → (path, base revision), to settle the real
+    /// kind if a later content read fails.
+    assumed: std::sync::Mutex<std::collections::BTreeMap<(String, String), (String, String)>>,
 }
 
 impl Reader {
@@ -1031,6 +1035,7 @@ impl Reader {
             client,
             runtime,
             identity: person(&identity),
+            assumed: Default::default(),
         })
     }
 

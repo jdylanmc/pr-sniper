@@ -599,6 +599,7 @@ fn final_authors_equal_preview_poll_and_actual_admission_for_all_inheritance_cas
                 ticket,
                 Ok(PollResult {
                     facts: Default::default(),
+                    listing: None,
                     states: Default::default(),
                     connection,
                     pull_requests: pulls,

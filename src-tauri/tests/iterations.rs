@@ -115,6 +115,7 @@ fn result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
         states: Default::default(),
         facts: Default::default(),
+        listing: None,
         connection: Connection {
             identity: Identity {
                 id: "22".into(),

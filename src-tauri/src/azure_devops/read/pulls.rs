@@ -5,18 +5,26 @@
 
 use super::{diff, Client, List, Reader, Repository, RepositoryKey, Request, API_VERSION};
 use crate::provider::{
-    ChangedFile, ConnectionError, Lifecycle, Listing, Person, ProviderResponse, PullRequest,
-    PullRequestReader, RemoteRepository, RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff,
-    TreeEntry,
+    listing, ChangedFile, ConnectionError, Lifecycle, Listing, ListingCursor, ListingScope, Person,
+    PolledPullRequests, ProviderResponse, PullRequest, PullRequestReader, RemoteRepository,
+    RequestedTeam, ReviewContext, ReviewFile, Since, TreeDiff, TreeEntry,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 const PAGE_SIZE: u64 = 100;
-/// Active pull requests read per repository before the listing is cut off.
-const MAX_PULL_REQUESTS: u64 = 5_000;
+/// Listing pages one poll reads; the pass resumes on the next poll (ADR 0028).
+const BATCH_PAGES: u64 = 10;
+/// Pull requests re-read when a pass resumes: closures since the last poll
+/// move later ones forward by as many places.
+const RESUME_OVERLAP: u64 = 20;
+/// Azure DevOps has no mention detection (`CommentReader::top_comments` is
+/// empty), so Mentioning me never admits and never widens a listing.
+const DETECTS_MENTIONS: bool = false;
 const CHANGES_PAGE_SIZE: u64 = 1_000;
+/// Assumed fallback base blobs remembered for content reads.
+const ASSUMED_LIMIT: usize = 10_000;
 /// Files diffed for review; later files get no patch, like GitHub's.
 const MAX_PATCH_FILES: usize = 300;
 
@@ -194,6 +202,104 @@ impl RawPullRequest {
     }
 }
 
+/// One server-side query of a listing scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Query<'a> {
+    All,
+    Creator(&'a str),
+    Reviewer(&'a str),
+}
+
+/// The queries whose union holds every pull request `scope` may admit.
+fn queries(scope: &ListingScope) -> Vec<Query<'_>> {
+    match scope {
+        ListingScope::All => vec![Query::All],
+        ListingScope::Narrowed { mentions: true, .. } if DETECTS_MENTIONS => vec![Query::All],
+        ListingScope::Narrowed {
+            authors, reviewer, ..
+        } => {
+            // Only identity IDs can be authors or reviewers here; others
+            // match no Azure DevOps pull request, listed or not.
+            let identity = |id: &&str| {
+                crate::azure_devops::tenant::TenantId::parse(id)
+                    .is_some_and(|parsed| parsed.as_str() == *id)
+            };
+            let authors: BTreeSet<&str> = authors
+                .iter()
+                .map(String::as_str)
+                .filter(identity)
+                .collect();
+            authors
+                .into_iter()
+                .map(Query::Creator)
+                .chain(reviewer.as_deref().filter(identity).map(Query::Reviewer))
+                .collect()
+        }
+    }
+}
+
+/// Adds a page's open pull requests not seen yet. A pull request that does
+/// not parse is skipped, not fatal: it cannot be reviewed either, and one
+/// such pull request must not stop a listing of thousands.
+fn collect(
+    key: &RepositoryKey,
+    page: Vec<Value>,
+    pulls: &mut BTreeMap<u64, PullRequest>,
+) -> Result<(), ConnectionError> {
+    for value in page {
+        let Ok(raw) = serde_json::from_value::<RawPullRequest>(value) else {
+            continue;
+        };
+        match raw.into_pull_request(key) {
+            Ok(pull) if pull.state == Lifecycle::Open => {
+                pulls.entry(pull.number).or_insert(pull);
+            }
+            Ok(_) => {}
+            Err(ConnectionError::RepositoryChanged) => {
+                return Err(ConnectionError::RepositoryChanged)
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A whole-tree read that a very large repository cannot serve: past the
+/// body cap, or not downloaded within the request timeout (which the
+/// transport reports as a lost connection). A real outage fails the next
+/// read anyway.
+fn tree_too_large(error: ConnectionError) -> bool {
+    matches!(
+        error,
+        ConnectionError::LimitExceeded | ConnectionError::Network | ConnectionError::Timeout
+    )
+}
+
+/// A tree entry of one object kind (`blob`, or `commit` for a submodule).
+fn entry(path: &str, kind: &str, sha: &str) -> TreeEntry {
+    TreeEntry {
+        path: path.to_owned(),
+        mode: if kind == "commit" { "160000" } else { "100644" }.into(),
+        sha: sha.to_owned(),
+        kind: kind.to_owned(),
+    }
+}
+
+/// Head tree, base tree and base paths assumed to be blobs.
+type ChangedTrees = (
+    BTreeMap<String, TreeEntry>,
+    BTreeMap<String, TreeEntry>,
+    BTreeSet<String>,
+);
+
+/// One changed file with its earlier object (`originalObjectId`) when the
+/// provider names one, and its object kind.
+struct ChangeEntry {
+    file: ChangedFile,
+    original: Option<String>,
+    kind: String,
+}
+
 impl Client {
     pub(super) fn git_url(
         &self,
@@ -222,49 +328,145 @@ impl Client {
         }
     }
 
-    /// Every active pull request, drafts included, in stable creation order.
-    /// A pull request seen twice across pages means the listing moved.
+    /// Every active pull request, drafts included, by number. Pages that
+    /// moved while read are de-duplicated; nothing is capped.
     pub async fn active_pull_requests(
         &self,
         key: &RepositoryKey,
     ) -> Result<Vec<PullRequest>, ConnectionError> {
         self.owns(key)?;
-        let mut pulls = Vec::new();
-        let mut seen = HashSet::new();
-        let top = PAGE_SIZE.to_string();
+        let mut pulls = BTreeMap::new();
         let mut skip = 0;
         loop {
-            if skip >= MAX_PULL_REQUESTS {
-                return Err(ConnectionError::LimitExceeded);
-            }
-            let skip_text = skip.to_string();
-            let url = self.git_url(
-                key,
-                &["pullrequests"],
-                &[
-                    ("searchCriteria.status", "active"),
-                    ("$top", &top),
-                    ("$skip", &skip_text),
-                ],
-            );
-            let (list, _): (List<RawPullRequest>, _) =
-                self.get(ProviderResponse::PullRequests, url).await?;
-            let count = list.value.len() as u64;
-            for raw in list.value {
-                let pull = raw
-                    .into_pull_request(key)
-                    .map_err(|error| error.from_response(ProviderResponse::PullRequests))?;
-                if pull.state != Lifecycle::Open || !seen.insert(pull.number) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                pulls.push(pull);
-            }
+            let page = self.active_page(key, Query::All, skip).await?;
+            let count = page.len() as u64;
+            collect(key, page, &mut pulls)?;
             if count < PAGE_SIZE {
-                pulls.sort_by_key(|pull| pull.number);
-                return Ok(pulls);
+                return Ok(pulls.into_values().collect());
             }
             skip += count;
         }
+    }
+
+    /// One page of active pull requests of `query`, newest first, unparsed.
+    async fn active_page(
+        &self,
+        key: &RepositoryKey,
+        query: Query<'_>,
+        skip: u64,
+    ) -> Result<Vec<Value>, ConnectionError> {
+        let (top, skip) = (PAGE_SIZE.to_string(), skip.to_string());
+        let mut criteria = match query {
+            Query::All => Vec::new(),
+            Query::Creator(id) => vec![("searchCriteria.creatorId", id)],
+            Query::Reviewer(id) => vec![("searchCriteria.reviewerId", id)],
+        };
+        criteria.extend([
+            ("searchCriteria.status", "active"),
+            ("$top", top.as_str()),
+            ("$skip", skip.as_str()),
+        ]);
+        let url = self.git_url(key, &["pullrequests"], &criteria);
+        let (list, _): (List<Value>, _) = self.get(ProviderResponse::PullRequests, url).await?;
+        if list.value.len() as u64 > PAGE_SIZE {
+            return Err(ConnectionError::MalformedResponse(
+                ProviderResponse::PullRequests,
+            ));
+        }
+        Ok(list.value)
+    }
+
+    /// One poll's batch (ADR 0028): up to `BATCH_PAGES` listing pages of
+    /// `scope` from `cursor`, then tracked pull requests the batch missed and
+    /// a slice of closed ones (a reopen the scope may not list). Scale is
+    /// never a failure: a listing read that fails for a reason a later poll
+    /// can clear ends the batch where it stopped; only access, identity and
+    /// repository failures surface. A throttled listing is the poll's rate
+    /// limit: shared backpressure, nothing committed.
+    pub async fn poll_batch(
+        &self,
+        key: &RepositoryKey,
+        tracked: &[(String, u64)],
+        closed: &[(String, u64)],
+        scope: &ListingScope,
+        cursor: Option<&ListingCursor>,
+        now: i64,
+    ) -> Result<PolledPullRequests, ConnectionError> {
+        self.owns(key)?;
+        let queries = queries(scope);
+        let mut next = cursor
+            .filter(|cursor| cursor.query < queries.len().max(1))
+            .cloned()
+            .unwrap_or_default();
+        let mut pulls = BTreeMap::new();
+        if next.retry_at.is_none_or(|at| now >= at) {
+            next.retry_at = None;
+            self.list_batch(key, &queries, &mut next, &mut pulls, now)
+                .await?;
+        }
+        let (open, closed) = listing::tracked_reads(
+            |id| pulls.values().any(|pull: &PullRequest| pull.id == id),
+            tracked,
+            closed,
+            &mut next,
+        );
+        for ((id, number), reopen) in open
+            .iter()
+            .map(|pull| (pull, false))
+            .chain(closed.iter().map(|pull| (pull, true)))
+        {
+            let pull = self.pull_request(key, *number).await?;
+            if &pull.id != id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            // A closed probe matters only when it reopened.
+            if !reopen || pull.state == Lifecycle::Open {
+                pulls.insert(pull.number, pull);
+            }
+        }
+        Ok(PolledPullRequests {
+            pulls: pulls.into_values().collect(),
+            cursor: (next != ListingCursor::default()).then_some(next),
+        })
+    }
+
+    async fn list_batch(
+        &self,
+        key: &RepositoryKey,
+        queries: &[Query<'_>],
+        next: &mut ListingCursor,
+        pulls: &mut BTreeMap<u64, PullRequest>,
+        now: i64,
+    ) -> Result<(), ConnectionError> {
+        // Listings are newest first: when a pass resumes, the head page shows
+        // pull requests opened since it began.
+        let mut batch = listing::Batch::start(next, queries.len(), RESUME_OVERLAP);
+        while let Some((query, skip)) = batch.next(BATCH_PAGES) {
+            match self.active_page(key, queries[query], skip).await {
+                Ok(page) => {
+                    let count = page.len() as u64;
+                    collect(key, page, pulls)?;
+                    batch.read(count, PAGE_SIZE);
+                }
+                Err(error) => {
+                    // Throttling is backpressure (ADR 0026), never a scale
+                    // failure: the poll waits under the shared gate, commits
+                    // nothing, and resumes from the last committed cursor.
+                    if let Some(seconds) =
+                        listing::stated_wait(error).filter(|_| listing::throttled(error))
+                    {
+                        self.pacer.hold(
+                            u64::try_from(seconds)
+                                .unwrap_or_default()
+                                .saturating_mul(1_000),
+                        );
+                    }
+                    return batch.failed(error, now, &key.id());
+                }
+            }
+        }
+        batch.finish();
+        Ok(())
     }
 
     pub async fn pull_request(
@@ -366,6 +568,23 @@ impl Client {
         iteration: u64,
         compare_to: u64,
     ) -> Result<Vec<ChangedFile>, ConnectionError> {
+        Ok(self
+            .iteration_change_entries(key, number, iteration, compare_to)
+            .await?
+            .into_iter()
+            .map(|change| change.file)
+            .collect())
+    }
+
+    /// Like `iteration_changes_since`, with each file's earlier object and
+    /// object kind.
+    async fn iteration_change_entries(
+        &self,
+        key: &RepositoryKey,
+        number: u64,
+        iteration: u64,
+        compare_to: u64,
+    ) -> Result<Vec<ChangeEntry>, ConnectionError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct RawItem {
@@ -442,19 +661,28 @@ impl Client {
                 if status == "renamed" && previous_path.is_none() {
                     return Err(ConnectionError::IncompleteRead);
                 }
+                let original = item
+                    .original_object_id
+                    .as_deref()
+                    .and_then(|id| commit(id).ok());
                 let sha = if status == "removed" {
                     item.original_object_id.or(item.object_id)
                 } else {
                     item.object_id
                 };
-                files.push(ChangedFile {
-                    path,
-                    previous_path,
-                    status: status.into(),
-                    additions: 0,
-                    deletions: 0,
-                    changes: 0,
-                    sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
+                let kind = item.git_object_type.unwrap_or_else(|| "blob".into());
+                files.push(ChangeEntry {
+                    file: ChangedFile {
+                        path,
+                        previous_path,
+                        status: status.into(),
+                        additions: 0,
+                        deletions: 0,
+                        changes: 0,
+                        sha: commit(&sha.ok_or(malformed)?).map_err(|_| malformed)?,
+                    },
+                    original,
+                    kind,
                 });
             }
             // `nextSkip` absent or 0 ends the listing; one that does not
@@ -522,6 +750,82 @@ impl Client {
         Ok(tree)
     }
 
+    /// Review trees of only the changed files (ADR 0028): head holds what
+    /// the PR leaves, base what it changed. An earlier object the iteration
+    /// changes do not name is read at `base`.
+    /// A kept file's earlier kind is read whenever its head is not a blob;
+    /// a blob head assumes a blob base, and those assumed paths are returned.
+    async fn changed_trees(
+        &self,
+        key: &RepositoryKey,
+        entries: &[ChangeEntry],
+        base: &str,
+    ) -> Result<ChangedTrees, ConnectionError> {
+        let (mut head_tree, mut base_tree) = (BTreeMap::new(), BTreeMap::new());
+        let mut assumed = BTreeSet::new();
+        for ChangeEntry {
+            file,
+            original,
+            kind,
+        } in entries
+        {
+            if file.status != "removed" {
+                head_tree.insert(file.path.clone(), entry(&file.path, kind, &file.sha));
+            }
+            let path = file.previous_path.as_deref().unwrap_or(&file.path);
+            let before = match (file.status.as_str(), original) {
+                ("added", _) => None,
+                ("removed", _) => Some(entry(path, kind, &file.sha)),
+                (_, Some(original)) if kind == "blob" => {
+                    assumed.insert(path.to_owned());
+                    Some(entry(path, kind, original))
+                }
+                // A gitlink head may replace a file: the base kind is read.
+                (_, _) => Some(self.item(key, path, base).await?),
+            };
+            if let Some(before) = before {
+                base_tree.insert(path.to_owned(), before);
+            }
+        }
+        Ok((head_tree, base_tree, assumed))
+    }
+
+    /// One tree entry at `commit_id` by repository-relative path.
+    async fn item(
+        &self,
+        key: &RepositoryKey,
+        path: &str,
+        commit_id: &str,
+    ) -> Result<TreeEntry, ConnectionError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawItem {
+            object_id: String,
+            git_object_type: String,
+        }
+        let absolute = format!("/{path}");
+        let url = self.git_url(
+            key,
+            &["items"],
+            &[
+                ("path", absolute.as_str()),
+                ("versionDescriptor.version", commit_id),
+                ("versionDescriptor.versionType", "commit"),
+                ("$format", "json"),
+            ],
+        );
+        let (raw, _): (RawItem, _) = self.get(ProviderResponse::Tree, url).await?;
+        let malformed = ConnectionError::MalformedResponse(ProviderResponse::Tree);
+        if !matches!(raw.git_object_type.as_str(), "blob" | "commit") {
+            return Err(malformed);
+        }
+        Ok(entry(
+            path,
+            &raw.git_object_type,
+            &commit(&raw.object_id).map_err(|_| malformed)?,
+        ))
+    }
+
     /// One blob's bytes by object ID.
     pub async fn blob(
         &self,
@@ -556,6 +860,30 @@ impl Reader {
             Ok(bytes) if bytes.len() <= diff::MAX_SIDE_BYTES => Ok(Side::Blob(bytes)),
             Ok(_) | Err(ConnectionError::LimitExceeded) => Ok(Side::Other),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Records assumed fallback base blobs for `file_content` (bounded).
+    fn remember(
+        &self,
+        key: &RepositoryKey,
+        base_tree: &BTreeMap<String, TreeEntry>,
+        assumed: &BTreeSet<String>,
+        base: &str,
+    ) {
+        let Ok(mut known) = self.assumed.lock() else {
+            return;
+        };
+        if known.len() > ASSUMED_LIMIT {
+            known.clear();
+        }
+        for path in assumed {
+            if let Some(entry) = base_tree.get(path) {
+                known.insert(
+                    (key.id(), entry.sha.clone()),
+                    (path.clone(), base.to_owned()),
+                );
+            }
         }
     }
 
@@ -666,6 +994,22 @@ impl PullRequestReader for Reader {
             pulls.push(pull);
         }
         Ok(pulls)
+    }
+
+    fn poll_batch(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+        closed: &[(String, u64)],
+        scope: &ListingScope,
+        cursor: Option<&ListingCursor>,
+        now: i64,
+    ) -> Result<PolledPullRequests, ConnectionError> {
+        let key = self.key(repository)?;
+        self.runtime.block_on(
+            self.client
+                .poll_batch(&key, tracked, closed, scope, cursor, now),
+        )
     }
 
     fn pull_request(
@@ -801,17 +1145,46 @@ impl PullRequestReader for Reader {
                 .ok_or(ConnectionError::MalformedResponse(
                     ProviderResponse::Iterations,
                 ))?;
-            let changes = self
+            let entries = self
                 .client
-                .iteration_changes(&key, number, iteration.id)
+                .iteration_change_entries(&key, number, iteration.id, 0)
                 .await?;
-            let head_tree = self.client.tree(&key, head).await?;
-            let base_tree = self.client.tree(&key, &base_revision).await?;
+            let whole = async {
+                Ok::<_, ConnectionError>((
+                    self.client.tree(&key, head).await?,
+                    self.client.tree(&key, &base_revision).await?,
+                ))
+            };
+            let (head_tree, mut base_tree, mut assumed) = match whole.await {
+                Ok((head, base)) => (head, base, BTreeSet::new()),
+                Err(error) if tree_too_large(error) => {
+                    self.client
+                        .changed_trees(&key, &entries, &base_revision)
+                        .await?
+                }
+                Err(error) => return Err(error),
+            };
+            let changes: Vec<ChangedFile> = entries.into_iter().map(|change| change.file).collect();
             let mut files = Vec::with_capacity(changes.len());
             for (index, file) in changes.iter().enumerate() {
                 let patch = if index < MAX_PATCH_FILES {
                     let base_path = file.previous_path.as_deref().unwrap_or(&file.path);
-                    let old = self.side(&key, base_tree.get(base_path)).await?;
+                    let old = match self.side(&key, base_tree.get(base_path)).await {
+                        // An assumed blob that does not read: its real kind.
+                        Err(error) if assumed.remove(base_path) => {
+                            let entry = self.client.item(&key, base_path, &base_revision).await?;
+                            if entry.kind == "blob" {
+                                return Err(error);
+                            }
+                            base_tree.insert(base_path.to_owned(), entry);
+                            Side::Other
+                        }
+                        Ok(side) => {
+                            assumed.remove(base_path);
+                            side
+                        }
+                        Err(error) => return Err(error),
+                    };
                     let new = self.side(&key, head_tree.get(&file.path)).await?;
                     match (old, new) {
                         (Side::Blob(old), Side::Blob(new)) => diff::patch(Some(&old), Some(&new)),
@@ -829,6 +1202,8 @@ impl PullRequestReader for Reader {
                     patch,
                 });
             }
+            // Past the patch budget, a content read settles the kind.
+            self.remember(&key, &base_tree, &assumed, &base_revision);
             Ok(ReviewContext {
                 files,
                 pull: PullRequest {
@@ -847,7 +1222,27 @@ impl PullRequestReader for Reader {
             return Ok(json!({"kind": entry.kind, "sha": entry.sha, "mode": entry.mode}));
         }
         let key = self.key_of(repository)?;
-        let bytes = self.runtime.block_on(self.client.blob(&key, &entry.sha))?;
+        let bytes = match self.runtime.block_on(self.client.blob(&key, &entry.sha)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let assumed = self
+                    .assumed
+                    .lock()
+                    .map_err(|_| error)?
+                    .get(&(key.id(), entry.sha.clone()))
+                    .cloned();
+                let Some((path, base)) = assumed else {
+                    return Err(error);
+                };
+                let real = self
+                    .runtime
+                    .block_on(self.client.item(&key, &path, &base))?;
+                if real.kind == "blob" {
+                    return Err(error);
+                }
+                return Ok(json!({"kind": real.kind, "sha": real.sha, "mode": real.mode}));
+            }
+        };
         let size = bytes.len();
         match String::from_utf8(bytes) {
             Ok(text) if !text.contains('\0') => {

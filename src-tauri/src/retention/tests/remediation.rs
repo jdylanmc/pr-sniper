@@ -311,6 +311,7 @@ fn r4_missing_and_failed_legacy_reads_never_authorize_cleanup() {
             ticket,
             pulls.map(|pull_requests| PollResult {
                 facts: Default::default(),
+                listing: None,
                 states: Default::default(),
                 connection: Connection {
                     identity: Identity {
@@ -500,6 +501,7 @@ fn r3_full_and_compact_settlement_parity_preserves_unsettled_replies() {
                         ticket.clone(),
                         Ok(PollResult {
                             facts: Default::default(),
+                            listing: None,
                             states: Default::default(),
                             connection: Connection {
                                 identity: Identity {
@@ -626,6 +628,7 @@ fn r4_legacy_terminal_records_require_explicit_revalidation_before_cleanup() {
                 ticket,
                 Ok(PollResult {
                     facts: Default::default(),
+                    listing: None,
                     states: Default::default(),
                     connection: Connection {
                         identity: Identity {

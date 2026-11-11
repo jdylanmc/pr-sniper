@@ -106,6 +106,7 @@ fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) 
 fn poll_result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
         facts: Default::default(),
+        listing: None,
         states: Default::default(),
         connection: Connection {
             identity: Identity {

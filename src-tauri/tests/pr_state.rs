@@ -144,6 +144,7 @@ fn scan(
     assert_eq!(tickets.len(), 1);
     let result = PollResult {
         facts: Default::default(),
+        listing: None,
         connection: Connection {
             identity: Identity {
                 id: "22".into(),

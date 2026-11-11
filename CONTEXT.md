@@ -144,6 +144,9 @@ _Avoid_: Scope prompt, trust prompt
 Per-repository decision of which open PRs become tracked **Iterations**. Modes: **All pull requests**, or **Filtered pull requests**: ordered, reorderable on/off rules; first enabled matching rule decides; no match rejects. Rules: Assigned to me, Mentioning me, Include users, Exclude users. Path scoping is the separate **Path gate**. Admission is sticky: an admitted PR stays tracked after rule edits. Still gated by account, pause, capacity and grants. Existing repositories migrated with monitoring off until reviewed.
 _Avoid_: Reviewer requests, People you watch, watch filter
 
+**Listing scope**:
+The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit or its search cannot serve the query), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
+
 **Path gate**:
 Repository `paths`: include globs and `!` excludes, last match wins. ANDed with admission and explicit intake, per revision. Empty: no gate. See [ADR 0027](docs/adr/0027-path-globs.md).
 

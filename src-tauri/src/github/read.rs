@@ -47,30 +47,7 @@ impl<T: Transport> ScopedWalk<'_, T> {
         if self.reads > MAX_SCOPED_TREE_READS {
             return Ok(None);
         }
-        let (value, _) = self
-            .client
-            .read(&format!("/repos/{}/git/trees/{sha}", self.name))?;
-        match value["truncated"].as_bool() {
-            Some(true) => return Ok(None),
-            Some(false) => {}
-            None => return Err(ConnectionError::IncompleteRead),
-        }
-        let entries: Vec<TreeEntry> = serde_json::from_value(value["tree"].clone())
-            .map_err(|_| ConnectionError::InvalidResponse)?;
-        let mut level = BTreeMap::new();
-        for entry in entries {
-            if entry.path.is_empty()
-                || entry.path.contains('/')
-                || entry.sha.len() != 40
-                || !entry.sha.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(ConnectionError::InvalidResponse);
-            }
-            if level.insert(entry.path.clone(), entry).is_some() {
-                return Err(ConnectionError::IncompleteRead);
-            }
-        }
-        Ok(Some(level))
+        self.client.tree_level(self.name, sha)
     }
 
     /// False when a read was cut off.
@@ -133,6 +110,90 @@ impl<T: Transport> ScopedWalk<'_, T> {
         }
         Ok(true)
     }
+}
+
+impl<T: Transport> GithubClient<T> {
+    /// One tree level by object or commit; `None` when GitHub truncated it.
+    fn tree_level(
+        &self,
+        name: &str,
+        sha: &str,
+    ) -> Result<Option<BTreeMap<String, TreeEntry>>, ConnectionError> {
+        let (value, _) = self.read(&format!("/repos/{name}/git/trees/{sha}"))?;
+        match value["truncated"].as_bool() {
+            Some(true) => return Ok(None),
+            Some(false) => {}
+            None => return Err(ConnectionError::IncompleteRead),
+        }
+        let entries: Vec<TreeEntry> = serde_json::from_value(value["tree"].clone())
+            .map_err(|_| ConnectionError::InvalidResponse)?;
+        let mut level = BTreeMap::new();
+        for entry in entries {
+            if entry.path.is_empty()
+                || entry.path.contains('/')
+                || entry.sha.len() != 40
+                || !entry.sha.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            if level.insert(entry.path.clone(), entry).is_some() {
+                return Err(ConnectionError::IncompleteRead);
+            }
+        }
+        Ok(Some(level))
+    }
+
+    /// The tree entries of `paths` at `revision`, read level by level along
+    /// those paths only (ADR 0028): a review of a repository whose whole tree
+    /// GitHub truncates. Absent paths are absent.
+    fn entries_at(
+        &self,
+        name: &str,
+        revision: &str,
+        paths: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, TreeEntry>, ConnectionError> {
+        let mut levels: BTreeMap<String, Option<BTreeMap<String, TreeEntry>>> = BTreeMap::new();
+        let mut result = BTreeMap::new();
+        'paths: for path in paths {
+            let mut tree = revision.to_owned();
+            let mut parts = path.split('/').peekable();
+            while let Some(part) = parts.next() {
+                if !levels.contains_key(&tree) {
+                    let level = self.tree_level(name, &tree)?;
+                    levels.insert(tree.clone(), level);
+                }
+                let Some(entry) = levels[&tree].as_ref().and_then(|level| level.get(part)) else {
+                    if levels[&tree].is_none() {
+                        return Err(ConnectionError::LimitExceeded);
+                    }
+                    continue 'paths;
+                };
+                if parts.peek().is_none() {
+                    result.insert(
+                        path.clone(),
+                        TreeEntry {
+                            path: path.clone(),
+                            ..entry.clone()
+                        },
+                    );
+                } else if entry.kind == "tree" {
+                    tree = entry.sha.clone();
+                } else {
+                    continue 'paths;
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// A whole-tree read a very large repository cannot serve: truncated or past
+/// the body cap, or not downloaded within the request timeout.
+fn tree_too_large(error: ConnectionError) -> bool {
+    matches!(
+        error,
+        ConnectionError::LimitExceeded | ConnectionError::Network | ConnectionError::Timeout
+    )
 }
 
 impl<T: Transport> AccountReader for GithubClient<T> {
@@ -316,8 +377,7 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
         let list = self.pages(&format!(
             "/repos/{name}/pulls?state=all&sort=created&direction=asc&per_page=100&page=1"
         ))?;
-        let mut ids = HashSet::new();
-        let mut numbers = HashSet::new();
+        let (mut by_number, mut by_id) = (BTreeMap::new(), BTreeMap::new());
         let mut result = Vec::new();
         for summary in list {
             let id = decimal_id(&summary["id"])?;
@@ -325,8 +385,15 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
                 .as_u64()
                 .filter(|n| *n > 0)
                 .ok_or(ConnectionError::InvalidResponse)?;
-            if !ids.insert(id.clone()) || !numbers.insert(number) {
-                return Err(ConnectionError::IncompleteRead);
+            // A listing that moved while paged repeats an entry: read once.
+            // An ID under another number is no repeat.
+            match (by_number.get(&number), by_id.get(&id)) {
+                (Some(known), Some(_)) if known == &id => continue,
+                (None, None) => {
+                    by_number.insert(number, id.clone());
+                    by_id.insert(id.clone(), number);
+                }
+                _ => return Err(ConnectionError::IncompleteRead),
             }
             let path = format!("/repos/{name}/pulls/{number}");
             let (detail, _) = self.read(&path)?;
@@ -339,11 +406,16 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
             let count = detail["changed_files"]
                 .as_u64()
                 .ok_or(ConnectionError::InvalidResponse)?;
-            // GitHub's files endpoint cannot return more than 3,000 files.
-            if count > 3_000 {
-                return Err(ConnectionError::LimitExceeded);
-            }
-            let files = self.changed_files(&path, count)?;
+            // GitHub's files endpoint lists at most 3,000 files: past that,
+            // the files it lists.
+            let cap = super::metadata::FILES_LISTING_CAP;
+            let files = if count > cap {
+                super::metadata::changed_file_entries(
+                    self.pages_until(&format!("{path}/files?per_page=100&page=1"), cap as usize)?,
+                )?
+            } else {
+                self.changed_files(&path, count)?
+            };
             let (reviewers, response) = self.read(&format!("{path}/requested_reviewers"))?;
             if response.headers.contains_key("link") {
                 return Err(ConnectionError::IncompleteRead);
@@ -439,20 +511,28 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
         let list = self.pages(&format!(
             "/repos/{name}/pulls?state=open&sort=created&direction=asc&per_page=100&page=1"
         ))?;
-        let mut ids = HashSet::new();
-        let mut numbers = HashSet::new();
-        list.iter()
-            .map(|value| {
-                let pull = polling_pull_request(value)?;
-                if !ids.insert(pull.id.clone()) || !numbers.insert(pull.number) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
-                if pull.base_repository_id != repository.id {
-                    return Err(ConnectionError::RepositoryChanged);
-                }
-                Ok(pull)
-            })
-            .collect()
+        // A listing that moved while paged repeats entries: de-duplicated.
+        let mut pulls = BTreeMap::new();
+        for value in &list {
+            let pull = polling_pull_request(value)?;
+            if pull.base_repository_id != repository.id {
+                return Err(ConnectionError::RepositoryChanged);
+            }
+            pulls.entry(pull.number).or_insert(pull);
+        }
+        Ok(pulls.into_values().collect())
+    }
+
+    fn poll_batch(
+        &self,
+        repository: &RemoteRepository,
+        tracked: &[(String, u64)],
+        closed: &[(String, u64)],
+        scope: &crate::provider::ListingScope,
+        cursor: Option<&crate::provider::ListingCursor>,
+        now: i64,
+    ) -> Result<crate::provider::PolledPullRequests, ConnectionError> {
+        self.listing_batch(repository, tracked, closed, scope, cursor, now)
     }
 
     /// An open listing cannot establish closure. Verify every previously admitted
@@ -725,8 +805,39 @@ impl<T: Transport> PullRequestReader for GithubClient<T> {
             .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or(ConnectionError::InvalidResponse)?
             .to_string();
-        let base = self.review_tree(&name, &base_revision)?;
-        let head_tree = self.review_tree(&name, &pull.head_sha)?;
+        let whole = (|| {
+            Ok::<_, ConnectionError>((
+                self.review_tree(&name, &base_revision)?,
+                self.review_tree(&name, &pull.head_sha)?,
+            ))
+        })();
+        let (base, head_tree) = match whole {
+            Ok(trees) => trees,
+            // Trees of the changed paths only: what the PR changed, listed or
+            // found by a bounded walk of the differing subtrees.
+            Err(error) if tree_too_large(error) => {
+                let mut changed: BTreeSet<String> = BTreeSet::new();
+                if count > cap {
+                    let root = [String::new()];
+                    if let TreeDiff::Complete(walked) =
+                        self.tree_diff(repo, &base_revision, &pull.head_sha, &root)?
+                    {
+                        changed.extend(walked.into_iter().map(|file| file.path));
+                    }
+                }
+                // One path set for both sides: a path absent from either is
+                // absent from that revision, never just unread.
+                for file in &files {
+                    changed.insert(file.path.clone());
+                    changed.extend(file.previous_path.clone());
+                }
+                (
+                    self.entries_at(&name, &base_revision, &changed)?,
+                    self.entries_at(&name, &pull.head_sha, &changed)?,
+                )
+            }
+            Err(error) => return Err(error),
+        };
         for file in &files {
             if (file.status != "removed" && !head_tree.contains_key(&file.path))
                 || (file.status != "added"

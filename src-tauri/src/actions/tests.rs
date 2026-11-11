@@ -87,6 +87,7 @@ fn fixture(count: usize, approve: bool, merge: bool) -> (tempfile::TempDir, Stor
             ticket,
             Ok(PollResult {
                 facts: Default::default(),
+                listing: None,
                 states: Default::default(),
                 connection: Connection {
                     identity: Identity {

@@ -262,6 +262,39 @@ impl AdmissionConfig {
     pub fn admits(&self, account_id: &str, pull: &PullRequest) -> bool {
         self.decide(account_id, pull).admitted()
     }
+
+    /// Pull requests a poll must list so that `decide` sees every one it can
+    /// admit (ADR 0028). `decide` admits only through an enabled Assigned
+    /// (the account reviews), Mentioned (a mention) or Include users (the
+    /// author is listed) rule; Exclude users only rejects. Explicit admits
+    /// nothing, All everything.
+    pub fn listing_scope(&self, account_id: &str) -> crate::provider::ListingScope {
+        use crate::provider::ListingScope;
+        match self.mode {
+            AdmissionMode::All => ListingScope::All,
+            AdmissionMode::Explicit => ListingScope::Narrowed {
+                authors: Vec::new(),
+                reviewer: None,
+                mentions: false,
+            },
+            AdmissionMode::Filtered => {
+                let enabled = |kind| {
+                    self.rules
+                        .iter()
+                        .filter(move |rule| rule.enabled && rule.kind == kind)
+                };
+                ListingScope::Narrowed {
+                    authors: enabled(AdmissionRuleKind::IncludeUsers)
+                        .flat_map(|rule| rule.users().iter().map(|user| user.id.clone()))
+                        .collect(),
+                    reviewer: enabled(AdmissionRuleKind::Assigned)
+                        .next()
+                        .map(|_| account_id.to_owned()),
+                    mentions: enabled(AdmissionRuleKind::Mentioned).next().is_some(),
+                }
+            }
+        }
+    }
 }
 
 fn is_requested_reviewer(account_id: &str, pull: &PullRequest) -> bool {
@@ -842,5 +875,39 @@ mod tests {
         let pattern = "*a*a*a*a*a*a*a*a*a*a*a*a*b";
         let path = "a".repeat(200);
         assert!(!glob_matches(pattern, &path));
+    }
+
+    #[test]
+    fn listing_scope_covers_every_rule_that_can_admit() {
+        use crate::provider::ListingScope;
+        use AdmissionRuleKind::*;
+        let narrowed = |authors: &[&str], reviewer: bool, mentions: bool| ListingScope::Narrowed {
+            authors: authors.iter().map(|id| id.to_string()).collect(),
+            reviewer: reviewer.then(|| ME.to_string()),
+            mentions,
+        };
+        let config = filtered(vec![
+            users(ExcludeUsers, &["13"]),
+            users(IncludeUsers, &["11", "12"]),
+            rule(Assigned, true),
+            rule(Mentioned, false),
+        ]);
+        assert_eq!(
+            config.listing_scope(ME),
+            narrowed(&["11", "12"], true, false)
+        );
+        let config = filtered(vec![
+            rule(Assigned, false),
+            rule(Mentioned, true),
+            users(ExcludeUsers, &["13"]),
+        ]);
+        assert_eq!(config.listing_scope(ME), narrowed(&[], false, true));
+        let mut explicit = config.clone();
+        explicit.mode = AdmissionMode::Explicit;
+        assert_eq!(explicit.listing_scope(ME), narrowed(&[], false, false));
+        assert_eq!(
+            AdmissionConfig::default().listing_scope(ME),
+            ListingScope::All
+        );
     }
 }

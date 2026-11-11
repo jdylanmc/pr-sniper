@@ -675,6 +675,12 @@ pub struct PollCursor {
     pub repository_id: String,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    /// Where the batched listing pass resumes (ADR 0028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<crate::provider::ListingCursor>,
+    /// Pull requests with path facts listed during the current pass.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fact_pass: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -864,10 +870,14 @@ pub struct PollTicket {
     pub admission: Option<AdmissionConfig>,
     pub trigger_policy: String,
     pub updated_after: Option<String>,
+    /// Where this poll's listing batch resumes (ADR 0028).
+    pub listing: Option<crate::provider::ListingCursor>,
     pub activation_version: String,
     pub account_generation: u64,
     pub assignments: Vec<ScanAssignment>,
     pub tracked: Vec<(String, u64)>,
+    /// Tracked pull requests last seen closed: probed for a reopen.
+    pub closed: Vec<(String, u64)>,
     /// When the ticket was prepared, before any fetch: what it observes is no
     /// newer than this, so tracked observations are stamped with it.
     pub prepared_at: i64,
@@ -968,6 +978,8 @@ pub struct PollResult {
     pub states: BTreeMap<String, crate::github::state::PrSnapshot>,
     /// Path facts read this poll, by pull request id.
     pub facts: BTreeMap<String, crate::paths::PathFacts>,
+    /// Where the next poll's listing resumes; `None`: the pass is complete.
+    pub listing: Option<crate::provider::ListingCursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1652,6 +1664,12 @@ impl Monitor {
                             &ticket.provider_account_id,
                             &ticket.provider_repository_id,
                         );
+                        ticket.closed = closed_for(
+                            &queue,
+                            &ticket.repository_id,
+                            &ticket.provider_account_id,
+                            &ticket.provider_repository_id,
+                        );
                         ticket.paths.facts = self
                             .state
                             .path_facts
@@ -1832,10 +1850,12 @@ impl Monitor {
                 .clone()
                 .ok_or("Repository watch settings are invalid.")?,
             updated_after: None,
+            listing: None,
             activation_version: activation.version.clone(),
             account_generation: 0,
             assignments: configuration.assignments.clone(),
             tracked: Vec::new(),
+            closed: Vec::new(),
             prepared_at: read_at,
             sequence: next_observation(),
             paths: configuration.path_ticket(),
@@ -1851,6 +1871,7 @@ impl Monitor {
                 facts: facts.into_iter().map(|f| (pull.id.clone(), f)).collect(),
                 pull_requests: vec![pull],
                 states: BTreeMap::new(),
+                listing: None,
             },
             now,
             Some(&pull_id),
@@ -2639,11 +2660,13 @@ impl Monitor {
                 watched_authors: configuration.watched_authors.clone(),
                 admission: configuration.admission.clone(),
                 trigger_policy: policy_key.clone(),
+                listing: cursor.as_ref().and_then(|cursor| cursor.listing.clone()),
                 updated_after: cursor.and_then(|cursor| cursor.updated_after),
                 activation_version: activation.version.clone(),
                 account_generation: 0,
                 assignments: health.scan_assignments.clone(),
                 tracked: Vec::new(),
+                closed: Vec::new(),
                 prepared_at: now,
                 sequence: next_observation(),
                 paths: configuration.path_ticket(),
@@ -2999,6 +3022,20 @@ impl Monitor {
         let previous_pr_states = pr_states.clone();
         let writing = crate::exits::consume::writing(store).map_err(MonitoringError::Storage)?;
         let snapshots = result.states;
+        let passes = |cursor: Option<&crate::provider::ListingCursor>| {
+            cursor.map_or(0, |cursor| cursor.passes)
+        };
+        // A listing pass ended: every candidate was listed in it.
+        let pass_ended = ticket.listing.is_none() && result.listing.is_none()
+            || passes(result.listing.as_ref()) > passes(ticket.listing.as_ref());
+        let listing = result.listing;
+        let mut fact_pass = self
+            .state
+            .cursors
+            .get(&ticket.health_key)
+            .filter(|cursor| cursor.trigger_policy == ticket.trigger_policy)
+            .map(|cursor| cursor.fact_pass.clone())
+            .unwrap_or_default();
         let mut pulls = result.pull_requests;
         pulls.sort_by_key(|p| p.number);
         let mut path_facts = self
@@ -3007,9 +3044,32 @@ impl Monitor {
             .get(&ticket.repository_id)
             .cloned()
             .unwrap_or_default();
-        // A full poll lists every open and tracked PR: facts of others are gone.
+        // Facts of PRs closed now, or not listed during a whole pass, are gone.
         if explicit_pull_id.is_none() {
-            path_facts.retain(|id, _| pulls.iter().any(|p| &p.id == id));
+            path_facts.retain(|id, _| {
+                !pulls
+                    .iter()
+                    .any(|p| &p.id == id && p.state != Lifecycle::Open)
+            });
+            fact_pass.extend(
+                pulls
+                    .iter()
+                    .filter(|p| path_facts.contains_key(&p.id) || result.facts.contains_key(&p.id))
+                    .map(|p| p.id.clone()),
+            );
+            // Tracked PRs leave only when observed closed: the by-ID rotation
+            // may not reach every one within a pass.
+            if pass_ended {
+                path_facts.retain(|id, _| {
+                    fact_pass.contains(id)
+                        || ticket
+                            .tracked
+                            .iter()
+                            .chain(&ticket.closed)
+                            .any(|(tracked, _)| tracked == id)
+                });
+                fact_pass.clear();
+            }
         }
         path_facts.extend(result.facts);
         if path_facts.is_empty() {
@@ -3460,6 +3520,8 @@ impl Monitor {
                     trigger_policy: ticket.trigger_policy.clone(),
                     updated_after: newest
                         .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                    listing,
+                    fact_pass,
                 },
             );
         }
@@ -3534,6 +3596,30 @@ fn eligibility(
     }
 }
 
+/// Pull requests the ticket's poll must list (ADR 0028): a superset of what
+/// `eligibility` can admit. Legacy rules admit a watched author, a requested
+/// reviewer (with reviewer assignment) or a mention; no watched author is
+/// every author.
+pub(crate) fn listing_scope(ticket: &PollTicket) -> crate::provider::ListingScope {
+    use crate::provider::ListingScope;
+    match &ticket.admission {
+        Some(admission) => admission.listing_scope(&ticket.provider_account_id),
+        None if ticket.watched_authors.is_empty() => ListingScope::All,
+        None => ListingScope::Narrowed {
+            authors: ticket
+                .watched_authors
+                .iter()
+                .map(|author| author.id.clone())
+                .collect(),
+            reviewer: ticket
+                .policy
+                .reviewer_assignment
+                .then(|| ticket.provider_account_id.clone()),
+            mentions: true,
+        },
+    }
+}
+
 pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
     eligibility(
         &ticket.watched_authors,
@@ -3576,6 +3662,28 @@ fn tracked_for(
         )
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        .collect()
+}
+
+/// Tracked pull requests observed closed (not merged): a reopen can bring
+/// them back.
+fn closed_for(
+    queue: &QueueState,
+    configuration_id: &str,
+    account_id: &str,
+    repository_id: &str,
+) -> Vec<(String, u64)> {
+    queue
+        .tracked
+        .iter()
+        .filter(|p| {
+            p.lifecycle == Lifecycle::Closed
+                && p.terminal_observed
+                && p.configuration_id == configuration_id
+                && p.account_id == account_id
+                && p.repository_id == repository_id
+        })
+        .map(|p| (p.pull_request_id.clone(), p.number))
         .collect()
 }
 
@@ -5445,10 +5553,12 @@ mod admission_tests {
             admission: configuration.admission,
             trigger_policy: configuration.trigger_policy.unwrap(),
             updated_after: None,
+            listing: None,
             activation_version: String::new(),
             account_generation: 0,
             assignments: Vec::new(),
             tracked: Vec::new(),
+            closed: Vec::new(),
             prepared_at: 0,
             sequence: 0,
             paths,

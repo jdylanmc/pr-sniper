@@ -1,5 +1,8 @@
 use super::*;
-use crate::provider::{Lifecycle, PullRequest, PullRequestReader, TreeEntry};
+use crate::provider::{
+    Lifecycle, ListingCursor, ListingScope, PullRequest, PullRequestReader, TreeEntry,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 const TEAM: &str = "00000000-0000-0000-0000-0000000000d1";
 
@@ -89,21 +92,19 @@ fn polls_active_pull_requests_across_pages_with_the_source_commit_as_revision() 
 }
 
 #[test]
-fn a_listing_that_moves_or_names_another_repository_is_refused() {
+fn a_listing_that_moves_is_deduplicated_and_one_naming_another_repository_is_refused() {
     let (_, wire, client) = fakes();
     let page: Vec<Value> = (1..=100)
         .map(|n| raw_pull(n, BLAKE, n as u32, false))
         .collect();
-    // A new pull request shifted the pages: one is seen twice.
+    // A new pull request shifted the pages: one is seen twice, kept once.
     wire.json(&git("pullrequests?"), json!({"value": page}))
         .json(
             &git("pullrequests?"),
             json!({"value": [raw_pull(100, BLAKE, 100, false)]}),
         );
-    assert_eq!(
-        block(client.active_pull_requests(&key())),
-        Err(ConnectionError::IncompleteRead)
-    );
+    let pulls = block(client.active_pull_requests(&key())).unwrap();
+    assert_eq!(pulls.len(), 100);
 
     let (_, wire, client) = fakes();
     let mut moved = raw_pull(1, BLAKE, 1, false);
@@ -114,16 +115,16 @@ fn a_listing_that_moves_or_names_another_repository_is_refused() {
         Err(ConnectionError::RepositoryChanged)
     );
 
+    // One pull request that does not parse is skipped, not fatal.
     let (_, wire, client) = fakes();
     let mut short = raw_pull(1, BLAKE, 1, false);
     short["lastMergeSourceCommit"]["commitId"] = json!("abc");
-    wire.json(&git("pullrequests?"), json!({"value": [short]}));
-    assert_eq!(
-        block(client.active_pull_requests(&key())),
-        Err(ConnectionError::MalformedResponse(
-            crate::provider::ProviderResponse::PullRequests
-        ))
+    wire.json(
+        &git("pullrequests?"),
+        json!({"value": [short, raw_pull(2, BLAKE, 2, false)]}),
     );
+    let pulls = block(client.active_pull_requests(&key())).unwrap();
+    assert_eq!(pulls.iter().map(|p| p.number).collect::<Vec<_>>(), [2]);
 
     let (_, wire, client) = fakes();
     let other = RepositoryKey {
@@ -581,4 +582,580 @@ fn pull_request_reads_keep_the_shared_failure_types() {
             "{expected:?}"
         );
     }
+}
+
+/// A repository's active listing served by `$skip`/`$top`, newest first, as
+/// Azure DevOps lists it. `open` may change between polls; `fail` answers
+/// the listing request with that index instead.
+#[derive(Default)]
+struct Listing {
+    /// Its own organization: a throttling hold never reaches other tests.
+    organization: String,
+    open: Mutex<Vec<u64>>,
+    fail: Mutex<BTreeMap<usize, Response>>,
+    skips: Mutex<Vec<u64>>,
+}
+
+impl Listing {
+    fn new(open: impl IntoIterator<Item = u64>) -> Arc<Self> {
+        Self::of("contoso", open)
+    }
+
+    fn of(organization: &str, open: impl IntoIterator<Item = u64>) -> Arc<Self> {
+        let listing = Arc::new(Self {
+            organization: organization.into(),
+            ..Self::default()
+        });
+        listing.set(open);
+        listing
+    }
+
+    fn key(&self) -> RepositoryKey {
+        RepositoryKey {
+            organization: self.organization.clone(),
+            ..key()
+        }
+    }
+
+    fn set(&self, open: impl IntoIterator<Item = u64>) {
+        let mut open: Vec<u64> = open.into_iter().collect();
+        open.sort_unstable_by(|a, b| b.cmp(a));
+        *self.open.lock().unwrap() = open;
+        self.skips.lock().unwrap().clear();
+        self.fail.lock().unwrap().clear();
+    }
+
+    fn client(self: &Arc<Self>) -> Client {
+        Client::new(
+            Arc::new(FakeTokens::default()),
+            Arc::clone(self) as Arc<dyn Transport>,
+            TenantId::parse(TENANT).unwrap(),
+            &self.organization,
+        )
+    }
+
+    fn skips(&self) -> Vec<u64> {
+        self.skips.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Transport for Listing {
+    async fn send(&self, request: &Request, _: &AccessToken) -> Result<Response, NetworkError> {
+        let url = url::Url::parse(&request.url).unwrap();
+        assert!(url.path().ends_with("/pullrequests"), "{url}");
+        let query = |name: &str| {
+            url.query_pairs()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.parse::<u64>().unwrap())
+                .unwrap()
+        };
+        let (skip, top) = (query("$skip"), query("$top"));
+        let index = {
+            let mut skips = self.skips.lock().unwrap();
+            skips.push(skip);
+            skips.len() - 1
+        };
+        if let Some(response) = self.fail.lock().unwrap().remove(&index) {
+            return Ok(response);
+        }
+        let open = self.open.lock().unwrap();
+        let page: Vec<Value> = open
+            .iter()
+            .skip(skip as usize)
+            .take(top as usize)
+            .map(|&n| raw_pull(n, BLAKE, n as u32, false))
+            .collect();
+        Ok(ok(json!({ "value": page })))
+    }
+}
+
+fn numbers(batch: &crate::provider::PolledPullRequests) -> BTreeSet<u64> {
+    batch.pulls.iter().map(|p| p.number).collect()
+}
+
+const NOW: i64 = 1_800_000_000;
+const ALL: ListingScope = ListingScope::All;
+
+#[test]
+fn a_listing_larger_than_one_batch_completes_across_polls_without_a_cap() {
+    let listing = Listing::new(1..=5_150);
+    let mut seen = BTreeSet::new();
+    let mut cursor: Option<ListingCursor> = None;
+    for poll in 1.. {
+        let batch =
+            block(
+                listing
+                    .client()
+                    .poll_batch(&key(), &[], &[], &ALL, cursor.as_ref(), NOW),
+            )
+            .unwrap();
+        assert!(listing.skips().len() <= 10, "one bounded batch per poll");
+        listing.skips.lock().unwrap().clear();
+        seen.extend(numbers(&batch));
+        cursor = batch.cursor;
+        if cursor.as_ref().is_some_and(|c| c.passes == 1) {
+            assert_eq!(poll, 6);
+            break;
+        }
+    }
+    assert_eq!(seen, (1..=5_150).collect());
+}
+
+#[test]
+fn a_throttled_page_is_the_polls_rate_limit_and_holds_the_organization() {
+    let listing = Listing::of("throttled", 1..=3_000);
+    let key = listing.key();
+    let resume = ListingCursor {
+        skip: 1_000,
+        ..ListingCursor::default()
+    };
+    // Head page, 980, 1,080, then 1,180 is throttled.
+    listing
+        .fail
+        .lock()
+        .unwrap()
+        .insert(3, status(429, Some("1")));
+    // The tracked pull request is not read once throttled: the listing
+    // transport refuses any other request.
+    let tracked = [("7".to_string(), 7)];
+    assert_eq!(
+        block(
+            listing
+                .client()
+                .poll_batch(&key, &tracked, &[], &ALL, Some(&resume), NOW,)
+        ),
+        Err(ConnectionError::RateLimitedAfter(1))
+    );
+    assert_eq!(listing.skips(), [0, 980, 1_080, 1_180]);
+    // The organization holds: the next read waits out the stated second.
+    listing.skips.lock().unwrap().clear();
+    let started = std::time::Instant::now();
+    let batch = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(
+            listing
+                .client()
+                .poll_batch(&key, &[], &[], &ALL, Some(&resume), NOW + 1),
+        )
+        .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(500));
+    assert_eq!(listing.skips()[..4], [0, 980, 1_080, 1_180]);
+    assert!(numbers(&batch).contains(&1_850));
+}
+
+#[test]
+fn a_listing_that_fails_before_any_page_backs_off_and_keeps_its_place() {
+    let listing = Listing::new(1..=5_000);
+    let cursor = ListingCursor {
+        skip: 4_000,
+        ..ListingCursor::default()
+    };
+    for index in 0..2 {
+        listing
+            .fail
+            .lock()
+            .unwrap()
+            .insert(index, status(500, None));
+    }
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &[], &ALL, Some(&cursor), NOW),
+    )
+    .unwrap();
+    let next = batch.cursor.unwrap();
+    assert_eq!((next.skip, next.stalls), (3_980, 1));
+    assert!(next.retry_at.is_some_and(|at| at > NOW));
+}
+
+#[test]
+fn a_listing_that_shifts_between_polls_never_fails_or_misses_a_pull_request() {
+    let listing = Listing::new(1..=1_500);
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &[], &ALL, None, NOW),
+    )
+    .unwrap();
+    let mut seen = numbers(&batch);
+    let cursor = batch.cursor.unwrap();
+    assert_eq!(cursor.skip, 1_000);
+    // Before poll 2: five close (two not read yet) and three open.
+    let closed = [1_490, 1_200, 900, 400, 350];
+    let open: Vec<u64> = (1..=1_503).filter(|n| !closed.contains(n)).collect();
+    listing.set(open.clone());
+    let batch = block(
+        listing
+            .client()
+            .poll_batch(&key(), &[], &[], &ALL, Some(&cursor), NOW),
+    )
+    .unwrap();
+    assert_eq!(
+        batch.cursor.as_ref().unwrap().passes,
+        1,
+        "the pass completes"
+    );
+    seen.extend(numbers(&batch));
+    for number in open {
+        assert!(seen.contains(&number), "{number} missed");
+    }
+}
+
+#[test]
+fn a_narrowed_scope_lists_one_query_per_author_and_the_reviewer_only() {
+    let (_, wire, client) = fakes();
+    let creator = |id: &str| git(&format!("pullrequests?searchCriteria.creatorId={id}"));
+    wire.json(
+        &creator(BLAKE),
+        json!({"value": [raw_pull(7, BLAKE, 7, false)]}),
+    )
+    .json(
+        &creator(CASEY),
+        json!({"value": [raw_pull(8, CASEY, 8, false)]}),
+    )
+    .json(
+        &git(&format!("pullrequests?searchCriteria.reviewerId={AVERY}")),
+        json!({"value": [raw_pull(7, BLAKE, 7, false), raw_pull(9, CASEY, 9, false)]}),
+    );
+    let scope = ListingScope::Narrowed {
+        authors: vec![CASEY.into(), BLAKE.into(), BLAKE.into(), "12345".into()],
+        reviewer: Some(AVERY.into()),
+        // Azure DevOps detects no mentions: never a reason to list everything.
+        mentions: true,
+    };
+    let batch = block(client.poll_batch(&key(), &[], &[], &scope, None, NOW)).unwrap();
+    assert_eq!(
+        batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
+        [7, 8, 9]
+    );
+    assert_eq!(batch.cursor.unwrap().passes, 1);
+    let urls = wire.urls();
+    assert_eq!(urls.len(), 3, "{urls:?}");
+    assert!(urls
+        .iter()
+        .all(|url| url.contains("searchCriteria.creatorId=")
+            || url.contains("searchCriteria.reviewerId=")));
+    assert!(urls
+        .iter()
+        .all(|url| url.contains("searchCriteria.status=active")));
+}
+
+#[test]
+fn explicit_and_tracked_reads_never_list_the_repository() {
+    let (_, wire, client) = fakes();
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 7, false));
+    let nothing = ListingScope::Narrowed {
+        authors: Vec::new(),
+        reviewer: None,
+        mentions: false,
+    };
+    let batch =
+        block(client.poll_batch(&key(), &[("7".into(), 7)], &[], &nothing, None, NOW)).unwrap();
+    assert_eq!(batch.pulls.len(), 1);
+    assert_eq!(batch.cursor.unwrap().passes, 1);
+    assert_eq!(wire.urls().len(), 1);
+    assert!(wire.urls()[0].contains("/pullrequests/7?"));
+}
+
+#[test]
+fn a_tracked_pull_request_is_read_even_when_the_listing_fails() {
+    let (_, wire, client) = fakes();
+    wire.on(&git("pullrequests?"), Ok(status(500, None)))
+        .json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 7, false));
+    let batch = block(client.poll_batch(&key(), &[("7".into(), 7)], &[], &ALL, None, NOW)).unwrap();
+    assert_eq!(
+        batch.pulls.iter().map(|p| p.number).collect::<Vec<_>>(),
+        [7]
+    );
+    assert_eq!(batch.cursor.unwrap().stalls, 1);
+}
+
+#[test]
+fn access_failures_on_the_listing_still_surface() {
+    for (response, expected) in [
+        (status(401, None), ConnectionError::SignedOut),
+        (status(403, None), ConnectionError::MissingReadPermission),
+    ] {
+        let (_, wire, client) = fakes();
+        wire.on(&git("pullrequests?"), Ok(response.clone()))
+            .on(&git("pullrequests?"), Ok(response));
+        assert_eq!(
+            block(client.poll_batch(&key(), &[], &[], &ALL, None, NOW)),
+            Err(expected)
+        );
+    }
+}
+
+#[test]
+fn a_review_of_a_repository_too_large_for_whole_trees_reads_only_its_changes() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    let blob = |body: &[u8]| {
+        Ok(Response {
+            status: 200,
+            body: body.to_vec(),
+            ..Response::default()
+        })
+    };
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/src/main.rs", "objectId": sha(11), "originalObjectId": sha(12)}, "changeType": "edit"},
+                {"item": {"path": "/src/new.rs", "objectId": sha(13)}, "changeType": "add"}
+            ]}),
+        )
+        // The whole tree times out.
+        .on(&git("items?"), Err(NetworkError))
+        .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(13))), blob(b"fn new() {}\n"));
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(
+        context.files[0].patch.as_deref(),
+        Some("@@ -1 +1 @@\n-fn old() {}\n+fn main() {}")
+    );
+    assert_eq!(
+        context.files[1].patch.as_deref(),
+        Some("@@ -0,0 +1 @@\n+fn new() {}")
+    );
+    assert_eq!(
+        context.head.keys().collect::<Vec<_>>(),
+        ["src/main.rs", "src/new.rs"]
+    );
+    assert_eq!(context.base.keys().collect::<Vec<_>>(), ["src/main.rs"]);
+    assert!(
+        !wire.urls().iter().any(|url| url.contains("/pullrequests?")),
+        "a review never lists other pull requests"
+    );
+}
+
+#[test]
+fn changed_file_trees_read_unnamed_earlier_blobs_and_keep_deletions_and_submodules() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    let blob = |body: &[u8]| {
+        Ok(Response {
+            status: 200,
+            body: body.to_vec(),
+            ..Response::default()
+        })
+    };
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/src/main.rs", "objectId": sha(11)}, "changeType": "edit"},
+                {"item": {"path": "/src/old.rs", "objectId": sha(14)}, "changeType": "delete"},
+                {"item": {"path": "/vendor/lib", "objectId": sha(15), "originalObjectId": sha(16), "gitObjectType": "commit"}, "changeType": "edit"}
+            ]}),
+        )
+        .on(&git("items?scopePath"), Ok(Response {
+            status: 200,
+            oversize: true,
+            ..Response::default()
+        }))
+        .json(
+            &git("items?path=%2Fsrc%2Fmain.rs"),
+            json!({"objectId": sha(12), "gitObjectType": "blob", "path": "/src/main.rs"}),
+        )
+        // A gitlink head: its base kind is read.
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(16), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        )
+        .on(&git(&format!("blobs/{}?", sha(12))), blob(b"fn old() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(11))), blob(b"fn main() {}\n"))
+        .on(&git(&format!("blobs/{}?", sha(14))), blob(b"gone\n"));
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    let patch = |path: &str| {
+        context
+            .files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap()
+            .patch
+            .clone()
+    };
+    assert_eq!(
+        patch("src/main.rs").as_deref(),
+        Some("@@ -1 +1 @@\n-fn old() {}\n+fn main() {}")
+    );
+    assert_eq!(patch("src/old.rs").as_deref(), Some("@@ -1 +0,0 @@\n-gone"));
+    assert_eq!(patch("vendor/lib"), None);
+    assert_eq!(context.base["src/old.rs"].sha, sha(14));
+    let gitlink = &context.head["vendor/lib"];
+    assert_eq!(
+        (gitlink.kind.as_str(), gitlink.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(context.base["vendor/lib"].sha, sha(16));
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(15)))
+            || url.contains(&format!("blobs/{}", sha(16)))));
+}
+
+#[test]
+fn a_submodule_replaced_by_a_file_reviews_from_changed_file_trees() {
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({"changeEntries": [
+                {"item": {"path": "/vendor/lib", "objectId": sha(17), "originalObjectId": sha(18), "gitObjectType": "blob"}, "changeType": "edit"}
+            ]}),
+        )
+        .on(
+            &git("items?scopePath"),
+            Ok(Response {
+                status: 200,
+                oversize: true,
+                ..Response::default()
+            }),
+        )
+        // The old object is a submodule commit, not a blob.
+        .on(&git(&format!("blobs/{}?", sha(18))), Ok(status(404, None)))
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(18), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        )
+        .on(
+            &git(&format!("blobs/{}?", sha(17))),
+            Ok(Response {
+                status: 200,
+                body: b"now a file\n".to_vec(),
+                ..Response::default()
+            }),
+        );
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(context.files[0].patch, None);
+    let base = &context.base["vendor/lib"];
+    assert_eq!(
+        (base.kind.as_str(), base.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(context.head["vendor/lib"].kind, "blob");
+}
+
+/// A review of PR 7 at `sha(2)` whose whole trees are oversize, with
+/// `changes` as its iteration changes.
+fn fallback_review(changes: Vec<Value>) -> Arc<FakeWire> {
+    let wire = Arc::new(FakeWire::default());
+    signed_in(&wire);
+    wire.json(&git("pullrequests/7?"), raw_pull(7, BLAKE, 2, false))
+        .json(
+            &git("pullRequests/7/iterations?"),
+            json!({"value": [{"id": 1, "sourceRefCommit": {"commitId": sha(2)}, "commonRefCommit": {"commitId": sha(800)}}]}),
+        )
+        .json(
+            &git("pullRequests/7/iterations/1/changes?"),
+            json!({ "changeEntries": changes }),
+        )
+        .on(
+            &git("items?scopePath"),
+            Ok(Response {
+                status: 200,
+                oversize: true,
+                ..Response::default()
+            }),
+        );
+    wire
+}
+
+fn blob_reply(body: &[u8]) -> Reply {
+    Ok(Response {
+        status: 200,
+        body: body.to_vec(),
+        ..Response::default()
+    })
+}
+
+#[test]
+fn a_file_replaced_by_a_submodule_keeps_its_base_file() {
+    let runtime = runtime();
+    let wire = fallback_review(vec![json!(
+        {"item": {"path": "/vendor/lib", "objectId": sha(15), "originalObjectId": sha(16), "gitObjectType": "commit"}, "changeType": "edit"}
+    )]);
+    wire.json(
+        &git("items?path=%2Fvendor%2Flib"),
+        json!({"objectId": sha(16), "gitObjectType": "blob", "path": "/vendor/lib"}),
+    )
+    .on(
+        &git(&format!("blobs/{}?", sha(16))),
+        blob_reply(b"was a file\n"),
+    );
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    let (head, base) = (&context.head["vendor/lib"], &context.base["vendor/lib"]);
+    assert_eq!(
+        (head.kind.as_str(), head.mode.as_str()),
+        ("commit", "160000")
+    );
+    assert_eq!(
+        (base.kind.as_str(), base.mode.as_str(), base.sha.clone()),
+        ("blob", "100644", sha(16))
+    );
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(15)))));
+}
+
+#[test]
+fn a_submodule_replaced_by_a_file_past_the_patch_budget_reads_as_a_submodule() {
+    let runtime = runtime();
+    let mut changes: Vec<Value> = (0..300)
+        .map(|n| json!({"item": {"path": format!("/src/f{n}.rs"), "objectId": sha(50)}, "changeType": "add"}))
+        .collect();
+    changes.push(json!(
+        {"item": {"path": "/vendor/lib", "objectId": sha(17), "originalObjectId": sha(18), "gitObjectType": "blob"}, "changeType": "edit"}
+    ));
+    let wire = fallback_review(changes);
+    for _ in 0..300 {
+        wire.on(&git(&format!("blobs/{}?", sha(50))), blob_reply(b"x\n"));
+    }
+    let reader = reader(&wire, &runtime).unwrap();
+    let context = reader.review_context(&remote(), 7, &sha(2)).unwrap();
+    assert_eq!(context.files[300].patch, None);
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains(&format!("blobs/{}", sha(18)))));
+    // A later before-content read settles the real kind.
+    wire.on(&git(&format!("blobs/{}?", sha(18))), Ok(status(404, None)))
+        .json(
+            &git("items?path=%2Fvendor%2Flib"),
+            json!({"objectId": sha(18), "gitObjectType": "commit", "path": "/vendor/lib"}),
+        );
+    let before = reader
+        .file_content(&key().id(), &context.base["vendor/lib"])
+        .unwrap();
+    assert_eq!(
+        (before["kind"].as_str(), before["mode"].as_str()),
+        (Some("commit"), Some("160000"))
+    );
 }
