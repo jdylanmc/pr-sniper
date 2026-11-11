@@ -326,6 +326,43 @@ fn one_pull_request_with_malformed_changes_waits_and_the_rest_are_admitted() {
     assert_eq!(numbers(), [1, 2, 3]);
 }
 
+#[test]
+fn a_held_pull_request_past_the_by_id_budget_stays_held() {
+    let (_root, store, mut monitor) = monitored();
+    let mut ticket = next_ticket(&mut monitor, &store, NOW);
+    // 200 tracked PRs missing from the listing fill the by-ID budget, read
+    // after number 2: held PR 2 is not read this poll.
+    ticket.tracked = (1000..1200).map(|n| (n.to_string(), n)).collect();
+    ticket.listing = Some(crate::provider::ListingCursor {
+        tracked_after: 2,
+        held: vec![("2".into(), 2)],
+        ..Default::default()
+    });
+    let wire = signed_in_wire(json!({"value": []}));
+    for n in 1000..1200 {
+        wire.json(
+            &git(&format!("pullrequests/{n}?")),
+            raw_pull(n, CASEY, 7, false),
+        );
+    }
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket).unwrap();
+    assert!(!wire
+        .urls()
+        .iter()
+        .any(|url| url.contains("/pullrequests/2?")));
+    let listing = result.listing.unwrap();
+    assert_eq!(listing.held, [("2".to_string(), 2)]);
+
+    // Its turn: read by ID, facts read, no longer held.
+    ticket.listing = Some(listing);
+    ticket.tracked.clear();
+    let wire = signed_in_wire(json!({"value": []}));
+    wire.json(&git("pullrequests/2?"), raw_pull(2, BLAKE, 2, false));
+    let result = poll(Arc::new(FakeTokens::default()), &wire, &ticket).unwrap();
+    assert_eq!(result.pull_requests.len(), 1);
+    assert!(result.listing.is_none_or(|listing| listing.held.is_empty()));
+}
+
 /// The cause a repository poll parks with after failing every attempt it
 /// gets: on a token, or on the listing after a good token.
 fn parked_class(token: Option<TokenError>, listing: Option<Response>) -> Option<FailureClass> {

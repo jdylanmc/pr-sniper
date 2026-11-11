@@ -1959,19 +1959,27 @@ fn poll_repository(
         ticket.listing.as_ref(),
         now,
     )?;
+    // Held pull requests this poll did not read (past the by-ID budget) stay
+    // held; read ones are held again only if their facts fail again.
     if let Some(cursor) = polled.cursor.as_mut() {
-        cursor.held.clear();
+        cursor
+            .held
+            .retain(|(id, _)| !polled.pulls.iter().any(|pull| &pull.id == id));
     }
     Ok((connection, polled))
 }
 
-/// The poll's cursor, holding `held` for the next poll.
+/// The poll's cursor, also holding `held` for the next poll.
 fn hold(
     cursor: Option<provider::ListingCursor>,
     held: Vec<(String, u64)>,
 ) -> Option<provider::ListingCursor> {
     let mut cursor = cursor.unwrap_or_default();
-    cursor.held = held;
+    for pull in held {
+        if !cursor.held.contains(&pull) {
+            cursor.held.push(pull);
+        }
+    }
     (cursor != provider::ListingCursor::default()).then_some(cursor)
 }
 
