@@ -18,9 +18,9 @@ use std::sync::{
 use tauri::Manager;
 
 pub(crate) struct Observed {
-    origin: Publication,
-    head: String,
-    threads: Vec<Thread>,
+    pub(crate) origin: Publication,
+    pub(crate) head: String,
+    pub(crate) threads: Vec<Thread>,
 }
 
 #[derive(Default)]
@@ -32,6 +32,24 @@ pub(crate) struct Scan {
         Vec<crate::github::conversation::TopComment>,
     )>,
     pub(crate) threads: Vec<(crate::feedback::MentionBinding, Vec<Thread>)>,
+}
+
+impl Scan {
+    /// Drops every observation of `held` pull requests (held out of the
+    /// poll, ADR 0028): their cursors and owned feedback stay put until they
+    /// are read, so a mention still admits one, and feedback observed at a
+    /// head the poll did not commit never fails the repository.
+    pub(crate) fn hold_back(&mut self, held: &[(String, u64)]) {
+        let kept = |id: &str| !held.iter().any(|(held, _)| held == id);
+        self.mentions
+            .retain(|(binding, _)| kept(&binding.pull_request_id));
+        self.threads
+            .retain(|(binding, _)| kept(&binding.pull_request_id));
+        self.feedback
+            .retain(|observed| kept(&observed.origin.review.job.pull_request_id));
+        self.retained
+            .retain(|observed| kept(&observed.origin.proof.pull_request_id));
+    }
 }
 
 pub(crate) fn scan(
@@ -1195,11 +1213,5 @@ fn cancel_in_store(
 /// One pull request's discussion that is skipped, not fatal, for the
 /// repository: malformed, or past a provider or host size limit (ADR 0028).
 fn skipped_discussion(error: provider::ConnectionError) -> bool {
-    error.is_invalid_response()
-        || matches!(
-            error,
-            provider::ConnectionError::LimitExceeded
-                | provider::ConnectionError::IncompleteRead
-                | provider::ConnectionError::RevisionChanged
-        )
+    error.skips_pull_request()
 }

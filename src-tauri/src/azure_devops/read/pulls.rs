@@ -637,11 +637,6 @@ impl Client {
                 if item.is_folder || item.git_object_type.as_deref() == Some("tree") {
                     continue;
                 }
-                let path = relative(item.path.as_deref().ok_or(malformed)?)
-                    .map_err(|error| error.from_response(ProviderResponse::IterationChanges))?;
-                if !paths.insert(path.clone()) {
-                    return Err(ConnectionError::IncompleteRead);
-                }
                 let kind = change.change_type.to_ascii_lowercase();
                 let status = if kind.contains("delete") {
                     "removed"
@@ -652,6 +647,21 @@ impl Client {
                 } else {
                     "modified"
                 };
+                // A deleted file may have no item path (`"path": null`); it is
+                // named by the entry's `originalPath`.
+                let path = match (item.path.as_deref(), status) {
+                    (Some(path), _) => Some(path),
+                    (None, "removed") => change
+                        .original_path
+                        .as_deref()
+                        .or(change.source_server_item.as_deref()),
+                    (None, _) => None,
+                };
+                let path = relative(path.ok_or(malformed)?)
+                    .map_err(|error| error.from_response(ProviderResponse::IterationChanges))?;
+                if !paths.insert(path.clone()) {
+                    return Err(ConnectionError::IncompleteRead);
+                }
                 let previous_path = (status == "renamed")
                     .then(|| change.original_path.or(change.source_server_item))
                     .flatten()
