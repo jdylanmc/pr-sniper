@@ -77,7 +77,7 @@ struct Host {
     registration: LoginRegistration,
     github_auth: Mutex<GithubAuth>,
     github_generations: Mutex<BTreeMap<String, u64>>,
-    github_credentials: github::token_store::RotationSafeStore<github::NativeCredentialStore>,
+    github_credentials: Arc<GithubCredentials>,
     github_legacy_credentials:
         Option<github::token_store::RotationSafeStore<github::NativeCredentialStore>>,
     copilot: Arc<copilot::Integration>,
@@ -431,7 +431,16 @@ impl GithubAuth {
         account_id: &str,
         identity: provider::Person,
     ) -> Result<(), ConnectionError> {
-        self.account_session_allowed(account_id)?;
+        // A verified identity disproves an earlier expiry; other holds stand.
+        if !matches!(
+            self.accounts.get(account_id),
+            Some(GithubAccountState::ReconnectRequired {
+                reason: GithubAuthFailure::Expired,
+                ..
+            })
+        ) {
+            self.account_session_allowed(account_id)?;
+        }
         if identity.id != account_id {
             self.publish_session_failure(account_id, ConnectionError::WrongIdentity);
             return Err(ConnectionError::WrongIdentity);
@@ -691,7 +700,7 @@ impl GithubAuth {
     }
 
     fn restore_accounts(
-        store: &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
+        store: &Arc<GithubCredentials>,
         provider: github::token_store::ProviderId,
     ) -> Result<Self, github::token_store::StoreError> {
         use github::token_store::{ProviderAccountId, RotationError};
@@ -743,16 +752,19 @@ impl GithubAuth {
                     continue;
                 }
             };
-            let current = github::http::HttpTransport::from_token_pair(&pair)
-                .map(github::provider::GithubClient::new)
-                .and_then(|client| client.current_identity());
+            let current = github::http::HttpTransport::from_token_pair_renewing(
+                &pair,
+                github_renewal(store.clone(), &identity.id),
+            )
+            .map(github::provider::GithubClient::new)
+            .and_then(|client| client.current_identity());
             auth.publish_restored_identity(identity, current);
         }
         Ok(auth)
     }
 
     fn restore(
-        store: &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
+        store: &Arc<GithubCredentials>,
         legacy_store: Option<
             &github::token_store::RotationSafeStore<github::NativeCredentialStore>,
         >,
@@ -951,6 +963,37 @@ fn rotation_connection_error(error: github::token_store::RotationError) -> Conne
     }
 }
 
+type GithubCredentials = github::token_store::RotationSafeStore<github::NativeCredentialStore>;
+
+/// Refreshes an access token GitHub refused (401) for `account_id`. Only a
+/// refresh GitHub itself rejects is `SignedOut`; an unreachable or failing
+/// token endpoint keeps its transient cause.
+fn github_renewal(store: Arc<GithubCredentials>, account_id: &str) -> github::http::Renewal {
+    let key = github::token_store::ProviderAccountId::github(account_id);
+    Box::new(move |rejected| {
+        renew_github_pair(&store, &key, rejected, |current| {
+            github::oauth::GithubOAuthHttp::new()
+                .and_then(|transport| transport.refresh(current.refresh_token()))
+                .map_err(oauth_refresh_rotation_error)
+        })
+    })
+}
+
+fn renew_github_pair<
+    S: github::token_store::AccountRegistryStore + github::token_store::CredentialStore,
+>(
+    store: &github::token_store::RotationSafeStore<S>,
+    key: &github::token_store::CredentialKey,
+    rejected: &str,
+    refresh: impl FnOnce(
+        &github::oauth::TokenPair,
+    ) -> Result<github::oauth::TokenPair, github::token_store::RotationError>,
+) -> Result<github::oauth::TokenPair, ConnectionError> {
+    store
+        .renew_rejected(key, rejected, SystemTime::now(), refresh)
+        .map_err(rotation_connection_error)
+}
+
 fn oauth_refresh_rotation_error(
     error: github::oauth::OAuthError,
 ) -> github::token_store::RotationError {
@@ -1076,7 +1119,10 @@ fn acquire_github_session(
         })
         .map_err(rotation_connection_error)?;
     let client =
-        github::provider::GithubClient::new(github::http::HttpTransport::from_token_pair(&pair)?);
+        github::provider::GithubClient::new(github::http::HttpTransport::from_token_pair_renewing(
+            &pair,
+            github_renewal(host.github_credentials.clone(), account_id),
+        )?);
     let identity = client.current_identity()?;
     Ok((identity, client))
 }
@@ -5227,7 +5273,8 @@ pub fn run() {
             };
             let (github_keychain, legacy_github_keychain) =
                 github_keychain_stores(isolated, std::env::var_os("PR_SNIPER_KEYCHAIN_SERVICE"))?;
-            let github_credentials = github::token_store::RotationSafeStore::new(github_keychain);
+            let github_credentials =
+                Arc::new(github::token_store::RotationSafeStore::new(github_keychain));
             let github_legacy_credentials =
                 legacy_github_keychain.map(github::token_store::RotationSafeStore::new);
             let github_auth =
@@ -5677,6 +5724,157 @@ mod github_auth_tests {
             Duration::from_secs(60),
             Duration::from_secs(120),
         )
+    }
+
+    use super::{oauth_refresh_rotation_error, renew_github_pair};
+
+    fn saved_github_account(
+        access_lifetime: Duration,
+    ) -> crate::github::token_store::RotationSafeStore<FaultStore> {
+        use crate::github::token_store::{ActiveAccount, RotationSafeStore};
+        let store = RotationSafeStore::new(FaultStore::default());
+        store
+            .save_account(
+                &ActiveAccount::new("101", "octo").unwrap(),
+                &crate::github::oauth::TokenPair::new(
+                    "access-live",
+                    "refresh-live",
+                    access_lifetime,
+                    Duration::from_secs(120),
+                ),
+                true,
+            )
+            .unwrap();
+        store
+    }
+
+    fn connected_github_account() -> GithubAuth {
+        let mut auth = GithubAuth::new();
+        auth.accounts.insert(
+            "101".into(),
+            GithubAccountState::Connected(identity("101", "octo")),
+        );
+        auth
+    }
+
+    #[test]
+    fn a_refused_token_renewal_that_cannot_reach_github_keeps_the_account_connected() {
+        let key = crate::github::token_store::ProviderAccountId::github("101");
+        for (cause, error) in [
+            (OAuthError::Network, ConnectionError::Network),
+            (OAuthError::Provider, ConnectionError::ProviderFailure),
+            (
+                OAuthError::InvalidResponse,
+                ConnectionError::ProviderFailure,
+            ),
+        ] {
+            let store = saved_github_account(Duration::from_secs(60));
+            let mut auth = connected_github_account();
+            let result = renew_github_pair(&store, &key, "access-live", |_| {
+                Err(oauth_refresh_rotation_error(cause))
+            });
+            assert_eq!(result.unwrap_err(), error);
+            auth.publish_acquisition_failure("101", error);
+            assert_eq!(auth.account_session_allowed("101"), Ok(()));
+            assert!(auth.monitoring_accounts()["101"].connected);
+            assert_eq!(
+                store.load(&key).unwrap().unwrap().refresh_token(),
+                "refresh-live"
+            );
+
+            // Back online: the retried renewal and identity read reconnect it.
+            let renewed =
+                renew_github_pair(&store, &key, "access-live", |_| Ok(pair("next"))).unwrap();
+            assert_eq!(renewed.access_token(), "access-next");
+            auth.publish_session_success("101", identity("101", "octo"))
+                .unwrap();
+            assert!(matches!(
+                auth.accounts["101"],
+                GithubAccountState::Connected(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_refresh_github_rejects_still_requires_reconnect() {
+        let key = crate::github::token_store::ProviderAccountId::github("101");
+        let store = saved_github_account(Duration::from_secs(60));
+        let mut auth = connected_github_account();
+        let error = renew_github_pair(&store, &key, "access-live", |_| {
+            Err(oauth_refresh_rotation_error(OAuthError::RefreshRejected))
+        })
+        .unwrap_err();
+        assert_eq!(error, ConnectionError::SignedOut);
+        auth.publish_acquisition_failure("101", error);
+        assert_eq!(
+            auth.account_session_allowed("101"),
+            Err(ConnectionError::SignedOut)
+        );
+        assert!(!auth.monitoring_accounts()["101"].connected);
+        assert!(matches!(
+            auth.view().accounts[0],
+            GithubAccountView::ReconnectRequired {
+                reason: GithubAuthFailure::Expired,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_401_after_an_offline_refresh_renews_instead_of_expiring() {
+        let key = crate::github::token_store::ProviderAccountId::github("101");
+        let store = saved_github_account(Duration::ZERO);
+        let mut auth = connected_github_account();
+        // Asleep or offline when the access token lapsed: the refresh fails.
+        let offline = store
+            .refresh_if_needed(&key, SystemTime::now(), |_| {
+                Err(crate::github::token_store::RotationError::Network)
+            })
+            .map_err(rotation_connection_error)
+            .unwrap_err();
+        auth.publish_acquisition_failure("101", offline);
+        assert_eq!(auth.account_session_allowed("101"), Ok(()));
+
+        // Back online GitHub refuses the stale token: renew once, not expire.
+        let renewed = renew_github_pair(&store, &key, "access-live", |current| {
+            assert_eq!(current.refresh_token(), "refresh-live");
+            Ok(pair("next"))
+        })
+        .unwrap();
+        assert_eq!(renewed.access_token(), "access-next");
+        auth.publish_session_success("101", identity("101", "octo"))
+            .unwrap();
+        assert!(matches!(
+            auth.accounts["101"],
+            GithubAccountState::Connected(_)
+        ));
+    }
+
+    #[test]
+    fn a_verified_identity_clears_a_false_expiry_but_no_other_hold() {
+        let mut auth = connected_github_account();
+        auth.set_failure("101", GithubAuthFailure::Expired);
+        auth.publish_session_success("101", identity("101", "octo"))
+            .unwrap();
+        assert!(matches!(
+            auth.accounts["101"],
+            GithubAccountState::Connected(_)
+        ));
+        for hold in [
+            GithubAuthFailure::DisconnectPending,
+            GithubAuthFailure::DisconnectFailed,
+            GithubAuthFailure::WrongIdentity,
+            GithubAuthFailure::AuthenticationChanged,
+        ] {
+            auth.set_failure("101", hold);
+            assert!(auth
+                .publish_session_success("101", identity("101", "octo"))
+                .is_err());
+            assert!(matches!(
+                auth.accounts["101"],
+                GithubAccountState::ReconnectRequired { reason, .. } if reason == hold
+            ));
+        }
     }
 
     fn monitoring_fixture() -> (tempfile::TempDir, Store, Monitor, GithubAuth) {
@@ -7087,11 +7285,11 @@ mod github_auth_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let current = RotationSafeStore::new(
+        let current = Arc::new(RotationSafeStore::new(
             crate::github::macos_keychain::MacKeychainStore::with_service(format!(
                 "com.jdylanmc.pr-sniper.tests.oauth-current-{nonce}"
             )),
-        );
+        ));
         let legacy = RotationSafeStore::new(
             crate::github::macos_keychain::MacKeychainStore::with_service(format!(
                 "com.jdylanmc.pr-sniper.tests.oauth-legacy-{nonce}"

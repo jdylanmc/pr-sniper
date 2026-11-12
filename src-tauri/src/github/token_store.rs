@@ -524,6 +524,41 @@ impl<S: AccountRegistryStore + CredentialStore> RotationSafeStore<S> {
         Ok(replacement)
     }
 
+    /// GitHub refused `rejected` (HTTP 401): refresh once, whatever its local
+    /// expiry says. A pair another caller already rotated is returned as is,
+    /// so concurrent refusals spend one refresh token, not one each.
+    pub fn renew_rejected<F>(
+        &self,
+        key: &CredentialKey,
+        rejected: &str,
+        now: SystemTime,
+        refresh: F,
+    ) -> Result<TokenPair, RotationError>
+    where
+        F: FnOnce(&TokenPair) -> Result<TokenPair, RotationError>,
+    {
+        let lock = self.account_lock(key).map_err(RotationError::Store)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| RotationError::Store(StoreError::Unavailable))?;
+        let current = self
+            .inner
+            .load(key)
+            .map_err(RotationError::Store)?
+            .ok_or(RotationError::ReconnectRequired)?;
+        if current.access_token() != rejected && !current.access_is_expired(now) {
+            return Ok(current);
+        }
+        if current.refresh_is_expired(now) {
+            return Err(RotationError::ReconnectRequired);
+        }
+        let replacement = refresh(&current)?;
+        self.inner
+            .save(key, &replacement)
+            .map_err(RotationError::Store)?;
+        Ok(replacement)
+    }
+
     pub fn rotate<F>(&self, key: &CredentialKey, refresh: F) -> Result<TokenPair, RotationError>
     where
         F: FnOnce(&TokenPair) -> Result<TokenPair, RotationError>,
@@ -686,6 +721,50 @@ mod tests {
                 .access_token(),
             "a2"
         );
+    }
+
+    #[test]
+    fn a_refused_access_token_is_refreshed_once_before_its_local_expiry() {
+        let store = RotationSafeStore::new(MemoryStore::default());
+        let first = account("42", "octocat");
+        let key = first.provider_account_id();
+        store.save_account(&first, &pair("a1", "r1"), true).unwrap();
+        let now = SystemTime::now();
+        let calls = std::cell::Cell::new(0);
+        let renewed = store
+            .renew_rejected(&key, "a1", now, |current| {
+                calls.set(calls.get() + 1);
+                assert_eq!(current.refresh_token(), "r1");
+                Ok(pair("a2", "r2"))
+            })
+            .unwrap();
+        assert_eq!(renewed.access_token(), "a2");
+        // A second refusal of the old token reuses the rotated pair.
+        let again = store
+            .renew_rejected(&key, "a1", now, |_| panic!("already rotated"))
+            .unwrap();
+        assert_eq!(again.access_token(), "a2");
+        assert_eq!(calls.get(), 1);
+        assert_eq!(store.load(&key).unwrap().unwrap().refresh_token(), "r2");
+    }
+
+    #[test]
+    fn a_failed_renewal_keeps_the_stored_pair_and_its_typed_cause() {
+        let store = RotationSafeStore::new(MemoryStore::default());
+        let first = account("42", "octocat");
+        let key = first.provider_account_id();
+        store.save_account(&first, &pair("a1", "r1"), true).unwrap();
+        for cause in [
+            RotationError::Network,
+            RotationError::Provider,
+            RotationError::ReconnectRequired,
+        ] {
+            assert_eq!(
+                store.renew_rejected(&key, "a1", SystemTime::now(), |_| Err(cause)),
+                Err(cause)
+            );
+            assert_eq!(store.load(&key).unwrap().unwrap().refresh_token(), "r1");
+        }
     }
 
     #[test]

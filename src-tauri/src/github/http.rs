@@ -2,6 +2,7 @@ use super::{
     credentials::Credential,
     oauth::TokenPair,
     provider::{Response, Transport},
+    publication::SendFailure,
     ConnectionError,
 };
 use reqwest::{
@@ -10,13 +11,23 @@ use reqwest::{
     redirect::Policy,
     Url,
 };
-use std::{collections::BTreeMap, io::Read, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::Read,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+
+/// Replaces an access token GitHub refused with a refreshed one. Errors keep
+/// their typed cause: only a refused refresh is `SignedOut`.
+pub type Renewal = Box<dyn Fn(&str) -> Result<TokenPair, ConnectionError> + Send + Sync>;
 
 pub struct HttpTransport {
     client: Client,
     /// Credential-free client for signed redirect targets; never sees `credential`.
     blob: Client,
-    credential: Credential,
+    credential: RwLock<Arc<Credential>>,
+    renewal: Option<Renewal>,
 }
 
 /// Hard stop for a redirected blob download; the tail kept is far smaller.
@@ -41,8 +52,61 @@ impl HttpTransport {
         Ok(Self {
             client,
             blob,
-            credential,
+            credential: RwLock::new(Arc::new(credential)),
+            renewal: None,
         })
+    }
+
+    /// A token-pair transport that refreshes once and retries when GitHub
+    /// answers 401, so a refused but renewable token never reads as expired.
+    pub fn from_token_pair_renewing(
+        pair: &TokenPair,
+        renewal: Renewal,
+    ) -> Result<Self, ConnectionError> {
+        let mut transport = Self::from_token_pair(pair)?;
+        transport.renewal = Some(renewal);
+        Ok(transport)
+    }
+
+    fn current_credential(&self) -> Result<Arc<Credential>, ConnectionError> {
+        self.credential
+            .read()
+            .map(|credential| credential.clone())
+            .map_err(|_| ConnectionError::Configuration)
+    }
+
+    /// Sends with the current credential; on 401 renews it once and resends.
+    fn authorized(
+        &self,
+        build: impl Fn(&Credential) -> Result<Request, ConnectionError>,
+    ) -> Result<Response, ConnectionError> {
+        self.authorized_send(build).map_err(|failure| failure.error)
+    }
+
+    fn authorized_send(
+        &self,
+        build: impl Fn(&Credential) -> Result<Request, ConnectionError>,
+    ) -> Result<Response, SendFailure> {
+        let renewal = self.renewal.as_ref().map(|renew| {
+            move |rejected: &Arc<Credential>| -> Result<Arc<Credential>, ConnectionError> {
+                let pair = renew(rejected.0.as_str())?;
+                let fresh = Arc::new(Credential::from_secret(pair.access_token()));
+                *self
+                    .credential
+                    .write()
+                    .map_err(|_| ConnectionError::Configuration)? = fresh.clone();
+                Ok(fresh)
+            }
+        });
+        let credential = self.current_credential().map_err(|error| SendFailure {
+            error,
+            uncertain: false,
+        })?;
+        with_renewal(
+            credential,
+            |credential| self.execute(build(credential)?),
+            renewal.as_ref(),
+        )
     }
 
     /// A redirect target request: absolute `https`, no user info, no credential header.
@@ -65,7 +129,7 @@ impl HttpTransport {
         Self::new(Credential::from_secret(pair.access_token()))
     }
 
-    fn request(&self, path: &str) -> Result<Request, ConnectionError> {
+    fn request(&self, path: &str, credential: &Credential) -> Result<Request, ConnectionError> {
         if !path.starts_with('/') || path.starts_with("//") || path.contains('#') {
             return Err(ConnectionError::InvalidResponse);
         }
@@ -74,7 +138,7 @@ impl HttpTransport {
         if url.host_str() != Some("api.github.com") || url.scheme() != "https" {
             return Err(ConnectionError::InvalidResponse);
         }
-        let value = zeroize::Zeroizing::new(format!("Bearer {}", *self.credential.0));
+        let value = zeroize::Zeroizing::new(format!("Bearer {}", *credential.0));
         let mut authorization =
             HeaderValue::from_str(&value).map_err(|_| ConnectionError::BrokenCli)?;
         authorization.set_sensitive(true);
@@ -90,7 +154,7 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn get(&self, path: &str) -> Result<Response, ConnectionError> {
-        self.execute(self.request(path)?)
+        self.authorized(|credential| self.request(path, credential))
     }
 
     fn get_unauthenticated_tail(
@@ -178,25 +242,38 @@ impl super::publication::MutationTransport for HttpTransport {
         path: &str,
         mutation: super::publication::Request,
     ) -> Result<Response, ConnectionError> {
-        let mut request = self.request(path)?;
+        self.send_mutation(path, mutation)
+            .map_err(|failure| failure.error)
+    }
+
+    fn send_mutation(
+        &self,
+        path: &str,
+        mutation: super::publication::Request,
+    ) -> Result<Response, SendFailure> {
         let (method, body) = match mutation {
-            super::publication::Request::Post(body) => (reqwest::Method::POST, Some(body)),
+            super::publication::Request::Post(body) => (
+                reqwest::Method::POST,
+                Some(serde_json::to_vec(&body).map_err(|_| SendFailure {
+                    error: ConnectionError::InvalidResponse,
+                    uncertain: false,
+                })?),
+            ),
             super::publication::Request::Delete => (reqwest::Method::DELETE, None),
         };
-        *request.method_mut() = method;
-        if let Some(body) = body {
-            request.headers_mut().insert(
-                reqwest::header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            *request.body_mut() = Some(
-                serde_json::to_vec(&body)
-                    .map_err(|_| ConnectionError::InvalidResponse)?
-                    .into(),
-            );
-        }
-
-        self.execute(request)
+        // A 401 means GitHub did not apply the mutation, so a resend is safe.
+        self.authorized_send(|credential| {
+            let mut request = self.request(path, credential)?;
+            *request.method_mut() = method.clone();
+            if let Some(body) = &body {
+                request.headers_mut().insert(
+                    reqwest::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                *request.body_mut() = Some(body.clone().into());
+            }
+            Ok(request)
+        })
     }
 }
 
@@ -234,6 +311,33 @@ impl HttpTransport {
             headers,
             body,
         })
+    }
+}
+
+/// Sends with `credential`; a 401 renews it once and resends. The second
+/// answer stands, so a 401 on a just-refreshed token stays `SignedOut`.
+/// A failed renewal is certain: GitHub refused the first send and no resend
+/// left, so nothing was applied.
+fn with_renewal<C, R: Fn(&C) -> Result<C, ConnectionError>>(
+    credential: C,
+    send: impl Fn(&C) -> Result<Response, ConnectionError>,
+    renew: Option<R>,
+) -> Result<Response, SendFailure> {
+    let sent = |credential: &C| {
+        send(credential).map_err(|error| SendFailure {
+            error,
+            uncertain: true,
+        })
+    };
+    let response = sent(&credential)?;
+    match renew {
+        Some(renew) if response.status == 401 => {
+            sent(&renew(&credential).map_err(|error| SendFailure {
+                error,
+                uncertain: false,
+            })?)
+        }
+        _ => Ok(response),
     }
 }
 
@@ -309,7 +413,9 @@ mod tests {
     fn authenticated_request_is_get_only_and_debug_redacts_secret() {
         let transport =
             HttpTransport::new(Credential(Zeroizing::new("fixture-secret".into()))).unwrap();
-        let request = transport.request("/user").unwrap();
+        let request = transport
+            .request("/user", &transport.current_credential().unwrap())
+            .unwrap();
         assert_eq!(request.method(), reqwest::Method::GET);
         assert_eq!(request.url().as_str(), "https://api.github.com/user");
         assert!(request.headers()[AUTHORIZATION].is_sensitive());
@@ -353,7 +459,10 @@ mod tests {
                 .build()
                 .unwrap(),
             blob: Client::new(),
-            credential: Credential(Zeroizing::new("fixture-secret".into())),
+            credential: RwLock::new(Arc::new(Credential(Zeroizing::new(
+                "fixture-secret".into(),
+            )))),
+            renewal: None,
         };
         let get = |url: &str| transport.execute(transport.client.get(url).build().unwrap());
         let fail = |url: &str| get(url).err().expect("a transport failure");
@@ -446,9 +555,88 @@ mod tests {
             "/user#secret",
         ] {
             assert_eq!(
-                transport.request(path).unwrap_err(),
+                transport
+                    .request(path, &transport.current_credential().unwrap())
+                    .unwrap_err(),
                 ConnectionError::InvalidResponse
             );
         }
+    }
+
+    fn status(status: u16) -> Response {
+        Response {
+            status,
+            headers: BTreeMap::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_refused_token_is_renewed_once_and_resent() {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let renewals = std::cell::Cell::new(0);
+        let send = |token: &&'static str| {
+            sent.borrow_mut().push(*token);
+            Ok(status(if *token == "stale" { 401 } else { 200 }))
+        };
+        let renew = |_: &&str| {
+            renewals.set(renewals.get() + 1);
+            Ok("fresh")
+        };
+        let response = with_renewal("stale", send, Some(&renew)).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(*sent.borrow(), ["stale", "fresh"]);
+        assert_eq!(renewals.get(), 1);
+    }
+
+    #[test]
+    fn a_renewal_that_cannot_reach_github_keeps_its_transient_cause() {
+        for cause in [
+            ConnectionError::Network,
+            ConnectionError::Timeout,
+            ConnectionError::ProviderFailure,
+        ] {
+            let renew = |_: &&str| Err(cause);
+            // GitHub refused the send and nothing was resent: certain.
+            assert_eq!(
+                with_renewal("stale", |_| Ok(status(401)), Some(&renew)).err(),
+                Some(SendFailure {
+                    error: cause,
+                    uncertain: false
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_refresh_or_a_second_refusal_is_definitive() {
+        let refused = |_: &&str| Err(ConnectionError::SignedOut);
+        assert_eq!(
+            with_renewal("stale", |_| Ok(status(401)), Some(&refused)).err(),
+            Some(SendFailure {
+                error: ConnectionError::SignedOut,
+                uncertain: false
+            })
+        );
+        let renew = |_: &&str| Ok("fresh");
+        let response = with_renewal("stale", |_| Ok(status(401)), Some(&renew)).unwrap();
+        assert_eq!(response.status, 401);
+    }
+
+    #[test]
+    fn only_a_401_renews() {
+        let renew = |_: &&str| -> Result<&str, ConnectionError> { panic!("no renewal") };
+        for code in [200, 403, 404, 429, 500, 503] {
+            let response = with_renewal("token", |_| Ok(status(code)), Some(&renew)).unwrap();
+            assert_eq!(response.status, code);
+        }
+        // A send that may have reached GitHub stays uncertain.
+        assert_eq!(
+            with_renewal("token", |_| Err(ConnectionError::Network), Some(&renew)).err(),
+            Some(SendFailure {
+                error: ConnectionError::Network,
+                uncertain: true
+            })
+        );
     }
 }

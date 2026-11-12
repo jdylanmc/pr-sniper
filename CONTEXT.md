@@ -270,6 +270,9 @@ _Avoid_: Auto-merge approval
 **Offline suspension**:
 Verified service reachability loss, scoped to the GitHub or Copilot account. Queued work waits; active reviews stop and keep their slots through teardown. Retry deadlines, backoff and cooldown clocks freeze without clearing genuine failures. Bounded credential-free checks resume eligible work automatically. Running rows show Offline and the last successful check; authentication, permission and invalid-result errors are not offline.
 
+**Credential expiry**:
+A GitHub or Copilot account expires only on a definitive GitHub answer: a refresh GitHub rejects, or a 401 on a token refreshed after an earlier 401. A 401 first refreshes once and resends. Network, DNS, timeout, TLS, 5xx and rate-limit failures, including during that refresh, stay transient; the account stays connected. A later verified identity clears an expiry.
+
 **Backpressure**:
 A rate limit (GitHub 403/429, Copilot/model 429) is a signal to wait, not a failure. No attempt spent, no failure count, no Park, never Needs attention. The provider account is gated in `backpressure.json` until Retry-After/reset, else 30s x2^n (cap 15 min, deterministic jitter); a success clears it. Queue shows a quiet clock row with the local resume time.
 _Avoid_: Rate-limit failure
