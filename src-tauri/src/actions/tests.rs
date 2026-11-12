@@ -2254,3 +2254,24 @@ fn a_saved_backoff_nothing_will_run_does_not_hold_ready() {
     // Nothing will re-read it now, so the stale backoff is not settling.
     assert_eq!(notified(&store), [crate::notifications::Category::Ready]);
 }
+
+#[test]
+fn an_unresolved_intent_whose_first_reconcile_read_parks_notifies_its_failure_at_once() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let approval = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    mark_intent(&store, &approval.id, NOW + 21).unwrap();
+    host::record_observation(
+        &store,
+        &item,
+        Err(read_failure(monitoring::OperationFailure::Permanent)),
+        NOW + 22,
+    )
+    .unwrap();
+    let effect = store.load_actions().unwrap().effects.remove(0);
+    assert_eq!(
+        (effect.state, effect.reconcile_attempts),
+        (EffectState::Uncertain, 1)
+    );
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}

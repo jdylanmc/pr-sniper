@@ -300,3 +300,19 @@ fn a_queue_switched_on_or_off_after_preparation_sends_nothing_then_follows_the_n
         assert_eq!(merges(&store)[0].state, expected);
     }
 }
+
+#[test]
+fn a_queued_merge_whose_read_parks_notifies_its_failure_at_once() {
+    let (_root, store, item) = fixture(1, true, true);
+    enqueue(&store, &item);
+    assert!(notified(&store).is_empty());
+    synchronize(
+        &store,
+        &item,
+        Err(read_failure(monitoring::OperationFailure::Permanent)),
+        NOW + 30,
+    )
+    .unwrap();
+    assert_eq!(merges(&store)[0].state, EffectState::Queued);
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}
