@@ -227,6 +227,12 @@
     });
     return state;
   };
+  const pathSummary = (paths = []) => {
+    if (!paths.length) return "";
+    const excludes = paths.filter((path) => path.startsWith("!")).length;
+    const includes = paths.length - excludes;
+    return `${includes ? `+${includes}` : "All"}${excludes ? ` \u2212${excludes}` : ""}`;
+  };
   const pathProblem = (value, existing = []) => {
     if (typeof value !== "string" || !value.trim()) return "Enter a path.";
     const glob = value.startsWith("!") ? value.slice(1) : value;
@@ -1567,6 +1573,7 @@
     pathsMatch,
     globMatches,
     pathProblem,
+    pathSummary,
     defaultAdmission,
     ruleKinds,
     needsOnboarding,

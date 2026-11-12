@@ -1240,12 +1240,18 @@ function syncAdmission(form) {
       ? ""
       : `${admission.rules.filter((rule) => rule.enabled).length} on`;
   const or = form._pathsMode === "or" && admission.mode !== "explicit";
-  form.querySelector("[data-paths-summary]").textContent = form._paths.length
-    ? or
-      ? `Or \u00b7 ${form._paths.length}`
-      : String(form._paths.length)
-    : "";
+  const summary = Demo.pathSummary(form._paths);
+  form.querySelector("[data-paths-summary]").textContent =
+    or && summary ? `Or \u00b7 ${summary}` : summary;
   renderAdmission(form);
+}
+
+/** Include/exclude toggle for one path row; a flip onto an existing pattern is disabled. */
+function pathMode(value, values) {
+  const excluded = value.startsWith("!");
+  const glob = excluded ? value.slice(1) : value;
+  const flipped = excluded ? glob : `!${glob}`;
+  return `<button type="button" class="row-trash" data-action="toggle-path" data-value="${esc(value)}" aria-pressed="${excluded}" aria-label="Exclude ${esc(glob)}" title="Exclude" ${disabled(values.includes(flipped))}>${icon(excluded ? "minus" : "plus")}</button>`;
 }
 
 function currentRule(form) {
@@ -1288,7 +1294,7 @@ function renderAdmission(form) {
   const list = `<section class="group-card admission-values">${values
     .map(
       (value, index) =>
-        `<div class="assign-row"><span class="person-handle" title="${esc(value)}">${users ? esc(person(value)) : `<code>${esc(value)}</code>`}</span><button type="button" class="row-trash" data-action="remove-value" data-index="${index}" aria-label="Remove ${esc(users ? person(value) : value)}" title="Remove">${icon("trash")}</button></div>`,
+        `<div class="assign-row">${users ? "" : pathMode(value, values)}<span class="person-handle" title="${esc(value)}">${users ? esc(person(value)) : `<code>${esc(value)}</code>`}</span><button type="button" class="row-trash" data-action="remove-value" data-index="${index}" aria-label="Remove ${esc(users ? person(value) : value)}" title="Remove">${icon("trash")}</button></div>`,
     )
     .join("")}</section>`;
   if (users && form._provider === "azure_devops") {
@@ -2691,6 +2697,16 @@ popover.addEventListener("click", (event) => {
       values.splice(Number(button.dataset.index), 1);
       dirty = true;
       renderAdmission(form);
+    },
+    "toggle-path": () => {
+      const index = form._paths.indexOf(button.dataset.value);
+      const value = form._paths[index];
+      form._paths[index] = value.startsWith("!") ? value.slice(1) : `!${value}`;
+      dirty = true;
+      renderAdmission(form);
+      form
+        .querySelectorAll('[data-action="toggle-path"]')
+        [index]?.focus({ preventScroll: true });
     },
     "add-path": () => {
       const input = form.querySelector("[data-path-input]");

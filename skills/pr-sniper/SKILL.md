@@ -77,6 +77,8 @@ Use tool input schemas and current resource values; never invent identities.
   Preserve every unrelated field. Agent, doctrine, voice, repository (bindings,
   assignments, tools/grants, filters, cron), and preferences use app validation.
 - Grant changes need specific human intent and `allow_grants:true`.
+- A secondary assignment's `paths` both trigger and scope its review (only
+  matching changed files; `["!**/*.md"]` = all but Markdown). The primary has none.
 - Request-only overrides belong to `watch_pull_request.overrides`, keyed by assignment ID.
   Never edit shared Agents/doctrines to implement a one-request override.
 - Deletions use `value:null`; fix references explicitly, never cascade silently.

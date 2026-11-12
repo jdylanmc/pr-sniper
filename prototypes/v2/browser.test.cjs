@@ -430,10 +430,20 @@ async function check(engine, name) {
       await page.locator('.admission-path-form [role="alert"]').innerText(),
       /Already added/,
     );
+    await pathInput.fill("!**/*.md");
+    await page.locator('[data-action="add-path"]').click();
+    const exclude = page.getByRole("button", { name: "Exclude **/*.md" });
+    assert.equal(await exclude.getAttribute("aria-pressed"), "true");
+    await exclude.click();
+    assert.equal(
+      await page.locator(".admission-values code").nth(1).innerText(),
+      "**/*.md",
+    );
+    await exclude.click();
     await back();
     assert.equal(
       (await page.locator("[data-paths-summary]").innerText()).trim(),
-      "1",
+      "+1 \u22121",
     );
     assert.equal(
       await page.locator("#page-title").innerText(),

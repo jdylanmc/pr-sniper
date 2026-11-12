@@ -80,6 +80,9 @@
 - Desktop UI and MCP call the same native service handlers. The app remains
   the only configuration writer, permission enforcer and review scheduler.
 - [Tool mapping and diagnostic protocol](../skills/pr-sniper/references/control.md).
+- `save_repository` / `validate_repository` carry a secondary's `paths`: trigger
+  and review scope ([ADR 0027](adr/0027-path-globs.md)). Exclude-only lists
+  start from every file.
 - [Transport decision and trust boundary](adr/0025-local-agentic-control.md).
 - `saved`, `queued`, `waiting`, `running`, `completed` are distinct outcomes.
 - `inspect` returns bounded counts and control state. `accounts` carries safe

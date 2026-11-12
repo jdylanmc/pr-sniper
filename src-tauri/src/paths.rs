@@ -1,5 +1,6 @@
 //! Path globs (ADR 0027): the repository gate decides what is queued, a
-//! secondary assignment's globs decide whether it reviews a revision.
+//! secondary assignment's globs decide whether it reviews a revision and
+//! which changed files that review sees.
 //!
 //! Syntax: include patterns plus `!pattern` excludes, gitignore-style. Per
 //! file the last matching pattern wins; a list of only excludes starts from
@@ -7,8 +8,8 @@
 
 use crate::admission::{glob_matches, valid_pattern, MAX_PATTERN_LENGTH, MAX_VALUES_PER_RULE};
 use crate::provider::{
-    ChangedFile, ConnectionError, Listing, PullRequest, PullRequestReader, RemoteRepository, Since,
-    TreeDiff,
+    ChangedFile, ConnectionError, Listing, PullRequest, PullRequestReader, RemoteRepository,
+    ReviewContext, Since, TreeDiff,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -68,15 +69,38 @@ fn selected(patterns: &[String], name: &str) -> bool {
     selected
 }
 
+/// Whether `patterns` select a file by either name of a rename. Empty
+/// patterns select every file.
+pub fn selects(patterns: &[String], path: &str, previous: Option<&str>) -> bool {
+    patterns.is_empty()
+        || std::iter::once(path)
+            .chain(previous)
+            .any(|name| selected(patterns, name))
+}
+
 /// Whether any changed file (either name of a rename) is selected. Empty
 /// patterns match everything, even no files.
 pub fn matches(patterns: &[String], files: &[ChangedFile]) -> bool {
     patterns.is_empty()
-        || files.iter().any(|file| {
-            std::iter::once(file.path.as_str())
-                .chain(file.previous_path.as_deref())
-                .any(|name| selected(patterns, name))
-        })
+        || files
+            .iter()
+            .any(|file| selects(patterns, &file.path, file.previous_path.as_deref()))
+}
+
+/// A secondary's review scope (ADR 0027): the changed files, their patches
+/// and the PR's file list keep only what `patterns` select. Both trees stay
+/// whole, so `read_source` can still read any file for context.
+pub fn restrict(context: &mut ReviewContext, patterns: &[String]) {
+    if patterns.is_empty() {
+        return;
+    }
+    context
+        .files
+        .retain(|file| selects(patterns, &file.path, file.previous_path.as_deref()));
+    context
+        .pull
+        .files
+        .retain(|file| selects(patterns, &file.path, file.previous_path.as_deref()));
 }
 
 /// Directory prefixes a scoped tree diff must walk so `patterns` decide the

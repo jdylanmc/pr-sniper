@@ -35,6 +35,7 @@ Per repository, set in the repo editor.
 | Repository `paths` (gate)   | AND on top of admission and explicit intake. Re-evaluated per revision: a tracked PR whose new revision does not match gets no new work; existing entries stay. Empty: no gate.                                                  |
 | `paths_mode: "or"`          | Rules admit, or a changed file matches; Exclude users beats a match. Paths never block. No effect in Explicit. Lists every open PR; facts for ≤ 100 other PRs per poll, newest first. [ADR-0029](adr/0029-paths-or-admission.md) |
 | Secondary `paths` (trigger) | Files changed since that assignment's last completed review of the PR (none: whole PR). No match: entry `skipped_no_matching_files`, item **Skipped: no matching files**.                                                        |
+| Secondary `paths` (scope)   | A triggered review sees only matching changed files (whole PR, same patterns). Comments/findings elsewhere: exit refused `out_of_scope`. `read_source` reads any file.                                                           |
 | Primary                     | None: reviews everything the gate admits. Skips never block its barrier, exits, readiness, approval or merge.                                                                                                                    |
 
 Facts per revision (`monitoring.json` `path_facts`): read once per new head, base (retarget) or changed input; same revision and inputs are reused.

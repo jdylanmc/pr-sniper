@@ -50,6 +50,63 @@ fn gate_input(run: &ReviewRun, facts: Facts) -> Result<GateInput, Failure> {
     })
 }
 
+/// The run's path scope, as captured in its selection.
+pub(crate) fn scope(run: &ReviewRun) -> &[String] {
+    run.selection.scope(&run.assignment_id)
+}
+
+/// `context` as `run` may review it: a secondary sees only the changed files
+/// its globs select; both trees stay whole for read-only context.
+pub(crate) fn scoped(run: &ReviewRun, mut context: ReviewContext) -> ReviewContext {
+    crate::paths::restrict(&mut context, scope(run));
+    context
+}
+
+/// Comments or report findings on files outside a secondary's globs. A file
+/// in the scoped diff (a rename either name of which matches) stays in scope.
+pub(crate) fn out_of_scope(
+    patterns: &[String],
+    files: &[crate::provider::ReviewFile],
+    call: &crate::exits::ExitCall,
+) -> Option<String> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = match call {
+        crate::exits::ExitCall::LeaveComments { new_comments, .. } => {
+            new_comments.iter().map(|c| c.path.as_str()).collect()
+        }
+        crate::exits::ExitCall::SubmitReport { report } => {
+            report.findings.iter().map(|f| f.file.as_str()).collect()
+        }
+        _ => return None,
+    };
+    let mut outside: Vec<&str> = names
+        .into_iter()
+        .filter(|name| {
+            !crate::paths::selects(patterns, name, None)
+                && !files
+                    .iter()
+                    .any(|f| f.path == *name || f.previous_path.as_deref() == Some(*name))
+        })
+        .collect();
+    outside.sort_unstable();
+    outside.dedup();
+    const SHOWN: usize = 5;
+    (!outside.is_empty()).then(|| {
+        let more = outside.len().saturating_sub(SHOWN);
+        format!(
+            "{}{} outside this assignment's paths. Use only files in changed_files.",
+            outside[..outside.len().min(SHOWN)].join(", "),
+            if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            }
+        )
+    })
+}
+
 /// Who builds the packet, and the local facts the packet needs beyond the PR read.
 pub(crate) struct Caller<'a> {
     pub acting_login: &'a str,
@@ -349,8 +406,12 @@ fn exit_gate(
     let pull_request_id = run.job.pull_request_id.clone();
     let (head, target) = (context.pull.head_sha.clone(), context.pull.base_sha.clone());
     let files = context.files.clone();
+    let patterns = scope(run).to_vec();
     let (assignment, account) = (run.assignment_id.clone(), run.job.account_id.clone());
     Ok(Arc::new(move |call| {
+        if let Some(reason) = out_of_scope(&patterns, &files, call) {
+            return Err(Refusal::OutOfScope(reason));
+        }
         let mut observation: Observation = client
             .action_observation(&repo, number)
             .map_err(Refusal::Unreadable)?;

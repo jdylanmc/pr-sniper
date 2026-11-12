@@ -975,7 +975,9 @@ test("repository Paths gate edits inline and saves include and exclude globs", a
   await expect(paths.getByLabel("Path pattern")).toBeFocused();
   await assignmentBack(page, repository);
   await expect(repository.locator("[data-open-paths]")).toBeFocused();
-  await expect(repository.locator("[data-paths-summary]")).toHaveText("2");
+  await expect(repository.locator("[data-paths-summary]")).toHaveText(
+    "+1 \u22121",
+  );
   await button(repository, "Save repository").click();
   await page.evaluate(() => window.__settingsIdle());
   expect((await store("snapshot")).settings.repositories[0].paths).toEqual([
@@ -1017,7 +1019,7 @@ test("repository Paths And/Or saves, reloads and is disabled in Explicit", async
   await assignmentBack(page, repository);
   await expect(repository.locator("[data-open-paths]")).toBeFocused();
   await expect(repository.locator("[data-paths-summary]")).toHaveText(
-    "Or \u00b7 1",
+    "Or \u00b7 +1",
   );
   await button(repository, "Save repository").click();
   await page.evaluate(() => window.__settingsIdle());
@@ -1026,13 +1028,15 @@ test("repository Paths And/Or saves, reloads and is disabled in Explicit", async
   expect(saved.paths_mode).toBe("or");
 
   const again = await repositorySettings(page, "fixture/assignment");
-  await expect(again.locator("[data-paths-summary]")).toHaveText("Or \u00b7 1");
+  await expect(again.locator("[data-paths-summary]")).toHaveText(
+    "Or \u00b7 +1",
+  );
   await again.locator("[data-open-paths]").click();
   await expect(or).toBeChecked();
   await and.check();
   await assignmentBack(page, again);
   await expect(again.locator("[data-open-paths]")).toBeFocused();
-  await expect(again.locator("[data-paths-summary]")).toHaveText("1");
+  await expect(again.locator("[data-paths-summary]")).toHaveText("+1");
   await button(again, "Save repository").click();
   await page.evaluate(() => window.__settingsIdle());
   saved = (await store("snapshot")).settings.repositories[0];
@@ -1046,6 +1050,49 @@ test("repository Paths And/Or saves, reloads and is disabled in Explicit", async
   await explicit.locator("[data-open-paths]").click();
   await expect(and).toBeDisabled();
   await expect(or).toBeDisabled();
+});
+
+test("a secondary's exclude-only Paths read as All minus the exclude and save", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const assignment = await openAssignment(page);
+  const open = assignment.locator("[data-open-paths]");
+  await open.click();
+  const editor = assignment.locator("[data-paths-editor]");
+  await addPathPattern(editor, "!**/*.md");
+  await expect(editor.getByRole("alert")).toBeHidden();
+  await expect(pathRows(editor)).toHaveCount(1);
+  await expect(pathRows(editor)).toHaveAttribute("data-path", "!**/*.md");
+  const mode = editor.getByRole("button", { name: "Exclude **/*.md" });
+  await expect(mode).toHaveAttribute("aria-pressed", "true");
+  // Toggled to an include and back: the row keeps its glob and focus.
+  await mode.click();
+  await expect(pathRows(editor)).toHaveAttribute("data-path", "**/*.md");
+  await expect(mode).toHaveAttribute("aria-pressed", "false");
+  await expect(mode).toBeFocused();
+  await mode.click();
+  await expect(mode).toHaveAttribute("aria-pressed", "true");
+  // A flip onto an existing pattern would duplicate it.
+  await addPathPattern(editor, "**/*.md");
+  await expect(
+    editor.locator('[data-path="!**/*.md"] [data-path-mode]'),
+  ).toBeDisabled();
+  await editor
+    .getByRole("button", { name: "Remove **/*.md", exact: true })
+    .click();
+  await expect(mode).toBeEnabled();
+  await assignmentBack(page, assignment);
+  await expect(open).toBeFocused();
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText(
+    "All \u22121",
+  );
+  await saveAssignment(page, assignment);
+  const saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.assignments[0].paths).toEqual(["!**/*.md"]);
+  const again = await openAssignment(page);
+  await expect(again.locator("[data-paths-summary]")).toHaveText("All \u22121");
 });
 
 test("secondary assignment Paths save; a primary shows all admitted changes", async ({
@@ -1062,14 +1109,18 @@ test("secondary assignment Paths save; a primary shows all admitted changes", as
   await addPathPattern(editor, "!docs/generated/");
   await assignmentBack(page, assignment);
   await expect(open).toBeFocused();
-  await expect(assignment.locator("[data-paths-summary]")).toHaveText("2");
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText(
+    "+1 \u22121",
+  );
   await primarySwitch(assignment).check();
   await expect(open).toBeDisabled();
   await expect(assignment.locator("[data-paths-summary]")).toHaveText(
     "All admitted changes",
   );
   await primarySwitch(assignment).uncheck();
-  await expect(assignment.locator("[data-paths-summary]")).toHaveText("2");
+  await expect(assignment.locator("[data-paths-summary]")).toHaveText(
+    "+1 \u22121",
+  );
   await saveAssignment(page, assignment);
   let saved = (await store("snapshot")).settings.repositories[0];
   expect(saved.assignments[0].paths).toEqual(["docs/", "!docs/generated/"]);

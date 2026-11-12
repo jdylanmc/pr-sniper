@@ -3660,7 +3660,10 @@
   color: transparent;
 }
 .panel-shell .repository-editor .assignment-row [data-remove],
-.panel-shell .repository-editor .watchlist-row [data-remove] {
+.panel-shell
+  .repository-editor
+  .watchlist-row
+  :is([data-remove], [data-path-mode]) {
   position: relative;
   z-index: 1;
   display: grid;
@@ -3674,7 +3677,7 @@
   background: transparent;
   color: var(--text-neutral-8a96a6);
 }
-.panel-shell .repository-editor [data-remove] svg {
+.panel-shell .repository-editor :is([data-remove], [data-path-mode]) svg {
   width: 18px;
   height: 18px;
   stroke-width: 1.5;
@@ -3809,14 +3812,15 @@
 /* Standalone settings window: icon buttons keep a hit target. */
 .settings-window
   :is(.assignment-row, .watchlist-row, .agent-card, .doctrine-card, .voice-card)
-  [data-remove] {
+  [data-remove],
+.settings-window .watchlist-row [data-path-mode] {
   display: grid;
   place-items: center;
   min-width: 30px;
   min-height: 30px;
   padding: 0;
 }
-.settings-window [data-remove] svg {
+.settings-window :is([data-remove], [data-path-mode]) svg {
   width: 18px;
   height: 18px;
 }
