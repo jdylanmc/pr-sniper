@@ -37,6 +37,14 @@ export interface Repository {
   paths?: string[];
 }
 
+/** Paths summary: include and exclude counts; an exclude-only list starts from All. */
+export function pathSummary(paths: string[]): string {
+  if (!paths.length) return "";
+  const excludes = paths.filter((path) => path.startsWith("!")).length;
+  const includes = paths.length - excludes;
+  return `${includes ? `+${includes}` : "All"}${excludes ? ` \u2212${excludes}` : ""}`;
+}
+
 /** One path glob, as `paths::validate` checks it; `""` when valid. */
 export function pathProblem(value: string, existing: string[]): string {
   const glob = value.startsWith("!") ? value.slice(1) : value;
