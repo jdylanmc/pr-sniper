@@ -121,6 +121,8 @@ interface Snapshot {
   error: string | null;
   /** Occurrence id when `error` is a background host error. */
   error_id?: number | null;
+  /** Repositories whose polls are failing now. */
+  repository_outages?: string[];
 }
 // Host error occurrences already shown in this webview; redraws never re-show them.
 const shownHostErrors = new Set<number>();
@@ -147,7 +149,9 @@ export type SetupTarget =
   | "repositories"
   | "preferences"
   // One Agent's editor with its model picker focused.
-  | { agent: string };
+  | { agent: string }
+  // One repository's editor: its outage notice.
+  | { repository: string };
 export interface GuidedReturn {
   back: () => void;
 }
@@ -555,6 +559,7 @@ export async function mountSettings(
   const pendingSetup = new Set<string>();
   const setupMonitoringOff = new Set<string>();
   let repositoryAutomation: AutomationSnapshot | undefined;
+  let repositoryOutages = new Set<string>();
   let repositoryAutomationRead = 0;
   const pendingPullRequests = new Map<string, ExplicitPullRequestIntent>();
   let updateRepositoryIntake:
@@ -838,6 +843,7 @@ export async function mountSettings(
         ? "Reconnect account"
         : "Disabled / Reconnect account";
     if (!repository.enabled) return "Disabled";
+    if (repositoryOutages.has(repository.id)) return "Connection lost";
     if (!repository.assignments?.length) return "Needs setup";
     if (!repositoryAutomation) return "Unavailable";
     if (repositoryAutomation.paused) return "Paused";
@@ -849,9 +855,13 @@ export async function mountSettings(
   async function refreshRepositoryAutomation(update: () => void) {
     const read = ++repositoryAutomationRead;
     try {
-      const state = await invoke<AutomationSnapshot>("automation_snapshot");
+      const [state, fresh] = await Promise.all([
+        invoke<AutomationSnapshot>("automation_snapshot"),
+        invoke<Snapshot>("snapshot").catch(() => undefined),
+      ]);
       if (read !== repositoryAutomationRead) return;
       repositoryAutomation = state;
+      repositoryOutages = new Set(fresh?.repository_outages ?? []);
     } catch {
       if (read !== repositoryAutomationRead) return;
       repositoryAutomation = undefined;
@@ -5492,6 +5502,7 @@ export async function mountSettings(
   // Callers have checked that no draft, editor or save would be overwritten.
   function applySnapshot(state: Snapshot) {
     snapshot = state;
+    repositoryOutages = new Set(state.repository_outages ?? []);
     if (!state.settings) {
       showError(state.error ?? "Unavailable");
       return;
@@ -5578,6 +5589,28 @@ export async function mountSettings(
       }
       guidance = origin;
       returnGenie.hidden = false;
+      if (typeof target === "object" && "repository" in target) {
+        if (options.embedded) homeOpener = "repositories";
+        if (section !== "repositories") navigate("repositories");
+        settingsBack.hidden = true;
+        const repository = repositories().find(
+          (entry) => entry.id === target.repository,
+        );
+        const row = content.querySelector<HTMLButtonElement>(
+          `[data-repository="${CSS.escape(target.repository)}"]`,
+        );
+        if (!repository || !row) {
+          (
+            content.querySelector<HTMLElement>(".repository-library") ??
+            returnGenie
+          ).focus({ preventScroll: true });
+          return true;
+        }
+        row.scrollIntoView({ block: "nearest" });
+        row.focus({ preventScroll: true });
+        repositoryDialog(repository, row);
+        return true;
+      }
       if (typeof target === "object") {
         if (options.embedded) homeOpener = "agents";
         if (section !== "agents") navigate("agents");

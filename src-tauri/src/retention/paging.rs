@@ -535,6 +535,7 @@ pub fn detail(store: &Store, destination: Detail) -> Result<DetailResult, String
     crate::panel::Route {
         tab: crate::panel::Tab::Reviewed,
         detail: Some(destination.clone()),
+        repository: None,
     }
     .validate()?;
     guard(store)?;

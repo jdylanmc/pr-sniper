@@ -12,7 +12,7 @@ use pr_sniper_lib::{
     review::{self, Decision, ReviewRun, Selection},
     storage::{Settings, Store},
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 const REPO: &str = "00000000-0000-4000-8000-000000000001";
 const ASSIGNMENT: &str = "00000000-0000-4000-8000-000000000002";
@@ -663,7 +663,7 @@ fn polling_and_restart_keep_exact_destinations_without_retargeting_old_heads() {
 }
 
 #[test]
-fn sorted_attention_precedes_routine_work_and_monitoring_failures_prevent_ready() {
+fn sorted_attention_precedes_routine_work_and_poll_failures_never_fail_items() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let ready = review(9);
@@ -677,17 +677,225 @@ fn sorted_attention_precedes_routine_work_and_monitoring_failures_prevent_ready(
     let snapshot = queue::snapshot(&store, vec![]).unwrap();
     assert_eq!(snapshot.items[0].job.number, 9);
     assert_eq!(snapshot.items[1].state, State::WaitingForAuthor);
-    let health = serde_json::from_value(json!({
-        "repository_id":REPO,"name":"example/repo","schedule_key":"interval:5:UTC",
-        "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":90,
-        "next_run":120,"schedule_available":true,"last_failure":"network","in_flight":false
-    }))
-    .unwrap();
-    assert!(queue::snapshot(&store, vec![health])
-        .unwrap()
+    let own: Vec<_> = snapshot
         .items
         .iter()
-        .all(|i| i.state == State::Failed));
+        .map(|i| (i.id.clone(), i.state, i.failed_operation))
+        .collect();
+    let health = |failure: &str, operation: Value| {
+        serde_json::from_value(json!({
+            "repository_id":REPO,"name":"example/repo","schedule_key":"interval:5:UTC",
+            "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":90,
+            "next_run":0,"schedule_available":false,"last_failure":failure,"in_flight":false,
+            "outage_since":100,"operation":operation
+        }))
+        .unwrap()
+    };
+    let poll = |state: &str, failure: &str| {
+        json!({
+            "id":"poll-op","provider":"github","account_id":"22","configuration_id":REPO,
+            "repository_id":"100","pull_request_id":null,"head_sha":null,"trigger_policy":"policy",
+            "operation_type":"repository_poll","state":state,"attempt_count":3,
+            "initial_attempt_at":90,"retry_deadline":990,"next_attempt_at":null,"failure":failure,
+            "attempted_mutation":null,"pending_review_id":null,"owned_thread_id":null,
+            "triggering_external_comment_id":null,"confirmed_receipt":null
+        })
+    };
+    // Retrying, parked by an older build, or needing a human: the repository's.
+    for health in [
+        health("ProviderFailure", poll("queued", "provider")),
+        health("ProviderFailure", poll("manual_retry", "provider")),
+        health("MissingReadPermission", poll("failed", "permission")),
+        health("SignedOut", poll("failed", "credentials")),
+        health("network", Value::Null),
+    ] {
+        let items: Vec<_> = queue::snapshot(&store, vec![health])
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| (i.id.clone(), i.state, i.failed_operation))
+            .collect();
+        assert_eq!(items, own);
+    }
+    // A lost account binding still stops each item's work.
+    assert!(
+        queue::snapshot(&store, vec![health("account_disconnected", Value::Null)])
+            .unwrap()
+            .items
+            .iter()
+            .all(|i| i.state == State::Failed
+                && i.failed_operation == Some(queue::FailedOperation::RepositoryCheck))
+    );
+}
+
+#[test]
+fn a_poll_outage_sends_one_repository_notice_never_one_per_pr() {
+    use pr_sniper_lib::notifications::{self, Category, Destination, Ledger};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let runs: Vec<_> = (1..=3).map(review).collect();
+    let published: Vec<_> = runs.iter().map(published).collect();
+    seed(&store, &runs, &published);
+    let health = |since: Option<i64>,
+                  operation: &str,
+                  state: &str,
+                  last: Option<&str>|
+     -> pr_sniper_lib::monitoring::ScheduleHealth {
+        serde_json::from_value(json!({
+            "repository_id":REPO,"name":"example/repo","schedule_key":"interval:5:UTC",
+            "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":90,
+            "next_run":0,"schedule_available":true,"last_failure":last,"in_flight":false,
+            "outage_since":since,"outage_confirmed":since.is_some(),"operation":{
+                "id":operation,"provider":"github","account_id":"22","configuration_id":REPO,
+                "repository_id":"100","pull_request_id":null,"head_sha":null,
+                "trigger_policy":"policy","operation_type":"repository_poll","state":state,
+                "attempt_count":1,"initial_attempt_at":90,"retry_deadline":990,
+                "next_attempt_at":null,"failure":if state == "completed" { Value::Null } else { json!("provider") },
+                "attempted_mutation":null,"pending_review_id":null,"owned_thread_id":null,
+                "triggering_external_comment_id":null,"confirmed_receipt":null
+            }
+        }))
+        .unwrap()
+    };
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Ledger::default()
+    };
+    let observe = |ledger: &mut Ledger, health: pr_sniper_lib::monitoring::ScheduleHealth| {
+        let snapshot = queue::snapshot(&store, vec![health]).unwrap();
+        let frames = notifications::frames(&snapshot);
+        ledger.observe(&frames, 200).unwrap();
+        (snapshot, frames)
+    };
+    let failures = |ledger: &Ledger| {
+        ledger
+            .notices
+            .iter()
+            .filter(|n| n.event.category == Category::Failure)
+            .count()
+    };
+    // Retrying, retrying again in flight, then parked: one outage.
+    let (snapshot, frames) = observe(
+        &mut ledger,
+        health(Some(100), "poll-a", "queued", Some("ProviderFailure")),
+    );
+    let failing: Vec<_> = frames
+        .iter()
+        .filter_map(|f| f.event.as_ref())
+        .filter(|e| e.category == Category::Failure)
+        .collect();
+    assert_eq!(failing.len(), 1, "one notice, none per PR");
+    assert_eq!(
+        failing[0].destination,
+        Destination::Repository {
+            repository_id: REPO.into()
+        }
+    );
+    let notice = ledger
+        .notices
+        .iter()
+        .find(|n| n.event.category == Category::Failure)
+        .unwrap()
+        .clone();
+    let subject = notifications::Subject::find(&snapshot, &notice);
+    let message = notifications::render(&notice, subject.as_ref());
+    assert_eq!(message.title, "repo · Connection lost");
+    assert_eq!(message.body, "Retrying");
+    observe(&mut ledger, health(Some(100), "poll-a", "running", None));
+    observe(
+        &mut ledger,
+        health(Some(100), "poll-b", "failed", Some("MissingReadPermission")),
+    );
+    assert_eq!(failures(&ledger), 1);
+    // A restart reloads the saved ledger: still the same outage.
+    let mut ledger: Ledger =
+        serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+    observe(
+        &mut ledger,
+        health(Some(100), "poll-b", "failed", Some("MissingReadPermission")),
+    );
+    assert_eq!(failures(&ledger), 1);
+    // Recovery clears it quietly; the next outage is new.
+    observe(&mut ledger, health(None, "poll-c", "completed", None));
+    assert_eq!(failures(&ledger), 1);
+    observe(
+        &mut ledger,
+        health(Some(500), "poll-d", "queued", Some("ProviderFailure")),
+    );
+    assert_eq!(failures(&ledger), 2);
+}
+
+#[test]
+fn a_poll_blip_or_outage_never_re_announces_already_failed_prs() {
+    use pr_sniper_lib::notifications::{self, Category, Destination, Ledger};
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let runs: Vec<_> = (1..=2)
+        .map(|number| {
+            let mut run = review(number);
+            run.result = None;
+            run.operation.state = OperationState::Running;
+            run.operation.fail(
+                &review::Failure::tossed("PR state moved.").monitoring(),
+                1_000,
+            );
+            run.operation.state = OperationState::ManualRetry;
+            run
+        })
+        .collect();
+    seed(&store, &runs, &[]);
+    let health = |since: Option<i64>, confirmed: bool, state: &str, attempts: u8| {
+        let failed = state != "completed";
+        serde_json::from_value::<pr_sniper_lib::monitoring::ScheduleHealth>(json!({
+            "repository_id":REPO,"name":"example/repo","schedule_key":"interval:5:UTC",
+            "provider_account_id":"22","enabled":true,"last_attempt":100,"last_success":90,
+            "next_run":0,"schedule_available":true,
+            "last_failure":if failed { json!("ProviderFailure") } else { Value::Null },
+            "in_flight":false,"outage_since":since,"outage_confirmed":confirmed,"operation":{
+                "id":"poll-op","provider":"github","account_id":"22","configuration_id":REPO,
+                "repository_id":"100","pull_request_id":null,"head_sha":null,
+                "trigger_policy":"policy","operation_type":"repository_poll","state":state,
+                "attempt_count":attempts,"initial_attempt_at":90,"retry_deadline":990,
+                "next_attempt_at":null,"failure":if failed { json!("provider") } else { Value::Null },
+                "attempted_mutation":null,"pending_review_id":null,"owned_thread_id":null,
+                "triggering_external_comment_id":null,"confirmed_receipt":null
+            }
+        }))
+        .unwrap()
+    };
+    let mut ledger = Ledger {
+        enabled: true,
+        ..Ledger::default()
+    };
+    let mut counts = vec![];
+    for healths in [
+        vec![],
+        vec![health(Some(100), false, "queued", 1)],
+        vec![health(Some(100), true, "queued", 3)],
+        vec![health(None, false, "completed", 4)],
+    ] {
+        let snapshot = queue::snapshot(&store, healths).unwrap();
+        assert!(snapshot
+            .items
+            .iter()
+            .all(|item| item.state == State::Failed));
+        ledger
+            .observe(&notifications::frames(&snapshot), 200)
+            .unwrap();
+        let failures = |item: bool| {
+            ledger
+                .notices
+                .iter()
+                .filter(|n| {
+                    n.event.category == Category::Failure
+                        && matches!(n.event.destination, Destination::QueueItem { .. }) == item
+                })
+                .count()
+        };
+        counts.push((failures(true), failures(false)));
+    }
+    // Two PR notices once; the outage adds its one repository notice.
+    assert_eq!(counts, vec![(2, 0), (2, 0), (2, 1), (2, 1)]);
 }
 
 #[test]

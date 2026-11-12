@@ -1416,6 +1416,8 @@ struct Snapshot {
     error_id: Option<u64>,
     version: &'static str,
     settings_persisted: bool,
+    /// Repositories whose polls are failing now (#381).
+    repository_outages: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -2403,6 +2405,11 @@ fn snapshot(host: State<'_, Host>) -> Result<Snapshot, String> {
             .lock()
             .map_err(|_| "Storage is unavailable.")?
             .has_saved_settings(),
+        repository_outages: host
+            .monitor
+            .lock()
+            .map_err(|_| "Monitoring is unavailable.")?
+            .outages(),
     })
 }
 

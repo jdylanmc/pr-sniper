@@ -33,10 +33,14 @@ export type PanelDetail =
 export interface PanelRoute {
   tab: PanelTab;
   detail?: PanelDetail;
+  // Settings opens this repository's editor (an outage notice).
+  repository?: string;
 }
 interface PanelSnapshot {
   route: PanelRoute;
   revision: number;
+  // Explicit navigations only: a reveal or blur keeps it.
+  navigation: number;
   visible: boolean;
   missing: string | null;
   placement_warning: string | null;
@@ -211,6 +215,8 @@ export async function mountPanel(app: HTMLElement) {
   };
   let changelogOpen = false;
   let lastState: PanelSnapshot | undefined;
+  // The navigation whose repository destination was already opened.
+  let openedRepository: number | undefined;
   function renderChangelog() {
     const view = views.changelog;
     view.replaceChildren();
@@ -1247,6 +1253,22 @@ export async function mountPanel(app: HTMLElement) {
     if (visible === "settings" && !settingsController) {
       await ensureSettings();
       if (state.revision !== revision) return;
+    }
+    const repository = route.repository;
+    // Once per navigation, while shown: a reveal or blur keeps the route.
+    if (
+      visible === "settings" &&
+      repository &&
+      state.visible &&
+      openedRepository !== state.navigation
+    ) {
+      openedRepository = state.navigation;
+      const controller = await ensureSettings();
+      if (state.revision !== revision) return;
+      controller.open(
+        { repository },
+        { back: () => void navigate({ tab: "settings" }) },
+      );
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (restore && focusAtStart === focusRevision) {

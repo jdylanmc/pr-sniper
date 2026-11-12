@@ -1452,6 +1452,7 @@ fn subject(title: &str, failure_cause: Option<&'static str>) -> Subject {
         number: 219,
         title: title.into(),
         failure_cause: failure_cause.map(Into::into),
+        others: 0,
     }
 }
 
@@ -1687,8 +1688,13 @@ fn history_bodies(store: &Store, live: &queue::Snapshot) -> Vec<String> {
 #[test]
 fn history_keeps_each_failure_notice_to_its_own_reason() {
     let (_root, store) = store();
-    send_all(&store, &failed_snapshot(queue::CAUSE_PANIC, "first"));
-    let live = failed_snapshot("publication_failed", "second");
+    // A new account loss is a new failure of the item; a poll failure never
+    // is (#381).
+    send_all(
+        &store,
+        &failed_snapshot(queue::CAUSE_PANIC, "account_binding_required"),
+    );
+    let live = failed_snapshot("publication_failed", "account_disconnected");
     send_all(&store, &live);
     assert_eq!(
         history_bodies(&store, &live),

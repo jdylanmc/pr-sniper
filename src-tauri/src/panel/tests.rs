@@ -254,6 +254,7 @@ fn retained_native_navigation_and_stale_blur_do_not_change_execution_state() {
             kind: Kind::Normal,
             id: "exact-job".into(),
         }),
+        repository: None,
     };
     session.navigate(&store, Some(route.clone())).unwrap();
     let revision = session.revision;
@@ -323,6 +324,7 @@ fn unavailable_exact_routes_remain_requested_and_profile_scoped_without_substitu
             kind: Kind::Mention,
             id: "missing-job".into(),
         }),
+        repository: None,
     };
     assert!(missing(&store, &job).unwrap().is_some());
     assert_eq!(
@@ -372,7 +374,8 @@ fn exact_iteration_and_normal_job_routing_uses_the_real_native_projection() {
             detail: Some(Detail::Job {
                 kind: Kind::Normal,
                 id: key.clone()
-            })
+            }),
+            repository: None,
         }
     )
     .unwrap()
@@ -384,7 +387,8 @@ fn exact_iteration_and_normal_job_routing_uses_the_real_native_projection() {
             detail: Some(Detail::Job {
                 kind: Kind::Mention,
                 id: key
-            })
+            }),
+            repository: None,
         }
     )
     .unwrap()
@@ -480,4 +484,24 @@ fn an_explicit_dismissal_or_newer_destination_supersedes_a_pending_open_without_
         Opening::Failed("Cannot show the application panel.".into()).reportable(),
         Some("Cannot show the application panel.")
     );
+}
+
+#[test]
+fn a_repository_destination_opens_settings_at_that_repository() {
+    let route = Route::repository("repository-config".into());
+    assert_eq!(route.tab, Tab::Settings);
+    route.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(&route).unwrap(),
+        serde_json::json!({"tab": "settings", "repository": "repository-config"})
+    );
+    for invalid in [
+        Route {
+            tab: Tab::Queue,
+            ..Route::repository("repository-config".into())
+        },
+        Route::repository(String::new()),
+    ] {
+        assert!(invalid.validate().is_err());
+    }
 }

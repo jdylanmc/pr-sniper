@@ -370,6 +370,11 @@ pub(crate) async fn open(app: &tauri::AppHandle, id: &str) -> Result<(), String>
         Destination::Settings => crate::panel::show(app, Request::Exact(Route::tab(Tab::Settings)))
             .await
             .map(|_| ()),
+        Destination::Repository { repository_id } => {
+            crate::panel::show(app, Request::Exact(Route::repository(repository_id)))
+                .await
+                .map(|_| ())
+        }
     };
     // A newer navigation, dismissal or Quit owns the panel: nothing failed to report.
     let outcome = match outcome {

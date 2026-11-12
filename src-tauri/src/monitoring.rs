@@ -260,6 +260,14 @@ pub struct ScheduleHealth {
     pub operation: Option<JobOperation>,
     #[serde(default)]
     pub scan_assignments: Vec<ScanAssignment>,
+    /// When the current run of failed polls began, or the account outage it
+    /// joined; cleared by the next successful poll (#381).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outage_since: Option<i64>,
+    /// The run needs a human or has failed `MAX_FAILED_ATTEMPTS` times in a
+    /// row: an outage, one notice. A shorter blip retries silently.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outage_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +716,63 @@ pub struct MonitoringState {
     pub path_facts: BTreeMap<String, BTreeMap<String, crate::paths::PathFacts>>,
 }
 
+impl MonitoringState {
+    /// Repositories whose polls are failing now: Settings marks each once (#381).
+    pub fn outages(&self) -> Vec<String> {
+        let ids: BTreeSet<_> = self
+            .health
+            .values()
+            .filter(|health| health.enabled && health.outage_confirmed)
+            .map(|health| health.repository_id.clone())
+            .collect();
+        ids.into_iter().collect()
+    }
+
+    /// Start of an outage another repository on the ticket's account is
+    /// retrying on its own: a transient failure here joins it (#381).
+    fn account_outage(&self, ticket: &PollTicket) -> Option<i64> {
+        self.health
+            .iter()
+            .filter(|(key, health)| {
+                *key != &ticket.health_key
+                    && health.enabled
+                    && health.provider_account_id.as_deref()
+                        == Some(ticket.provider_account_id.as_str())
+                    && health
+                        .operation
+                        .as_ref()
+                        .is_some_and(|operation| !operation.parked())
+            })
+            .filter_map(|(_, health)| health.outage_since)
+            .min()
+    }
+}
+
+/// A failed poll starts (or continues) a run of failures. A transient run
+/// joins one its account is already retrying, so an account-wide outage is one
+/// notice, not one per repository, even if the first repository recovers
+/// first. The run is an outage once it needs a human or has failed
+/// `MAX_FAILED_ATTEMPTS` times in a row; a shorter blip retries silently (#381).
+fn record_outage(
+    health: &mut ScheduleHealth,
+    failure: &OperationFailure,
+    account_outage: Option<i64>,
+    now: i64,
+) {
+    let operation = health.operation.as_ref();
+    let parked = operation.is_some_and(JobOperation::parked);
+    let confirmed =
+        parked || operation.is_none_or(|operation| operation.attempt_count >= MAX_FAILED_ATTEMPTS);
+    health
+        .outage_since
+        .get_or_insert(if failure.transient() && !parked {
+            account_outage.unwrap_or(now)
+        } else {
+            now
+        });
+    health.outage_confirmed |= confirmed;
+}
+
 /// Retired poll operations kept for diagnosis; nothing reads them back, so
 /// only the most recent are kept instead of growing every saved poll.
 pub(crate) const ARCHIVED_OPERATIONS: usize = 64;
@@ -1141,6 +1206,10 @@ impl Monitor {
             connected_seen: None,
             previews: BTreeMap::new(),
         })
+    }
+
+    pub fn outages(&self) -> Vec<String> {
+        self.state.outages()
     }
 
     pub fn snapshot(&self) -> Vec<ScheduleHealth> {
@@ -2255,6 +2324,8 @@ impl Monitor {
                     manual_pending: false,
                     operation: None,
                     scan_assignments: Vec::new(),
+                    outage_since: None,
+                    outage_confirmed: false,
                 });
             let binding_changed = health.name != configuration.name
                 || health.provider_account_id != configuration.provider_account_id
@@ -2276,6 +2347,8 @@ impl Monitor {
                 health.next_run = 0;
                 health.account_login = None;
                 health.operation = None;
+                health.outage_since = None;
+                health.outage_confirmed = false;
                 self.state.cursors.remove(&configuration.health_key);
             }
             health.repository_id = configuration.repository_id.clone();
@@ -2354,6 +2427,7 @@ impl Monitor {
             }
             // A parked repository poll retries once per occurrence of its own
             // schedule (credentials wait for a reconnect); Check Now retries any.
+            // A transient park from an older build never waits (#381).
             let occurrence_due =
                 !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
             let restart = !health.in_flight
@@ -2363,7 +2437,11 @@ impl Monitor {
                         && match parked {
                             ParkedPolls::Keep => false,
                             ParkedPolls::ScheduledRun => {
-                                occurrence_due
+                                (occurrence_due
+                                    || operation
+                                        .failure
+                                        .as_ref()
+                                        .is_some_and(OperationFailure::transient))
                                     && operation.failure != Some(OperationFailure::Credentials)
                             }
                             ParkedPolls::CheckNow => true,
@@ -2807,6 +2885,7 @@ impl Monitor {
             Err(_) => {}
         }
         self.synchronize_health(&configured, accounts, now);
+        let account_outage = self.state.account_outage(&ticket);
         let current = configured
             .iter()
             .find(|configuration| configuration.health_key == ticket.health_key);
@@ -2820,6 +2899,8 @@ impl Monitor {
                         health.last_failure = None;
                         health.last_error = None;
                         health.conversation_admission_pending = false;
+                        health.outage_since = None;
+                        health.outage_confirmed = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
@@ -2863,6 +2944,10 @@ impl Monitor {
                             health.last_failure = Some(error.health_failure().into());
                             health.last_error = Some(error.message().into());
                             finish_failed_operation(health, error, now);
+                            // Provider-side only: a local storage failure is a host error.
+                            if let MonitoringError::Recoverable { failure, .. } = error {
+                                record_outage(health, failure, account_outage, now);
+                            }
                         }
                     }
                 }
@@ -3995,6 +4080,7 @@ fn start_poll_operation(
     now: i64,
     manual: bool,
 ) {
+    // A poll retrying a transient failure has no attempt cap (#381).
     let retrying = health.operation.as_ref().is_some_and(|operation| {
         matches!(
             operation.state,
@@ -4003,12 +4089,11 @@ fn start_poll_operation(
             .next_attempt_at
             .is_some_and(|next| manual || now >= next)
             && now < operation.retry_deadline
-            && operation.attempt_count < MAX_FAILED_ATTEMPTS
     });
     if retrying {
         if let Some(operation) = health.operation.as_mut() {
             operation.state = OperationState::Running;
-            operation.attempt_count += 1;
+            operation.attempt_count = operation.attempt_count.saturating_add(1);
             operation.next_attempt_at = None;
             operation.backpressure_until = None;
             return;
@@ -4058,12 +4143,47 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
     let Some(operation) = health.operation.as_mut() else {
         return;
     };
-    operation.fail(error, now);
+    operation.fail_poll(error, now);
     health.next_run = operation.next_attempt_at.unwrap_or(0);
     health.schedule_available = operation.next_attempt_at.is_some();
 }
 
 impl JobOperation {
+    /// A repository poll never parks for a transient failure (5xx, network,
+    /// timeout, truncated read): it retries under `retry::TRANSIENT`, the wait
+    /// growing with consecutive failures up to the cap, with no attempt limit
+    /// (ADR 0028). Credentials, permission and permanent failures park.
+    pub fn fail_poll(&mut self, error: &MonitoringError, now: i64) {
+        let MonitoringError::Recoverable {
+            failure,
+            retry_after_seconds,
+            ..
+        } = error
+        else {
+            return self.fail(error, now);
+        };
+        if !failure.transient() {
+            return self.fail(error, now);
+        }
+        self.offline_since = None;
+        self.backpressure_until = None;
+        self.ai_attempt = None;
+        self.interruption = None;
+        self.resume_at = None;
+        self.failure = Some(failure.clone());
+        let delay = crate::retry::TRANSIENT.wait(
+            &self.id,
+            u32::from(self.attempt_count.saturating_sub(1)),
+            *retry_after_seconds,
+        );
+        let next_attempt = now.saturating_add(delay);
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(next_attempt);
+        self.retry_deadline = self
+            .retry_deadline
+            .max(next_attempt.saturating_add(RETRY_WINDOW_SECONDS));
+    }
+
     pub fn freeze_offline(&mut self, now: i64) {
         if self.state != OperationState::Completed && !self.ended_superseded() {
             self.offline_since.get_or_insert(now);
