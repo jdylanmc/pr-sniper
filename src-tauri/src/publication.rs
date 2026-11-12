@@ -254,8 +254,11 @@ impl Publication {
     }
 }
 
-fn lens_differs(current: &Selection, review: &Selection) -> bool {
-    !current.same_lens(review)
+/// The review's lens no longer matches settings: Agent inputs, or the
+/// reviewed assignment's own Paths (they scoped what it saw, ADR 0027).
+fn lens_differs(current: &Selection, review: &ReviewRun) -> bool {
+    !current.same_lens(&review.selection)
+        || current.scope(&review.assignment_id) != review.selection.scope(&review.assignment_id)
 }
 
 pub fn automatic_policy(
@@ -264,7 +267,7 @@ pub fn automatic_policy(
     job: &QueueJob,
 ) -> Result<bool, String> {
     let current = Selection::resolve(settings, job, &review.assignment_id)?;
-    if lens_differs(&current, &review.selection) {
+    if lens_differs(&current, review) {
         return Err("The review lens changed; run a new review before publishing.".into());
     }
     let assignment = settings
@@ -363,7 +366,7 @@ pub fn evaluate_review_gate(
     // Withdrawn or lens-changed output can never publish: its batch is discarded.
     let lens_changed = current_job.is_some_and(|job| {
         Selection::resolve(settings, job, &review.assignment_id)
-            .is_ok_and(|current| lens_differs(&current, &review.selection))
+            .is_ok_and(|current| lens_differs(&current, review))
     });
     Gate {
         stop,

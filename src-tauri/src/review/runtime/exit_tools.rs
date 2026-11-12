@@ -21,6 +21,8 @@ pub enum Refusal {
     Denied(String),
     /// The PR state moved since the packet; the run is tossed.
     Moved(String),
+    /// A comment or finding names a file outside a secondary's paths.
+    OutOfScope(String),
     /// The exit-time PR re-read failed. The run ends with the typed provider failure:
     /// the agent cannot fix it, and retrying in the loop only ends in `panic_exit`.
     Unreadable(crate::provider::ConnectionError),
@@ -179,6 +181,7 @@ impl ExitTools {
             if let Err(refusal) = (self.gate)(&call) {
                 return Err(match refusal {
                     Refusal::Denied(reason) => refused(R::Gate, error(&reason)),
+                    Refusal::OutOfScope(reason) => refused(R::OutOfScope, error(&reason)),
                     Refusal::Moved(reason) => {
                         self.state.fail(Failure::tossed(&reason));
                         refused(R::Moved, error(&reason))

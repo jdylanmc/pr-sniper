@@ -168,6 +168,22 @@ impl Selection {
             }
     }
 
+    /// A secondary's path scope (ADR 0027): its captured globs. The primary
+    /// has none and reviews everything the repository gate admits.
+    pub(crate) fn scope(&self, assignment_id: &str) -> &[String] {
+        self.configuration
+            .as_ref()
+            .filter(|config| !config.authority.primary)
+            .and_then(|config| {
+                config
+                    .repository
+                    .assignments
+                    .iter()
+                    .find(|a| a.id == assignment_id)
+            })
+            .map_or(&[], |assignment| assignment.paths.as_slice())
+    }
+
     pub fn resolve(
         settings: &Settings,
         job: &QueueJob,
@@ -535,7 +551,10 @@ pub fn validate_execution_selection(store: &Store, run: &ReviewRun) -> Result<()
             _ => Failure::permanent(error),
         }
     })?;
-    if !current.same_execution(&run.selection) {
+    // A secondary's Paths decide what it reviews, so a change makes the run stale.
+    if !current.same_execution(&run.selection)
+        || current.scope(&run.assignment_id) != run.selection.scope(&run.assignment_id)
+    {
         return Err(Failure::permanent(
             "Agent configuration changed; explicitly retry.",
         ));

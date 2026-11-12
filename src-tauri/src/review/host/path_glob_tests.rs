@@ -13,6 +13,7 @@ use crate::monitoring::{
     WAITING_INCOMPLETE_FILES, WAITING_SKIPPED_NO_MATCHING_FILES, WAITING_SUPERSEDED,
 };
 use crate::queue::State;
+use crate::review::packet_run;
 use crate::storage::{Settings, Store};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -789,4 +790,303 @@ fn turning_on_review_drafts_mid_poll_never_bypasses_the_gate() {
     store.save_settings(&settings).unwrap();
     let _ = monitor.finish(&store, ticket, result, NOW + 1);
     assert!(waiting(&store, 'a').is_empty());
+}
+
+/// Dispatches `assignment`'s queued entry for `head` as a run.
+fn started(store: &Store, assignment: &str, head: char, now: i64) -> ReviewRun {
+    let job = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| {
+            j.assignment_id.as_deref() == Some(assignment)
+                && j.head_sha == sha(head)
+                && j.waiting == WAITING_AI_CAPACITY
+        })
+        .unwrap();
+    let key = key(&job, assignment);
+    request(store, &key, true, now).unwrap();
+    prepare_dispatch(store, &key, now).unwrap().unwrap()
+}
+
+/// The review read of `head` changing `files`, each with a one-line patch.
+fn review_context(head: char, files: &[&str]) -> crate::provider::ReviewContext {
+    let tree: BTreeMap<String, crate::provider::TreeEntry> = files
+        .iter()
+        .map(|path| {
+            (
+                path.to_string(),
+                crate::provider::TreeEntry {
+                    path: path.to_string(),
+                    mode: "100644".into(),
+                    sha: sha('c'),
+                    kind: "blob".into(),
+                },
+            )
+        })
+        .collect();
+    crate::provider::ReviewContext {
+        base_revision: sha('f'),
+        pull: PullRequest {
+            files: files
+                .iter()
+                .map(|path| crate::provider::ChangedFile {
+                    path: path.to_string(),
+                    previous_path: None,
+                    status: "modified".into(),
+                    additions: 1,
+                    deletions: 1,
+                    changes: 2,
+                    sha: sha('c'),
+                })
+                .collect(),
+            ..pull(head)
+        },
+        files: files
+            .iter()
+            .map(|path| crate::provider::ReviewFile {
+                path: path.to_string(),
+                previous_path: None,
+                status: "modified".into(),
+                patch: Some("@@ -1 +1 @@\n-old\n+new".into()),
+            })
+            .collect(),
+        head: tree.clone(),
+        base: tree,
+    }
+}
+
+fn changed(context: &crate::provider::ReviewContext) -> Vec<String> {
+    let files: Vec<_> = context.files.iter().map(|f| f.path.clone()).collect();
+    let listed: Vec<_> = context.pull.files.iter().map(|f| f.path.clone()).collect();
+    let packet: Vec<_> = crate::packet::reads::files(context)
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(files, listed);
+    assert_eq!(files, packet);
+    files
+}
+
+fn comment_on(path: &str) -> crate::exits::ExitCall {
+    crate::exits::ExitCall::LeaveComments {
+        new_comments: vec![crate::exits::NewComment {
+            path: path.into(),
+            line: 1,
+            side: None,
+            body: "Defect.".into(),
+        }],
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    }
+}
+
+#[test]
+fn an_exclude_only_secondary_reviews_and_comments_only_inside_its_paths() {
+    let (_root, store, mut monitor) = configured(&[], &["!**/*.md"]);
+    let wire = Wire::default();
+    let files = ["README.md", "docs/b.md", "src/a.ts"];
+    wire.head('a', &files);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    assert_eq!(waiting(&store, 'a')[TEAMMATE], WAITING_AI_CAPACITY);
+
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    let scoped = packet_run::scoped(&teammate, review_context('a', &files));
+    assert_eq!(changed(&scoped), ["src/a.ts"]);
+    // Read-only context: read_source still reaches out-of-scope files.
+    assert!(scoped.head.contains_key("docs/b.md"));
+    let scope = packet_run::scope(&teammate);
+    assert_eq!(scope, ["!**/*.md"]);
+    let refusal = packet_run::out_of_scope(scope, &scoped.files, &comment_on("docs/b.md"));
+    assert!(refusal.unwrap().starts_with("docs/b.md outside"));
+    assert_eq!(
+        packet_run::out_of_scope(scope, &scoped.files, &comment_on("src/a.ts")),
+        None
+    );
+    let finding = crate::exits::ExitCall::SubmitReport {
+        report: crate::exits::TeammateReport {
+            findings: vec![crate::exits::ReportFinding {
+                file: "README.md".into(),
+                line: 1,
+                nano: "Typo.".into(),
+                full: "Typo.".into(),
+                fix: "Fix it.".into(),
+            }],
+        },
+    };
+    assert!(packet_run::out_of_scope(scope, &scoped.files, &finding).is_some());
+    complete(&store, &teammate.operation.id, Ok(report()), NOW + 3).unwrap();
+
+    // The primary is unaffected: every changed file, no scope.
+    let primary = started(&store, PRIMARY, 'a', NOW + 4);
+    assert!(packet_run::scope(&primary).is_empty());
+    let all = packet_run::scoped(&primary, review_context('a', &files));
+    assert_eq!(changed(&all), files);
+    assert_eq!(
+        packet_run::out_of_scope(
+            packet_run::scope(&primary),
+            &all.files,
+            &comment_on("docs/b.md")
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_rename_into_scope_keeps_its_old_name_addressable() {
+    let (_root, store, mut monitor) = configured(&[], &["src/"]);
+    let wire = Wire::default();
+    wire.head('a', &["src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    let mut context = review_context('a', &["src/a.ts", "docs/b.md"]);
+    context.files[0].previous_path = Some("lib/a.ts".into());
+    let scoped = packet_run::scoped(&teammate, context);
+    assert_eq!(
+        scoped
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/a.ts"]
+    );
+    let scope = packet_run::scope(&teammate);
+    assert_eq!(
+        packet_run::out_of_scope(scope, &scoped.files, &comment_on("lib/a.ts")),
+        None
+    );
+}
+
+#[test]
+fn an_exclude_only_secondary_skips_a_markdown_only_pr() {
+    let (_root, store, mut monitor) = configured(&[], &["!**/*.md"]);
+    let wire = Wire::default();
+    wire.head('a', &["README.md", "docs/b.md"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    assert_eq!(
+        waiting(&store, 'a'),
+        BTreeMap::from([
+            (PRIMARY.into(), WAITING_AI_CAPACITY.into()),
+            (TEAMMATE.into(), WAITING_SKIPPED_NO_MATCHING_FILES.into()),
+        ])
+    );
+}
+
+#[test]
+fn an_incremental_secondary_review_is_scoped_too() {
+    let (_root, store, mut monitor) = configured(&[], &["!**/*.md"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/b.md", "src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    complete_teammate(&store, NOW + 2);
+
+    // Only Markdown since the teammate's review of a: skipped.
+    wire.head('b', &["docs/b.md", "docs/c.md", "src/a.ts"])
+        .compare('a', 'b', "ahead", &["docs/c.md"]);
+    scan(&mut monitor, &store, &wire, 'b', NOW + 10);
+    assert_eq!(
+        waiting(&store, 'b')[TEAMMATE],
+        WAITING_SKIPPED_NO_MATCHING_FILES
+    );
+
+    // Code since then: it reviews, and still sees no Markdown.
+    let files = ["docs/b.md", "docs/c.md", "src/a.ts", "src/d.ts"];
+    wire.head('c', &files)
+        .compare('a', 'c', "ahead", &["docs/c.md", "src/d.ts"]);
+    scan(&mut monitor, &store, &wire, 'c', NOW + 20);
+    assert_eq!(waiting(&store, 'c')[TEAMMATE], WAITING_AI_CAPACITY);
+    let teammate = started(&store, TEAMMATE, 'c', NOW + 22);
+    let scoped = packet_run::scoped(&teammate, review_context('c', &files));
+    assert_eq!(changed(&scoped), ["src/a.ts", "src/d.ts"]);
+}
+
+#[test]
+fn changing_a_secondarys_paths_makes_its_run_stale_but_not_the_primarys() {
+    let (_root, store, mut monitor) = configured(&[], &["!**/*.md"]);
+    let wire = Wire::default();
+    wire.head('a', &["docs/b.md", "src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    crate::review::validate_execution_selection(&store, &teammate).unwrap();
+    let save = |paths: &[&str]| {
+        let mut settings = store.load_settings().unwrap();
+        let assignment = settings.repositories[0]
+            .assignments
+            .iter_mut()
+            .find(|a| a.id == TEAMMATE)
+            .unwrap();
+        assignment.paths = paths.iter().map(|p| p.to_string()).collect();
+        store.save_settings(&settings).unwrap();
+    };
+    save(&["!**/*.md", "!docs/"]);
+    let stale = crate::review::validate_execution_selection(&store, &teammate).unwrap_err();
+    assert_eq!(
+        stale.message,
+        "Agent configuration changed; explicitly retry."
+    );
+    save(&["!**/*.md"]);
+    crate::review::validate_execution_selection(&store, &teammate).unwrap();
+    complete(&store, &teammate.operation.id, Ok(report()), NOW + 3).unwrap();
+
+    // A sibling's Paths never touch the primary's run.
+    let primary = started(&store, PRIMARY, 'a', NOW + 4);
+    save(&["src/"]);
+    crate::review::validate_execution_selection(&store, &primary).unwrap();
+}
+
+#[test]
+fn a_secondarys_changed_paths_discard_its_unpublished_output() {
+    let (_root, store, mut monitor) = configured(&[], &[]);
+    let wire = Wire::default();
+    wire.head('a', &["README.md", "src/a.ts"]);
+    scan(&mut monitor, &store, &wire, 'a', NOW);
+    let teammate = started(&store, TEAMMATE, 'a', NOW + 2);
+    complete(&store, &teammate.operation.id, Ok(report()), NOW + 3).unwrap();
+    let review = store
+        .load_reviews()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.operation.id == teammate.operation.id)
+        .unwrap();
+    let job = store
+        .load_queue()
+        .unwrap()
+        .into_iter()
+        .find(|j| review.matches_job(j))
+        .unwrap();
+    let mut pending =
+        crate::publication::Publication::new(review.clone(), true, true, NOW + 4).unwrap();
+    pending.batch = Some(crate::publication::Batch {
+        commit_id: sha('a'),
+        body: "marker".into(),
+        comments: vec![],
+        unmappable: vec![],
+    });
+    let gate = |settings: &Settings| {
+        crate::publication::evaluate_gate(
+            settings,
+            &pending,
+            Some(&job),
+            &pull('a'),
+            true,
+            true,
+            false,
+        )
+    };
+    let settings = store.load_settings().unwrap();
+    crate::publication::automatic_policy(&settings, &review, &job).unwrap();
+    assert!(!gate(&settings).discard);
+
+    // Saved after completion, before publication: the output is stale.
+    let mut changed = settings.clone();
+    changed.repositories[0]
+        .assignments
+        .iter_mut()
+        .find(|a| a.id == TEAMMATE)
+        .unwrap()
+        .paths = vec!["!**/*.md".into()];
+    assert!(crate::publication::automatic_policy(&changed, &review, &job).is_err());
+    let stale = gate(&changed);
+    assert!(stale.discard);
+    assert!(stale.stop.is_some());
 }

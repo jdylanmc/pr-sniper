@@ -673,7 +673,11 @@ impl Environment for Native {
             &run.review.job.head_sha,
         )?;
         self.local_gate(run)?;
-        Batch::prepare(run, &context)
+        // The diff the review saw: a secondary's comments stay inside its paths.
+        Batch::prepare(
+            run,
+            &crate::review::packet_run::scoped(&run.review, context),
+        )
     }
 
     fn reconcile(&mut self, run: &Publication) -> Result<Option<Receipt>, Failure> {
