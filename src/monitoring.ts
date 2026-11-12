@@ -60,6 +60,8 @@ interface Health {
       | "manual_retry";
     attempt_count: number;
     initial_attempt_at?: number;
+    // When it completed; absent on older records.
+    completed_at?: number | null;
     retry_deadline: number;
     next_attempt_at: number | null;
     failure: string | null;

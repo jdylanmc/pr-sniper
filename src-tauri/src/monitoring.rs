@@ -170,6 +170,9 @@ pub struct JobOperation {
     /// A superseded run waits for a poll that observed its PR after this, not a timer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<Supersession>,
+    /// When the operation completed; absent on older records and unfinished work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4047,6 +4050,7 @@ fn start_poll_operation(
         confirmed_receipt: None,
         rereview_lens: None,
         superseded: None,
+        completed_at: None,
     });
 }
 
@@ -4442,6 +4446,7 @@ impl JobOperation {
             confirmed_receipt: None,
             rereview_lens: None,
             superseded: None,
+            completed_at: None,
         }
     }
 }
