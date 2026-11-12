@@ -45,6 +45,7 @@ import {
   repositoryProviderContext,
   azureDevopsOrganization,
   pathProblem,
+  pathSummary,
 } from "./repositories";
 import { defaultTools, doctrineIds } from "./policy";
 import {
@@ -199,6 +200,8 @@ const iconPaths = {
   up: '<path d="m6 14 6-6 6 6"/>',
   down: '<path d="m6 10 6 6 6-6"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
   check: '<path d="m5 12 5 5 9-10"/>',
   home: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
@@ -3826,7 +3829,19 @@ export async function mountSettings(
         const row = document.createElement("div");
         row.className = "watchlist-row";
         row.dataset.path = value;
-        row.innerHTML = `<span><code>${escape(value)}</code></span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+        const excluded = value.startsWith("!");
+        const glob = excluded ? value.slice(1) : value;
+        const flipped = excluded ? glob : `!${glob}`;
+        row.innerHTML = `<button type="button" data-path-mode aria-pressed="${excluded}" aria-label="Exclude ${escape(glob)}" title="Exclude">${icon(excluded ? "minus" : "plus")}</button><span><code>${escape(value)}</code></span><button type="button" data-remove aria-label="Remove ${escape(value)}" title="Remove">${icon("trash")}</button>`;
+        const mode = row.querySelector<HTMLButtonElement>("[data-path-mode]")!;
+        mode.disabled = read().includes(flipped);
+        mode.onclick = () => {
+          write(read().map((v, i) => (i === index ? flipped : v)));
+          draw();
+          list
+            .querySelectorAll<HTMLButtonElement>("[data-path-mode]")
+            [index]?.focus({ preventScroll: true });
+        };
         row.querySelector<HTMLButtonElement>("[data-remove]")!.onclick = () => {
           write(read().filter((_, i) => i !== index));
           draw();
@@ -4300,10 +4315,9 @@ export async function mountSettings(
         const on = a.rules.filter((r) => r.enabled).length;
         modal.querySelector("[data-filter-summary]")!.textContent =
           a.mode === "filtered" ? `${on} on` : "";
-        const paths = repository.paths?.length ?? 0;
-        modal.querySelector("[data-paths-summary]")!.textContent = paths
-          ? String(paths)
-          : "";
+        modal.querySelector("[data-paths-summary]")!.textContent = pathSummary(
+          repository.paths ?? [],
+        );
       };
       explicitInput.onchange = () => {
         editAdmission().mode = explicitInput.checked ? "explicit" : "filtered";
@@ -4708,11 +4722,7 @@ export async function mountSettings(
         modal.querySelector<HTMLInputElement>("[name=primary]")!.checked;
       openPaths.disabled = isPrimaryNow;
       openPaths.querySelector("[data-paths-summary]")!.textContent =
-        isPrimaryNow
-          ? "All admitted changes"
-          : paths.length
-            ? String(paths.length)
-            : "";
+        isPrimaryNow ? "All admitted changes" : pathSummary(paths);
     };
     refreshSelection(existing?.agent_id ?? "");
     const closeView = () => {

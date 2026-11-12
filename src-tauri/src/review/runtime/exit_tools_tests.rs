@@ -185,3 +185,20 @@ async fn a_host_panic_in_an_exit_call_is_a_typed_failure_with_its_location() {
     assert_eq!(events(&records, "exit_refused")[0]["refusal"], "host_panic");
     assert_eq!(events(&records, "finished").len(), 0);
 }
+
+#[test]
+fn an_out_of_scope_comment_is_a_typed_refusal_that_keeps_the_slot_open() {
+    let tools = ExitTools::new(
+        vec![Exit::LeaveComments],
+        Arc::new(|_| Err(Refusal::OutOfScope("docs/b.md outside.".into()))),
+        None,
+    );
+    let rejection = tools
+        .judge(
+            "leave_comments",
+            &json!({"new_comments":[{"path":"docs/b.md","line":1,"body":"Typo."}]}),
+        )
+        .unwrap_err();
+    assert_eq!(rejection.refusal, ExitRefusal::OutOfScope);
+    assert!(!tools.state.taken());
+}

@@ -362,6 +362,8 @@ pub enum ExitRefusal {
     Unavailable,
     Findings,
     Gate,
+    /// A comment or finding names a file outside a secondary's paths.
+    OutOfScope,
     Moved,
     /// The exit-time PR re-read failed; `provider_error` carries the typed cause.
     ProviderRead,

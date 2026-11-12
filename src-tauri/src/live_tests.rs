@@ -408,6 +408,7 @@ fn execute(live: &Live, run: ReviewRun, label: &str) -> Report {
                 Ok(()) => "ok".to_string(),
                 Err(Refusal::Denied(r)) => format!("denied({r})"),
                 Err(Refusal::Moved(r)) => format!("moved({r})"),
+                Err(Refusal::OutOfScope(r)) => format!("out_of_scope({r})"),
                 Err(Refusal::Unreadable(e)) => format!("unreadable({e:?})"),
             }
         ));
