@@ -1595,11 +1595,28 @@ fn provider_receipts_produce_distinct_approval_and_merge_notifications_without_h
     let approval = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
     let mut env = env(&store);
     host::execute_action(&mut env, &approval).unwrap();
-    let frames = crate::notifications::frames(&queue::snapshot(&store, vec![]).unwrap());
-    assert!(frames.iter().any(|f| f
-        .event
-        .as_ref()
-        .is_some_and(|e| e.category == crate::notifications::Category::Approved)));
+    // Approved while the authorized merge is still running is not settled.
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    assert_eq!(
+        (snapshot.items[0].state, snapshot.items[0].progress),
+        (State::Approved, Some(queue::Progress::Merging))
+    );
+    assert!(notified(&store).is_empty());
+    let (_approve_root, approve_only, approve_item) = fixture(1, true, false);
+    let run = completed_final(&approve_only, &approve_item);
+    let vote = prepare_effect(
+        &approve_only,
+        &run.id,
+        Action::Approve,
+        &observed(),
+        NOW + 20,
+    )
+    .unwrap();
+    host::execute_action(&mut self::env(&approve_only), &vote).unwrap();
+    assert_eq!(
+        notified(&approve_only),
+        [crate::notifications::Category::Approved]
+    );
     let mut external = env.wire.0.lock().unwrap().observation.clone();
     external.state = "MERGED".into();
     external.merged_by = Some("77".into());
@@ -2111,4 +2128,55 @@ fn state_marks_treat_the_acting_accounts_own_vote_as_its_own_write_on_each_provi
             "{provider:?}: another reviewer's vote is a change"
         );
     }
+}
+
+fn notified(store: &Store) -> Vec<crate::notifications::Category> {
+    crate::notifications::frames(&queue::snapshot(store, vec![]).unwrap())
+        .into_iter()
+        .filter_map(|f| f.event.map(|e| e.category))
+        .collect()
+}
+
+#[test]
+fn an_approval_pending_in_flight_or_reconciling_notifies_nothing_until_it_settles() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let approval = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    // Pending: not yet Ready for a human.
+    assert!(notified(&store).is_empty());
+    mark_intent(&store, &approval.id, NOW + 21).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    assert!(snapshot.items[0].action_status.as_ref().unwrap().settling);
+    // In flight, then reconciled automatically: no Failed notice.
+    assert!(notified(&store).is_empty());
+    let mut ledger = store.load_actions().unwrap();
+    ledger.effects[0].reconcile_attempts = 3;
+    store.save_actions(&ledger).unwrap();
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}
+
+#[test]
+fn a_provider_read_being_retried_is_not_a_failure_notice() {
+    let (_root, store, item) = fixture(1, true, false);
+    let failure = Failure {
+        cancelled: false,
+        kind: monitoring::OperationFailure::Provider,
+        message: "Provider read failed.".into(),
+        retry_after_seconds: None,
+        origin: crate::backpressure::Origin::Github,
+        duck_setup: false,
+        slept_seconds: 0,
+        model: None,
+        resume: Default::default(),
+    };
+    let mut now = NOW + 21;
+    for _ in 0..crate::retry::TRANSIENT.max_attempts - 1 {
+        synchronize(&store, &item, Err(failure.clone()), now).unwrap();
+        assert!(notified(&store).is_empty());
+        now = store.load_actions().unwrap().observations[0]
+            .retry_at
+            .unwrap();
+    }
+    synchronize(&store, &item, Err(failure), now).unwrap();
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
 }
