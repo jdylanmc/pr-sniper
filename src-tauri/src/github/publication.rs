@@ -18,9 +18,34 @@ pub enum Request {
     Delete,
 }
 
+/// A write that did not complete. `uncertain` is false only when GitHub
+/// answered and refused it, so nothing can have been applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendFailure {
+    pub error: ConnectionError,
+    pub uncertain: bool,
+}
+
+impl From<SendFailure> for WriteFailure {
+    fn from(failure: SendFailure) -> Self {
+        Self {
+            failure: failure.error.into(),
+            uncertain: failure.uncertain,
+        }
+    }
+}
+
 // Deliberately separate from Transport: the Copilot read adapter cannot mutate.
 pub trait MutationTransport: Transport {
     fn mutate(&self, path: &str, request: Request) -> Result<Response, ConnectionError>;
+
+    /// `mutate` for a write: a failure says whether GitHub may have applied it.
+    fn send_mutation(&self, path: &str, request: Request) -> Result<Response, SendFailure> {
+        self.mutate(path, request).map_err(|error| SendFailure {
+            error,
+            uncertain: true,
+        })
+    }
 }
 
 impl<T: Transport> GithubClient<T> {
@@ -455,12 +480,9 @@ impl<T: MutationTransport> GithubClient<T> {
         })?;
         let response = self
             .transport
-            .mutate(&request.0, request.1)
-            .inspect_err(|error| self.publication_provider_error(*error))
-            .map_err(|error| WriteFailure {
-                failure: error.into(),
-                uncertain: true,
-            })?;
+            .send_mutation(&request.0, request.1)
+            .inspect_err(|failure| self.publication_provider_error(failure.error))
+            .map_err(WriteFailure::from)?;
         let status = response.status;
         let uncertain = !(400..500).contains(&status) || status == 408;
         let (value, _) = parse_response(response).inspect_err(|error| self.publication_provider_error(*error)).map_err(|error| WriteFailure {

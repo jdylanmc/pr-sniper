@@ -354,11 +354,8 @@ impl<T: MutationTransport> ThreadWriter for GithubClient<T> {
         })?;
         let response = self
             .transport
-            .mutate(&request, Request::Post(json!({"body":body})))
-            .map_err(|error| WriteFailure {
-                failure: error.into(),
-                uncertain: true,
-            })?;
+            .send_mutation(&request, Request::Post(json!({"body":body})))
+            .map_err(WriteFailure::from)?;
         if response.status != 201 {
             let uncertain = !(400..500).contains(&response.status) || response.status == 408;
             let failure = parse_response(response)
@@ -428,16 +425,12 @@ impl<T: MutationTransport> GithubClient<T> {
         };
         let response = self
             .transport
-            .mutate(
+            .send_mutation(
                 "/graphql",
                 Request::Post(
                     json!({"query":query,"variables":{"input":{"threadId":thread_id,"clientMutationId":request_id}}}),
                 ),
-            )
-            .map_err(|error| WriteFailure {
-                failure: error.into(),
-                uncertain: true,
-            })?;
+            ).map_err(WriteFailure::from)?;
         if response.status != 200 {
             let uncertain = !(400..500).contains(&response.status) || response.status == 408;
             let failure = parse_response(response)
