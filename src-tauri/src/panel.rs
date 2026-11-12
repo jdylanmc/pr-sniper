@@ -35,15 +35,29 @@ pub struct Route {
     pub tab: Tab,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<Detail>,
+    /// Settings opens this repository's entry: its outage notice (#381).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
 }
 impl Route {
     pub fn tab(tab: Tab) -> Self {
-        Self { tab, detail: None }
+        Self {
+            tab,
+            ..Self::default()
+        }
     }
     pub fn item(id: String) -> Self {
         Self {
             tab: Tab::Queue,
             detail: Some(Detail::Item { item_id: id }),
+            repository: None,
+        }
+    }
+    pub fn repository(id: String) -> Self {
+        Self {
+            tab: Tab::Settings,
+            detail: None,
+            repository: Some(id),
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -52,7 +66,12 @@ impl Route {
             Some(Detail::Job { id, .. }) => Some(id),
             _ => None,
         };
-        if id.is_some_and(|id| {
+        if self.repository.is_some() && (self.tab != Tab::Settings || self.detail.is_some()) {
+            return Err(
+                "Panel destination identity is invalid; no substitute was selected.".into(),
+            );
+        }
+        if id.or(self.repository.as_ref()).is_some_and(|id| {
             id.is_empty() || id.len() > 16_384 || id.chars().any(char::is_control)
         }) {
             return Err(
@@ -114,6 +133,9 @@ impl From<Opening> for String {
 pub struct Snapshot {
     pub route: Route,
     pub revision: u64,
+    /// Counts explicit navigations only; a reveal or blur keeps it, so a
+    /// one-shot destination (an outage notice's editor) opens once (#381).
+    pub navigation: u64,
     pub visible: bool,
     pub missing: Option<String>,
     pub placement_warning: Option<String>,
@@ -124,6 +146,8 @@ pub struct Session {
     route: Route,
     initialized: bool,
     revision: u64,
+    #[serde(default)]
+    navigation: u64,
     visible: bool,
     #[serde(skip)]
     blur_from_tray: Option<Instant>,
@@ -146,6 +170,7 @@ impl Session {
         if let Some(route) = route {
             save_selection(store, &route)?;
             self.route = route;
+            self.navigation += 1;
         }
         self.initialized = true;
         self.revision += 1;
@@ -202,6 +227,7 @@ impl Session {
         Snapshot {
             route: self.route.clone(),
             revision: self.revision,
+            navigation: self.navigation,
             visible: self.visible,
             missing,
             placement_warning: self.placement_warning.clone(),

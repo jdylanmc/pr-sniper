@@ -119,6 +119,7 @@ test("overlapping panel mutations retain both revisions and the newer route", as
       ...before,
       route: { tab: "settings" },
       revision: before.revision + 2,
+      navigation: before.navigation + 1,
     },
   });
   await hide.wait("loaded");
@@ -128,6 +129,7 @@ test("overlapping panel mutations retain both revisions and the newer route", as
     route: { tab: "settings" },
     visible: false,
     revision: before.revision + 3,
+    navigation: before.navigation + 1,
   };
   expect(await hide.response()).toEqual({ ok: expected });
   expect(await store("panel_snapshot")).toEqual(expected);
@@ -152,6 +154,7 @@ test("partial panel writes never publish torn JSON and snapshots observe the com
     ...before,
     route: { tab: "settings" },
     revision: before.revision + 2,
+    navigation: before.navigation + 1,
   };
   expect(await writer.response()).toEqual({ ok: expected });
   await reader.wait("loaded");
@@ -270,6 +273,7 @@ test("held IPC replies retain concurrency after panel ownership ends", async ({
       route: { tab: "settings" },
       visible: false,
       revision: before.revision + 3,
+      navigation: before.navigation + 1,
     });
 
     const saved = await store("save_repository", {
@@ -282,6 +286,7 @@ test("held IPC replies retain concurrency after panel ownership ends", async ({
       ...before,
       route: { tab: "settings" },
       revision: before.revision + 2,
+      navigation: before.navigation + 1,
     });
     expect(await store("panel_snapshot")).toEqual(newer);
   } finally {
@@ -449,6 +454,7 @@ test("native panel routes, visibility, revisions and missing-destination errors 
   expect(initial).toEqual({
     route: { tab: "queue" },
     revision: 2,
+    navigation: 0,
     visible: true,
     missing: null,
     placement_warning: null,
@@ -475,6 +481,10 @@ test("native panel routes, visibility, revisions and missing-destination errors 
       route,
       visible,
       revision: expected.revision + increment,
+      // Only an explicit route is a navigation; hide and reveal keep it.
+      navigation:
+        expected.navigation +
+        Number(["open_settings", "panel_navigate"].includes(command)),
     };
     expect(await store(command, args)).toEqual(expected);
     expect(await store("panel_snapshot")).toEqual(expected);
@@ -504,6 +514,7 @@ test("native panel routes, visibility, revisions and missing-destination errors 
     },
     visible: true,
     revision: expected.revision + 2,
+    navigation: expected.navigation + 1,
     missing,
   });
   expect(await store("queue_selection")).toBe("missing-exact-item");

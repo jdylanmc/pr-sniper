@@ -404,28 +404,29 @@ fn parked_class(token: Option<TokenError>, listing: Option<Response>) -> Option<
 
 #[test]
 fn failures_park_with_the_mapped_cause() {
-    use FailureClass::{Credentials, Network, Other, Permission};
+    use FailureClass::{Credentials, Other, Permission};
+    // Transient causes (network, timeout, 5xx) never park: they retry (#381).
     for (token, expected) in [
-        (TokenError::NotLoggedIn, Credentials),
-        (TokenError::NoAccountInTenant, Credentials),
+        (TokenError::NotLoggedIn, Some(Credentials)),
+        (TokenError::NoAccountInTenant, Some(Credentials)),
         (
             TokenError::InteractionRequired { aadsts: 50076 },
-            Credentials,
+            Some(Credentials),
         ),
-        (TokenError::AzMissing, Credentials),
-        (TokenError::TenantAccessBlocked, Permission),
-        (TokenError::Network, Network),
-        (TokenError::Timeout, Network),
+        (TokenError::AzMissing, Some(Credentials)),
+        (TokenError::TenantAccessBlocked, Some(Permission)),
+        (TokenError::Network, None),
+        (TokenError::Timeout, None),
         (
             TokenError::Other {
                 exit_code: Some(1),
                 aadsts: None,
             },
-            Other,
+            Some(Other),
         ),
-        (TokenError::MalformedOutput, Other),
+        (TokenError::MalformedOutput, Some(Other)),
     ] {
-        assert_eq!(parked_class(Some(token), None), Some(expected), "{token:?}");
+        assert_eq!(parked_class(Some(token), None), expected, "{token:?}");
     }
     assert_eq!(
         parked_class(None, Some(status(403, None))),

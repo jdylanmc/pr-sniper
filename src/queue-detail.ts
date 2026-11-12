@@ -215,16 +215,14 @@ export function failureCause(item: QueueItem, snapshot: MonitoringSnapshot) {
   }
   if (item.job.waiting === "account_disconnected")
     return "account_disconnected";
-  // As in the queue projection: a check still backing off retries on its own
-  // and is not this item's cause; account losses always are.
+  // A repository poll failure is never this item's cause (#381); an account
+  // loss always is.
   const health = (snapshot.health ?? []).find(
     (entry) =>
       entry.repository_id === item.job.configuration_id &&
       entry.provider_account_id === item.job.account_id &&
       entry.last_failure &&
-      (accountCauses.includes(entry.last_failure) ||
-        !entry.operation ||
-        ["failed", "manual_retry"].includes(entry.operation.state)),
+      accountCauses.includes(entry.last_failure),
   );
   if (health?.last_failure) return health.last_failure;
   if (
