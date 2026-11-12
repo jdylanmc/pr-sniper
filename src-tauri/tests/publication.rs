@@ -3,7 +3,7 @@ use pr_sniper_lib::{
     github::{
         metadata::{Lifecycle, PullRequest},
         provider::{GithubClient, Response, Transport},
-        publication::{MutationTransport, Request},
+        publication::{MutationTransport, Request, SendFailure},
         review::{ReviewContext, ReviewFile},
         ConnectionError,
     },
@@ -137,6 +137,8 @@ enum Fault {
     After,
     Reject,
     RateLimit,
+    /// GitHub answered 401 and the token renewal then failed offline.
+    Refused,
 }
 
 #[derive(Clone)]
@@ -200,7 +202,38 @@ impl Transport for Wire {
     }
 }
 
+fn mutation_of(path: &str, request: &Request) -> Mutation {
+    match request {
+        Request::Post(_) if path.ends_with("/events") => Mutation::Submit,
+        Request::Post(_) => Mutation::Create,
+        Request::Delete => Mutation::Discard,
+    }
+}
+
 impl MutationTransport for Wire {
+    fn send_mutation(&self, path: &str, request: Request) -> Result<Response, SendFailure> {
+        {
+            let mut server = self.0.lock().unwrap();
+            let mutation = mutation_of(path, &request);
+            if matches!(server.fault, Some((target, Fault::Refused)) if target == mutation) {
+                server.fault = None;
+                let body = match &request {
+                    Request::Post(body) => body.clone(),
+                    Request::Delete => Value::Null,
+                };
+                server.writes.push(("POST".into(), path.into(), body));
+                return Err(SendFailure {
+                    error: ConnectionError::Network,
+                    uncertain: false,
+                });
+            }
+        }
+        self.mutate(path, request).map_err(|error| SendFailure {
+            error,
+            uncertain: true,
+        })
+    }
+
     fn mutate(&self, path: &str, request: Request) -> Result<Response, ConnectionError> {
         let mut server = self.0.lock().unwrap();
         let (method, body, mutation) = match request {
@@ -935,6 +968,23 @@ fn lost_create_and_submit_responses_reconcile_without_duplicate_batches() {
         assert_eq!(restored.operation.attempt_count, 2);
         assert_eq!(restored.operation.retry_deadline, 1000);
     }
+}
+
+#[test]
+fn a_refused_create_whose_renewal_failed_offline_is_created_on_retry() {
+    let mut fixture = Fixture::new();
+    fixture.wire.0.lock().unwrap().fault = Some((Mutation::Create, Fault::Refused));
+    let mut run = publication();
+    assert!(fixture.run(&mut run).is_err());
+    assert!(!run.uncertain, "a 401 proves nothing was written");
+    assert_eq!(fixture.visible(), 0);
+    let mut restored = fixture.resume();
+    fixture.now = restored.operation.next_attempt_at.unwrap_or(fixture.now);
+    fixture.run(&mut restored).unwrap();
+    assert_eq!(restored.phase, Phase::Published);
+    assert_eq!(fixture.visible(), 1);
+    // Refused Create, then Create and Submit once back online.
+    assert_eq!(fixture.writes(), 3);
 }
 
 #[test]

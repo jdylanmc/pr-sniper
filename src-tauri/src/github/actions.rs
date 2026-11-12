@@ -355,14 +355,11 @@ impl<T: MutationTransport> ReviewerOutcome for GithubClient<T> {
         }
         let response = self
             .transport
-            .mutate(
+            .send_mutation(
                 &format!("/repos/{name}/pulls/{number}/reviews"),
                 Request::Post(json!({"event":"APPROVE","commit_id":head,"body":body})),
             )
-            .map_err(|e| WriteFailure {
-                failure: e.into(),
-                uncertain: true,
-            })?;
+            .map_err(WriteFailure::from)?;
         if response.status != 200 && response.status != 201 {
             let uncertain = !(400..500).contains(&response.status) || response.status == 408;
             return Err(WriteFailure {
@@ -411,9 +408,9 @@ impl<T: MutationTransport> ReviewerOutcome for GithubClient<T> {
             uncertain: false,
         })?;
         let query="mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){clientMutationId pullRequest{id headRefOid merged mergedAt mergedBy{... on User{databaseId} ... on Bot{databaseId}} mergeCommit{oid}}}}";
-        let response=self.transport.mutate("/graphql",Request::Post(json!({"query":query,"variables":{"input":{
+        let response=self.transport.send_mutation("/graphql",Request::Post(json!({"query":query,"variables":{"input":{
             "pullRequestId":observation.node_id,"expectedHeadOid":observation.head,"mergeMethod":method,"clientMutationId":request_id
-        }}}))).map_err(|e|WriteFailure{failure:e.into(),uncertain:true})?;
+        }}}))).map_err(WriteFailure::from)?;
         let (value, _) = parse_response(response).map_err(|e| WriteFailure {
             failure: e.into(),
             uncertain: true,
@@ -462,16 +459,12 @@ impl<T: MutationTransport> GithubClient<T> {
         let query = "mutation($input:EnqueuePullRequestInput!){enqueuePullRequest(input:$input){clientMutationId mergeQueueEntry{id state pullRequest{id headRefOid isInMergeQueue}}}}";
         let response = self
             .transport
-            .mutate(
+            .send_mutation(
                 "/graphql",
                 Request::Post(json!({"query":query,"variables":{"input":{
                     "pullRequestId":observation.node_id,"expectedHeadOid":observation.head,"clientMutationId":request_id
                 }}})),
-            )
-            .map_err(|e| WriteFailure {
-                failure: e.into(),
-                uncertain: true,
-            })?;
+            ).map_err(WriteFailure::from)?;
         let (value, _) = parse_response(response).map_err(|e| WriteFailure {
             failure: e.into(),
             uncertain: true,
