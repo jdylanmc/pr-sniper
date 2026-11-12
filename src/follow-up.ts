@@ -7,6 +7,8 @@ import { renderConfiguration } from "./work-presentation";
 interface Operation {
   state: string;
   attempt_count: number;
+  initial_attempt_at?: number;
+  completed_at?: number | null;
   retry_deadline: number;
 }
 

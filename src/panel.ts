@@ -1009,15 +1009,42 @@ export async function mountPanel(app: HTMLElement) {
       draw("reviewed", null, now);
       return;
     }
-    const rows: Row[] = [];
+    // Newest completion first, then newest pass, then a stable id. Never
+    // saved queue order: re-enabling a repository must not lift old reviews.
+    const ranked: { row: Row; at: number; pass: number }[] = [];
+    const finished = (
+      operation?: {
+        completed_at?: number | null;
+        initial_attempt_at?: number;
+      } | null,
+    ) => operation?.completed_at ?? operation?.initial_attempt_at ?? 0;
+    // Latest completion per review key and per item: an item's review_keys
+    // name only its newest pass, which may not have completed.
+    const reviewedAt = new Map<string, number>();
+    const itemAt = new Map<string, number>();
+    const latest = (
+      times: Map<string, number>,
+      key: string | undefined,
+      at: number,
+    ) => {
+      if (key) times.set(key, Math.max(at, times.get(key) ?? 0));
+    };
     for (const review of snapshot.reviews ?? [])
       if (review.run?.operation.state === "completed") {
-        rows.push({
-          id: review.key,
-          kind: "normal",
-          title: metadata("normal", review.key)!.title,
-          state: review.run.phase,
-          work: workPresentation(snapshot, "normal", review.key),
+        const at = finished(review.run.operation);
+        latest(reviewedAt, review.key, at);
+        latest(itemAt, review.job.work?.item_id, at);
+        latest(itemAt, review.run.job?.work?.item_id, at);
+        ranked.push({
+          at,
+          pass: (review.run.job ?? review.job).work?.pass_ordinal ?? 0,
+          row: {
+            id: review.key,
+            kind: "normal",
+            title: metadata("normal", review.key)!.title,
+            state: review.run.phase,
+            work: workPresentation(snapshot, "normal", review.key),
+          },
         });
       }
     for (const follow of snapshot.follow_ups ?? [])
@@ -1026,34 +1053,72 @@ export async function mountPanel(app: HTMLElement) {
           follow.run.target?.kind === "mention" ? "mention" : "reply";
         const meta = metadata(kind, follow.run.id);
         if (meta)
-          rows.push({
-            id: follow.run.id,
-            kind,
-            title: meta.title,
-            state: follow.run.phase,
-            work: workPresentation(snapshot, kind, follow.run.id),
+          ranked.push({
+            at: finished(follow.run.publication ?? follow.run.analysis),
+            pass: follow.run.reply_ordinal ?? 0,
+            row: {
+              id: follow.run.id,
+              kind,
+              title: meta.title,
+              state: follow.run.phase,
+              work: workPresentation(snapshot, kind, follow.run.id),
+            },
           });
       }
     for (const item of snapshot.items ?? []) {
       const final = item.action_status?.final_review;
+      const finalAt =
+        final?.execution.operation.state === "completed"
+          ? finished(final.execution.operation)
+          : 0;
       if (final?.execution.operation.state === "completed")
-        rows.push({
-          id: final.id,
-          kind: "primary_final",
-          title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
-          state: final.execution.phase,
-          work: workPresentation(snapshot, "primary_final", final.id),
+        ranked.push({
+          at: finalAt,
+          pass: final.execution.job.work?.pass_ordinal ?? 0,
+          row: {
+            id: final.id,
+            kind: "primary_final",
+            title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
+            state: final.execution.phase,
+            work: workPresentation(snapshot, "primary_final", final.id),
+          },
         });
       if (["approved", "closed", "merged"].includes(item.state)) {
-        rows.push({
-          id: item.id,
-          kind: "item",
-          title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
-          state: item.state,
+        ranked.push({
+          // The PR's own row sits with its latest completed review.
+          at: Math.max(
+            finalAt,
+            ...[item.id, ...(item.aliases ?? [])].map(
+              (id) => itemAt.get(id) ?? 0,
+            ),
+            ...item.review_keys.map((key) => reviewedAt.get(key) ?? 0),
+          ),
+          pass: 0,
+          row: {
+            id: item.id,
+            kind: "item",
+            title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
+            state: item.state,
+          },
         });
       }
     }
-    draw("reviewed", rows, now);
+    const stable = (row: Row) => `${row.kind}:${row.id}`;
+    ranked.sort(
+      (a, b) =>
+        b.at - a.at ||
+        b.pass - a.pass ||
+        (stable(a.row) < stable(b.row)
+          ? -1
+          : stable(a.row) > stable(b.row)
+            ? 1
+            : 0),
+    );
+    draw(
+      "reviewed",
+      ranked.map(({ row }) => row),
+      now,
+    );
   }
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
