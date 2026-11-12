@@ -1,5 +1,11 @@
 use super::*;
-use crate::{capacity::Kind, monitoring::OperationState, panel::Detail, provider::Lifecycle};
+use crate::{
+    capacity::Kind, monitoring::OperationState, panel::Detail, provider::Lifecycle,
+    review::outcome::Outcome,
+};
+
+/// Index format; older ones are rebuilt from saved state on the next read.
+const INDEX_VERSION: u8 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +28,9 @@ pub struct PageRequest {
     pub limit: usize,
     pub cursor: Option<Cursor>,
     pub unavailable_cursor: Option<UnavailableCursor>,
+    /// Only rows with one of these outcomes. Absent or empty: every row.
+    #[serde(default)]
+    pub outcomes: Option<BTreeSet<Outcome>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +41,9 @@ pub struct Row {
     pub completed_passes: usize,
     pub review_attempts: usize,
     pub conversations: usize,
+    /// Outcome of the PR revision's latest completed review.
+    #[serde(default)]
+    pub outcome: Option<Outcome>,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +56,8 @@ pub struct Unavailable {
 pub struct Page {
     pub results: Vec<Row>,
     pub next_cursor: Option<Cursor>,
+    /// Rows per outcome across every page, before the outcome filter.
+    pub outcome_counts: BTreeMap<Outcome, usize>,
     pub unavailable: Vec<Unavailable>,
     pub unavailable_count: usize,
     pub next_unavailable_cursor: Option<UnavailableCursor>,
@@ -164,8 +178,10 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
             completed_passes: 0,
             review_attempts: 0,
             conversations: 0,
+            outcome: None,
         });
     }
+    let outcomes = outcomes(store, &reviews, &publications, &feedback, &actions)?;
     // Keyed by identity and occurrence, stable when other records go away.
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut occurrence = |id: String| -> String {
@@ -323,6 +339,7 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
                 }
                 row.activity_sequence = stamp.sequence;
                 row.completed_passes = completed.get(id).map_or(0, BTreeSet::len);
+                row.outcome = outcomes.get(id).copied();
                 Some(row)
             });
         if stamp.row != row {
@@ -333,14 +350,58 @@ pub(super) fn refresh(store: &Store) -> Result<(), String> {
     if changed
         || removed
         || projection_changed
-        || index.version != 3
+        || index.version != INDEX_VERSION
         || index.unavailable != unavailable
     {
-        index.version = 3;
+        index.version = INDEX_VERSION;
         index.unavailable = unavailable;
         store.write_state("result-index.json", &index)?;
     }
     store.write_state("result-index-pending.json", &false)
+}
+
+/// Each PR revision's outcome: its latest completed review's, a teammate
+/// `submit_report` only when nothing else completed, and a confirmed Approve or merge
+/// on the PR wins.
+fn outcomes(
+    store: &Store,
+    reviews: &[crate::review::ReviewRun],
+    publications: &[crate::publication::Publication],
+    feedback: &crate::feedback::Ledger,
+    actions: &crate::actions::Ledger,
+) -> Result<BTreeMap<String, Outcome>, String> {
+    let settings = store.load_settings()?;
+    let adoptable = crate::actions::adoptable_runs(store, actions)?;
+    let evidence = crate::review::outcome::Evidence {
+        publications,
+        exit_writes: &feedback.exit_writes,
+        actions,
+        adoptable: &adoptable,
+    };
+    let mut result: BTreeMap<String, Outcome> = BTreeMap::new();
+    for run in reviews {
+        let publication = publications
+            .iter()
+            .find(|p| p.review.operation.id == run.operation.id);
+        let local_only = crate::publication::host::local_only(&settings, run, publication);
+        let Some(outcome) = evidence.run(run, local_only) else {
+            continue;
+        };
+        let id = crate::queue::item_id(&run.job);
+        // A teammate report never hides the primary's outcome.
+        let teammate = run.result.as_ref().is_some_and(|r| {
+            matches!(r.output.exit, Some(crate::exits::ExitOutcome::SubmitReport))
+        });
+        if !teammate || !result.contains_key(&id) {
+            result.insert(id, outcome);
+        }
+    }
+    for (id, outcome) in result.iter_mut() {
+        if let Some(confirmed) = evidence.item(id) {
+            *outcome = confirmed;
+        }
+    }
+    Ok(result)
 }
 
 pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
@@ -365,7 +426,11 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     }
     guard(store)?;
     let mut index = load_index(store)?;
-    if index.as_ref().is_none_or(|index| index.version != 3) || pending(store)? {
+    if index
+        .as_ref()
+        .is_none_or(|index| index.version != INDEX_VERSION)
+        || pending(store)?
+    {
         refresh(store)?;
         index = load_index(store)?;
     }
@@ -410,6 +475,13 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
         })
         .collect();
     let mut rows: Vec<_> = index.rows.into_values().filter_map(|s| s.row).collect();
+    let mut outcome_counts = BTreeMap::new();
+    for outcome in rows.iter().filter_map(|r| r.outcome) {
+        *outcome_counts.entry(outcome).or_insert(0) += 1;
+    }
+    if let Some(wanted) = request.outcomes.as_ref().filter(|w| !w.is_empty()) {
+        rows.retain(|row| row.outcome.is_some_and(|o| wanted.contains(&o)));
+    }
     rows.sort_by(|a, b| {
         b.activity_sequence
             .cmp(&a.activity_sequence)
@@ -435,6 +507,7 @@ pub fn page(store: &Store, request: PageRequest) -> Result<Page, String> {
     Ok(Page {
         results: rows,
         next_cursor,
+        outcome_counts,
         unavailable,
         unavailable_count,
         next_unavailable_cursor,

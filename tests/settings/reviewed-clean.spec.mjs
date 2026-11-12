@@ -156,15 +156,19 @@ test("Reviewed shows 50 rows, appends 50 per Show more, keeps Clean all last and
   const total = 132;
   const more = reviewed(page).getByRole("button", { name: "Show 50 more" });
   await expect(more).toHaveText(`+${total - 50}`);
-  // The list card overlaps the band like Queue; Clean all sits after Show more.
+  // Outcome chips overlap the band like Queue's cards, the list follows;
+  // Clean all sits after Show more.
+  const chips = await reviewed(page).locator(".filter-row").boundingBox();
+  expect(chips.y).toBeCloseTo((await band(page)) - 23, 0);
   const list = await reviewed(page).locator(".work-list").boundingBox();
-  expect(list.y).toBeCloseTo((await band(page)) - 23, 0);
+  expect(list.y).toBeGreaterThan(chips.y + chips.height);
   const clean = reviewed(page).getByRole("button", { name: "Clean all" });
   await expect(clean).toContainText("2");
   const order = await reviewed(page).evaluate((root) =>
     [...root.children].map((child) => child.className),
   );
   expect(order).toEqual([
+    "filter-row",
     "work-list",
     "work-more",
     "work-retry-all work-clean-all",
