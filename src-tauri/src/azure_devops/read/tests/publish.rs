@@ -278,15 +278,13 @@ fn publishes_inline_threads_at_file_lines_with_iteration_context_then_confirms_b
         assert_eq!(body["status"], "active");
         assert_eq!(body["comments"][0]["content"], comment.body);
         assert_eq!(body["comments"][0]["parentCommentId"], 0);
-        assert!(comment
-            .body
-            .ends_with(&format!("<!-- pr-sniper:comment:{}:{} -->", run.id, {
-                if comment.side == "LEFT" {
-                    1
-                } else {
-                    0
-                }
-            })));
+        // The visible signature follows the hidden marker: ADO has no review body.
+        assert!(comment.body.ends_with(&format!(
+            "<!-- pr-sniper:comment:{}:{} -->\n\n{}",
+            run.id,
+            if comment.side == "LEFT" { 1 } else { 0 },
+            crate::exit_writes::SIGNATURE
+        )));
         let context = &body["pullRequestThreadContext"];
         // Both sides of iteration 2: the left side is the merge base the
         // review diffed, even for base-side lines after several pushes.
