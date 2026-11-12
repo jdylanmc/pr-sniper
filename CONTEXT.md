@@ -153,6 +153,9 @@ Repository `paths`: include globs and `!` excludes, last match wins. ANDed with 
 **Secondary trigger**:
 A teammate's `paths`: it reviews a revision only when a file changed since its own last completed review matches; otherwise its entry is retired as **Skipped: no matching files**. The primary has none.
 
+**Secondary scope**:
+The same `paths` limit what a triggered teammate reviews: changed files, patches, packet file list, `read_changes`, `search_code`, comments and report findings. Out-of-scope comments or findings are refused (`out_of_scope`). `read_source` still reads any file. `!**/*.md` alone: every file except Markdown.
+
 **Complete changed-file list**:
 Path and parking decisions use only a complete list: listing, then tree diff, then scoped tree diff (globs only). None complete: parked for a human (`incomplete_files`). Transient read failures retry, never decide.
 
