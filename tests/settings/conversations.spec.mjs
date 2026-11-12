@@ -727,6 +727,7 @@ for (const stage of ["before-dispatch", "after-response"]) {
       expect(final.snapshot).toEqual({
         ...seeded,
         revision: seeded.revision + 4,
+        navigation: seeded.navigation + 2,
       });
       expect(final.browser.heading).toBe("Job details");
       expect(
