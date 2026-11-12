@@ -1891,37 +1891,43 @@ fn an_authorized_approve_and_merge_notifies_only_its_settled_outcome() {
 
 #[test]
 fn a_merge_left_pending_on_the_author_settles_as_approved() {
-    let (_root, store) = store();
-    let mut ledger = store.load_notifications().unwrap();
-    let mut snapshot = merged_snapshot(1);
-    snapshot.items[0].state = queue::State::Approved;
-    snapshot.items[0].progress = Some(queue::Progress::MergePendingBehindBase);
-    ledger.observe(&frames(&snapshot), 1).unwrap();
-    assert_eq!(categories(&ledger), [Category::Approved]);
+    for provider in ["github", "azure_devops"] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let mut snapshot = merged_snapshot(1);
+        snapshot.items[0].job.provider = provider.into();
+        snapshot.items[0].state = queue::State::Approved;
+        snapshot.items[0].progress = Some(queue::Progress::MergePendingBehindBase);
+        ledger.observe(&frames(&snapshot), 1).unwrap();
+        assert_eq!(categories(&ledger), [Category::Approved], "{provider}");
+    }
 }
 
 #[test]
 fn work_the_retry_policy_still_owns_never_notifies_a_failure() {
-    let (_root, store) = store();
-    let mut ledger = store.load_notifications().unwrap();
-    let mut snapshot = merged_snapshot(1);
-    let item = &mut snapshot.items[0];
-    item.state = queue::State::Failed;
-    item.failed_operation = Some(queue::FailedOperation::ProviderAction);
-    item.action_status.as_mut().unwrap().settling = true;
-    ledger.observe(&frames(&snapshot), 1).unwrap();
-    assert!(ledger.notices.is_empty());
-    // Another operation's failure is still news while an action settles.
-    snapshot.items[0].failed_operation = Some(queue::FailedOperation::Review);
-    ledger.observe(&frames(&snapshot), 2).unwrap();
-    assert_eq!(categories(&ledger), [Category::Failure]);
-    // Once retries give up, the action failure notifies.
-    let (_fresh_root, fresh) = self::store();
-    let mut ledger = fresh.load_notifications().unwrap();
-    snapshot.items[0].failed_operation = Some(queue::FailedOperation::ProviderAction);
-    snapshot.items[0].action_status.as_mut().unwrap().settling = false;
-    ledger.observe(&frames(&snapshot), 3).unwrap();
-    assert_eq!(categories(&ledger), [Category::Failure]);
+    for provider in ["github", "azure_devops"] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let mut snapshot = merged_snapshot(1);
+        let item = &mut snapshot.items[0];
+        item.job.provider = provider.into();
+        item.state = queue::State::Failed;
+        item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+        item.action_status.as_mut().unwrap().settling = true;
+        ledger.observe(&frames(&snapshot), 1).unwrap();
+        assert!(ledger.notices.is_empty(), "{provider}");
+        // Another operation's failure is still news while an action settles.
+        snapshot.items[0].failed_operation = Some(queue::FailedOperation::Review);
+        ledger.observe(&frames(&snapshot), 2).unwrap();
+        assert_eq!(categories(&ledger), [Category::Failure], "{provider}");
+        // Once retries give up, the action failure notifies.
+        let (_fresh_root, fresh) = self::store();
+        let mut ledger = fresh.load_notifications().unwrap();
+        snapshot.items[0].failed_operation = Some(queue::FailedOperation::ProviderAction);
+        snapshot.items[0].action_status.as_mut().unwrap().settling = false;
+        ledger.observe(&frames(&snapshot), 3).unwrap();
+        assert_eq!(categories(&ledger), [Category::Failure], "{provider}");
+    }
 }
 
 #[test]
