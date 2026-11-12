@@ -171,7 +171,7 @@ Nothing is cut. Over limit means an error the agent fixes.
 
 ## Gates
 
-Run twice. At packet build: failing exit is not offered, packet says why (Exits section). At exit: re-check for races. One pure function: `exits::gates::offered`. Exits outside the assignment's tool set or role are absent. GitHub refuses self-approval ("Can not approve your own pull request", verified live): approve is denied for the acting account's own PRs; merge there needs Include self. PR-state reasons (conflicts, CI red) are stated before self-authorship, so the agent learns what to comment.
+Run twice. At packet build: failing exit is not offered, packet says why (Exits section). At exit: re-check for races. One pure function: `exits::gates::offered`. Exits outside the assignment's tool set or role are absent. GitHub takes no approval vote from the PR author (REST and GraphQL answer 422 "Can not approve your own pull request", verified live): on the acting account's own PRs the approve exit is denied and Include self merges them without a vote. The denial says which: "Own PR: … Include self is on: use the merge exit" or "Own PR: … Include self is off; turn it on". PR-state reasons (conflicts, CI red) are stated before self-authorship, so the agent learns what to comment.
 
 | Situation                                 | Result                                                                                                         |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |

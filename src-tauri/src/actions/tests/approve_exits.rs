@@ -346,7 +346,7 @@ fn gates_deny_what_the_exit_table_denies_and_allow_the_rest() {
 fn a_self_authored_pr_denies_approve_and_merges_only_with_include_self() {
     let own = |o: &mut Observation| o.author_id = "22".into();
     let (a, m) = ready_for(false, false, own);
-    assert!(a.unwrap_err().contains("self-approval"));
+    assert!(a.unwrap_err().starts_with("Own PR: GitHub takes no"));
     assert!(m.is_err());
     // Merge exit on an own PR: no approval vote, merge only with Include self.
     let (_a, m) = ready_for(true, false, own);
