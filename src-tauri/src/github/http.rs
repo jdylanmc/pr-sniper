@@ -2,6 +2,7 @@ use super::{
     credentials::Credential,
     oauth::TokenPair,
     provider::{Response, Transport},
+    publication::SendFailure,
     ConnectionError,
 };
 use reqwest::{
@@ -79,6 +80,13 @@ impl HttpTransport {
         &self,
         build: impl Fn(&Credential) -> Result<Request, ConnectionError>,
     ) -> Result<Response, ConnectionError> {
+        self.authorized_send(build).map_err(|failure| failure.error)
+    }
+
+    fn authorized_send(
+        &self,
+        build: impl Fn(&Credential) -> Result<Request, ConnectionError>,
+    ) -> Result<Response, SendFailure> {
         let renewal = self.renewal.as_ref().map(|renew| {
             move |rejected: &Arc<Credential>| -> Result<Arc<Credential>, ConnectionError> {
                 let pair = renew(rejected.0.as_str())?;
@@ -90,8 +98,12 @@ impl HttpTransport {
                 Ok(fresh)
             }
         });
+        let credential = self.current_credential().map_err(|error| SendFailure {
+            error,
+            uncertain: false,
+        })?;
         with_renewal(
-            self.current_credential()?,
+            credential,
             |credential| self.execute(build(credential)?),
             renewal.as_ref(),
         )
@@ -230,15 +242,27 @@ impl super::publication::MutationTransport for HttpTransport {
         path: &str,
         mutation: super::publication::Request,
     ) -> Result<Response, ConnectionError> {
+        self.send_mutation(path, mutation)
+            .map_err(|failure| failure.error)
+    }
+
+    fn send_mutation(
+        &self,
+        path: &str,
+        mutation: super::publication::Request,
+    ) -> Result<Response, SendFailure> {
         let (method, body) = match mutation {
             super::publication::Request::Post(body) => (
                 reqwest::Method::POST,
-                Some(serde_json::to_vec(&body).map_err(|_| ConnectionError::InvalidResponse)?),
+                Some(serde_json::to_vec(&body).map_err(|_| SendFailure {
+                    error: ConnectionError::InvalidResponse,
+                    uncertain: false,
+                })?),
             ),
             super::publication::Request::Delete => (reqwest::Method::DELETE, None),
         };
         // A 401 means GitHub did not apply the mutation, so a resend is safe.
-        self.authorized(|credential| {
+        self.authorized_send(|credential| {
             let mut request = self.request(path, credential)?;
             *request.method_mut() = method.clone();
             if let Some(body) = &body {
@@ -292,14 +316,27 @@ impl HttpTransport {
 
 /// Sends with `credential`; a 401 renews it once and resends. The second
 /// answer stands, so a 401 on a just-refreshed token stays `SignedOut`.
+/// A failed renewal is certain: GitHub refused the first send and no resend
+/// left, so nothing was applied.
 fn with_renewal<C, R: Fn(&C) -> Result<C, ConnectionError>>(
     credential: C,
     send: impl Fn(&C) -> Result<Response, ConnectionError>,
     renew: Option<R>,
-) -> Result<Response, ConnectionError> {
-    let response = send(&credential)?;
+) -> Result<Response, SendFailure> {
+    let sent = |credential: &C| {
+        send(credential).map_err(|error| SendFailure {
+            error,
+            uncertain: true,
+        })
+    };
+    let response = sent(&credential)?;
     match renew {
-        Some(renew) if response.status == 401 => send(&renew(&credential)?),
+        Some(renew) if response.status == 401 => {
+            sent(&renew(&credential).map_err(|error| SendFailure {
+                error,
+                uncertain: false,
+            })?)
+        }
         _ => Ok(response),
     }
 }
@@ -560,9 +597,13 @@ mod tests {
             ConnectionError::ProviderFailure,
         ] {
             let renew = |_: &&str| Err(cause);
+            // GitHub refused the send and nothing was resent: certain.
             assert_eq!(
                 with_renewal("stale", |_| Ok(status(401)), Some(&renew)).err(),
-                Some(cause)
+                Some(SendFailure {
+                    error: cause,
+                    uncertain: false
+                })
             );
         }
     }
@@ -572,7 +613,10 @@ mod tests {
         let refused = |_: &&str| Err(ConnectionError::SignedOut);
         assert_eq!(
             with_renewal("stale", |_| Ok(status(401)), Some(&refused)).err(),
-            Some(ConnectionError::SignedOut)
+            Some(SendFailure {
+                error: ConnectionError::SignedOut,
+                uncertain: false
+            })
         );
         let renew = |_: &&str| Ok("fresh");
         let response = with_renewal("stale", |_| Ok(status(401)), Some(&renew)).unwrap();
@@ -586,9 +630,13 @@ mod tests {
             let response = with_renewal("token", |_| Ok(status(code)), Some(&renew)).unwrap();
             assert_eq!(response.status, code);
         }
+        // A send that may have reached GitHub stays uncertain.
         assert_eq!(
             with_renewal("token", |_| Err(ConnectionError::Network), Some(&renew)).err(),
-            Some(ConnectionError::Network)
+            Some(SendFailure {
+                error: ConnectionError::Network,
+                uncertain: true
+            })
         );
     }
 }

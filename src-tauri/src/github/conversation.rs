@@ -108,14 +108,11 @@ impl<T: MutationTransport> CommentWriter for GithubClient<T> {
 
         let response = self
             .transport
-            .mutate(
+            .send_mutation(
                 &format!("/repos/{name}/issues/{number}/comments"),
                 Request::Post(json!({"body":body})),
             )
-            .map_err(|e| WriteFailure {
-                failure: e.into(),
-                uncertain: true,
-            })?;
+            .map_err(WriteFailure::from)?;
         if response.status != 201 {
             let uncertain = !(400..500).contains(&response.status) || response.status == 408;
             return Err(WriteFailure {
