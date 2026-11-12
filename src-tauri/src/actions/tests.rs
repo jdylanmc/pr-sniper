@@ -2275,3 +2275,23 @@ fn an_unresolved_intent_whose_first_reconcile_read_parks_notifies_its_failure_at
     );
     assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
 }
+
+#[test]
+fn a_review_failure_is_notified_while_a_same_pr_action_reconciles() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let approval = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    mark_intent(&store, &approval.id, NOW + 21).unwrap();
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.state = OperationState::Failed;
+    reviews[0].error = Some("Review failed.".into());
+    reviews[0].result = None;
+    store.save_reviews(&reviews).unwrap();
+    let review = queue::normal_snapshot(&store, vec![]).unwrap();
+    assert_eq!(
+        review.items[0].failed_operation,
+        Some(queue::FailedOperation::Review)
+    );
+    // The action projection re-labels it ProviderAction while reconciling.
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}
