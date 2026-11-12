@@ -461,6 +461,7 @@ pub(crate) fn complete(
                 current.attempt_ducks.clear();
                 current.operation.ai_attempt = None;
                 current.operation.state = OperationState::Completed;
+                current.operation.completed_at = Some(now);
                 current.operation.failure = None;
                 current.operation.next_attempt_at = None;
                 current.phase = if matches!(
