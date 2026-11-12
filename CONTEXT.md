@@ -333,11 +333,11 @@ Queue state. Follow-up needs human judgment, findings remain local, or some find
 _Avoid_: Needs attention (that term is the failure group)
 
 **Stale**:
-Review superseded by a new head or base. Stale after publication is the same condition on a **Publication**: receipt kept, labeled stale, no publish against a different diff. Base move without new head needs explicit Review again.
+Review superseded by a new head or base. Stale after publication is the same condition on a **Publication**: receipt kept, labeled stale, no publish against a different diff. Base move without new head needs explicit Review again. Settled stale work is never in Needs attention, its count or notifications: rests with a typed reason (superseded, awaiting change, closed, merged, repository removed or disabled, account unbound, not admitted) until the PR changes; the next head starts a new Iteration. Unsettled work (uncertain or in-flight) or a pending human decision on the PR (failure, question, confirmation) keeps it in Needs attention. Closed/merged reason follows the tracked PR lifecycle, not older closed Iterations. Projection only: upgrade reclassifies saved items; history, receipts and dismissals stay.
 _Avoid_: Outdated review
 
 **Dismiss stale review**:
-Local Queue visibility acknowledgement for one exact stale PR state, scoped to its account and repository binding. Persists across refresh and restart; later head, base or meaningful PR-state changes remain eligible. Keeps history and receipts; never consumes a review baseline, retries work, ignores the PR or dismisses a GitHub review. Uncertain or in-flight work prevents dismissal and overrides an earlier acknowledgement.
+Local visibility acknowledgement (full Queue view, MCP) for one exact stale PR state, scoped to its account and repository binding. Persists across refresh and restart; later head, base or meaningful PR-state changes remain eligible. Keeps history and receipts; never consumes a review baseline, retries work, ignores the PR or dismisses a GitHub review. Uncertain or in-flight work prevents dismissal and overrides an earlier acknowledgement.
 
 **Destination**:
 Exact PR, Iteration or job identity addressed by a panel route, notification or provider link. Unavailable exact identity is a missing destination; never substitutes another item.
