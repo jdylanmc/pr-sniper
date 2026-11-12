@@ -142,7 +142,7 @@ impl Observation {
         }
         match action {
             Action::Approve if self.author_id == self.account_id && !self.author_may_approve => {
-                Some("GitHub does not allow the PR author to approve their own PR.".into())
+                Some("Own PR: GitHub takes no author approval vote; Include self merges it without one.".into())
             }
             Action::Approve => None,
             Action::Merge if self.discussion_blocker().is_some() => self.discussion_blocker(),

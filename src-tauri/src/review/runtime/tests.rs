@@ -2051,7 +2051,7 @@ mod exits {
     async fn an_approve_denied_on_the_own_pr_lets_the_agent_hand_over_instead() {
         let gate: ExitGate = Arc::new(|call| match call {
             ExitCall::ApprovePullRequest { .. } => Err(Refusal::Denied(
-                "Acting account authored this PR. GitHub refuses self-approval.".into(),
+                "Own PR: GitHub takes no approval vote from the PR author.".into(),
             )),
             _ => Ok(()),
         });
