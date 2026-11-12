@@ -39,6 +39,7 @@ Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-qu
 - Activity (packet runs): **Read** N of M, exit row (icon + exit, counts New / Replies / Resolved, Approve / Merge, Write phase, Progress), **Packet** row (State id, Schema, Tools, Offered, Denied, Hash), teammate **Report** rows (agent, finding count; tap = `file:line` + nano). `ready_for_human` summary shows local, never posted.
 - Stale only on new head or base; settled stale never in Needs attention (typed `rest` reason); unsettled stale or a pending human decision keeps it there. Completed reviews stay Ready despite config drift or a disabled repo. Merged/closed PRs move to Reviewed; tracked PRs of disabled repos keep a light lifecycle refresh.
 - Queue identity is derived from stored tracking, not position.
+- Reviewed order: newest completion first (`operation.completed_at`; older records use their first attempt time), then newest pass, then a stable row id. Never saved queue order, so re-enabling a repository, reactivation or cleanup moves no completed review. A merged, closed or approved PR row sits with its latest completed review.
 
 ## Evidence and actions
 
