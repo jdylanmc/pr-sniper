@@ -432,7 +432,7 @@ pub(super) fn dispatch(runtime: &impl Runtime, command: Command) -> Result<Value
                 "incomplete_files":item.incomplete_files,"skipped":item.skipped,
                 "failed_model":item.failed_model,
                 "failed_operation":item.failed_operation,"remedy":item.remedy,
-                "dismiss_token":item.dismiss_token,
+                "dismiss_token":item.dismiss_token,"rest":item.rest,
                 "resume_at":item.resume_at,
                 "exit":item.exit,"progress":item.progress,
                 "merge_pending":item.action_status.as_ref()
