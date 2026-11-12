@@ -234,7 +234,44 @@ fn denials_carry_a_short_directive_reason() {
         Offer::Denied(reason) => reason,
         Offer::Offered => panic!("offered"),
     };
-    assert!(reason.contains("self-approval"));
+    assert!(reason.contains("Include self is off"), "{reason}");
+}
+
+#[test]
+fn own_github_pr_approve_denial_states_what_include_self_does() {
+    let mut own = base();
+    own.facts.author_is_acting = true;
+    let reason = |input: &GateInput| match offer(input, Exit::ApprovePullRequest) {
+        Some(Offer::Denied(reason)) => reason,
+        other => panic!("{other:?}"),
+    };
+    let off = reason(&own);
+    assert_eq!(
+        off,
+        "Own PR: GitHub takes no approval vote from the PR author. Include self is off; \
+         turn it on to merge own PRs without a vote."
+    );
+    own.grants.include_self = true;
+    let on = reason(&own);
+    assert_eq!(
+        on,
+        "Own PR: GitHub takes no approval vote from the PR author. Include self is on: \
+         use the merge exit, which merges without a vote."
+    );
+    assert!(is_offered(&own, Exit::ApproveAndMerge));
+    own.grants.merge = false;
+    let approve_only = reason(&own);
+    assert!(approve_only.ends_with("Include self merges own PRs only with Approve & Merge."));
+    // Never claims PR Sniper cannot act on its own PRs.
+    for text in [off, on, approve_only, SELF_EXCLUDED.into()] {
+        let lower = text.to_lowercase();
+        assert!(
+            !["can't", "cannot", "refuses", "self-approval"]
+                .iter()
+                .any(|w| lower.contains(w)),
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -248,7 +285,11 @@ fn self_authorship_never_masks_an_actionable_pr_state_reason() {
             "CI is red",
         ),
         (|f| f.conflicts = true, "Merge conflicts", "Merge conflicts"),
-        (|_| {}, "self-approval", "Include self is off"),
+        (
+            |_| {},
+            "Own PR: GitHub takes no approval vote",
+            "Include self is off",
+        ),
     ] {
         let mut input = base();
         input.facts.author_is_acting = true;
@@ -589,12 +630,12 @@ fn pending_ci_alone_parks_an_own_pr_merge_sign_off_with_include_self() {
     assert!(lgtm_parks(&own));
     assert_eq!(offer(&own, Exit::Lgtm), Some(Offer::Offered));
     assert_eq!(check_call(&own, &lgtm), Ok(()));
-    // Self-approval is refused by the provider; that never blocks the merge path.
+    // GitHub takes no author vote; the denial points at the merge exit it leaves open.
     let mut with_approve = own.clone();
     with_approve.tools.push("approve_pull_request".into());
     assert!(matches!(
         offer(&with_approve, Exit::ApprovePullRequest),
-        Some(Offer::Denied(reason)) if reason.contains("self-approval")
+        Some(Offer::Denied(reason)) if reason.contains("use the merge exit")
     ));
     assert!(lgtm_parks(&with_approve));
     // Anything beyond pending CI still refuses it.
@@ -855,7 +896,12 @@ fn azure_devops_approves_an_own_pr_only_with_include_self_and_github_never_does(
         };
         match (&provider, include_self) {
             (ProviderId::AzureDevops, false) => assert_eq!(reason, SELF_EXCLUDED),
-            (ProviderId::Github, _) => assert!(reason.contains("self-approval"), "{reason}"),
+            (ProviderId::Github, _) => {
+                assert!(
+                    reason.starts_with("Own PR: GitHub takes no approval vote"),
+                    "{reason}"
+                )
+            }
             _ => {}
         }
         // Pending CI alone: an own vote this assignment may cast parks; else no wait.

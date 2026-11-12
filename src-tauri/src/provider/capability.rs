@@ -48,8 +48,8 @@ pub struct ProviderCapabilities {
     pub approve: Capability,
     /// Approve and merge (complete) on an exact head.
     pub approve_and_merge: Capability,
-    /// Why the acting account never approves its own pull request. `None`:
-    /// it may, when the assignment's Include self is on.
+    /// The provider fact that the acting account casts no approval vote on its
+    /// own pull request. `None`: it may, when the assignment's Include self is on.
     pub self_approval_denial: Option<&'static str>,
 }
 
@@ -65,10 +65,9 @@ impl ProviderCapabilities {
                 readiness: Available,
                 approve: Available,
                 approve_and_merge: Available,
-                // "Can not approve your own pull request".
-                self_approval_denial: Some(
-                    "Acting account authored this PR. GitHub refuses self-approval.",
-                ),
+                // REST and GraphQL answer 422 "Can not approve your own pull
+                // request"; Include self merges an own PR without a vote.
+                self_approval_denial: Some("GitHub takes no approval vote from the PR author."),
             },
             ProviderId::AzureDevops => Self {
                 discovery: Available,

@@ -361,7 +361,7 @@ Single native writer for every comment, reply, approval and merge, serial and in
 _Avoid_: Agent tool, publisher
 
 **Approval**:
-One acting-account provider vote, not one per Agent. Cannot self-approve a GitHub PR or replace an existing vote; an own Azure DevOps PR needs Include self. Pins `commit_id` (GitHub). Approve alone never merges.
+One acting-account provider vote, not one per Agent. GitHub takes no vote from the PR author (an own PR merges without one under Include self); never replaces an existing vote; an own Azure DevOps PR needs Include self. Pins `commit_id` (GitHub). Approve alone never merges.
 _Avoid_: Agent vote
 
 **Merge Readiness**:
