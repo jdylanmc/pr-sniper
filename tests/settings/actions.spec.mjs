@@ -184,7 +184,7 @@ test("confirmed peer approval is shown without fabricating a merging author's vo
   });
   expect(snapshot.items[0].action_status.effects).toEqual([]);
   expect(snapshot.items[0].action_status.blockers).not.toContain(
-    "GitHub does not allow the PR author to approve their own PR.",
+    "Own PR: GitHub takes no author approval vote; Include self merges it without one.",
   );
 });
 

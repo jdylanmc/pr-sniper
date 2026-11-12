@@ -413,14 +413,29 @@ fn gated_wait_reasons(input: &GateInput) -> Vec<WaitReason> {
 pub const UNSUPPORTED: &str = "The repository's provider does not offer this action.";
 
 /// Denial of an action on the acting account's own PR while Include self is off.
-pub const SELF_EXCLUDED: &str = "Acting account authored this PR. Include self is off.";
+pub const SELF_EXCLUDED: &str =
+    "Own PR: Include self is off. Turn it on in the assignment to act on own PRs.";
 
-/// Why the acting account may not approve its own PR: the provider refuses
-/// self-approval, or it permits it and Include self is off.
-fn self_approval_denial(input: &GateInput) -> Option<&'static str> {
+/// Why the acting account casts no approval vote on its own PR, and what happens
+/// instead: the provider takes no author vote (merge without one under Include
+/// self), or it permits one and Include self is off.
+fn self_approval_denial(input: &GateInput) -> Option<String> {
+    let include_self = input.grants.include_self;
     match input.capabilities.self_approval_denial {
-        Some(reason) => Some(reason),
-        None if !input.grants.include_self => Some(SELF_EXCLUDED),
+        Some(fact) if !include_self => Some(format!(
+            "Own PR: {fact} Include self is off; turn it on to merge own PRs without a vote."
+        )),
+        Some(fact)
+            if input.grants.merge && input.capabilities.approve_and_merge.is_available() =>
+        {
+            Some(format!(
+                "Own PR: {fact} Include self is on: use the merge exit, which merges without a vote."
+            ))
+        }
+        Some(fact) => Some(format!(
+            "Own PR: {fact} Include self merges own PRs only with Approve & Merge."
+        )),
+        None if !include_self => Some(SELF_EXCLUDED.into()),
         None => None,
     }
 }
@@ -441,7 +456,7 @@ fn approve_denial(input: &GateInput) -> Option<String> {
     } else if f.ci == Ci::Red {
         "CI is red. Do not approve. Comment the fix if you know it.".into()
     } else if let Some(reason) = self_approval_denial(input).filter(|_| f.author_is_acting) {
-        reason.into()
+        reason
     } else {
         return f.approve_blocker.clone();
     })
@@ -469,7 +484,7 @@ fn merge_denial(input: &GateInput) -> Option<String> {
     } else if f.ci == Ci::Red {
         "CI is red. Do not merge.".into()
     } else if f.author_is_acting && !input.grants.include_self {
-        // Approval cannot be posted on an own PR; merge alone needs Include self.
+        // An own PR merges without an approval vote, only under Include self.
         SELF_EXCLUDED.into()
     } else if f.ci == Ci::Pending {
         "CI is pending. Cannot merge yet.".into()
