@@ -1221,6 +1221,7 @@ function initRepoForm(form) {
     values?.admission ?? saved?.admission ?? Demo.defaultAdmission(),
   );
   form._paths = [...(values?.paths ?? saved?.paths ?? [])];
+  form._pathsMode = values?.pathsMode ?? saved?.pathsMode ?? "and";
   form._route = [...(route().draft?.admissionRoute ?? [])];
   form._provider = saved?.provider ?? "github";
   renderRepoLists(form);
@@ -1251,9 +1252,10 @@ function syncAdmission(form) {
     admission.mode !== "filtered"
       ? ""
       : `${admission.rules.filter((rule) => rule.enabled).length} on`;
-  form.querySelector("[data-paths-summary]").textContent = Demo.pathSummary(
-    form._paths,
-  );
+  const or = form._pathsMode === "or" && admission.mode !== "explicit";
+  const summary = Demo.pathSummary(form._paths);
+  form.querySelector("[data-paths-summary]").textContent =
+    or && summary ? `Or \u00b7 ${summary}` : summary;
   renderAdmission(form);
 }
 
@@ -1315,8 +1317,21 @@ function renderAdmission(form) {
   if (users) {
     const choices = Demo.people.filter((person) => !values.includes(person));
     view.innerHTML = `${list}<select class="picker" data-picker="people" aria-label="Add people" hidden><option value="">Choose a person</option>${choices.map((person) => `<option value="${esc(person)}">${esc(person)}</option>`).join("")}</select><button type="button" class="floating-pill" data-action="add-people" ${disabled(!choices.length)}>${icon("plus")}Add people</button>`;
-  } else
-    view.innerHTML = `${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="src/** or !docs/" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
+  } else {
+    // And: paths gate the rules. Or: paths also admit. Explicit: gate only.
+    const explicit = form._admission.mode === "explicit";
+    const mode = form._pathsMode;
+    const join = `<section class="group-card"><div class="kv-row"><span>Rules</span><div class="paths-mode-choices" role="radiogroup" aria-label="Rules with paths" data-value="${mode}">${[
+      ["and", "And", "Rules and paths"],
+      ["or", "Or", "Rules or paths"],
+    ]
+      .map(
+        ([value, label, name]) =>
+          `<label class="segment"><input type="radio" name="pathsMode" value="${value}" aria-label="${name}" ${checked(mode === value)} ${disabled(explicit)} /><span>${label}</span></label>`,
+      )
+      .join("")}</div></div></section>`;
+    view.innerHTML = `${join}${list}<div class="admission-path-form"><input data-path-input aria-label="Path pattern" placeholder="src/** or !docs/" autocomplete="off" /><button type="button" class="primary-action" data-action="add-path">Add</button><p role="alert" class="inline-warning" hidden></p></div>`;
+  }
 }
 
 /** Directory people whose name or address starts with the query. */
@@ -1459,6 +1474,7 @@ function captureDraft() {
           agentIds: [...form._agents],
           admission: Demo.copy(form._admission),
           paths: [...form._paths],
+          pathsMode: form._pathsMode,
           schedule: text("schedule"),
           minutes: Number(text("minutes")),
           cron: text("cron"),
@@ -2095,6 +2111,7 @@ function readForm(form) {
             agentIds: all("agentIds"),
             admission: Demo.copy(form._admission),
             paths: [...form._paths],
+            pathsMode: form._pathsMode,
             schedule,
             minutes:
               schedule === "interval"
@@ -2397,6 +2414,12 @@ stage.addEventListener("change", (event) => {
     form._admission.mode = event.target.checked ? "all" : "filtered";
     dirty = true;
     syncAdmission(form);
+  }
+  if (event.target.name === "pathsMode") {
+    const form = event.target.closest("form");
+    form._pathsMode = event.target.value;
+    event.target.closest("[data-value]").dataset.value = event.target.value;
+    dirty = true;
   }
   if (event.target.name === "admissionExplicit") {
     const form = event.target.closest("form");

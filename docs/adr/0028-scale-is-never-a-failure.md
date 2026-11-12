@@ -15,6 +15,7 @@ An Azure DevOps poll paged through every active PR and failed with `LimitExceede
 | Filtered                  | Enabled Include users authors, plus the account as reviewer if Assigned is enabled |
 | Filtered, Mentioned on    | As above; a provider that detects mentions lists every open PR                     |
 | Explicit                  | Nothing; tracked PRs only                                                          |
+| Paths mode OR             | Every open PR ([ADR 0029](0029-paths-or-admission.md))                             |
 | Legacy, no watched author | Every open PR                                                                      |
 | Legacy, watched authors   | Those authors, the account as reviewer with reviewer assignment, mentions          |
 

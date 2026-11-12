@@ -711,10 +711,25 @@ pub struct Repository {
     /// Include draft pull requests in review.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub review_drafts: bool,
-    /// Repository gate globs (`crate::paths`), ANDed with admission. Empty =
-    /// no gate.
+    /// Repository globs (`crate::paths`). Empty = no path involvement.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// How `paths` combine with admission: AND gate (default) or OR.
+    #[serde(default, skip_serializing_if = "crate::paths::PathsMode::is_and")]
+    pub paths_mode: crate::paths::PathsMode,
+}
+
+impl Repository {
+    /// `paths` admit on their own: OR mode, with paths, outside Explicit
+    /// (only explicit intake admits there).
+    pub fn paths_also_admit(&self) -> bool {
+        self.paths_mode == crate::paths::PathsMode::Or
+            && !self.paths.is_empty()
+            && self
+                .admission
+                .as_ref()
+                .is_none_or(|a| a.mode != crate::admission::AdmissionMode::Explicit)
+    }
 }
 
 /// Committed with configuration, not with the recoverable polling cache.
@@ -2688,6 +2703,7 @@ impl Store {
         settings.repositories.push(Repository {
             review_drafts: false,
             paths: Vec::new(),
+            paths_mode: Default::default(),
             id: uuid::Uuid::new_v4().to_string(),
             provider: ProviderId::Github,
             name,
