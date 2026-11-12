@@ -890,12 +890,10 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         let observation_retry_blocker =
             observation_retry_blocker(item, &settings, &ledger, paused, now);
         let reobserved = observation_pending(item, &settings, &ledger, now);
-        // A failure of another operation (review, publication) is news on its
-        // own, even if the action projection below re-labels the item.
-        let independent_failure = item.state == State::Failed
-            && item
-                .failed_operation
-                .is_some_and(|op| op != queue::FailedOperation::ProviderAction);
+        // Only this projection assigns ProviderAction, so a Failed item here
+        // failed for another reason (review, publication, mention, files). That
+        // is news on its own, even if the projection below re-labels it.
+        let independent_failure = item.state == State::Failed;
         let Some(repository) = settings
             .repositories
             .iter()
