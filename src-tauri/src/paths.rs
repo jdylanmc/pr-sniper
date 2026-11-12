@@ -18,6 +18,23 @@ use std::collections::{BTreeMap, HashSet};
 /// migrated include + exclude list fits.
 pub const MAX_PATTERNS: usize = 2 * MAX_VALUES_PER_RULE;
 
+/// How repository `paths` combine with admission (ADR 0029).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathsMode {
+    /// Gate: admitted by the rules and touching the paths.
+    #[default]
+    And,
+    /// Also: admitted by the rules, or touching the paths. Paths never block.
+    Or,
+}
+
+impl PathsMode {
+    pub fn is_and(&self) -> bool {
+        *self == Self::And
+    }
+}
+
 /// Validates one path list; `owner` names it in errors.
 pub fn validate(patterns: &[String], owner: &str) -> Result<(), String> {
     if patterns.len() > MAX_PATTERNS {
@@ -147,6 +164,10 @@ pub struct PathFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate: Vec<String>,
     pub admitted: bool,
+    /// Taken for a plan that runs the revision without a gate match
+    /// (`Plan::whole`): a negative verdict rests on the complete list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
     /// Secondary assignments with globs, by assignment id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secondaries: BTreeMap<String, SecondaryFacts>,
@@ -166,6 +187,9 @@ pub struct SecondaryFacts {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     pub gate: Vec<String>,
+    /// The revision may run without a gate match (OR mode, ADR 0029): a
+    /// scoped walk cannot decide it, so an incomplete list parks it.
+    pub whole: bool,
     pub secondaries: Vec<SecondaryPlan>,
 }
 
@@ -186,6 +210,7 @@ impl PathFacts {
             tried,
             gate: Vec::new(),
             admitted: true,
+            whole: false,
             secondaries: BTreeMap::new(),
         }
     }
@@ -200,6 +225,8 @@ impl PathFacts {
         self.at(pull)
             && (self.incomplete.is_some()
                 || self.gate == plan.gate
+                    // A negative taken without `whole` may rest on a scoped walk.
+                    && (self.admitted || self.whole || !plan.whole)
                     && plan.secondaries.iter().all(|s| {
                         self.secondaries
                             .get(&s.assignment_id)
@@ -210,6 +237,12 @@ impl PathFacts {
     /// The gate keeps this revision out of the queue.
     pub fn gated_out(&self, pull: &PullRequest) -> bool {
         self.at(pull) && self.incomplete.is_none() && !self.admitted
+    }
+
+    /// `gate` selects a changed file of this revision. Parked facts admit:
+    /// the PR then waits for a human, never missed.
+    pub fn gate_admits(&self, pull: &PullRequest, gate: &[String]) -> bool {
+        self.at(pull) && self.admitted && (self.incomplete.is_some() || self.gate == gate)
     }
 
     /// Changed files the provider cannot list in full at this revision.
@@ -410,8 +443,9 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
             },
         );
     }
-    // Admitted on a list a review cannot see in full: no review starts.
-    if let Some(stuck) = whole.partial.filter(|_| admitted) {
+    // Admitted, or run regardless of the gate, on a list a review cannot see
+    // in full: no review starts.
+    if let Some(stuck) = whole.partial.filter(|_| admitted || plan.whole) {
         return Ok(parked(stuck));
     }
     Ok(PathFacts {
@@ -421,6 +455,7 @@ pub fn read_facts<R: PullRequestReader + ?Sized>(
         tried: Vec::new(),
         gate: plan.gate.clone(),
         admitted,
+        whole: plan.whole,
         secondaries,
     })
 }
