@@ -50,13 +50,24 @@ function dismiss(store, entry) {
   });
 }
 
-test("dismiss stale review persists across Store restart and reload without deleting history", async ({
+test("a stale review rests outside Needs attention and its dismissal persists without deleting history", async ({
   page,
   store,
   dataRoot,
 }, testInfo) => {
-  await staleFixture(store, true);
-  const before = await item(store);
+  const fixture = await staleFixture(store, true);
+  const failed = fixture.review(10);
+  failed.operation.state = "manual_retry";
+  failed.operation.failure = "provider";
+  failed.result = null;
+  fixture.state.jobs.push(failed.job);
+  fixture.state.reviews.push(failed);
+  await store("seed_queue_state", fixture.state);
+  const before = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.job.number === 9,
+  );
+  expect(before.state).toBe("stale_after_publication");
+  expect(before.rest).toBe("superseded");
   const stateDir = join(dataRoot, "state");
   const preserved = new Map(
     await Promise.all(
@@ -70,32 +81,32 @@ test("dismiss stale review persists across Store restart and reload without dele
   );
   await page.goto("/?panel=1");
   await showQueueGroup(page, "attention");
-  const button = page.getByRole("button", {
-    name: "Dismiss stale review",
-    exact: true,
-  });
   await expect(page.locator("[data-queue-attention]")).toHaveText("1");
-  await page.screenshot({
-    path: testInfo.outputPath("stale-dismiss-control.png"),
-  });
-  await button.focus();
-  await button.press("Enter");
-  await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  const rows = page.locator('[data-queue-group="attention"] .queue-item');
+  await expect(rows).toHaveCount(1);
+  await expect(rows).not.toContainText("Fix reconnect race");
   await expect(
-    page.getByRole("heading", { name: "Your queue", exact: true }),
-  ).toBeFocused();
-  await expect(button).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("stale-dismissed.png") });
+    page.getByRole("button", { name: "Dismiss stale review", exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("stale-rests.png") });
+  await dismiss(store, before);
   await page.reload();
-  await expect(page.locator("[data-queue-attention]")).toHaveText("0");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
   // Each bridge call opens a fresh Store in a separate process.
-  const after = await item(store);
+  const after = (await store("monitoring_snapshot")).items.find(
+    (entry) => entry.id === before.id,
+  );
   expect(after.dismissed).toBe(true);
   expect(after.state).toBe("stale_after_publication");
   expect(after.review_keys).toEqual(before.review_keys);
   for (const [name, bytes] of preserved) {
     // Navigation alone updates the panel/selection files.
-    if (["panel.json", "queue-selection.json"].includes(name)) continue;
+    if (
+      ["panel.json", "queue-selection.json", "queue-dismissals.json"].includes(
+        name,
+      )
+    )
+      continue;
     expect(await readFile(join(stateDir, name), "utf8"), name).toBe(bytes);
   }
   expect(await store("queue_destination", { itemId: before.id })).toContain(
@@ -165,6 +176,7 @@ test("dismissal cannot cross an account boundary or dismiss current non-stale wo
 });
 
 test("uncertain publication resurfaces a dismissed stale entry and cannot be dismissed", async ({
+  page,
   store,
 }) => {
   const fixture = await staleFixture(store, true);
@@ -175,7 +187,14 @@ test("uncertain publication resurfaces a dismissed stale entry and cannot be dis
   const unsafe = await item(store);
   expect(unsafe.dismissed).toBe(false);
   expect(unsafe.dismiss_token).toBeNull();
+  expect(unsafe.rest).toBeNull();
   await expect(dismiss(store, old)).rejects.toContain("unsettled");
+  await page.goto("/?panel=1");
+  await showQueueGroup(page, "attention");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(
+    page.locator('[data-queue-group="attention"] .queue-item'),
+  ).toContainText("Fix reconnect race");
   const snapshot = await store("monitoring_snapshot");
   expect(snapshot.publications[0].publication.uncertain).toBe(true);
   expect(snapshot.publications[0].publication.receipts).toEqual(
@@ -184,6 +203,7 @@ test("uncertain publication resurfaces a dismissed stale entry and cannot be dis
 });
 
 test("an original uncertain action remains intact and prevents stale dismissal", async ({
+  page,
   store,
 }) => {
   const fixture = await staleFixture(store);
@@ -242,7 +262,14 @@ test("an original uncertain action remains intact and prevents stale dismissal",
   const unsafe = await item(store);
   expect(unsafe.dismissed).toBe(false);
   expect(unsafe.dismiss_token).toBeNull();
+  expect(unsafe.rest).toBeNull();
   await expect(dismiss(store, old)).rejects.toContain("unsettled");
+  await page.goto("/?panel=1");
+  await showQueueGroup(page, "attention");
+  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(
+    page.locator('[data-queue-group="attention"] .queue-item'),
+  ).toContainText("Fix reconnect race");
   expect(unsafe.action_status.effects[0]).toMatchObject(effect);
 });
 
@@ -265,6 +292,7 @@ test("in-flight review cannot be dismissed and failed persistence does not ackno
   expect((await item(store)).dismissed).toBe(false);
 });
 
+// Stale rows rest outside the panel; the full Queue view still lists them.
 test("dismissal errors keep the card visible", async ({ page, store }) => {
   await staleFixture(store);
   await page.addInitScript(() => {
@@ -274,26 +302,24 @@ test("dismissal errors keep the card visible", async ({ page, store }) => {
         ? Promise.reject("Dismiss failed")
         : invoke(command, args);
   });
-  await page.goto("/?panel=1");
-  await showQueueGroup(page, "attention");
+  await page.goto("/?view=queue");
   const button = page.getByRole("button", {
     name: "Dismiss stale review",
     exact: true,
   });
   await button.click();
   await expect(button).toBeEnabled();
-  await expect(page.locator("[data-queue-attention]")).toHaveText("1");
+  await expect(page.locator("[data-dismiss-item]")).toHaveCount(1);
   expect((await item(store)).dismissed).toBe(false);
 });
 
-test("dismissal completion does not steal focus after navigation", async ({
+test("dismissal completion does not steal focus after it moves", async ({
   page,
   store,
   ipc,
 }) => {
   await staleFixture(store);
-  await page.goto("/?panel=1");
-  await showQueueGroup(page, "attention");
+  await page.goto("/?view=queue");
   const held = ipc.holdNext("dismiss_stale_review");
   const button = page.getByRole("button", {
     name: "Dismiss stale review",
@@ -302,13 +328,13 @@ test("dismissal completion does not steal focus after navigation", async ({
   await button.focus();
   await button.press("Enter");
   await held.arrived;
-  const reviewed = page
-    .getByRole("navigation", { name: "Application destinations" })
-    .getByRole("button", { name: "Reviewed", exact: true });
-  await reviewed.click();
-  const heading = page.getByRole("heading", { name: "Reviewed", exact: true });
-  await expect(heading).toBeFocused();
+  const open = page.getByRole("button", {
+    name: "Open PR on GitHub",
+    exact: true,
+  });
+  await open.focus();
   held.release();
   await page.evaluate(() => window.__settingsIdle());
-  await expect(heading).toBeFocused();
+  await expect(page.locator("[data-dismiss-item]")).toHaveCount(0);
+  await expect(open).toBeFocused();
 });
