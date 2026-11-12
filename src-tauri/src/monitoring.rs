@@ -723,6 +723,50 @@ impl MonitoringState {
             .collect();
         ids.into_iter().collect()
     }
+
+    /// Start of an outage another repository on the ticket's account is
+    /// retrying on its own: a transient failure here joins it (#381).
+    fn account_outage(&self, ticket: &PollTicket) -> Option<i64> {
+        self.health
+            .iter()
+            .filter(|(key, health)| {
+                *key != &ticket.health_key
+                    && health.enabled
+                    && health.provider_account_id.as_deref()
+                        == Some(ticket.provider_account_id.as_str())
+                    && health
+                        .operation
+                        .as_ref()
+                        .is_some_and(|operation| !operation.parked())
+            })
+            .filter_map(|(_, health)| health.outage_since)
+            .min()
+    }
+}
+
+/// A failed poll is an outage once it needs a human or has failed
+/// `MAX_FAILED_ATTEMPTS` times in a row; a shorter blip retries silently. A
+/// transient outage joins one its account is already retrying, so an
+/// account-wide outage is one notice, not one per repository (#381).
+fn begin_outage(
+    health: &mut ScheduleHealth,
+    failure: &OperationFailure,
+    account_outage: Option<i64>,
+    now: i64,
+) {
+    if health.outage_since.is_some() {
+        return;
+    }
+    let operation = health.operation.as_ref();
+    let parked = operation.is_some_and(JobOperation::parked);
+    if !parked && operation.is_some_and(|operation| operation.attempt_count < MAX_FAILED_ATTEMPTS) {
+        return;
+    }
+    health.outage_since = Some(if failure.transient() && !parked {
+        account_outage.unwrap_or(now)
+    } else {
+        now
+    });
 }
 
 /// Retired poll operations kept for diagnosis; nothing reads them back, so
@@ -2828,6 +2872,7 @@ impl Monitor {
             Err(_) => {}
         }
         self.synchronize_health(&configured, accounts, now);
+        let account_outage = self.state.account_outage(&ticket);
         let current = configured
             .iter()
             .find(|configuration| configuration.health_key == ticket.health_key);
@@ -2884,11 +2929,11 @@ impl Monitor {
                         } else {
                             health.last_failure = Some(error.health_failure().into());
                             health.last_error = Some(error.message().into());
-                            // Provider-side only: a local storage failure is a host error.
-                            if matches!(error, MonitoringError::Recoverable { .. }) {
-                                health.outage_since.get_or_insert(now);
-                            }
                             finish_failed_operation(health, error, now);
+                            // Provider-side only: a local storage failure is a host error.
+                            if let MonitoringError::Recoverable { failure, .. } = error {
+                                begin_outage(health, failure, account_outage, now);
+                            }
                         }
                     }
                 }

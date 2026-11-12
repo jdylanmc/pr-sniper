@@ -2280,6 +2280,7 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
     let mut monitor = Monitor::restore(&store).unwrap();
     let start = 1_800_000_000;
     let mut now = start;
+    let mut outage = None;
     // A 5xx outage longer than the old three-attempt budget.
     for attempt in 1..=8u8 {
         let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
@@ -2302,7 +2303,11 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
         assert!(next > now + 1 && next <= now + 1 + 300, "capped backoff");
         assert!(health.schedule_available);
         assert_eq!(health.next_run, next);
-        assert_eq!(health.outage_since, Some(start + 1));
+        // A blip retries silently; the third failure in a row is an outage.
+        if attempt == 3 {
+            outage = Some(now + 1);
+        }
+        assert_eq!(health.outage_since, outage, "attempt {attempt}");
         now = next;
     }
     let mut tickets = monitor.prepare_checks(&store, now, false).unwrap();
@@ -2323,6 +2328,130 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
     assert_eq!(health.outage_since, None);
     assert_eq!(health.last_failure, None);
     assert!(health.schedule_available);
+}
+
+/// Polls each due repository once at `now`; `fails` names the ones that fail
+/// with a 5xx. Returns the outage notices the ledger holds afterwards.
+fn poll_round(
+    monitor: &mut Monitor,
+    store: &Store,
+    ledger: &mut pr_sniper_lib::notifications::Ledger,
+    now: i64,
+    fails: &[&str],
+) -> Vec<pr_sniper_lib::notifications::Message> {
+    use pr_sniper_lib::{notifications, queue};
+    for ticket in monitor.prepare_checks(store, now, false).unwrap() {
+        let result = if fails.contains(&ticket.name.as_str()) {
+            Err(ConnectionError::ProviderFailure)
+        } else {
+            Ok(poll_result_for(
+                ACCOUNT_ID,
+                &ticket.provider_repository_id,
+                &ticket.name,
+                vec![],
+                "actor",
+            ))
+        };
+        let _ = monitor.finish(store, ticket, result, now + 1);
+    }
+    let snapshot = queue::snapshot(store, monitor.snapshot()).unwrap();
+    ledger
+        .observe(&notifications::frames(&snapshot), now + 1)
+        .unwrap();
+    ledger
+        .notices
+        .iter()
+        .filter(|notice| notice.event.category == notifications::Category::Failure)
+        .map(|notice| {
+            notifications::render(
+                notice,
+                notifications::Subject::find(&snapshot, notice).as_ref(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_poll_blip_that_recovers_on_retry_never_notifies() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut ledger = pr_sniper_lib::notifications::Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let mut now = 1_800_000_000;
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::ProviderFailure,
+    );
+    for fails in [&[REPOSITORY_NAME][..], &[]] {
+        now += 301;
+        assert_eq!(
+            poll_round(&mut monitor, &store, &mut ledger, now, fails),
+            vec![]
+        );
+    }
+    let health = &monitor.snapshot()[0];
+    assert_eq!(health.outage_since, None);
+    assert_eq!(health.last_success, Some(now + 1));
+}
+
+#[test]
+fn an_account_wide_outage_is_one_notice_until_every_repository_recovers() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut ledger = pr_sniper_lib::notifications::Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let other = "example/other";
+    let mut now = 1_800_000_000;
+    // Schedules start; both repositories are due at `now`.
+    assert!(monitor
+        .prepare_checks(&store, now - 1, false)
+        .unwrap()
+        .is_empty());
+    // One repository fails first; the other joins three polls later.
+    let mut notices = vec![];
+    for (round, fails) in [
+        &[REPOSITORY_NAME][..],
+        &[REPOSITORY_NAME],
+        &[REPOSITORY_NAME],
+        &[REPOSITORY_NAME, other],
+        &[REPOSITORY_NAME, other],
+        &[REPOSITORY_NAME, other],
+        // The first recovers while the other is still down: same outage.
+        &[other],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        notices = poll_round(&mut monitor, &store, &mut ledger, now, fails);
+        if round == 5 {
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].title, "repo +1 · Connection lost");
+        }
+        now += 901;
+    }
+    let outages: Vec<_> = monitor
+        .snapshot()
+        .into_iter()
+        .map(|health| health.outage_since)
+        .collect();
+    assert_eq!(outages, vec![None, Some(1_800_001_803)]);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    // Every repository recovers; the next outage notifies again.
+    poll_round(&mut monitor, &store, &mut ledger, now, &[]);
+    for _ in 0..3 {
+        now += 901;
+        notices = poll_round(&mut monitor, &store, &mut ledger, now, &[other]);
+    }
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert_eq!(notices[1].title, "other · Connection lost");
 }
 
 #[test]

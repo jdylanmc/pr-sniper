@@ -81,8 +81,32 @@ impl Event {
             // Saved evidence and receipt availability may change; a PR merges only once.
             return digest(&serde_json::json!([self.category, self.group]).to_string());
         }
+        if let Destination::Repository { .. } = self.destination {
+            // The repository an outage names may change while it lasts.
+            return digest(&serde_json::json!([self.category, "outage", self.cause]).to_string());
+        }
         digest(&serde_json::json!([self.category, self.destination, self.cause]).to_string())
     }
+}
+
+/// The account and start of a repository's current poll outage.
+pub(crate) fn outage(health: &crate::monitoring::ScheduleHealth) -> Option<(&str, i64)> {
+    let since = health.outage_since.filter(|_| health.enabled)?;
+    let account = health
+        .provider_account_id
+        .as_deref()
+        .unwrap_or(&health.repository_id);
+    Some((account, since))
+}
+
+fn retrying(health: &crate::monitoring::ScheduleHealth) -> bool {
+    health.operation.as_ref().is_some_and(|operation| {
+        !operation.parked()
+            && operation
+                .failure
+                .as_ref()
+                .is_some_and(crate::monitoring::OperationFailure::transient)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -330,37 +354,55 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 && Some(&item.job.account_id) == health.provider_account_id.as_ref()
                 && item.state == queue::State::Failed
         });
-        // One poll outage, one notice: its cause is when the outage began, so
-        // retries, polls and restarts never repeat it and the next outage
-        // after a successful poll is new (#381).
-        let outage = health
-            .outage_since
-            .filter(|_| health.enabled)
-            .map(|since| Event {
-                category: Category::Failure,
-                destination: Destination::Repository {
-                    repository_id: health.repository_id.clone(),
-                },
-                cause: digest(&serde_json::json!(["outage", since]).to_string()),
-                group: source.clone(),
-            });
         frames.push(Frame {
             source: format!("schedule:{source}"),
             legacy: None,
-            event: outage.or_else(|| {
-                health
-                    .last_failure
-                    .as_ref()
-                    .filter(|_| !covered)
-                    .map(|failure| Event {
-                        category: Category::Failure,
-                        destination: Destination::Settings,
-                        cause: digest(
-                            &serde_json::json!([health.operation.as_ref().map(|o| &o.id), failure])
-                                .to_string(),
-                        ),
-                        group: source,
-                    })
+            // An outage is the outage frame's, below; a poll still retrying a
+            // transient failure on its own is not news.
+            event: health
+                .last_failure
+                .as_ref()
+                .filter(|_| !covered && outage(health).is_none() && !retrying(health))
+                .map(|failure| Event {
+                    category: Category::Failure,
+                    destination: Destination::Settings,
+                    cause: digest(
+                        &serde_json::json!([health.operation.as_ref().map(|o| &o.id), failure])
+                            .to_string(),
+                    ),
+                    group: source,
+                }),
+        });
+    }
+    // One poll outage, one notice: its source and cause are the account and
+    // when the outage began, so retries, polls and restarts never repeat it,
+    // repositories on one account failing together share it, and the next
+    // outage after a successful poll is new (#381).
+    let mut outages: BTreeMap<(&str, i64), &crate::monitoring::ScheduleHealth> = BTreeMap::new();
+    for health in &snapshot.health {
+        if let Some(key) = outage(health) {
+            outages
+                .entry(key)
+                .and_modify(|lead| {
+                    if health.repository_id < lead.repository_id {
+                        *lead = health;
+                    }
+                })
+                .or_insert(health);
+        }
+    }
+    for ((account, since), lead) in outages {
+        let key = serde_json::json!(["outage", account, since]).to_string();
+        frames.push(Frame {
+            source: format!("outage:{}", digest(&key)),
+            legacy: None,
+            event: Some(Event {
+                category: Category::Failure,
+                destination: Destination::Repository {
+                    repository_id: lead.repository_id.clone(),
+                },
+                cause: digest(&key),
+                group: digest(&serde_json::json!(["outage", account]).to_string()),
             }),
         });
     }

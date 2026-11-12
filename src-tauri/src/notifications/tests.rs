@@ -1449,6 +1449,7 @@ fn subject(title: &str, failure_cause: Option<&'static str>) -> Subject {
         number: 219,
         title: title.into(),
         failure_cause: failure_cause.map(Into::into),
+        others: 0,
     }
 }
 

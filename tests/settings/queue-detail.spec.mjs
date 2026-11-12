@@ -154,7 +154,7 @@ test("Needs attention rows show a compact retry clock for parked failures", asyn
   await expect(hint.locator("svg")).toHaveCount(1);
 });
 
-test("monitoring failures show the stored error line and a readable cause", async ({
+test("a parked repository poll never fails the item: it keeps its own state", async ({
   page,
   store,
 }) => {
@@ -208,30 +208,18 @@ test("monitoring failures show the stored error line and a readable cause", asyn
   const item = (await store("monitoring_snapshot")).items.find(
     (entry) => entry.job.number === 1,
   );
-  expect(item.state).toBe("failed");
-  expect([item.failed_operation, item.remedy]).toEqual([
-    "repository_check",
-    "retry",
-  ]);
+  expect(item.state).not.toBe("failed");
+  expect(item.failed_operation ?? null).toBeNull();
+  expect(item.warnings.join(" ")).not.toContain("Monitoring failure");
   await store("panel_navigate", {
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
   });
   await page.goto("/");
-  await expect(page.locator(".queue-status-label strong")).toHaveText(
-    "Reply admission failed",
-  );
-  await expect(
-    page.locator('.queue-facts dt:text-is("Operation") + dd'),
-  ).toHaveText("Repository check");
-  await expect(page.locator("[data-queue-error]")).toHaveText(
-    "Could not write conversation state; retry the check.",
-  );
-  await expect(
-    page.locator('.queue-facts dt:text-is("Last attempt") + dd'),
-  ).toHaveText("5m ago");
+  await expect(page.locator("[data-queue-error]")).toHaveCount(0);
+  await expect(page.locator('[data-queue-primary="retry"]')).toHaveCount(0);
 });
 
-test("Retry on a repository poll failure retries the poll, never the published review", async ({
+test("Retry on an account-loss failure retries the poll, never the published review", async ({
   page,
   store,
 }) => {
@@ -262,7 +250,7 @@ test("Retry on a repository poll failure retries the poll, never the published r
         last_success: null,
         next_run: 0,
         schedule_available: true,
-        last_failure: "conversation_admission",
+        last_failure: "account_disconnected",
         last_error: "Could not write conversation state; retry the check.",
         in_flight: false,
         operation: {
@@ -300,7 +288,7 @@ test("Retry on a repository poll failure retries the poll, never the published r
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
   });
   await page.goto("/");
-  await page.locator('[data-queue-primary="retry"]').click();
+  await page.locator("button.queue-secondary").click();
   await expect
     .poll(() => page.evaluate(() => window.__commands))
     .toContain("retry_monitoring_operation");
@@ -357,7 +345,7 @@ test("Retry restarts the poll and each failed review, once per command", async (
         last_success: null,
         next_run: 0,
         schedule_available: true,
-        last_failure: "network",
+        last_failure: "account_disconnected",
         in_flight: false,
         operation: {
           id: "health-op",
@@ -393,7 +381,7 @@ test("Retry restarts the poll and each failed review, once per command", async (
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
   });
   await page.goto("/");
-  await page.locator('[data-queue-primary="retry"]').click();
+  await page.locator("button.queue-secondary").click();
   await expect
     .poll(() => page.evaluate(() => window.__commands))
     .toContain("start_review");
@@ -442,7 +430,7 @@ test("action errors are terse, dismissible toasts that never cover the header", 
         last_success: null,
         next_run: 0,
         schedule_available: true,
-        last_failure: "conversation_admission",
+        last_failure: "account_disconnected",
         last_error: "Could not write conversation state; retry the check.",
         in_flight: false,
         operation: {
@@ -480,7 +468,7 @@ test("action errors are terse, dismissible toasts that never cover the header", 
     route: { tab: "queue", detail: { type: "item", item_id: item.id } },
   });
   await page.goto("/");
-  await page.locator('[data-queue-primary="retry"]').click();
+  await page.locator("button.queue-secondary").click();
   const toast = page.locator("[data-panel-error]");
   await expect(toast).toHaveText("Already reviewed");
   await expect(toast).toHaveAttribute("title", /Reconcile the original/);

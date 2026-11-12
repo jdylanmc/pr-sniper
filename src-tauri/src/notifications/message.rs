@@ -127,6 +127,8 @@ pub struct Subject {
     pub title: String,
     /// Typed failure cause, never inferred from text.
     pub failure_cause: Option<String>,
+    /// Other repositories sharing a repository outage's notice.
+    pub others: usize,
 }
 
 impl Subject {
@@ -136,6 +138,7 @@ impl Subject {
             number: item.job.number,
             title: item.job.title.clone(),
             failure_cause: failure_cause(item),
+            others: 0,
         }
     }
 
@@ -157,6 +160,16 @@ impl Subject {
                     number: 0,
                     title: String::new(),
                     failure_cause: Some(outage_cause(health).into()),
+                    others: super::outage(health).map_or(0, |outage| {
+                        snapshot
+                            .health
+                            .iter()
+                            .filter(|other| {
+                                other.repository_id != health.repository_id
+                                    && super::outage(other) == Some(outage)
+                            })
+                            .count()
+                    }),
                 }),
             Destination::Settings => None,
         }
@@ -298,11 +311,17 @@ pub fn render(notice: &Notice, subject: Option<&Subject>) -> Message {
             .unwrap_or(&subject.repository),
     );
     if let Destination::Repository { .. } = notice.event.destination {
-        let room =
-            TITLE_MAX.saturating_sub(CONNECTION_LOST.chars().count() + SEPARATOR.chars().count());
+        // An account-wide outage names one repository and counts the rest.
+        let others = match subject.others {
+            0 => String::new(),
+            count => format!(" +{count}"),
+        };
+        let room = TITLE_MAX.saturating_sub(
+            CONNECTION_LOST.chars().count() + SEPARATOR.chars().count() + others.chars().count(),
+        );
         return Message {
             title: format!(
-                "{}{SEPARATOR}{CONNECTION_LOST}",
+                "{}{others}{SEPARATOR}{CONNECTION_LOST}",
                 truncate(&repository, room)
             ),
             body: subject
