@@ -416,6 +416,8 @@ impl Store {
         state: &crate::monitoring::MonitoringState,
     ) -> Result<(), String> {
         crate::retention::guard(self)?;
+        // Outcomes read activations (adoptable approvals).
+        crate::retention::mark_activity_pending(self)?;
         self.write_state("monitoring.json", state)
     }
 

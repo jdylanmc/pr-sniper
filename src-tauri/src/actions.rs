@@ -10,7 +10,7 @@ use crate::{
     storage::{ActionPermissions, Repository, Store},
 };
 pub(crate) use packet::adoptable_runs;
-pub use packet::{adopt as adopt_packet, PacketApproval, Ready};
+pub use packet::{adopt as adopt_packet, PacketApproval, Ready, Settlement};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

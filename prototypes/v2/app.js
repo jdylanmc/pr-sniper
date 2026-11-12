@@ -38,7 +38,8 @@ let savedRaw = null;
 let storageBlocked = false;
 let tab = "queue";
 let queueFilter;
-let historyFilter = "all";
+// Reviewed outcome chips; empty shows every row.
+let historyFilter = new Set();
 // Reviewed rows drawn; grows by 50 per Show more.
 let reviewedLimit = 50;
 let dirty = false;
@@ -96,6 +97,24 @@ const reviewed = () =>
   state.reviews.filter(
     (review) => !["queued", "running", "waiting_on_ci"].includes(review.state),
   );
+// Typed outcome of reviewed work (native `review::outcome`), mapped from demo states.
+const outcomes = {
+  approved: ["Approved", "check"],
+  commented: ["Commented", "mail"],
+  ready_for_human: ["Ready for human", "people"],
+  pending: ["Pending", "clock"],
+  failed: ["Failed", "failed"],
+};
+const outcomeOf = (review) =>
+  review.state === "approved"
+    ? "approved"
+    : review.state === "author"
+      ? "commented"
+      : review.state === "failed"
+        ? "failed"
+        : review.state === "stale"
+          ? "pending"
+          : "ready_for_human";
 const statusNames = {
   queued: "Queued",
   running: "Reviewing",
@@ -347,7 +366,7 @@ function loadScenario(scenario) {
     dirty = false;
     tab = "queue";
     queueFilter = undefined;
-    historyFilter = "all";
+    historyFilter = new Set();
     Object.keys(stacks).forEach((key) => {
       stacks[key] = [
         {
@@ -553,7 +572,7 @@ function workRow(review, kind) {
     review.state === "waiting_on_ci"
       ? "Waiting on CI"
       : kind === "reviewed"
-        ? statusNames[review.state]
+        ? outcomes[outcomeOf(review)][0]
         : review.state === "running"
           ? "Running"
           : review.state === "failed"
@@ -567,7 +586,7 @@ function workRow(review, kind) {
                   : "Queued";
   const symbol =
     kind === "reviewed"
-      ? "reviewed"
+      ? outcomes[outcomeOf(review)][1]
       : review.state === "failed"
         ? "failed"
         : blocked || review.state === "stale"
@@ -654,27 +673,21 @@ function runningPage() {
 }
 
 function reviewedPage() {
-  const items = reviewed().filter(
-    (review) =>
-      historyFilter === "all" ||
-      (historyFilter === "approved"
-        ? review.state === "approved"
-        : historyFilter === "attention"
-          ? ["human", "question", "author", "failed", "stale"].includes(
-              review.state,
-            )
-          : review.state === "done"),
-  );
+  const all = reviewed();
+  const counts = {};
+  for (const review of all)
+    counts[outcomeOf(review)] = (counts[outcomeOf(review)] ?? 0) + 1;
+  const items = historyFilter.size
+    ? all.filter((review) => historyFilter.has(outcomeOf(review)))
+    : all;
   return `<div class="page-scroll" data-scroll="reviewed">
-    <div class="filter-row" aria-label="Filter review history">${[
-      ["all", "All"],
-      ["approved", "Approved"],
-      ["attention", "Follow-up"],
-      ["done", "Human-reviewed"],
-    ]
+    <div class="filter-row" role="group" aria-label="Outcome">${Object.entries(
+      outcomes,
+    )
+      .filter(([key]) => counts[key] || historyFilter.has(key))
       .map(
-        ([key, label]) =>
-          `<button class="filter-chip" data-filter="${key}" aria-pressed="${historyFilter === key}">${label}</button>`,
+        ([key, [label, symbol]]) =>
+          `<button class="filter-chip" data-filter="${key}" aria-pressed="${historyFilter.has(key)}" aria-label="${label} ${counts[key] ?? 0}" title="${label}">${icon(symbol)}<span aria-hidden="true">${counts[key] ?? 0}</span></button>`,
       )
       .join("")}</div>
     ${
@@ -2450,8 +2463,13 @@ popover.addEventListener("click", (event) => {
   }
   if (button.dataset.filter) {
     remember();
-    historyFilter = button.dataset.filter;
+    const key = button.dataset.filter;
+    if (!historyFilter.delete(key)) historyFilter.add(key);
+    reviewedLimit = 50;
     render();
+    stage
+      .querySelector(`[data-filter="${key}"]`)
+      ?.focus({ preventScroll: true });
     return;
   }
   if (button.id === "notice-dismiss") {

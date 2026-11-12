@@ -1550,7 +1550,45 @@ body:has(.panel-shell) {
 .panel-shell .work-retry-all + .work-list {
   margin-top: 0;
 }
-/* Reviewed: list first (overlapping the band like Queue), then Show more, then Clean all. */
+/* Reviewed outcome chips overlap the band like cards; pressed chips filter the list. */
+.panel-shell .filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.panel-shell .filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px 5px 8px;
+  border: 1px solid var(--line-slate-e3e7ec);
+  border-radius: 999px;
+  background: var(--panel-paper);
+  color: var(--panel-ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.panel-shell .filter-chip .panel-icon {
+  width: 15px;
+  height: 15px;
+}
+.panel-shell .filter-chip[aria-pressed="true"] {
+  background: var(--panel-accent);
+  border-color: var(--panel-accent);
+  color: var(--text-on-accent-ink);
+}
+.panel-shell .filter-chip:focus-visible {
+  outline: 2px solid var(--panel-ink);
+  outline-offset: 2px;
+}
+.panel-shell
+  .filter-chip[data-reviewed-outcome="failed"][aria-pressed="false"]
+  .panel-icon {
+  color: var(--text-red-b3261e);
+}
+/* Reviewed: outcome chips (overlapping the band like Queue), list, Show more, then Clean all. */
 .panel-shell .work-list ~ .work-clean-all {
   margin: 12px 0 0 auto;
 }

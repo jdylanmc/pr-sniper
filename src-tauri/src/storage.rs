@@ -2683,6 +2683,8 @@ impl Store {
             .map_err(|_| "Cannot create configuration directory.".to_string())?;
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "Cannot encode settings.".to_string())?;
+        // Outcomes read assignments and local-only publication from settings.
+        crate::retention::mark_activity_pending(self)?;
         private_fs::replace(&directory.join("settings.json"), &bytes, "settings")?;
         self.record_write("settings.json", None);
         Ok(())
