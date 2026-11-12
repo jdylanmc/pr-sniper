@@ -488,6 +488,7 @@ test("MCP round-trips repository and secondary path globs and shows skipped revi
       name: "octo-org/app",
       enabled: false,
       paths: ["src/", "!src/gen/"],
+      paths_mode: "or",
       primary_assignment_id: primary,
       assignments: [
         { id: primary, agent_id: randomUUID(), comment: false },
@@ -524,10 +525,12 @@ test("MCP round-trips repository and secondary path globs and shows skipped revi
     });
     assert.deepEqual(f.calls.at(-1).edit.value.paths, ["src/", "!src/gen/"]);
     assert.deepEqual(f.calls.at(-1).edit.value.assignments[1].paths, ["docs/"]);
-    // Legacy path admission rules and empty globs never reach the app.
+    assert.equal(f.calls.at(-1).edit.value.paths_mode, "or");
+    // Legacy path admission rules, empty globs and unknown modes never reach the app.
     const calls = f.calls.length;
     for (const bad of [
       { ...value, paths: [""] },
+      { ...value, paths_mode: "xor" },
       {
         ...value,
         admission: {

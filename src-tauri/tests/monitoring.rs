@@ -36,6 +36,7 @@ fn repository(enabled: bool) -> Repository {
     Repository {
         review_drafts: false,
         paths: Vec::new(),
+        paths_mode: Default::default(),
         id: "00000000-0000-4000-8000-000000000001".into(),
         provider: ProviderId::Github,
         name: REPOSITORY_NAME.into(),
@@ -4495,4 +4496,81 @@ fn legacy_global_scan_state_moves_into_repository_health_once() {
     let bytes = std::fs::read(&path).unwrap();
     Monitor::restore(&store).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "idempotent");
+}
+
+/// Facts as `paths::read_facts` stores them for the `src/**` gate.
+fn gate_facts(pull: &PullRequest, matched: bool) -> pr_sniper_lib::paths::PathFacts {
+    pr_sniper_lib::paths::PathFacts {
+        head_sha: pull.head_sha.clone(),
+        base_sha: pull.base_sha.clone(),
+        incomplete: None,
+        tried: Vec::new(),
+        gate: vec!["src/**".into()],
+        admitted: matched,
+        whole: false,
+        secondaries: BTreeMap::new(),
+    }
+}
+
+/// Polls once with a team (`11` included, `13` excluded) and `src/**` paths
+/// in `mode`; returns the admitted PR numbers.
+fn paths_mode_admits(mode: &str, rules_on: bool) -> Vec<u64> {
+    let (_root, store) = unactivated_store();
+    let mut settings = store.load_settings().unwrap();
+    let repository = &mut settings.repositories[0];
+    repository.admission = Some(
+        serde_json::from_value(json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": rules_on, "users": [{"id": "11", "login": "team"}]},
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "13", "login": "excluded"}]}
+        ]}))
+        .unwrap(),
+    );
+    repository.paths = vec!["src/**".into()];
+    repository.paths_mode = serde_json::from_value(json!(mode)).unwrap();
+    store.save_settings(&settings).unwrap();
+    activate(&store, 0, BTreeMap::new());
+    let at = "2026-10-01T00:00:00Z";
+    // (number, author, touches src/**)
+    let cases = [
+        (1, "11", false),
+        (2, "12", true),
+        (3, "13", true),
+        (4, "12", false),
+        (5, "11", true),
+    ];
+    let pulls: Vec<_> = cases
+        .iter()
+        .map(|(number, author, _)| pull(&number.to_string(), *number, author, "u", &[], HEAD_A, at))
+        .collect();
+    let mut result = poll_result(pulls.clone(), "actor");
+    result.facts = pulls
+        .iter()
+        .zip(cases)
+        .map(|(pull, (_, _, matched))| (pull.id.clone(), gate_facts(pull, matched)))
+        .collect();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut tickets = monitor.prepare_checks(&store, 1_800_000_000, true).unwrap();
+    monitor
+        .finish(&store, tickets.remove(0), Ok(result), 1_800_000_001)
+        .unwrap();
+    let mut numbers: Vec<_> = store
+        .load_queue_state()
+        .unwrap()
+        .tracked
+        .iter()
+        .map(|t| t.number)
+        .collect();
+    numbers.sort_unstable();
+    numbers
+}
+
+#[test]
+fn paths_or_admits_the_team_or_the_path_and_exclusions_still_win() {
+    // AND: a team author touching the path only.
+    assert_eq!(paths_mode_admits("and", true), [5]);
+    // OR: the team anywhere, or anyone touching the path; an excluded
+    // author's matching PR stays out.
+    assert_eq!(paths_mode_admits("or", true), [1, 2, 5]);
+    // OR with no admitting rule: the path alone decides.
+    assert_eq!(paths_mode_admits("or", false), [2, 5]);
 }

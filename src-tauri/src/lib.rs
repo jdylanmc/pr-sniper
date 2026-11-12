@@ -2049,7 +2049,11 @@ pub(crate) fn explicit_facts(
     else {
         return Ok(None);
     };
-    let plan = paths.plan(&pull.id);
+    // OR mode: explicit intake runs without a gate match (ADR 0029).
+    let plan = paths::Plan {
+        whole: paths.also,
+        ..paths.plan(&pull.id)
+    };
     let previous = paths.facts.get(&pull.id);
     if previous.is_some_and(|f| f.current(pull, &plan)) {
         return Ok(previous.cloned());
@@ -2057,8 +2061,8 @@ pub(crate) fn explicit_facts(
     paths::read_facts(reader, &target.connection.repository, pull, &plan, previous).map(Some)
 }
 
-/// Path facts (ADR 0027) for open pull requests that are tracked or would be
-/// admitted, re-read only when their head or an input changed. A pull request
+/// Path facts (ADR 0027) for the pull requests `monitoring::fact_reads`
+/// selects, re-read only when their head or an input changed. A pull request
 /// whose own reads fail as malformed, too large or moved while read is held
 /// out of this poll and read again on the next (ADR 0028); the rest are
 /// admitted. Returns the facts and the held-out (id, number) pairs.
@@ -2071,17 +2075,9 @@ fn path_facts(
 ) -> Result<(BTreeMap<String, paths::PathFacts>, Vec<(String, u64)>), ConnectionError> {
     let mut facts = BTreeMap::new();
     let mut skipped = Vec::new();
-    for pull in pull_requests.iter().filter(|pull| {
-        pull.state == provider::Lifecycle::Open
-            && (!pull.draft || ticket.paths.review_drafts)
-            && (ticket.tracked.iter().any(|(id, _)| id == &pull.id)
-                || monitoring::scan_admits(ticket, pull))
-    }) {
-        let plan = ticket.paths.plan(&pull.id);
+    for pull in monitoring::fact_reads(ticket, pull_requests) {
+        let plan = monitoring::fact_plan(ticket, pull);
         let previous = ticket.paths.facts.get(&pull.id);
-        if previous.is_some_and(|f| f.current(pull, &plan)) {
-            continue;
-        }
         match paths::read_facts(reader, &connection.repository, pull, &plan, previous) {
             Ok(read) => {
                 facts.insert(pull.id.clone(), read);
@@ -5861,6 +5857,7 @@ mod github_auth_tests {
         settings.repositories.push(Repository {
             review_drafts: false,
             paths: Vec::new(),
+            paths_mode: Default::default(),
             id: "00000000-0000-4000-8000-000000000001".into(),
             provider: SettingsProviderId::Github,
             name: "example/repo".into(),
