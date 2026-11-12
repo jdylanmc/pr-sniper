@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod dismissal;
+pub mod rest;
 pub mod retry_all;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -141,6 +142,12 @@ pub struct SkippedReview {
 
 #[derive(Clone, Serialize)]
 pub struct Item {
+    /// Set on settled stale items: they rest outside Needs attention.
+    pub rest: Option<rest::Rest>,
+    /// A human decision (failure, question, confirmation) hidden behind a
+    /// stale state; such an item never rests.
+    #[serde(skip)]
+    pub decision_behind_stale: bool,
     pub dismiss_token: Option<String>,
     pub dismissed: bool,
     pub action_status: Option<crate::actions::Status>,
@@ -227,6 +234,7 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let mut snapshot = normal_snapshot(store, health)?;
     crate::actions::project(store, &mut snapshot)?;
+    rest::project(store, &mut snapshot)?;
     dismissal::project(store, &mut snapshot)?;
     retry_all::project(store, &mut snapshot)?;
     Ok(snapshot)
@@ -1055,6 +1063,16 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                 }
             }
         }
+        let decision_behind_stale = states
+            .iter()
+            .filter(|s| !matches!(s, State::Stale | State::StaleAfterPublication))
+            .min()
+            .is_some_and(|s| {
+                matches!(
+                    s,
+                    State::Failed | State::WaitingForHuman | State::ConfirmationRequired
+                )
+            });
         let state = match job.waiting.as_str() {
             monitoring::WAITING_CLOSED => State::Closed,
             monitoring::WAITING_MERGED => State::Merged,
@@ -1249,6 +1267,8 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
             _ => None,
         };
         items.push(Item {
+            rest: None,
+            decision_behind_stale,
             dismiss_token: None,
             dismissed: false,
             action_status: None,

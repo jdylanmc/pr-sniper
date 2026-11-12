@@ -1361,3 +1361,109 @@ fn a_legacy_body_only_exit_stays_local_instead_of_publishing() {
         "no replies: no exit write"
     );
 }
+
+fn rest(store: &Store) -> (State, Option<queue::rest::Rest>) {
+    let item = &queue::snapshot(store, vec![]).unwrap().items[0];
+    (item.state, item.rest)
+}
+
+#[test]
+fn persisted_stale_items_rest_with_a_typed_reason_and_keep_their_history() {
+    use queue::rest::Rest;
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let receipt = published(&run);
+    seed(
+        &store,
+        std::slice::from_ref(&run),
+        std::slice::from_ref(&receipt),
+    );
+    assert_eq!(rest(&store), (State::MachineSignedOff, None));
+    // Base moved with no new head: rests until the PR changes.
+    let mut moved = run.job.clone();
+    moved.observed_base_sha = Some("c".repeat(40));
+    store.save_queue(std::slice::from_ref(&moved)).unwrap();
+    assert_eq!(
+        rest(&store),
+        (State::StaleAfterPublication, Some(Rest::AwaitingChange))
+    );
+    let mut old = run.job.clone();
+    old.waiting = "superseded".into();
+    store.save_queue(std::slice::from_ref(&old)).unwrap();
+    assert_eq!(
+        rest(&store),
+        (State::StaleAfterPublication, Some(Rest::Superseded))
+    );
+    let mut queue_state = store.load_queue_state().unwrap();
+    let mut tracked = tracked_open(&run);
+    tracked["lifecycle"] = json!("closed");
+    queue_state.tracked = vec![serde_json::from_value(tracked).unwrap()];
+    store.save_queue_state(&queue_state).unwrap();
+    assert_eq!(rest(&store).1, Some(Rest::Closed));
+    queue_state.tracked.clear();
+    store.save_queue_state(&queue_state).unwrap();
+    let mut configuration = settings();
+    configuration.repositories[0].enabled = false;
+    store.save_settings(&configuration).unwrap();
+    assert_eq!(rest(&store).1, Some(Rest::RepositoryDisabled));
+    configuration.repositories[0].enabled = true;
+    configuration.repositories[0].provider_account_id = Some("44".into());
+    store.save_settings(&configuration).unwrap();
+    assert_eq!(rest(&store).1, Some(Rest::AccountUnbound));
+    configuration.repositories.clear();
+    store.save_settings(&configuration).unwrap();
+    assert_eq!(rest(&store).1, Some(Rest::RepositoryRemoved));
+    // History and receipts are untouched; dismissal still works.
+    assert_eq!(store.load_reviews().unwrap(), vec![run.clone()]);
+    assert_eq!(store.load_publications().unwrap(), vec![receipt]);
+    let item = queue::snapshot(&store, vec![]).unwrap().items.remove(0);
+    queue::dismissal::dismiss(&store, &item.id, item.dismiss_token.as_deref().unwrap()).unwrap();
+    assert!(queue::snapshot(&store, vec![]).unwrap().items[0].dismissed);
+}
+
+#[test]
+fn a_real_failure_never_rests() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let mut run = review(1);
+    run.operation.state = OperationState::ManualRetry;
+    run.result = None;
+    seed(&store, std::slice::from_ref(&run), &[]);
+    assert_eq!(rest(&store), (State::Failed, None));
+}
+
+#[test]
+fn a_pending_human_question_keeps_a_stale_item_out_of_rest() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path().into());
+    let run = review(1);
+    let origin = published(&run);
+    seed(
+        &store,
+        std::slice::from_ref(&run),
+        std::slice::from_ref(&origin),
+    );
+    let follow: FollowUp = follow_up::decode_runs(&serde_json::to_vec(&json!([{
+        "id":"follow-1","key":"key","publication_id":origin.id,"review":run,
+        "thread":{"id":"thread-1","resolved":false,"can_reply":true,"comments":[]},
+        "trigger_id":"99","phase":"human_input_required","analysis":null,"publication":null,"history":[],
+        "manual_start":true,"confirmed":false,"automatic_publication":false,"cancelled":false,
+        "error":null,"result":null,"body":null,"uncertain":false,"receipt":null
+    }])).unwrap()).unwrap().remove(0);
+    store.save_follow_ups(&[follow]).unwrap();
+    assert_eq!(rest(&store), (State::WaitingForHuman, None));
+    // Base moved, same head: stale, but the question still needs the human.
+    let mut moved = run.job.clone();
+    moved.observed_base_sha = Some("c".repeat(40));
+    store.save_queue(std::slice::from_ref(&moved)).unwrap();
+    assert_eq!(rest(&store), (State::StaleAfterPublication, None));
+    store.save_follow_ups(&[]).unwrap();
+    assert_eq!(
+        rest(&store),
+        (
+            State::StaleAfterPublication,
+            Some(queue::rest::Rest::AwaitingChange)
+        )
+    );
+}
