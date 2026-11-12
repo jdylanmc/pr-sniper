@@ -925,6 +925,7 @@ test("a repository outage notice opens that repository's editor and its row show
           last_failure: "ProviderFailure",
           in_flight: false,
           outage_since: 1_800_000_000,
+          outage_confirmed: true,
         },
       },
     },
@@ -947,4 +948,41 @@ test("a repository outage notice opens that repository's editor and its row show
   await expect(
     page.locator(`[data-repository="${neighborId}"]`),
   ).not.toContainText("Connection lost");
+});
+
+test("an outage notice opens the repository editor once: hide and reveal never reopen it", async ({
+  page,
+  store,
+}) => {
+  const initial = await seed(store);
+  initial.repositories[0].enabled = true;
+  await store("seed_settings", initial);
+  await providerFixture(page, store);
+  await store("fixture_show_panel");
+  await store("panel_navigate", {
+    route: { tab: "settings", repository: repoId },
+  });
+  await page.goto("/");
+  const modal = editor(page);
+  await expect(modal).toBeVisible();
+  const native = (command) =>
+    page.evaluate(
+      (name) => window.__TAURI_INTERNALS__.invoke(name, {}),
+      command,
+    );
+  const blink = async () => {
+    await native("hide_panel");
+    await native("fixture_show_panel");
+    await page.evaluate(() => window.__settingsIdle());
+  };
+  // Open editor: a reveal is no new navigation, so no second open.
+  await blink();
+  await expect(modal).toBeVisible();
+  await expect(page.getByText("Editor open")).toHaveCount(0);
+  // Closed without Back: the route still names the repository.
+  await modal.evaluate((dialog) => dialog.close());
+  await expect(modal).toBeHidden();
+  await blink();
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("Editor open")).toHaveCount(0);
 });

@@ -38,6 +38,8 @@ export interface PanelRoute {
 interface PanelSnapshot {
   route: PanelRoute;
   revision: number;
+  // Explicit navigations only: a reveal or blur keeps it.
+  navigation: number;
   visible: boolean;
   missing: string | null;
   placement_warning: string | null;
@@ -211,7 +213,7 @@ export async function mountPanel(app: HTMLElement) {
   };
   let changelogOpen = false;
   let lastState: PanelSnapshot | undefined;
-  // The revision whose repository destination was already opened.
+  // The navigation whose repository destination was already opened.
   let openedRepository: number | undefined;
   function renderChangelog() {
     const view = views.changelog;
@@ -1197,12 +1199,14 @@ export async function mountPanel(app: HTMLElement) {
       if (state.revision !== revision) return;
     }
     const repository = route.repository;
+    // Once per navigation, while shown: a reveal or blur keeps the route.
     if (
       visible === "settings" &&
       repository &&
-      openedRepository !== state.revision
+      state.visible &&
+      openedRepository !== state.navigation
     ) {
-      openedRepository = state.revision;
+      openedRepository = state.navigation;
       const controller = await ensureSettings();
       if (state.revision !== revision) return;
       controller.open(

@@ -2280,7 +2280,6 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
     let mut monitor = Monitor::restore(&store).unwrap();
     let start = 1_800_000_000;
     let mut now = start;
-    let mut outage = None;
     // A 5xx outage longer than the old three-attempt budget.
     for attempt in 1..=8u8 {
         let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
@@ -2304,10 +2303,8 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
         assert!(health.schedule_available);
         assert_eq!(health.next_run, next);
         // A blip retries silently; the third failure in a row is an outage.
-        if attempt == 3 {
-            outage = Some(now + 1);
-        }
-        assert_eq!(health.outage_since, outage, "attempt {attempt}");
+        assert_eq!(health.outage_since, Some(start + 1), "attempt {attempt}");
+        assert_eq!(health.outage_confirmed, attempt >= 3, "attempt {attempt}");
         now = next;
     }
     let mut tickets = monitor.prepare_checks(&store, now, false).unwrap();
@@ -2326,6 +2323,7 @@ fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
         OperationState::Completed
     );
     assert_eq!(health.outage_since, None);
+    assert!(!health.outage_confirmed);
     assert_eq!(health.last_failure, None);
     assert!(health.schedule_available);
 }
@@ -2442,7 +2440,7 @@ fn an_account_wide_outage_is_one_notice_until_every_repository_recovers() {
         .into_iter()
         .map(|health| health.outage_since)
         .collect();
-    assert_eq!(outages, vec![None, Some(1_800_001_803)]);
+    assert_eq!(outages, vec![None, Some(1_800_000_001)]);
     assert_eq!(notices.len(), 1, "{notices:?}");
     // Every repository recovers; the next outage notifies again.
     poll_round(&mut monitor, &store, &mut ledger, now, &[]);
@@ -2452,6 +2450,45 @@ fn an_account_wide_outage_is_one_notice_until_every_repository_recovers() {
     }
     assert_eq!(notices.len(), 2, "{notices:?}");
     assert_eq!(notices[1].title, "other · Connection lost");
+}
+
+#[test]
+fn a_repository_still_failing_when_its_account_peer_recovers_keeps_the_one_notice() {
+    let (_root, store) = store();
+    second_repository(&store, ACCOUNT_ID);
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let mut ledger = pr_sniper_lib::notifications::Ledger {
+        enabled: true,
+        ..Default::default()
+    };
+    let other = "example/other";
+    let mut now = 1_800_000_000;
+    assert!(monitor
+        .prepare_checks(&store, now - 1, false)
+        .unwrap()
+        .is_empty());
+    let mut notices = vec![];
+    // The first announces; the other fails twice, then the first recovers
+    // before the other's third failure.
+    for fails in [
+        &[REPOSITORY_NAME][..],
+        &[REPOSITORY_NAME],
+        &[REPOSITORY_NAME],
+        &[REPOSITORY_NAME, other],
+        &[REPOSITORY_NAME, other],
+        &[other],
+        &[other],
+    ] {
+        notices = poll_round(&mut monitor, &store, &mut ledger, now, fails);
+        now += 901;
+    }
+    let health: Vec<_> = monitor
+        .snapshot()
+        .into_iter()
+        .map(|health| (health.outage_since, health.outage_confirmed))
+        .collect();
+    assert_eq!(health, vec![(None, false), (Some(1_800_000_001), true)]);
+    assert_eq!(notices.len(), 1, "{notices:?}");
 }
 
 #[test]
@@ -2506,6 +2543,7 @@ fn definitive_poll_failures_park_for_a_human_and_manual_retry_resets_budget() {
         assert_eq!(parked.next_attempt_at, None);
         assert!(!health.schedule_available);
         assert_eq!(health.outage_since, Some(now + 1));
+        assert!(health.outage_confirmed);
         monitor
             .manual_retry_operation(&store, &parked.id, now + 2)
             .unwrap();

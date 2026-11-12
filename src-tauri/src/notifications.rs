@@ -91,7 +91,9 @@ impl Event {
 
 /// The account and start of a repository's current poll outage.
 pub(crate) fn outage(health: &crate::monitoring::ScheduleHealth) -> Option<(&str, i64)> {
-    let since = health.outage_since.filter(|_| health.enabled)?;
+    let since = health
+        .outage_since
+        .filter(|_| health.enabled && health.outage_confirmed)?;
     let account = health
         .provider_account_id
         .as_deref()
@@ -270,17 +272,34 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 .collect();
         }
         if category == Some(Category::Failure) {
+            // Only an account loss is the item's failure; a poll failure is
+            // the repository's outage notice, never a new one per PR (#381).
+            let mut every = causes.clone();
             for health in snapshot.health.iter().filter(|h| {
                 h.repository_id == item.job.configuration_id
                     && h.provider_account_id.as_deref() == Some(&item.job.account_id)
-                    && h.last_failure.is_some()
             }) {
-                if let Some(operation) = &health.operation {
-                    causes.insert(operation.id.clone());
+                let Some(failure) = &health.last_failure else {
+                    continue;
+                };
+                let account = matches!(
+                    failure.as_str(),
+                    "account_disconnected" | "account_binding_required"
+                );
+                let add = |set: &mut BTreeSet<String>| {
+                    if let Some(operation) = &health.operation {
+                        set.insert(operation.id.clone());
+                    }
+                    set.insert(failure.clone());
+                };
+                add(&mut every);
+                if account {
+                    add(&mut causes);
                 }
-                if let Some(failure) = &health.last_failure {
-                    causes.insert(failure.clone());
-                }
+            }
+            // An older version's digest of the same failure, poll included.
+            if every != causes {
+                legacy = Some(digest(&serde_json::json!(every).to_string()));
             }
         }
         let event = category.map(|category| Event {

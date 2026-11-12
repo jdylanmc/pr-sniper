@@ -260,10 +260,14 @@ pub struct ScheduleHealth {
     pub operation: Option<JobOperation>,
     #[serde(default)]
     pub scan_assignments: Vec<ScanAssignment>,
-    /// When the current run of failed polls began; cleared by the next
-    /// successful poll. One outage is one repository notice (#381).
+    /// When the current run of failed polls began, or the account outage it
+    /// joined; cleared by the next successful poll (#381).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outage_since: Option<i64>,
+    /// The run needs a human or has failed `MAX_FAILED_ATTEMPTS` times in a
+    /// row: an outage, one notice. A shorter blip retries silently.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outage_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -718,7 +722,7 @@ impl MonitoringState {
         let ids: BTreeSet<_> = self
             .health
             .values()
-            .filter(|health| health.enabled && health.outage_since.is_some())
+            .filter(|health| health.enabled && health.outage_confirmed)
             .map(|health| health.repository_id.clone())
             .collect();
         ids.into_iter().collect()
@@ -744,29 +748,29 @@ impl MonitoringState {
     }
 }
 
-/// A failed poll is an outage once it needs a human or has failed
-/// `MAX_FAILED_ATTEMPTS` times in a row; a shorter blip retries silently. A
-/// transient outage joins one its account is already retrying, so an
-/// account-wide outage is one notice, not one per repository (#381).
-fn begin_outage(
+/// A failed poll starts (or continues) a run of failures. A transient run
+/// joins one its account is already retrying, so an account-wide outage is one
+/// notice, not one per repository, even if the first repository recovers
+/// first. The run is an outage once it needs a human or has failed
+/// `MAX_FAILED_ATTEMPTS` times in a row; a shorter blip retries silently (#381).
+fn record_outage(
     health: &mut ScheduleHealth,
     failure: &OperationFailure,
     account_outage: Option<i64>,
     now: i64,
 ) {
-    if health.outage_since.is_some() {
-        return;
-    }
     let operation = health.operation.as_ref();
     let parked = operation.is_some_and(JobOperation::parked);
-    if !parked && operation.is_some_and(|operation| operation.attempt_count < MAX_FAILED_ATTEMPTS) {
-        return;
-    }
-    health.outage_since = Some(if failure.transient() && !parked {
-        account_outage.unwrap_or(now)
-    } else {
-        now
-    });
+    let confirmed =
+        parked || operation.is_none_or(|operation| operation.attempt_count >= MAX_FAILED_ATTEMPTS);
+    health
+        .outage_since
+        .get_or_insert(if failure.transient() && !parked {
+            account_outage.unwrap_or(now)
+        } else {
+            now
+        });
+    health.outage_confirmed |= confirmed;
 }
 
 /// Retired poll operations kept for diagnosis; nothing reads them back, so
@@ -2314,6 +2318,7 @@ impl Monitor {
                     operation: None,
                     scan_assignments: Vec::new(),
                     outage_since: None,
+                    outage_confirmed: false,
                 });
             let binding_changed = health.name != configuration.name
                 || health.provider_account_id != configuration.provider_account_id
@@ -2336,6 +2341,7 @@ impl Monitor {
                 health.account_login = None;
                 health.operation = None;
                 health.outage_since = None;
+                health.outage_confirmed = false;
                 self.state.cursors.remove(&configuration.health_key);
             }
             health.repository_id = configuration.repository_id.clone();
@@ -2887,6 +2893,7 @@ impl Monitor {
                         health.last_error = None;
                         health.conversation_admission_pending = false;
                         health.outage_since = None;
+                        health.outage_confirmed = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
@@ -2932,7 +2939,7 @@ impl Monitor {
                             finish_failed_operation(health, error, now);
                             // Provider-side only: a local storage failure is a host error.
                             if let MonitoringError::Recoverable { failure, .. } = error {
-                                begin_outage(health, failure, account_outage, now);
+                                record_outage(health, failure, account_outage, now);
                             }
                         }
                     }

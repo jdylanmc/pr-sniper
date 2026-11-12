@@ -133,6 +133,9 @@ impl From<Opening> for String {
 pub struct Snapshot {
     pub route: Route,
     pub revision: u64,
+    /// Counts explicit navigations only; a reveal or blur keeps it, so a
+    /// one-shot destination (an outage notice's editor) opens once (#381).
+    pub navigation: u64,
     pub visible: bool,
     pub missing: Option<String>,
     pub placement_warning: Option<String>,
@@ -143,6 +146,8 @@ pub struct Session {
     route: Route,
     initialized: bool,
     revision: u64,
+    #[serde(default)]
+    navigation: u64,
     visible: bool,
     #[serde(skip)]
     blur_from_tray: Option<Instant>,
@@ -165,6 +170,7 @@ impl Session {
         if let Some(route) = route {
             save_selection(store, &route)?;
             self.route = route;
+            self.navigation += 1;
         }
         self.initialized = true;
         self.revision += 1;
@@ -221,6 +227,7 @@ impl Session {
         Snapshot {
             route: self.route.clone(),
             revision: self.revision,
+            navigation: self.navigation,
             visible: self.visible,
             missing,
             placement_warning: self.placement_warning.clone(),
