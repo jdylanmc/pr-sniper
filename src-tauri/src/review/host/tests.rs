@@ -977,3 +977,23 @@ fn a_failed_attempt_keeps_its_duck_calls_until_a_result_replaces_them() {
     assert!(saved.attempt_ducks.is_empty());
     assert_eq!(saved.result.unwrap().ducks.len(), 1);
 }
+
+#[test]
+fn a_completed_review_records_when_it_completed_and_a_failure_does_not() {
+    let (_root, store, template) = fixture();
+    let run = running_packet(&store, &template, 100);
+    complete(&store, &run.operation.id, Err(Failure::timeout()), 150).unwrap();
+    assert_eq!(
+        store.load_reviews().unwrap()[0].operation.completed_at,
+        None
+    );
+    let mut reviews = store.load_reviews().unwrap();
+    reviews[0].operation.state = OperationState::Running;
+    store.save_reviews(&reviews).unwrap();
+    let result = packet_result(json!({"exit":"ready_for_human","summary":"Checked."}));
+    complete(&store, &run.operation.id, Ok(result), 900).unwrap();
+    let op = store.load_reviews().unwrap().remove(0).operation;
+    assert_eq!(op.state, OperationState::Completed);
+    // Reviewed orders by completion, not by when the work was first attempted.
+    assert_eq!((op.initial_attempt_at, op.completed_at), (100, Some(900)));
+}
