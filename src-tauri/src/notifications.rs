@@ -56,8 +56,14 @@ impl Category {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Destination {
-    QueueItem { item_id: String },
+    QueueItem {
+        item_id: String,
+    },
     Settings,
+    /// A repository's Settings entry: its poll outage (#381).
+    Repository {
+        repository_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,22 +330,38 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
                 && Some(&item.job.account_id) == health.provider_account_id.as_ref()
                 && item.state == queue::State::Failed
         });
+        // One poll outage, one notice: its cause is when the outage began, so
+        // retries, polls and restarts never repeat it and the next outage
+        // after a successful poll is new (#381).
+        let outage = health
+            .outage_since
+            .filter(|_| health.enabled)
+            .map(|since| Event {
+                category: Category::Failure,
+                destination: Destination::Repository {
+                    repository_id: health.repository_id.clone(),
+                },
+                cause: digest(&serde_json::json!(["outage", since]).to_string()),
+                group: source.clone(),
+            });
         frames.push(Frame {
             source: format!("schedule:{source}"),
             legacy: None,
-            event: health
-                .last_failure
-                .as_ref()
-                .filter(|_| !covered)
-                .map(|failure| Event {
-                    category: Category::Failure,
-                    destination: Destination::Settings,
-                    cause: digest(
-                        &serde_json::json!([health.operation.as_ref().map(|o| &o.id), failure])
-                            .to_string(),
-                    ),
-                    group: source,
-                }),
+            event: outage.or_else(|| {
+                health
+                    .last_failure
+                    .as_ref()
+                    .filter(|_| !covered)
+                    .map(|failure| Event {
+                        category: Category::Failure,
+                        destination: Destination::Settings,
+                        cause: digest(
+                            &serde_json::json!([health.operation.as_ref().map(|o| &o.id), failure])
+                                .to_string(),
+                        ),
+                        group: source,
+                    })
+            }),
         });
     }
     frames

@@ -1919,20 +1919,16 @@ fn exhausted_cooldown_poll_requeues_on_the_next_scheduled_scan() {
     let (_root, store) = store();
     let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
     let mut monitor = Monitor::restore(&store).unwrap();
-    let mut now = 1_800_000_000;
-    for attempt in 1..=3 {
-        fail_poll(
-            &mut monitor,
-            &store,
-            now,
-            attempt == 1,
-            ConnectionError::Network,
-        );
-        if attempt < 3 {
-            now = poll_operation(&monitor).next_attempt_at.unwrap();
-        }
-    }
-    assert_eq!(poll_operation(&monitor).state, OperationState::ManualRetry);
+    let now = 1_800_000_000;
+    // Transient failures never park (#381); a permission failure does.
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::MissingReadPermission,
+    );
+    assert!(poll_operation(&monitor).parked());
     let mut state = store.load_monitoring_state().unwrap();
     let operation = state
         .health
@@ -1966,19 +1962,13 @@ fn reconnected_parked_poll_keeps_its_schedule_without_erasing_the_real_failure()
     for control in ["connected", "disconnected", "unauthorized"] {
         let (_root, store) = store();
         let mut monitor = Monitor::restore(&store).unwrap();
-        let mut now = 1_800_000_000;
-        for attempt in 1..=3 {
-            fail_poll(
-                &mut monitor,
-                &store,
-                now,
-                attempt == 1,
-                ConnectionError::Network,
-            );
-            if attempt < 3 {
-                now = poll_operation(&monitor).next_attempt_at.unwrap();
-            }
-        }
+        fail_poll(
+            &mut monitor,
+            &store,
+            1_800_000_000,
+            true,
+            ConnectionError::MissingReadPermission,
+        );
         let mut state = store.load_monitoring_state().unwrap();
         let health = state.health.get_mut(REPOSITORY_KEY).unwrap();
         health.last_failure = Some("account_disconnected".into());
@@ -1986,6 +1976,8 @@ fn reconnected_parked_poll_keeps_its_schedule_without_erasing_the_real_failure()
         health.scheduled_run = 0;
         health.schedule_available = false;
         let operation = health.operation.as_mut().unwrap();
+        // A budget-exhausted park saved by an older build.
+        operation.state = OperationState::ManualRetry;
         operation.resume_cycle = 5;
         operation.resume_at = None;
         let parked = operation.clone();
@@ -2130,21 +2122,22 @@ fn queued_poll_relaunched_after_its_deadline_keeps_its_cause_and_runs_in_the_due
     );
     let waiting = poll_operation(&monitor);
     assert_eq!(waiting.state, OperationState::Queued);
-    assert_eq!(waiting.retry_deadline, 1_800_000_900);
+    // The window stays open past the retry it waits for.
+    let next = waiting.next_attempt_at.unwrap();
+    assert_eq!(waiting.retry_deadline, next + 900);
     drop(monitor);
 
     // Quit while the retry delay was pending; relaunch after the window.
+    let relaunch = waiting.retry_deadline + 1;
     let mut restored = Monitor::restore(&store).unwrap();
-    let tickets = restored
-        .prepare_checks(&store, 1_800_000_901, false)
-        .unwrap();
+    let tickets = restored.prepare_checks(&store, relaunch, false).unwrap();
     assert_eq!(tickets.len(), 1);
     let operation = poll_operation(&restored);
     assert_eq!(operation.id, waiting.id);
     assert_eq!(operation.state, OperationState::Running);
     assert_eq!(operation.attempt_count, 1);
     assert_eq!(operation.failure, Some(OperationFailure::Network));
-    assert_eq!(operation.retry_deadline, 1_800_001_801);
+    assert_eq!(operation.retry_deadline, relaunch + 900);
 }
 
 fn second_repository(store: &Store, account_id: &str) {
@@ -2282,92 +2275,140 @@ fn parked_polls_across_repositories_retry_once_per_scan() {
 }
 
 #[test]
-fn transient_poll_failures_park_after_three_failed_attempts_and_manual_retry_resets_budget() {
+fn transient_poll_failures_never_park_and_the_next_good_poll_recovers() {
     let (_root, store) = store();
     let mut monitor = Monitor::restore(&store).unwrap();
-    let mut now = 1_800_000_000;
-
-    for expected_attempt in 1..=3 {
-        let mut tickets = monitor
-            .prepare_checks(&store, now, expected_attempt == 1)
-            .unwrap();
-        assert_eq!(tickets.len(), 1);
-        assert_eq!(
-            monitor.snapshot()[0]
-                .operation
-                .as_ref()
-                .unwrap()
-                .attempt_count,
-            expected_attempt
-        );
+    let start = 1_800_000_000;
+    let mut now = start;
+    // A 5xx outage longer than the old three-attempt budget.
+    for attempt in 1..=8u8 {
+        let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
+        assert_eq!(tickets.len(), 1, "attempt {attempt}");
         monitor
             .finish(
                 &store,
                 tickets.remove(0),
-                Err(ConnectionError::Network),
+                Err(ConnectionError::ProviderFailure),
                 now + 1,
             )
             .unwrap_err();
         let health = &monitor.snapshot()[0];
         let operation = health.operation.as_ref().unwrap();
-        assert_eq!(operation.failure, Some(OperationFailure::Network));
-        if expected_attempt < 3 {
-            assert_eq!(operation.state, OperationState::Queued);
-            now = operation.next_attempt_at.unwrap();
-        } else {
-            assert_eq!(operation.state, OperationState::ManualRetry);
-            assert!(!health.schedule_available);
-            assert_eq!(health.next_run, 0);
-        }
+        assert_eq!(operation.state, OperationState::Queued, "attempt {attempt}");
+        assert_eq!(operation.failure, Some(OperationFailure::Provider));
+        assert_eq!(operation.attempt_count, attempt);
+        assert!(!operation.parked());
+        let next = operation.next_attempt_at.unwrap();
+        assert!(next > now + 1 && next <= now + 1 + 300, "capped backoff");
+        assert!(health.schedule_available);
+        assert_eq!(health.next_run, next);
+        assert_eq!(health.outage_since, Some(start + 1));
+        now = next;
     }
-
-    let expired = monitor.snapshot()[0].operation.clone().unwrap();
+    let mut tickets = monitor.prepare_checks(&store, now, false).unwrap();
+    assert_eq!(tickets.len(), 1);
     monitor
-        .manual_retry_operation(&store, &expired.id, now + 1)
+        .finish(
+            &store,
+            tickets.remove(0),
+            Ok(poll_result(vec![], "actor")),
+            now + 1,
+        )
         .unwrap();
-    let reset = monitor.snapshot()[0].operation.clone().unwrap();
-    assert_ne!(reset.id, expired.id);
-    assert_eq!(reset.state, OperationState::Queued);
-    assert_eq!(reset.attempt_count, 0);
-    assert_eq!(reset.initial_attempt_at, now + 1);
-    assert_eq!(reset.retry_deadline, now + 901);
+    let health = &monitor.snapshot()[0];
+    assert_eq!(
+        health.operation.as_ref().unwrap().state,
+        OperationState::Completed
+    );
+    assert_eq!(health.outage_since, None);
+    assert_eq!(health.last_failure, None);
+    assert!(health.schedule_available);
 }
 
 #[test]
-fn valid_repository_cron_clears_stale_schedule_error_while_manual_retry_remains() {
+fn a_transient_park_saved_by_an_older_build_is_requeued_without_a_human() {
+    let (_root, store) = store();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let now = 1_800_000_000;
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::ProviderFailure,
+    );
+    let mut state = store.load_monitoring_state().unwrap();
+    let operation = state
+        .health
+        .values_mut()
+        .next()
+        .unwrap()
+        .operation
+        .as_mut()
+        .unwrap();
+    operation.state = OperationState::ManualRetry;
+    operation.next_attempt_at = None;
+    store.save_monitoring_state(&state).unwrap();
+    let mut monitor = Monitor::restore(&store).unwrap();
+    let tickets = monitor.prepare_checks(&store, now + 10, false).unwrap();
+    assert_eq!(tickets.len(), 1, "polls again at once");
+    let health = &monitor.snapshot()[0];
+    assert!(!health.operation.as_ref().unwrap().parked());
+    assert!(health.schedule_available);
+}
+
+#[test]
+fn definitive_poll_failures_park_for_a_human_and_manual_retry_resets_budget() {
+    for (error, failure) in [
+        (ConnectionError::SignedOut, OperationFailure::Credentials),
+        (
+            ConnectionError::MissingReadPermission,
+            OperationFailure::Permission,
+        ),
+    ] {
+        let (_root, store) = store();
+        let mut monitor = Monitor::restore(&store).unwrap();
+        let now = 1_800_000_000;
+        fail_poll(&mut monitor, &store, now, true, error);
+        let health = &monitor.snapshot()[0];
+        let parked = health.operation.clone().unwrap();
+        assert_eq!(parked.state, OperationState::Failed, "{error:?}");
+        assert_eq!(parked.failure, Some(failure));
+        assert_eq!(parked.next_attempt_at, None);
+        assert!(!health.schedule_available);
+        assert_eq!(health.outage_since, Some(now + 1));
+        monitor
+            .manual_retry_operation(&store, &parked.id, now + 2)
+            .unwrap();
+        let reset = monitor.snapshot()[0].operation.clone().unwrap();
+        assert_ne!(reset.id, parked.id);
+        assert_eq!(reset.state, OperationState::Queued);
+        assert_eq!(reset.attempt_count, 0);
+        assert_eq!(reset.retry_deadline, now + 902);
+    }
+}
+
+#[test]
+fn valid_repository_cron_clears_stale_schedule_error_while_a_parked_poll_remains() {
     let (_root, store) = store();
     let accounts = available_accounts(&[(ACCOUNT_ID, "current-login")]);
     let mut monitor = Monitor::restore(&store).unwrap();
-    let mut now = 1_800_000_000;
-
-    for attempt in 1..=3 {
-        let mut tickets = monitor.prepare_checks(&store, now, attempt == 1).unwrap();
-        assert_eq!(tickets.len(), 1);
-        monitor
-            .finish(
-                &store,
-                tickets.remove(0),
-                Err(ConnectionError::Network),
-                now + 1,
-            )
-            .unwrap_err();
-        if attempt < 3 {
-            now = monitor.snapshot()[0]
-                .operation
-                .as_ref()
-                .unwrap()
-                .next_attempt_at
-                .unwrap();
-        }
-    }
-    assert_eq!(
-        monitor.snapshot()[0].operation.as_ref().unwrap().state,
-        OperationState::ManualRetry
+    let now = 1_800_000_000;
+    fail_poll(
+        &mut monitor,
+        &store,
+        now,
+        true,
+        ConnectionError::MissingReadPermission,
     );
+    assert!(monitor.snapshot()[0].operation.as_ref().unwrap().parked());
 
-    // Failure recorded by a build whose global schedule was a legacy interval.
+    // Failure recorded by a build whose global schedule was a legacy interval,
+    // on a budget-exhausted park.
     let mut state = store.load_monitoring_state().unwrap();
-    state.health.values_mut().next().unwrap().last_failure = Some("invalid_global_cron".into());
+    let health = state.health.values_mut().next().unwrap();
+    health.last_failure = Some("invalid_global_cron".into());
+    health.operation.as_mut().unwrap().state = OperationState::ManualRetry;
     store.save_monitoring_state(&state).unwrap();
     let mut monitor = Monitor::restore(&store).unwrap();
     let mut settings = store.load_settings().unwrap();
@@ -2377,10 +2418,7 @@ fn valid_repository_cron_clears_stale_schedule_error_while_manual_retry_remains(
         .synchronize_configuration(&store, &accounts, now + 3)
         .unwrap();
     let health = monitor.snapshot().remove(0);
-    assert_eq!(
-        health.operation.as_ref().unwrap().state,
-        OperationState::ManualRetry
-    );
+    assert!(health.operation.as_ref().unwrap().parked());
     assert_ne!(health.last_failure.as_deref(), Some("invalid_global_cron"));
     assert!(!health.schedule_available);
 }

@@ -1,7 +1,8 @@
 //! OS notification copy and state badges. Pattern: title = state word, then
 //! `repo#123`; body = PR title, then at most one short reason. Copy is rendered
 //! from the live queue item and never persisted; a Failure reason comes only from
-//! the cause stored on the notice when it was sent.
+//! the cause stored on the notice when it was sent. A repository outage reads
+//! `repo · Connection lost`, then whether it is retrying or needs you.
 
 use super::{Category, Destination, Notice};
 use crate::queue;
@@ -13,6 +14,8 @@ pub const TITLE_MAX: usize = 48;
 pub const BODY_MAX: usize = 90;
 
 const SEPARATOR: &str = " · ";
+/// Status of a repository whose polls fail: one notice per outage (#381).
+const CONNECTION_LOST: &str = "Connection lost";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Badge {
@@ -136,16 +139,27 @@ impl Subject {
         }
     }
 
-    /// The live item behind a queue notice, if it is still in the snapshot.
+    /// The live item behind a queue notice, or the repository behind an
+    /// outage notice, if it is still in the snapshot.
     pub fn find(snapshot: &queue::Snapshot, notice: &Notice) -> Option<Self> {
-        let Destination::QueueItem { item_id } = &notice.event.destination else {
-            return None;
-        };
-        snapshot
-            .items
-            .iter()
-            .find(|item| &item.id == item_id || item.aliases.contains(item_id))
-            .map(Self::of)
+        match &notice.event.destination {
+            Destination::QueueItem { item_id } => snapshot
+                .items
+                .iter()
+                .find(|item| &item.id == item_id || item.aliases.contains(item_id))
+                .map(Self::of),
+            Destination::Repository { repository_id } => snapshot
+                .health
+                .iter()
+                .find(|health| &health.repository_id == repository_id)
+                .map(|health| Self {
+                    repository: health.name.clone(),
+                    number: 0,
+                    title: String::new(),
+                    failure_cause: Some(outage_cause(health).into()),
+                }),
+            Destination::Settings => None,
+        }
     }
 
     /// [`Self::find`] for a saved notice: the failure cause is the one stored on
@@ -190,8 +204,29 @@ fn failure_cause(item: &queue::Item) -> Option<String> {
     }
 }
 
+/// Typed state of a repository's poll outage: retrying on its own, or parked
+/// for a human by its class.
+fn outage_cause(health: &crate::monitoring::ScheduleHealth) -> &'static str {
+    use crate::monitoring::FailureClass;
+    match health
+        .operation
+        .as_ref()
+        .and_then(crate::monitoring::JobOperation::failure_class)
+    {
+        None => OUTAGE_RETRYING,
+        Some(FailureClass::Credentials) => "credentials",
+        Some(FailureClass::Permission) => "permission",
+        Some(_) => OUTAGE_PARKED,
+    }
+}
+
+const OUTAGE_RETRYING: &str = "outage_retrying";
+const OUTAGE_PARKED: &str = "outage_parked";
+
 fn failure_reason(cause: &str) -> Option<&'static str> {
     match cause {
+        OUTAGE_RETRYING => Some("Retrying"),
+        OUTAGE_PARKED => Some("Needs you"),
         "model_rejected" => Some("Model rejected"),
         "model_unavailable" => Some("Model unavailable"),
         "model_retired" => Some("Model retired"),
@@ -246,6 +281,7 @@ pub fn render(notice: &Notice, subject: Option<&Subject>) -> Message {
             (Category::Failure, Destination::Settings) => {
                 (format!("{state}{SEPARATOR}Repo check"), "Open Settings")
             }
+            (_, Destination::Repository { .. }) => (CONNECTION_LOST.into(), "Open Settings"),
             _ => (state.to_string(), "Open the queue"),
         };
         return Message {
@@ -261,6 +297,23 @@ pub fn render(notice: &Notice, subject: Option<&Subject>) -> Message {
             .next()
             .unwrap_or(&subject.repository),
     );
+    if let Destination::Repository { .. } = notice.event.destination {
+        let room =
+            TITLE_MAX.saturating_sub(CONNECTION_LOST.chars().count() + SEPARATOR.chars().count());
+        return Message {
+            title: format!(
+                "{}{SEPARATOR}{CONNECTION_LOST}",
+                truncate(&repository, room)
+            ),
+            body: subject
+                .failure_cause
+                .as_deref()
+                .and_then(failure_reason)
+                .unwrap_or("Open Settings")
+                .into(),
+            badge,
+        };
+    }
     let number = format!("#{}", subject.number);
     let room = TITLE_MAX
         .saturating_sub(state.chars().count() + SEPARATOR.chars().count() + number.chars().count());

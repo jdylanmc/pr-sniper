@@ -285,7 +285,7 @@ Recorded count of changed files the agent read in full ("N of M files read"). In
 _Avoid_: Coverage gate
 
 **Retry budget**:
-Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
+Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. A repository poll's transient failures never park: capped backoff, no attempt limit, schedule kept (ADR 0028); its failure is the repository's, never a PR item's. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
 _Avoid_: Retry count, unlimited retry
 
 **Failure class**:
