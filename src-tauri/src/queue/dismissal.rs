@@ -43,7 +43,11 @@ fn token(item: &Item, snapshot: &Snapshot) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn unsettled(item: &Item, snapshot: &Snapshot, actions: &crate::actions::Ledger) -> bool {
+pub(super) fn unsettled(
+    item: &Item,
+    snapshot: &Snapshot,
+    actions: &crate::actions::Ledger,
+) -> bool {
     let binding = Binding::job(&item.job);
     item.progress.is_some()
         || snapshot.reviews.iter().any(|r| {

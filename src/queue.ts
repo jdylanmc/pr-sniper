@@ -29,6 +29,16 @@ export interface NormalWork {
 }
 
 export interface QueueItem {
+  rest?:
+    | "superseded"
+    | "awaiting_change"
+    | "closed"
+    | "merged"
+    | "repository_removed"
+    | "repository_disabled"
+    | "account_unbound"
+    | "not_admitted"
+    | null;
   dismiss_token?: string | null;
   dismissed?: boolean;
   action_status?: ActionStatus | null;
@@ -323,6 +333,7 @@ export function humanQueue(items: QueueItem[]): QueueItem[] {
     .filter(
       (item) =>
         !item.dismissed &&
+        !item.rest &&
         ![
           "queued",
           "reviewing",
