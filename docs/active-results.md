@@ -30,8 +30,8 @@ Typed, from the completed exit and its confirmed effect (`review::outcome`). Nev
 | `commented`           | `leave_comments`: batch published or exit writes done; reply published                                                                                                                                              |
 | `ready_for_human`     | `ready_for_human`; `lgtm` without approve authority (final settled `no_authority`); reply needing input; human merged first; legacy final                                                                           |
 | `waiting`             | `wait`                                                                                                                                                                                                              |
-| `report`              | teammate `submit_report`; local-only findings; quiet reply; reply kept local (no Reply grant)                                                                                                                       |
-| `pending`             | exit completed, effect or publication not confirmed yet                                                                                                                                                             |
+| `report`              | teammate `submit_report`; local-only findings with no replies or resolutions planned; quiet reply; reply kept local (no Reply grant)                                                                                |
+| `pending`             | exit completed, effect or publication not confirmed yet; reply publication stopped with a retry ahead                                                                                                               |
 | `failed`              | effect refused, stale, dequeued or cancelled; final settled moved, revoked or refused; approve run no longer adoptable; sign-off writes failed (`lgtm` ready too); publication parked, stale, stopped or unresolved |
 
 - A result row takes its iteration's latest completed run; a teammate `submit_report` only when nothing else completed. A confirmed Approve or merge on the PR wins. A `primary_final` row reads like the run that created it.
@@ -49,7 +49,7 @@ Typed, from the completed exit and its confirmed effect (`review::outcome`). Nev
 - Order: newest activity first, ties by item ID ascending. Unchanged polling adds no activity. Execution progress is new activity.
 - Pages read the index (`state/result-index.json`), not review bodies. Cursors are versioned keysets, not offsets or snapshots.
 - Legacy results index deterministically; no invented completion timestamps. An interrupted index rebuilds from durable evidence (`result-index-pending.json`).
-- Index format 4 adds `outcome`. An older index is rebuilt from saved reviews, publications, exit writes and actions on the next read.
+- Index format 4 adds `outcome`. An older index is rebuilt from saved reviews, publications, exit writes and actions on the next read. Saving settings or monitoring activations marks the index pending, so outcomes that read them refresh on the next page.
 - Open PR jobs, passes, earlier iterations and owned feedback stay durable across scans and restarts.
 
 ## Mention intent and unavailable entries

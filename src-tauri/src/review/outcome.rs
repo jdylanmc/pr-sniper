@@ -142,7 +142,12 @@ impl Evidence<'_> {
         {
             return Outcome::Failed;
         }
-        if publication.is_none() && write.is_none() && local_only {
+        // Replies and resolutions still go out when new comments stay local.
+        if publication.is_none()
+            && write.is_none()
+            && local_only
+            && crate::exit_writes::plan(run, 0).is_none()
+        {
             return Outcome::Report;
         }
         Outcome::Pending
@@ -194,14 +199,14 @@ impl Evidence<'_> {
                 | Settlement::Refused
                 | Settlement::Failed,
             ) => Outcome::Failed,
-            // Settled by an older build: only its permissions are on record.
+            // Settled by an older build: only its permissions are on record. A
+            // consumed sign-off write proves its resolutions, never an approval.
             None if !finals
                 .last()
                 .is_some_and(|f| f.basis.permissions.approve || f.basis.permissions.merge) =>
             {
                 Outcome::ReadyForHuman
             }
-            None if write.is_some_and(|w| w.consumed) => Outcome::Approved,
             None => Outcome::Failed,
         }
     }
@@ -269,6 +274,20 @@ pub fn follow_up(follow: &FollowUp) -> Option<Outcome> {
         FollowPhase::Published | FollowPhase::StaleAfterPublication => Outcome::Commented,
         FollowPhase::Quiet => Outcome::Report,
         FollowPhase::HumanInputRequired => Outcome::ReadyForHuman,
+        // A publication error with a retry ahead (rate limit, transient) still goes out.
+        FollowPhase::Stopped
+            if !follow.cancelled
+                && follow.publication.as_ref().is_some_and(|op| {
+                    matches!(
+                        op.state,
+                        OperationState::Queued
+                            | OperationState::Running
+                            | OperationState::Interrupted
+                    )
+                }) =>
+        {
+            Outcome::Pending
+        }
         FollowPhase::Stopped | FollowPhase::Unresolved => Outcome::Failed,
         FollowPhase::WaitingStart
         | FollowPhase::Analyzing

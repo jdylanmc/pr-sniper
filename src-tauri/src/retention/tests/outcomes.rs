@@ -541,3 +541,198 @@ fn a_reply_kept_local_is_a_report_and_one_with_the_reply_grant_waits_to_publish(
         Some(Outcome::Pending)
     );
 }
+
+#[test]
+fn an_older_settled_sign_off_with_no_effect_is_never_approved() {
+    let (_root, store, _monitor) = fixture();
+    let job = store.load_queue().unwrap()[0].clone();
+    let sign_off = with_exit(
+        &store,
+        &job,
+        ExitOutcome::Lgtm {
+            comment: String::new(),
+            resolve_own_threads: vec!["thread".into()],
+            action: LgtmAction::Approve,
+            dismissed_teammate_findings: vec![],
+        },
+    );
+    // Settled by an older build (no settlement on record), revoked or moved
+    // after its own resolutions were consumed.
+    let mut ledger = approval(&store, &sign_off, &[]);
+    ledger.finals[0].basis.permissions.approve = true;
+    let packet = ledger.finals[0].packet.as_mut().unwrap();
+    packet.settled = true;
+    packet.settlement = None;
+    let mut write = exit_write(&job, WritePhase::Completed, StepState::Done);
+    write.review_operation_id = sign_off.operation.id.clone();
+    write.consumed = true;
+    let none = std::collections::HashSet::new();
+    let evidence = Evidence {
+        publications: &[],
+        exit_writes: std::slice::from_ref(&write),
+        actions: &ledger,
+        adoptable: &none,
+    };
+    assert_eq!(evidence.run(&sign_off, false), Some(Outcome::Failed));
+    assert_eq!(evidence.final_review(&ledger.finals[0]), Outcome::Failed);
+}
+
+#[test]
+fn local_only_comments_with_replies_or_resolutions_wait_for_their_write() {
+    let (_root, store, _monitor) = fixture();
+    let job = store.load_queue().unwrap()[0].clone();
+    let none = Ledger::default();
+    let adoptable = std::collections::HashSet::new();
+    let plain = Evidence {
+        publications: &[],
+        exit_writes: &[],
+        actions: &none,
+        adoptable: &adoptable,
+    };
+    let exit = |replies: serde_json::Value, resolutions: serde_json::Value| {
+        serde_json::from_value::<ExitOutcome>(json!({
+            "exit":"comments","new_comments":[],
+            "reply_comments":replies,"resolve_own_threads":resolutions
+        }))
+        .unwrap()
+    };
+    let reply_only = with_exit(
+        &store,
+        &job,
+        exit(
+            json!([{"thread_id":"thread","body":"Still applies."}]),
+            json!([]),
+        ),
+    );
+    let resolve_only = with_exit(&store, &job, exit(json!([]), json!(["thread"])));
+    assert_eq!(plain.run(&reply_only, true), Some(Outcome::Pending));
+    assert_eq!(plain.run(&resolve_only, true), Some(Outcome::Pending));
+    assert_eq!(
+        plain.run(&with_exit(&store, &job, comments()), true),
+        Some(Outcome::Report)
+    );
+}
+
+#[test]
+fn a_stopped_reply_with_a_retry_ahead_is_pending_and_a_parked_one_failed() {
+    let (_root, store, _monitor) = fixture();
+    let (_, _, mut follow) = evidence(&store);
+    follow.result = Some(
+        serde_json::from_value(json!({
+            "output":{"decision":"reply","body":"Fixed in the latest push.",
+                "new_information":"","reason":"","evidence":[]},
+            "session_id":"session","model":"model","runtime_version":"fixture",
+            "input_tokens":1,"output_tokens":1,"tool_calls":1
+        }))
+        .unwrap(),
+    );
+    follow
+        .context
+        .selection
+        .configuration
+        .as_mut()
+        .unwrap()
+        .authority
+        .reply = true;
+    follow.phase = FollowPhase::Stopped;
+    let mut publication = follow.operation("reply_publication", NOW);
+    publication.state = OperationState::Queued;
+    publication.next_attempt_at = Some(NOW + 60);
+    follow.publication = Some(publication.clone());
+    assert_eq!(
+        crate::review::outcome::follow_up(&follow),
+        Some(Outcome::Pending)
+    );
+    for state in [OperationState::Failed, OperationState::ManualRetry] {
+        publication.state = state.clone();
+        publication.next_attempt_at = None;
+        follow.publication = Some(publication.clone());
+        assert_eq!(
+            crate::review::outcome::follow_up(&follow),
+            Some(Outcome::Failed),
+            "{state:?}"
+        );
+    }
+    follow.publication = None;
+    assert_eq!(
+        crate::review::outcome::follow_up(&follow),
+        Some(Outcome::Failed)
+    );
+}
+
+#[test]
+fn removing_an_activation_refreshes_an_indexed_approval_outcome() {
+    let (_root, store, _monitor) = fixture();
+    let job = store.load_queue().unwrap()[0].clone();
+    live_state(&store, &job);
+    let approve = with_exit(
+        &store,
+        &job,
+        ExitOutcome::Approve {
+            comment: "Looks right.".into(),
+        },
+    );
+    store.save_reviews(&[approve]).unwrap();
+    let read = || {
+        page(
+            &store,
+            PageRequest {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let before = read();
+    assert_eq!(before.results[0].outcome, Some(Outcome::Pending));
+    let mut monitoring = store.load_monitoring_state().unwrap();
+    monitoring.activations.clear();
+    store.save_monitoring_state(&monitoring).unwrap();
+    let after = read();
+    assert_eq!(after.results[0].outcome, Some(Outcome::Failed));
+    assert_eq!(after.outcome_counts, BTreeMap::from([(Outcome::Failed, 1)]));
+}
+
+#[test]
+fn removing_an_assignment_refreshes_an_indexed_approval_outcome() {
+    let (_root, store, _monitor) = fixture();
+    let job = store.load_queue().unwrap()[0].clone();
+    live_state(&store, &job);
+    let approve = with_exit(
+        &store,
+        &job,
+        ExitOutcome::Approve {
+            comment: "Looks right.".into(),
+        },
+    );
+    store.save_reviews(&[approve]).unwrap();
+    let read = || {
+        page(
+            &store,
+            PageRequest {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .results[0]
+            .outcome
+    };
+    assert_eq!(read(), Some(Outcome::Pending));
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments.clear();
+    store.save_settings(&settings).unwrap();
+    assert_eq!(read(), Some(Outcome::Failed));
+}
+
+/// The PR state the run read is still current: its approval can be adopted.
+fn live_state(store: &Store, job: &QueueJob) {
+    let mut states = crate::pr_state::PrStates::default();
+    states.consume(
+        &Binding::job(job),
+        crate::exits::consume::state_seq(job),
+        "baseline",
+    );
+    states.records[0].exit = None;
+    store.save_pr_states(&states).unwrap();
+}
