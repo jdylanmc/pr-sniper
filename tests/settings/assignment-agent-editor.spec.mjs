@@ -783,6 +783,10 @@ test("tools drill-in follows role and grants, saves ids, and shows the count", a
     await permissionSwitch(assignment, "Publish Comment").check();
     await approval(assignment, "Approve & Merge").check();
     await expect(permissionSwitch(assignment, "Include self")).toBeVisible();
+    await expect(assignment.locator("[data-include-self]")).toHaveAttribute(
+      "title",
+      /own PRs without an approval vote/,
+    );
     await permissionSwitch(assignment, "Include self").check();
   });
   await openTools(assignment);
