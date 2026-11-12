@@ -580,7 +580,11 @@ export async function mountPanel(app: HTMLElement) {
     const scanning =
       !!scanRequest ||
       health.some((h) => h.enabled && (h.in_flight || h.scan_pending));
-    const scannable = health.some((h) => h.enabled && h.schedule_available);
+    // A parked poll that awaits its schedule keeps `scheduled_run`; Check Now
+    // restarts it, so it stays scannable while not schedule-available.
+    const scannable = health.some(
+      (h) => h.enabled && (h.schedule_available || !!h.scheduled_run),
+    );
     // aria-disabled, not disabled: an in-flight press keeps its focus.
     scanAll.setAttribute(
       "aria-disabled",

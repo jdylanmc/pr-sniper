@@ -38,7 +38,7 @@ const azureRepositories = [
 
 // Enabled, saved repositories with matching monitoring authorizations, plus
 // idle health as the scheduler leaves it between occurrences.
-async function seed(store, configured = repositories) {
+async function seed(store, configured = repositories, adjust = () => {}) {
   const settings = (await store("snapshot")).settings;
   settings.agents = [reviewer];
   settings.repositories = configured.map(
@@ -66,7 +66,7 @@ async function seed(store, configured = repositories) {
       ]),
   );
   await store("seed_settings", settings);
-  await store("seed_queue_state", {
+  const state = {
     jobs: [],
     reviews: [],
     publications: [],
@@ -92,7 +92,9 @@ async function seed(store, configured = repositories) {
         ]),
       ),
     },
-  });
+  };
+  adjust(state.monitoring.health);
+  await store("seed_queue_state", state);
 }
 
 // Records scan requests while the real Store bridge serves them.
@@ -169,6 +171,55 @@ test("Running Scan is disabled while automation is paused", async ({
   await scan.click({ force: true });
   expect(await scans(page)).toEqual([]);
   expect(await store("repository_scans")).toEqual([]);
+});
+
+test("Running Scan stays available when the only repository poll is parked for manual retry", async ({
+  page,
+  store,
+}) => {
+  await seed(store, [repositories[0]], (health) =>
+    Object.assign(health[one], {
+      next_run: 0,
+      schedule_available: false,
+      scheduled_run: 1_900_000_000,
+      last_failure: "network",
+      operation: {
+        id: "parked-poll",
+        provider: "github",
+        account_id: "22",
+        configuration_id: one,
+        repository_id: "100",
+        pull_request_id: null,
+        head_sha: null,
+        trigger_policy: "fixture",
+        operation_type: "repository_poll",
+        state: "manual_retry",
+        attempt_count: 3,
+        initial_attempt_at: 1_800_000_000,
+        retry_deadline: 1_800_000_900,
+        next_attempt_at: null,
+        failure: "network",
+        attempted_mutation: null,
+        pending_review_id: null,
+        owned_thread_id: null,
+        triggering_external_comment_id: null,
+        confirmed_receipt: null,
+      },
+    }),
+  );
+  await recordScans(page);
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "Application destinations" })
+    .getByRole("button", { name: "Running", exact: true })
+    .click();
+  const scan = page.getByRole("button", {
+    name: "Scan all repositories",
+    exact: true,
+  });
+  await expect(scan).toBeEnabled();
+  await scan.click();
+  expect(await scans(page)).toEqual([["check_now", null]]);
 });
 
 test("repository Scan queues only that saved repository and never a draft or disabled one", async ({
