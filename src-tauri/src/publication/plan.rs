@@ -62,10 +62,13 @@ impl Batch {
             let position = locations.position(comment).ok_or_else(|| {
                 Failure::tossed("A comment line is not in the diff; the review was tossed.")
             })?;
+            // Each inline comment carries the signature: Azure DevOps has no review
+            // body, so a thread is the only place its attribution can show.
             let body = format!(
-                "{}\n\n<!-- pr-sniper:comment:{}:{index} -->",
+                "{}\n\n<!-- pr-sniper:comment:{}:{index} -->\n\n{}",
                 comment.body.trim_end(),
-                run.id
+                run.id,
+                crate::exit_writes::SIGNATURE
             );
             check_body(&body)?;
             comments.push(InlineComment {
