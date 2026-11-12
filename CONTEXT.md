@@ -145,10 +145,13 @@ Per-repository decision of which open PRs become tracked **Iterations**. Modes: 
 _Avoid_: Reviewer requests, People you watch, watch filter
 
 **Listing scope**:
-The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit or its search cannot serve the query), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
+The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit, its search cannot serve the query, or **Paths mode** is OR), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
 
 **Path gate**:
 Repository `paths`: include globs and `!` excludes, last match wins. ANDed with admission and explicit intake, per revision. Empty: no gate. See [ADR 0027](docs/adr/0027-path-globs.md).
+
+**Paths mode**:
+How repository `paths` combine with the **Admission rule**: `and` (default, the **Path gate**) or `or` (rules admit, or a changed file matches; paths never block). Exclude users beats a path match. No effect in Explicit or with empty `paths`. OR widens the **Listing scope** to every open PR. See [ADR 0029](docs/adr/0029-paths-or-admission.md).
 
 **Secondary trigger**:
 A teammate's `paths`: it reviews a revision only when a file changed since its own last completed review matches; otherwise its entry is retired as **Skipped: no matching files**. The primary has none.

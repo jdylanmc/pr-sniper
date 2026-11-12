@@ -139,8 +139,9 @@ export const repository = z.strictObject({
   assignments: z.array(assignment).optional(),
   primary_assignment_id: nullableOptional(id),
   review_drafts: z.boolean().optional(),
-  // Repository gate, ANDed with admission.
+  // Repository paths: "and" gates admission (default), "or" also admits.
   paths: pathGlobs.optional(),
+  paths_mode: z.enum(["and", "or"]).optional(),
 });
 export const preferences = z.strictObject({
   defaults: policy,

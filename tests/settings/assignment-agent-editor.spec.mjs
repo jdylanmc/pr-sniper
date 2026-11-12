@@ -1002,6 +1002,60 @@ test("repository Paths gate edits inline and saves include and exclude globs", a
   ).toBeUndefined();
 });
 
+test("repository Paths And/Or saves, reloads and is disabled in Explicit", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const repository = await repositorySettings(page, "fixture/assignment");
+  await repository.locator("[data-open-paths]").click();
+  const paths = page.locator("[data-repository-paths]");
+  const and = page.getByRole("radio", { name: "Rules and paths", exact: true });
+  const or = page.getByRole("radio", { name: "Rules or paths", exact: true });
+  await expect(and).toBeChecked();
+  await expect(or).toBeEnabled();
+  await addPathPattern(paths, "src/**");
+  // Keyboard choice: the pill keeps focus; nothing redraws under it.
+  await and.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(or).toBeChecked();
+  await expect(or).toBeFocused();
+  await assignmentBack(page, repository);
+  await expect(repository.locator("[data-open-paths]")).toBeFocused();
+  await expect(repository.locator("[data-paths-summary]")).toHaveText(
+    "Or \u00b7 +1",
+  );
+  await button(repository, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  let saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.paths).toEqual(["src/**"]);
+  expect(saved.paths_mode).toBe("or");
+
+  const again = await repositorySettings(page, "fixture/assignment");
+  await expect(again.locator("[data-paths-summary]")).toHaveText(
+    "Or \u00b7 +1",
+  );
+  await again.locator("[data-open-paths]").click();
+  await expect(or).toBeChecked();
+  await and.check();
+  await assignmentBack(page, again);
+  await expect(again.locator("[data-open-paths]")).toBeFocused();
+  await expect(again.locator("[data-paths-summary]")).toHaveText("+1");
+  await button(again, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  saved = (await store("snapshot")).settings.repositories[0];
+  expect(saved.paths_mode).toBeUndefined();
+
+  // Explicit admits only explicit intake: the paths gate it, no choice.
+  const explicit = await repositorySettings(page, "fixture/assignment");
+  await explicit
+    .getByRole("switch", { name: "Explicit PRs only", exact: true })
+    .check();
+  await explicit.locator("[data-open-paths]").click();
+  await expect(and).toBeDisabled();
+  await expect(or).toBeDisabled();
+});
+
 test("a secondary's exclude-only Paths read as All minus the exclude and save", async ({
   page,
   store,
