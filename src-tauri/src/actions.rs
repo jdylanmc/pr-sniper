@@ -875,6 +875,17 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
     let ledger = store.load_actions()?;
     let paused = store.load_automation()?.paused;
     let now = crate::now_seconds()?;
+    // An effect is still automatic only while the coordinator can re-read its
+    // own iteration: that item is listed and its read has not parked.
+    let listed: std::collections::HashSet<String> =
+        snapshot.items.iter().map(|i| i.id.clone()).collect();
+    let parked = |item_id: &str| {
+        ledger
+            .observations
+            .iter()
+            .find(|o| o.item_id == item_id)
+            .is_some_and(|o| o.error.is_some() && o.retry_at.is_none())
+    };
     for item in &mut snapshot.items {
         let observation_retry_blocker =
             observation_retry_blocker(item, &settings, &ledger, paused, now);
@@ -1166,15 +1177,15 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
         // A parked read (no retry scheduled) is never re-run: nothing automatic
         // happens until a human retries or reconciles, so its failure is settled.
         // A saved backoff counts only while the coordinator would still run it.
-        let parked = observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_none());
         let settling = !matches!(item.state, State::Merged | State::Closed)
-            && !parked
-            && (ledger
-                .effects
-                .iter()
-                .any(|e| same_scope(e, &item.job) && e.automatic(now))
-                || reobserved
-                    && observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_some()));
+            && !parked(&item.id)
+            && (ledger.effects.iter().any(|e| {
+                same_scope(e, &item.job)
+                    && e.automatic(now)
+                    && listed.contains(&e.item_id)
+                    && !parked(&e.item_id)
+            }) || reobserved
+                && observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_some()));
         item.action_status = Some(Status {
             item_id: item.id.clone(),
             final_valid,

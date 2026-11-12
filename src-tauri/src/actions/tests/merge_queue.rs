@@ -316,3 +316,62 @@ fn a_queued_merge_whose_read_parks_notifies_its_failure_at_once() {
     assert_eq!(merges(&store)[0].state, EffectState::Queued);
     assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
 }
+
+#[test]
+fn an_older_iterations_parked_queued_merge_does_not_hold_the_new_iterations_ready() {
+    let (_root, store, item) = fixture(1, true, true);
+    enqueue(&store, &item);
+    synchronize(
+        &store,
+        &item,
+        Err(read_failure(monitoring::OperationFailure::Permanent)),
+        NOW + 30,
+    )
+    .unwrap();
+    // A new head replaces the job: a plain review signs off, and the account
+    // may no longer act.
+    let new_head = "c".repeat(40);
+    let mut reviews = store.load_reviews().unwrap();
+    let mut second = reviews[0].clone();
+    second.mode = Default::default();
+    second.packet = None;
+    second.result = Some(output());
+    second.operation.id = "second-review".into();
+    second.job.head_sha = new_head.clone();
+    let work = second.job.work.as_mut().unwrap();
+    work.state_seq = 2;
+    work.iteration += 1;
+    work.iteration_id = "second-iteration".into();
+    work.item_id = "iteration-second-iteration".into();
+    let next = work.item_id.clone();
+    reviews.push(second.clone());
+    store.save_reviews(&reviews).unwrap();
+    let mut queue = store.load_queue_state().unwrap();
+    queue.jobs = vec![second.job.clone()];
+    for tracked in &mut queue.tracked {
+        tracked.head_sha = new_head.clone();
+        tracked.item_id = next.clone();
+        tracked.iteration_id = "second-iteration".into();
+        tracked.iteration += 1;
+    }
+    store.save_queue_state(&queue).unwrap();
+    let binding = crate::retention::Binding::job(&second.job);
+    let mut states = store.load_pr_states().unwrap();
+    states
+        .records
+        .iter_mut()
+        .find(|r| r.binding == binding)
+        .unwrap()
+        .state_seq = 2;
+    store.save_pr_states(&states).unwrap();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].actions = None;
+    store.save_settings(&settings).unwrap();
+    let snapshot = queue::snapshot(&store, vec![]).unwrap();
+    let ready = snapshot.items.iter().find(|i| i.id == next).unwrap();
+    assert_eq!(ready.state, State::MachineSignedOff);
+    // The old iteration is no longer listed: nothing will re-read its merge.
+    assert!(snapshot.items.iter().all(|i| i.id != item));
+    assert_eq!(merges(&store)[0].state, EffectState::Queued);
+    assert!(notified(&store).contains(&crate::notifications::Category::Ready));
+}
