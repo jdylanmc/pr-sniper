@@ -2180,3 +2180,77 @@ fn a_provider_read_being_retried_is_not_a_failure_notice() {
     synchronize(&store, &item, Err(failure), now).unwrap();
     assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
 }
+
+fn read_failure(kind: monitoring::OperationFailure) -> Failure {
+    Failure {
+        cancelled: false,
+        kind,
+        message: "Provider read failed.".into(),
+        retry_after_seconds: None,
+        origin: crate::backpressure::Origin::Github,
+        duck_setup: false,
+        slept_seconds: 0,
+        model: None,
+        resume: Default::default(),
+    }
+}
+
+#[test]
+fn the_final_reconciliation_attempt_counts_only_once_its_read_lands() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    let approval = prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    mark_intent(&store, &approval.id, NOW + 21).unwrap();
+    let mut ledger = store.load_actions().unwrap();
+    ledger.effects[0].reconcile_attempts = 2;
+    store.save_actions(&ledger).unwrap();
+    // The third read is in flight: still automatic, so no Failed notice.
+    assert!(notified(&store).is_empty());
+    // It lands without the vote: the budget is spent and the outcome is unresolved.
+    host::record_observation(&store, &item, Ok(observed()), NOW + 22).unwrap();
+    assert_eq!(
+        store.load_actions().unwrap().effects[0].reconcile_attempts,
+        3
+    );
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}
+
+#[test]
+fn an_unsent_intent_whose_read_parked_notifies_its_failure_at_once() {
+    let (_root, store, item) = fixture(1, true, false);
+    let run = completed_final(&store, &item);
+    prepare_effect(&store, &run.id, Action::Approve, &observed(), NOW + 20).unwrap();
+    synchronize(
+        &store,
+        &item,
+        Err(read_failure(monitoring::OperationFailure::Permanent)),
+        NOW + 21,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_actions().unwrap().effects[0].state,
+        EffectState::Prepared
+    );
+    assert_eq!(notified(&store), [crate::notifications::Category::Failure]);
+}
+
+#[test]
+fn a_saved_backoff_nothing_will_run_does_not_hold_ready() {
+    let (_root, store, item) = fixture(1, true, false);
+    synchronize(
+        &store,
+        &item,
+        Err(read_failure(monitoring::OperationFailure::Provider)),
+        NOW + 21,
+    )
+    .unwrap();
+    assert!(store.load_actions().unwrap().observations[0]
+        .retry_at
+        .is_some());
+    assert!(notified(&store).is_empty());
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[0].assignments[0].actions = None;
+    store.save_settings(&settings).unwrap();
+    // Nothing will re-read it now, so the stale backoff is not settling.
+    assert_eq!(notified(&store), [crate::notifications::Category::Ready]);
+}

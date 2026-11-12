@@ -878,6 +878,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
     for item in &mut snapshot.items {
         let observation_retry_blocker =
             observation_retry_blocker(item, &settings, &ledger, paused, now);
+        let reobserved = observation_pending(item, &settings, &ledger, now);
         let Some(repository) = settings
             .repositories
             .iter()
@@ -1162,12 +1163,17 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                         .as_ref()
                         .is_some_and(|r| r.head == item.job.head_sha)
             });
+        // A parked read (no retry scheduled) strands an unsent intent: nothing
+        // will send it, so its failure is settled. A saved backoff counts only
+        // while the coordinator would still run it.
+        let parked = observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_none());
         let settling = !matches!(item.state, State::Merged | State::Closed)
-            && (ledger
-                .effects
-                .iter()
-                .any(|e| same_scope(e, &item.job) && e.automatic(now))
-                || observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_some()));
+            && (ledger.effects.iter().any(|e| {
+                same_scope(e, &item.job)
+                    && e.automatic(now)
+                    && !(parked && e.state == EffectState::Prepared)
+            }) || reobserved
+                && observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_some()));
         item.action_status = Some(Status {
             item_id: item.id.clone(),
             final_valid,
