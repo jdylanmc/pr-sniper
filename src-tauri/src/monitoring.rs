@@ -144,6 +144,10 @@ pub struct JobOperation {
     /// Which account a credentials failure came from; absent on older records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials_origin: Option<crate::backpressure::Origin>,
+    /// Provider-stated wait (Retry-After) on a transient poll failure: a
+    /// requested scan may cut the retry's own backoff short, never this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stated_wait_until: Option<i64>,
     pub id: String,
     pub provider: String,
     pub account_id: String,
@@ -2674,6 +2678,24 @@ impl Monitor {
                 if check_now && health.in_flight {
                     health.scan_requested = true;
                 }
+                // A requested scan cuts a transient retry's own backoff short;
+                // account backpressure and offline still hold it.
+                if check_now && !health.in_flight {
+                    if let Some(operation) = health.operation.as_mut().filter(|operation| {
+                        operation.state == OperationState::Queued
+                            && operation.offline_since.is_none()
+                            && operation.backpressure_until.is_none()
+                            && operation.stated_wait_until.is_none_or(|until| now >= until)
+                            && operation
+                                .failure
+                                .as_ref()
+                                .is_some_and(OperationFailure::transient)
+                            && operation.next_attempt_at.is_some_and(|next| now < next)
+                    }) {
+                        operation.next_attempt_at = Some(now);
+                        health.next_run = now;
+                    }
+                }
                 continue;
             }
             if health.scheduled_run == 0
@@ -4183,6 +4205,7 @@ fn start_poll_operation(
         resume_at: None,
         backpressure_until: None,
         credentials_origin: None,
+        stated_wait_until: None,
         id: uuid::Uuid::new_v4().to_string(),
         provider: provider_key(&configuration.provider).into(),
         account_id: configuration
@@ -4255,6 +4278,7 @@ impl JobOperation {
         let next_attempt = now.saturating_add(delay);
         self.state = OperationState::Queued;
         self.next_attempt_at = Some(next_attempt);
+        self.stated_wait_until = retry_after_seconds.map(|_| next_attempt);
         self.retry_deadline = self
             .retry_deadline
             .max(next_attempt.saturating_add(RETRY_WINDOW_SECONDS));
@@ -4620,6 +4644,7 @@ impl JobOperation {
             resume_at: None,
             backpressure_until: None,
             credentials_origin: None,
+            stated_wait_until: None,
             id: uuid::Uuid::new_v4().to_string(),
             provider: job.provider.clone(),
             account_id: job.account_id.clone(),

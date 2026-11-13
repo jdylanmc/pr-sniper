@@ -2668,12 +2668,14 @@ fn check_now_preserves_an_existing_retry_budget() {
         .finish(
             &store,
             tickets.remove(0),
-            Err(ConnectionError::Network),
+            Err(ConnectionError::ProviderFailureAfter(60)),
             1_800_000_001,
         )
         .unwrap_err();
     let queued = monitor.snapshot()[0].operation.clone().unwrap();
     let due = queued.next_attempt_at.unwrap();
+    // Check Now cuts a retry's own backoff short, never a provider-stated wait.
+    assert_eq!(due, 1_800_000_061);
 
     assert!(monitor
         .prepare_checks(&store, due - 1, true)
@@ -4501,6 +4503,78 @@ fn scanning_one_repository_keeps_a_due_retry_for_another_parked_repository() {
         vec![SECOND_NAME, REPOSITORY_NAME]
     );
     assert_ne!(operation_for(&monitor, REPOSITORY_NAME).id, parked);
+}
+
+#[test]
+fn a_scan_polls_a_transient_retry_now_and_leaves_other_retries_waiting() {
+    let (_root, store, mut monitor) = two_schedules();
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let _ = monitor.finish(
+            &store,
+            ticket,
+            Err(ConnectionError::ProviderFailure),
+            HOUR + 11,
+        );
+    }
+    for name in [REPOSITORY_NAME, SECOND_NAME] {
+        let operation = operation_for(&monitor, name);
+        assert!(!operation.parked());
+        // The backoff floor is one second past the failure.
+        assert!(operation.next_attempt_at.unwrap() > HOUR + 11);
+    }
+    let retrying = operation_for(&monitor, SECOND_NAME).id;
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 11,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME]
+    );
+    let polled = operation_for(&monitor, SECOND_NAME);
+    assert_eq!(polled.id, retrying, "the same poll, its backoff cut short");
+    assert_eq!(polled.state, OperationState::Completed);
+    assert!(operation_for(&monitor, REPOSITORY_NAME)
+        .next_attempt_at
+        .is_some_and(|next| next > HOUR + 11));
+    // Check Now cuts the other repository's backoff short too.
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 11, true),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn a_scan_keeps_a_transient_retry_behind_account_backpressure() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    let ticket = monitor
+        .prepare_scan(&store, HOUR + 10, scan)
+        .unwrap()
+        .remove(0);
+    let _ = monitor.finish(
+        &store,
+        ticket,
+        Err(ConnectionError::ProviderFailure),
+        HOUR + 11,
+    );
+    let mut gates = pr_sniper_lib::backpressure::Backpressure::default();
+    let until = gates.signal(
+        pr_sniper_lib::backpressure::Scope::github(ACCOUNT_ID),
+        Some(600),
+        "scan",
+        HOUR + 12,
+    );
+    store.save_backpressure(&gates).unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 12, scan)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        scanned_names(&mut monitor, &store, until, scan),
+        vec![SECOND_NAME]
+    );
 }
 
 #[test]
