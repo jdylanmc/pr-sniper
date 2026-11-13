@@ -423,6 +423,33 @@ pub(crate) fn prepare_next_effect(
     Ok(None)
 }
 
+/// Commits one coordinator read. A reconciliation attempt counts only once its
+/// read lands, so the final attempt stays automatic (no Failed notice) while
+/// that read is in flight.
+pub(crate) fn record_observation(
+    store: &Store,
+    item_id: &str,
+    observed: Result<Observation, Failure>,
+    now: i64,
+) -> Result<(), String> {
+    let mut ledger = store.load_actions()?;
+    let mut reconciling = false;
+    for effect in ledger
+        .effects
+        .iter_mut()
+        .filter(|e| e.item_id == item_id && e.needs_reconciliation())
+    {
+        effect.reconcile_attempts = effect.reconcile_attempts.saturating_add(1);
+        effect.reconcile_requested = false;
+        reconciling = true;
+    }
+    // An unchanged ledger is not rewritten (or re-indexed).
+    if reconciling {
+        store.save_actions(&ledger)?;
+    }
+    synchronize(store, item_id, observed, now)
+}
+
 /// The item whose provider state should be observed next, if any.
 /// Read-only: selection never writes, so it can scan a frozen copy.
 pub(crate) fn next_target(store: &Store, now: i64) -> Result<Option<queue::Item>, String> {
@@ -526,28 +553,6 @@ impl Coordinator {
                     .get(&target.job.account_id)
                     .copied()
                     .unwrap_or(0);
-                {
-                    let host = app.state::<Host>();
-                    let store = host
-                        .store
-                        .lock()
-                        .map_err(|_| "Action storage unavailable.")?;
-                    let mut ledger = store.load_actions()?;
-                    let mut reconciling = false;
-                    for effect in ledger
-                        .effects
-                        .iter_mut()
-                        .filter(|e| e.item_id == target.id && e.needs_reconciliation())
-                    {
-                        effect.reconcile_attempts = effect.reconcile_attempts.saturating_add(1);
-                        effect.reconcile_requested = false;
-                        reconciling = true;
-                    }
-                    // An unchanged ledger is not rewritten (or re-indexed).
-                    if reconciling {
-                        store.save_actions(&ledger)?;
-                    }
-                }
                 let observed = observation(&app, &target.job);
                 let effect = {
                     let host = app.state::<Host>();
@@ -567,7 +572,7 @@ impl Coordinator {
                         .store
                         .lock()
                         .map_err(|_| "Action storage unavailable.")?;
-                    synchronize(&store, &target.id, observed, now_seconds()?)?;
+                    record_observation(&store, &target.id, observed, now_seconds()?)?;
                     packet::adopt(&store, &target.id)?;
                     prepare_next_effect(&store, &target.id, now_seconds()?)?
                 };

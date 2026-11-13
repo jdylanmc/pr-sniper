@@ -469,6 +469,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
                         final_review: None,
                         effects: vec![],
                         blockers: vec![],
+                        settling: false,
                     }),
                     exit: None,
                     exit_run_id: None,
@@ -1861,5 +1862,106 @@ fn an_older_build_superseded_navigation_error_loads_as_none_after_upgrade() {
             .unwrap();
         assert_eq!(notice.navigation_error.as_deref(), loaded);
         assert_eq!(notice.opened_at, None);
+    }
+}
+
+fn categories(ledger: &Ledger) -> Vec<Category> {
+    ledger.notices.iter().map(|n| n.event.category).collect()
+}
+
+#[test]
+fn an_authorized_approve_and_merge_notifies_only_its_settled_outcome() {
+    for provider in ["github", "azure_devops"] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let mut snapshot = merged_snapshot(1);
+        snapshot.items[0].job.provider = provider.into();
+        for (now, (state, progress)) in [
+            // The primary signed off; its approval is pending, then in flight.
+            (
+                queue::State::MachineSignedOff,
+                Some(queue::Progress::Approving),
+            ),
+            // Approved; the authorized merge is still running.
+            (queue::State::Approved, Some(queue::Progress::Merging)),
+            (queue::State::Merged, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            snapshot.items[0].state = state;
+            snapshot.items[0].progress = progress;
+            ledger.observe(&frames(&snapshot), now as i64).unwrap();
+            attempt_queued(&mut ledger);
+        }
+        assert_eq!(categories(&ledger), [Category::Merged], "{provider}");
+    }
+}
+
+#[test]
+fn a_merge_left_pending_on_the_author_settles_as_approved() {
+    for provider in ["github", "azure_devops"] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let mut snapshot = merged_snapshot(1);
+        snapshot.items[0].job.provider = provider.into();
+        snapshot.items[0].state = queue::State::Approved;
+        snapshot.items[0].progress = Some(queue::Progress::MergePendingBehindBase);
+        ledger.observe(&frames(&snapshot), 1).unwrap();
+        assert_eq!(categories(&ledger), [Category::Approved], "{provider}");
+    }
+}
+
+#[test]
+fn work_the_retry_policy_still_owns_never_notifies_a_failure() {
+    for provider in ["github", "azure_devops"] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let mut snapshot = merged_snapshot(1);
+        let item = &mut snapshot.items[0];
+        item.job.provider = provider.into();
+        item.state = queue::State::Failed;
+        item.failed_operation = Some(queue::FailedOperation::ProviderAction);
+        item.action_status.as_mut().unwrap().settling = true;
+        ledger.observe(&frames(&snapshot), 1).unwrap();
+        assert!(ledger.notices.is_empty(), "{provider}");
+        // Another operation's failure is still news while an action settles.
+        snapshot.items[0].failed_operation = Some(queue::FailedOperation::Review);
+        ledger.observe(&frames(&snapshot), 2).unwrap();
+        assert_eq!(categories(&ledger), [Category::Failure], "{provider}");
+        // Once retries give up, the action failure notifies.
+        let (_fresh_root, fresh) = self::store();
+        let mut ledger = fresh.load_notifications().unwrap();
+        snapshot.items[0].failed_operation = Some(queue::FailedOperation::ProviderAction);
+        snapshot.items[0].action_status.as_mut().unwrap().settling = false;
+        ledger.observe(&frames(&snapshot), 3).unwrap();
+        assert_eq!(categories(&ledger), [Category::Failure], "{provider}");
+    }
+}
+
+#[test]
+fn a_same_head_rereview_with_the_same_outcome_is_not_announced_again() {
+    for category in [Category::Ready, Category::FinalReviewCleared] {
+        let (_root, store) = store();
+        let mut ledger = store.load_notifications().unwrap();
+        let gone = Frame {
+            source: "queue:exact-revision".into(),
+            legacy: None,
+            event: None,
+        };
+        for (now, frame) in [
+            frame(category, "first-pass"),
+            gone,
+            frame(category, "second-pass"),
+            frame(Category::HumanInput, "third-pass"),
+            frame(category, "fourth-pass"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            ledger.observe(&[frame], now as i64).unwrap();
+            attempt_queued(&mut ledger);
+        }
+        assert_eq!(categories(&ledger), [category, Category::HumanInput]);
     }
 }
