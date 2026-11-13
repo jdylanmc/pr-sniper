@@ -260,6 +260,14 @@ pub struct ScheduleHealth {
     pub operation: Option<JobOperation>,
     #[serde(default)]
     pub scan_assignments: Vec<ScanAssignment>,
+    /// When the current run of failed polls began, or the account outage it
+    /// joined; cleared by the next successful poll (#381).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outage_since: Option<i64>,
+    /// The run needs a human or has failed `MAX_FAILED_ATTEMPTS` times in a
+    /// row: an outage, one notice. A shorter blip retries silently.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outage_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +716,63 @@ pub struct MonitoringState {
     pub path_facts: BTreeMap<String, BTreeMap<String, crate::paths::PathFacts>>,
 }
 
+impl MonitoringState {
+    /// Repositories whose polls are failing now: Settings marks each once (#381).
+    pub fn outages(&self) -> Vec<String> {
+        let ids: BTreeSet<_> = self
+            .health
+            .values()
+            .filter(|health| health.enabled && health.outage_confirmed)
+            .map(|health| health.repository_id.clone())
+            .collect();
+        ids.into_iter().collect()
+    }
+
+    /// Start of an outage another repository on the ticket's account is
+    /// retrying on its own: a transient failure here joins it (#381).
+    fn account_outage(&self, ticket: &PollTicket) -> Option<i64> {
+        self.health
+            .iter()
+            .filter(|(key, health)| {
+                *key != &ticket.health_key
+                    && health.enabled
+                    && health.provider_account_id.as_deref()
+                        == Some(ticket.provider_account_id.as_str())
+                    && health
+                        .operation
+                        .as_ref()
+                        .is_some_and(|operation| !operation.parked())
+            })
+            .filter_map(|(_, health)| health.outage_since)
+            .min()
+    }
+}
+
+/// A failed poll starts (or continues) a run of failures. A transient run
+/// joins one its account is already retrying, so an account-wide outage is one
+/// notice, not one per repository, even if the first repository recovers
+/// first. The run is an outage once it needs a human or has failed
+/// `MAX_FAILED_ATTEMPTS` times in a row; a shorter blip retries silently (#381).
+fn record_outage(
+    health: &mut ScheduleHealth,
+    failure: &OperationFailure,
+    account_outage: Option<i64>,
+    now: i64,
+) {
+    let operation = health.operation.as_ref();
+    let parked = operation.is_some_and(JobOperation::parked);
+    let confirmed =
+        parked || operation.is_none_or(|operation| operation.attempt_count >= MAX_FAILED_ATTEMPTS);
+    health
+        .outage_since
+        .get_or_insert(if failure.transient() && !parked {
+            account_outage.unwrap_or(now)
+        } else {
+            now
+        });
+    health.outage_confirmed |= confirmed;
+}
+
 /// Retired poll operations kept for diagnosis; nothing reads them back, so
 /// only the most recent are kept instead of growing every saved poll.
 pub(crate) const ARCHIVED_OPERATIONS: usize = 64;
@@ -893,6 +958,8 @@ pub struct PollTicket {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathTicket {
     pub gate: Vec<String>,
+    /// OR mode (ADR 0029): `gate` also admits and never blocks.
+    pub also: bool,
     /// Secondary assignments with globs: (assignment id, patterns).
     pub secondaries: Vec<(String, Vec<String>)>,
     pub review_drafts: bool,
@@ -907,6 +974,7 @@ impl PathTicket {
         let reviewed = self.reviewed.get(pull_request_id);
         crate::paths::Plan {
             gate: self.gate.clone(),
+            whole: false,
             secondaries: self
                 .secondaries
                 .iter()
@@ -1056,6 +1124,8 @@ struct ConfiguredSchedule {
     review_drafts: bool,
     /// Repository gate globs.
     paths: Vec<String>,
+    /// `Repository::paths_also_admit`.
+    paths_also: bool,
     /// Secondary assignments with globs: (assignment id, patterns).
     secondary_paths: Vec<(String, Vec<String>)>,
 }
@@ -1064,6 +1134,7 @@ impl ConfiguredSchedule {
     fn path_ticket(&self) -> PathTicket {
         PathTicket {
             gate: self.paths.clone(),
+            also: self.paths_also,
             secondaries: self.secondary_paths.clone(),
             review_drafts: self.review_drafts,
             ..PathTicket::default()
@@ -1137,6 +1208,10 @@ impl Monitor {
         })
     }
 
+    pub fn outages(&self) -> Vec<String> {
+        self.state.outages()
+    }
+
     pub fn snapshot(&self) -> Vec<ScheduleHealth> {
         self.state.health.values().cloned().collect()
     }
@@ -1178,6 +1253,7 @@ impl Monitor {
             policy.reviewer_assignment,
             admission.as_ref(),
             &repository.paths,
+            repository.paths_also_admit(),
         )?;
         Ok(ActivationContext {
             repository_id: repository.id.clone(),
@@ -1869,7 +1945,7 @@ impl Monitor {
         if expected.assignments.is_empty() {
             return Err("Assign a saved Agent before queueing this pull request.".into());
         }
-        if facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
+        if !expected.paths_also_admit() && facts.as_ref().is_some_and(|f| f.gated_out(&pull)) {
             return Ok(ExplicitAdmission {
                 queued: false,
                 message: format!(
@@ -2299,6 +2375,8 @@ impl Monitor {
                     manual_pending: false,
                     operation: None,
                     scan_assignments: Vec::new(),
+                    outage_since: None,
+                    outage_confirmed: false,
                 });
             let binding_changed = health.name != configuration.name
                 || health.provider_account_id != configuration.provider_account_id
@@ -2320,6 +2398,8 @@ impl Monitor {
                 health.next_run = 0;
                 health.account_login = None;
                 health.operation = None;
+                health.outage_since = None;
+                health.outage_confirmed = false;
                 self.state.cursors.remove(&configuration.health_key);
             }
             health.repository_id = configuration.repository_id.clone();
@@ -2399,12 +2479,17 @@ impl Monitor {
             // A parked repository poll retries once per occurrence of its own
             // schedule (credentials wait for a reconnect); a requested scan
             // also retries its own, without consuming another repository's due retry.
+            // A transient park from an older build never waits (#381).
             let occurrence_due =
                 !health.scan_pending && health.scheduled_run > 0 && now >= health.scheduled_run;
             let restart = !health.in_flight
                 && health.operation.as_ref().is_some_and(|operation| {
-                    let scheduled_retry =
-                        occurrence_due && operation.failure != Some(OperationFailure::Credentials);
+                    let scheduled_retry = (occurrence_due
+                        || operation
+                            .failure
+                            .as_ref()
+                            .is_some_and(OperationFailure::transient))
+                        && operation.failure != Some(OperationFailure::Credentials);
                     operation.offline_since.is_none()
                         && operation.parked()
                         && match parked {
@@ -2854,6 +2939,7 @@ impl Monitor {
             Err(_) => {}
         }
         self.synchronize_health(&configured, accounts, now);
+        let account_outage = self.state.account_outage(&ticket);
         let current = configured
             .iter()
             .find(|configuration| configuration.health_key == ticket.health_key);
@@ -2867,6 +2953,8 @@ impl Monitor {
                         health.last_failure = None;
                         health.last_error = None;
                         health.conversation_admission_pending = false;
+                        health.outage_since = None;
+                        health.outage_confirmed = false;
                         if let Some(operation) = health.operation.as_mut() {
                             operation.state = OperationState::Completed;
                             operation.next_attempt_at = None;
@@ -2910,6 +2998,10 @@ impl Monitor {
                             health.last_failure = Some(error.health_failure().into());
                             health.last_error = Some(error.message().into());
                             finish_failed_operation(health, error, now);
+                            // Provider-side only: a local storage failure is a host error.
+                            if let MonitoringError::Recoverable { failure, .. } = error {
+                                record_outage(health, failure, account_outage, now);
+                            }
                         }
                     }
                 }
@@ -3119,11 +3211,7 @@ impl Monitor {
             if pass_ended {
                 path_facts.retain(|id, _| {
                     fact_pass.contains(id)
-                        || ticket
-                            .tracked
-                            .iter()
-                            .chain(&ticket.closed)
-                            .any(|(tracked, _)| tracked == id)
+                        || ticket.tracked.iter().any(|(tracked, _)| tracked == id)
                 });
                 fact_pass.clear();
             }
@@ -3151,15 +3239,18 @@ impl Monitor {
             }
             let admission_candidate = activation_admission_candidate(&mut activation, &pull);
             let facts = path_facts.get(&pull.id);
-            let gated_out = facts.is_some_and(|f| f.gated_out(&pull));
+            // AND: the paths gate this revision. OR: they only admit (ADR 0029).
+            let gated_out = !ticket.paths.also && facts.is_some_and(|f| f.gated_out(&pull));
             let incomplete = facts.and_then(|f| f.incomplete_for(&pull));
-            let eligibility = eligibility(
+            let mut eligibility = eligibility(
                 &ticket.watched_authors,
                 ticket.admission.as_ref(),
                 &ticket.policy,
                 &result.connection.identity.id,
                 &pull,
             );
+            eligibility.admitted |= path_candidate(ticket, &pull)
+                && facts.is_some_and(|f| f.gate_admits(&pull, &ticket.paths.gate));
             let bound = |job: &QueueJob| {
                 job.provider == provider_key(&ticket.provider)
                     && (job.configuration_id == ticket.repository_id
@@ -3659,6 +3750,11 @@ fn eligibility(
 /// every author.
 pub(crate) fn listing_scope(ticket: &PollTicket) -> crate::provider::ListingScope {
     use crate::provider::ListingScope;
+    // OR mode (ADR 0029): any author's PR touching the paths can qualify, and
+    // no provider filters open PRs by path, so only every open PR is a superset.
+    if ticket.paths.also {
+        return ListingScope::All;
+    }
     match &ticket.admission {
         Some(admission) => admission.listing_scope(&ticket.provider_account_id),
         None if ticket.watched_authors.is_empty() => ListingScope::All,
@@ -3686,6 +3782,80 @@ pub(crate) fn scan_admits(ticket: &PollTicket, pull: &PullRequest) -> bool {
         pull,
     )
     .admitted
+}
+
+/// Path-fact reads a poll spends on untracked PRs only OR-mode paths could
+/// admit (ADR 0029). The rest wait for a later poll of the pass; read facts
+/// persist per revision, so successive polls converge.
+pub(crate) const PATH_CANDIDATE_READS: usize = 100;
+
+/// An open PR the rules do not admit but OR-mode paths could: its path
+/// facts decide. Exclude users beats a path match.
+pub(crate) fn path_candidate(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket.paths.also
+        && !ticket
+            .admission
+            .as_ref()
+            .is_some_and(|a| a.excludes(&ticket.provider_account_id, pull))
+}
+
+/// Admitted before: tracked, or observed closed (a reopen resumes it).
+fn previously_admitted(ticket: &PollTicket, pull: &PullRequest) -> bool {
+    ticket
+        .tracked
+        .iter()
+        .chain(&ticket.closed)
+        .any(|(id, _)| id == &pull.id)
+}
+
+/// The facts plan for `pull`. In OR mode a previously or rule-admitted
+/// revision runs without a gate match, so its facts need the complete list.
+pub(crate) fn fact_plan(ticket: &PollTicket, pull: &PullRequest) -> crate::paths::Plan {
+    crate::paths::Plan {
+        whole: ticket.paths.also
+            && (previously_admitted(ticket, pull) || scan_admits(ticket, pull)),
+        ..ticket.paths.plan(&pull.id)
+    }
+}
+
+/// Open pull requests whose path facts this poll reads: tracked, closed (a
+/// reopen resumes them), held or admitted ones, plus in OR mode up to
+/// `PATH_CANDIDATE_READS` path candidates, newest first. Facts current for
+/// the revision and inputs are reused.
+pub(crate) fn fact_reads<'a>(
+    ticket: &PollTicket,
+    pull_requests: &'a [PullRequest],
+) -> Vec<&'a PullRequest> {
+    let mut open: Vec<_> = pull_requests
+        .iter()
+        .filter(|pull| pull.state == Lifecycle::Open && (!pull.draft || ticket.paths.review_drafts))
+        .filter(|pull| {
+            let plan = fact_plan(ticket, pull);
+            !ticket
+                .paths
+                .facts
+                .get(&pull.id)
+                .is_some_and(|f| f.current(pull, &plan))
+        })
+        .collect();
+    open.sort_by_key(|pull| std::cmp::Reverse(pull.number));
+    let mut candidates = PATH_CANDIDATE_READS;
+    open.retain(|pull| {
+        // Held out of the last poll (ADR 0028): read again, outside the budget.
+        let held = ticket
+            .listing
+            .as_ref()
+            .is_some_and(|c| c.held.iter().any(|(id, _)| id == &pull.id));
+        if held || previously_admitted(ticket, pull) || scan_admits(ticket, pull) {
+            return true;
+        }
+        if candidates == 0 || !path_candidate(ticket, pull) {
+            return false;
+        }
+        candidates -= 1;
+        true
+    });
+    open
 }
 
 fn tracked_for(
@@ -3843,6 +4013,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
             policy.reviewer_assignment,
             admission.as_ref(),
             &repository.paths,
+            repository.paths_also_admit(),
         )
         .ok();
         let binding = repository.account_binding();
@@ -3884,6 +4055,7 @@ fn configured_schedules(settings: &Settings) -> Vec<ConfiguredSchedule> {
                 .collect(),
             review_drafts: repository.review_drafts,
             paths: repository.paths.clone(),
+            paths_also: repository.paths_also_admit(),
             secondary_paths: repository
                 .assignments
                 .iter()
@@ -3984,6 +4156,7 @@ fn start_poll_operation(
     now: i64,
     manual: bool,
 ) {
+    // A poll retrying a transient failure has no attempt cap (#381).
     let retrying = health.operation.as_ref().is_some_and(|operation| {
         matches!(
             operation.state,
@@ -3992,12 +4165,11 @@ fn start_poll_operation(
             .next_attempt_at
             .is_some_and(|next| manual || now >= next)
             && now < operation.retry_deadline
-            && operation.attempt_count < MAX_FAILED_ATTEMPTS
     });
     if retrying {
         if let Some(operation) = health.operation.as_mut() {
             operation.state = OperationState::Running;
-            operation.attempt_count += 1;
+            operation.attempt_count = operation.attempt_count.saturating_add(1);
             operation.next_attempt_at = None;
             operation.backpressure_until = None;
             return;
@@ -4047,12 +4219,47 @@ fn finish_failed_operation(health: &mut ScheduleHealth, error: &MonitoringError,
     let Some(operation) = health.operation.as_mut() else {
         return;
     };
-    operation.fail(error, now);
+    operation.fail_poll(error, now);
     health.next_run = operation.next_attempt_at.unwrap_or(0);
     health.schedule_available = operation.next_attempt_at.is_some();
 }
 
 impl JobOperation {
+    /// A repository poll never parks for a transient failure (5xx, network,
+    /// timeout, truncated read): it retries under `retry::TRANSIENT`, the wait
+    /// growing with consecutive failures up to the cap, with no attempt limit
+    /// (ADR 0028). Credentials, permission and permanent failures park.
+    pub fn fail_poll(&mut self, error: &MonitoringError, now: i64) {
+        let MonitoringError::Recoverable {
+            failure,
+            retry_after_seconds,
+            ..
+        } = error
+        else {
+            return self.fail(error, now);
+        };
+        if !failure.transient() {
+            return self.fail(error, now);
+        }
+        self.offline_since = None;
+        self.backpressure_until = None;
+        self.ai_attempt = None;
+        self.interruption = None;
+        self.resume_at = None;
+        self.failure = Some(failure.clone());
+        let delay = crate::retry::TRANSIENT.wait(
+            &self.id,
+            u32::from(self.attempt_count.saturating_sub(1)),
+            *retry_after_seconds,
+        );
+        let next_attempt = now.saturating_add(delay);
+        self.state = OperationState::Queued;
+        self.next_attempt_at = Some(next_attempt);
+        self.retry_deadline = self
+            .retry_deadline
+            .max(next_attempt.saturating_add(RETRY_WINDOW_SECONDS));
+    }
+
     pub fn freeze_offline(&mut self, now: i64) {
         if self.state != OperationState::Completed && !self.ended_superseded() {
             self.offline_since.get_or_insert(now);
@@ -4665,6 +4872,7 @@ fn trigger_policy(
     reviewer_assignment: bool,
     admission: Option<&AdmissionConfig>,
     gate: &[String],
+    also: bool,
 ) -> Result<String, ConnectionError> {
     let mut authors: Vec<_> = watched_authors
         .iter()
@@ -4675,8 +4883,14 @@ fn trigger_policy(
     // An empty gate keeps the key unchanged.
     match (admission, gate) {
         (None, []) => serde_json::to_string(&(authors, reviewer_assignment)),
+        (None, gate) if also => {
+            serde_json::to_string(&(authors, reviewer_assignment, "paths_or", gate))
+        }
         (None, gate) => serde_json::to_string(&(authors, reviewer_assignment, "paths", gate)),
         (Some(admission), []) => serde_json::to_string(&("admission", admission)),
+        (Some(admission), gate) if also => {
+            serde_json::to_string(&("admission", admission, "paths_or", gate))
+        }
         (Some(admission), gate) => serde_json::to_string(&("admission", admission, "paths", gate)),
     }
     .map_err(|_| ConnectionError::Configuration)
@@ -5678,6 +5892,170 @@ mod admission_tests {
             sequence: 0,
             paths,
         }
+    }
+
+    #[test]
+    fn paths_or_lists_every_open_pr_and_and_keeps_the_narrowed_listing() {
+        use crate::paths::PathsMode;
+        use crate::provider::ListingScope;
+        let team = serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]},
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "13", "login": "x"}]}
+        ]});
+        let mut configured = settings(team);
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let and = ticket_for(&configured);
+        assert!(!and.paths.also);
+        // AND: the author listing stays a superset of what the rules admit.
+        assert!(matches!(listing_scope(&and), ListingScope::Narrowed { .. }));
+        assert!(!path_candidate(&and, &pull("12", &[], false, &[])));
+        configured.repositories[0].paths_mode = PathsMode::Or;
+        let or = ticket_for(&configured);
+        assert!(or.paths.also);
+        assert_ne!(or.trigger_policy, and.trigger_policy);
+        // OR: any author's PR touching the paths can qualify.
+        assert_eq!(listing_scope(&or), ListingScope::All);
+        assert!(path_candidate(&or, &pull("12", &[], false, &[])));
+        // Exclude users beats a path match.
+        assert!(!path_candidate(&or, &pull("13", &[], false, &[])));
+        // No paths, or Explicit: no path admission, the listing narrows again.
+        let mut empty = configured.clone();
+        empty.repositories[0].paths.clear();
+        assert!(!ticket_for(&empty).paths.also);
+        assert!(matches!(
+            listing_scope(&ticket_for(&empty)),
+            ListingScope::Narrowed { .. }
+        ));
+        configured.repositories[0].admission.as_mut().unwrap().mode = AdmissionMode::Explicit;
+        let explicit = ticket_for(&configured);
+        assert!(!explicit.paths.also);
+        assert!(matches!(
+            listing_scope(&explicit),
+            ListingScope::Narrowed { .. }
+        ));
+    }
+
+    #[test]
+    fn paths_or_reads_a_bounded_batch_of_candidate_facts_newest_first() {
+        let mut configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]},
+            {"kind": "exclude_users", "enabled": true, "users": [{"id": "13", "login": "x"}]}
+        ]}));
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let numbered = |number: u64, author: &str| {
+            let mut pull = pull(author, &[], false, &[]);
+            pull.number = number;
+            pull.id = number.to_string();
+            pull
+        };
+        let mut pulls: Vec<_> = (1..=PATH_CANDIDATE_READS as u64 + 50)
+            .map(|n| numbered(n, "12"))
+            .collect();
+        pulls.push(numbered(1_000, "11"));
+        pulls.push(numbered(1_001, "13"));
+        let ids = |ticket: &PollTicket| -> Vec<String> {
+            fact_reads(ticket, &pulls)
+                .iter()
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        // AND: only what the rules admit.
+        assert_eq!(ids(&ticket_for(&configured)), ["1000"]);
+        configured.repositories[0].paths_mode = crate::paths::PathsMode::Or;
+        let mut or = ticket_for(&configured);
+        let read = ids(&or);
+        // The admitted PR, then the newest candidates up to the budget; never
+        // the excluded author.
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 1);
+        assert_eq!(read[0], "1000");
+        assert_eq!(read[1], (PATH_CANDIDATE_READS as u64 + 50).to_string());
+        assert!(!read.contains(&"1001".to_string()));
+        // Facts kept for a revision are reused: the next poll moves on.
+        for pull in pulls.iter().filter(|p| read.contains(&p.id)) {
+            let whole = fact_plan(&or, pull).whole;
+            or.paths.facts.insert(
+                pull.id.clone(),
+                crate::paths::PathFacts {
+                    head_sha: pull.head_sha.clone(),
+                    base_sha: pull.base_sha.clone(),
+                    incomplete: None,
+                    tried: Vec::new(),
+                    gate: or.paths.gate.clone(),
+                    admitted: false,
+                    whole,
+                    secondaries: Default::default(),
+                },
+            );
+        }
+        let next = ids(&or);
+        assert_eq!(next.len(), 50);
+        assert!(next.iter().all(|id| !read.contains(id)));
+        // A candidate held out of the last poll is read outside the budget.
+        or.paths.facts.clear();
+        or.listing = Some(crate::provider::ListingCursor {
+            held: vec![("1".into(), 1)],
+            ..Default::default()
+        });
+        let read = ids(&or);
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 2);
+        assert!(read.contains(&"1".to_string()));
+    }
+
+    #[test]
+    fn paths_or_needs_the_complete_list_for_revisions_that_run_without_a_match() {
+        let mut configured = settings(serde_json::json!({"mode": "filtered", "rules": [
+            {"kind": "include_users", "enabled": true, "users": [{"id": "11", "login": "t"}]}
+        ]}));
+        configured.repositories[0].paths = vec!["src/**".into()];
+        let team = pull("11", &[], false, &[]);
+        let mut tracked = pull("12", &[], false, &[]);
+        tracked.id = "tracked".into();
+        let candidate = pull("12", &[], false, &[]);
+        let mut and = ticket_for(&configured);
+        and.tracked.push((tracked.id.clone(), tracked.number));
+        // AND: a gate-out never runs, so a scoped verdict may decide it.
+        assert!([&team, &tracked].iter().all(|p| !fact_plan(&and, p).whole));
+        configured.repositories[0].paths_mode = crate::paths::PathsMode::Or;
+        let mut or = ticket_for(&configured);
+        or.tracked.push((tracked.id.clone(), tracked.number));
+        // OR: rule-admitted and tracked revisions run without a match.
+        assert!(fact_plan(&or, &team).whole);
+        assert!(fact_plan(&or, &tracked).whole);
+        // A path-only candidate runs only on a match.
+        assert!(!fact_plan(&or, &candidate).whole);
+        // A closed PR admitted by paths alone resumes on reopen: it needs the
+        // complete list and its facts are read whatever the candidate budget.
+        let mut reopened = pull("12", &[], false, &[]);
+        reopened.id = "reopened".into();
+        or.closed.push((reopened.id.clone(), reopened.number));
+        assert!(fact_plan(&or, &reopened).whole);
+        let mut pulls: Vec<_> = (2..=PATH_CANDIDATE_READS as u64 + 1)
+            .map(|n| {
+                let mut newer = pull("12", &[], false, &[]);
+                newer.number = n;
+                newer.id = n.to_string();
+                newer
+            })
+            .collect();
+        pulls.push(reopened.clone());
+        let read = fact_reads(&or, &pulls);
+        assert!(read.iter().any(|p| p.id == reopened.id));
+        assert_eq!(read.len(), PATH_CANDIDATE_READS + 1);
+    }
+
+    #[test]
+    fn repositories_without_paths_mode_are_and_and_round_trip_unchanged() {
+        let configured = settings(serde_json::json!({"mode": "all", "rules": []}));
+        let repository = &configured.repositories[0];
+        assert_eq!(repository.paths_mode, crate::paths::PathsMode::And);
+        let saved = serde_json::to_value(repository).unwrap();
+        assert!(saved.get("paths_mode").is_none());
+        let mut or = repository.clone();
+        or.paths_mode = crate::paths::PathsMode::Or;
+        let saved = serde_json::to_value(&or).unwrap();
+        assert_eq!(saved["paths_mode"], "or");
+        let back: crate::storage::Repository = serde_json::from_value(saved).unwrap();
+        assert_eq!(back, or);
     }
 
     #[test]

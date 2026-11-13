@@ -107,6 +107,8 @@ export interface MonitoringSnapshot {
   publications?: PublicationCandidate[];
   follow_ups?: FollowUpCandidate[];
   exit_writes?: ExitWrite[];
+  // Reviewed rows' typed outcomes, keyed `<kind>:<id>`.
+  outcomes?: Record<string, import("./outcomes").Outcome>;
 }
 
 // Host execution of a `leave_comments` exit's replies and resolutions.

@@ -23,6 +23,7 @@ import { inlineMarkdown } from "./markdown";
 import { drawNow, setText, whenReleased } from "./stable-dom";
 import { applyTheme } from "./theme";
 import { waitingStates } from "./exits";
+import { outcomes, type Outcome } from "./outcomes";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -32,10 +33,14 @@ export type PanelDetail =
 export interface PanelRoute {
   tab: PanelTab;
   detail?: PanelDetail;
+  // Settings opens this repository's editor (an outage notice).
+  repository?: string;
 }
 interface PanelSnapshot {
   route: PanelRoute;
   revision: number;
+  // Explicit navigations only: a reveal or blur keeps it.
+  navigation: number;
   visible: boolean;
   missing: string | null;
   placement_warning: string | null;
@@ -59,6 +64,7 @@ interface Row {
   work?: WorkPresentation;
   subject?: string;
   reference?: string;
+  outcome?: Outcome;
 }
 
 const stateIcons: Record<string, string> = {
@@ -212,6 +218,8 @@ export async function mountPanel(app: HTMLElement) {
   const scanAll = app.querySelector<HTMLButtonElement>("[data-scan-all]")!;
   let changelogOpen = false;
   let lastState: PanelSnapshot | undefined;
+  // The navigation whose repository destination was already opened.
+  let openedRepository: number | undefined;
   function renderChangelog() {
     const view = views.changelog;
     view.replaceChildren();
@@ -275,6 +283,8 @@ export async function mountPanel(app: HTMLElement) {
   const positions = new Map<string, Position>();
   // Reviewed rows drawn; grows by a page per Show more, reset when the tab reopens.
   let reviewedLimit = REVIEWED_PAGE;
+  // Reviewed outcome filter; empty shows every row. Kept for the session.
+  const reviewedOutcomes = new Set<Outcome>();
   // Tab of the latest navigation request; the route updates only after it resolves.
   let tabIntent: PanelTab = "queue";
   const listSignatures = new Map<PanelTab, string>();
@@ -716,10 +726,23 @@ export async function mountPanel(app: HTMLElement) {
     else whenReleased(drawers[tab]);
   }
   function render(tab: "running" | "reviewed", rows: Row[]) {
+    const terminal = (row: Row) =>
+      row.kind === "item" && ["closed", "merged"].includes(row.state);
     const limit = tab === "reviewed" ? reviewedLimit : rows.length;
-    const signature = JSON.stringify([rows, limit]);
+    const signature = JSON.stringify([rows, limit, [...reviewedOutcomes]]);
     if (listSignatures.get(tab) === signature) return;
     listSignatures.set(tab, signature);
+    const counts = new Map<Outcome, number>();
+    const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
+    if (tab === "reviewed") {
+      for (const row of rows)
+        if (row.outcome)
+          counts.set(row.outcome, (counts.get(row.outcome) ?? 0) + 1);
+      if (reviewedOutcomes.size)
+        rows = rows.filter(
+          (row) => row.outcome && reviewedOutcomes.has(row.outcome),
+        );
+    }
     const root =
       tab === "running"
         ? views.running.querySelector<HTMLElement>("[data-running-list]")!
@@ -729,7 +752,46 @@ export async function mountPanel(app: HTMLElement) {
         ? document.activeElement.closest<HTMLElement>("[data-job-id]")?.dataset
             .jobId
         : undefined;
+    const activeOutcome =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement.dataset.reviewedOutcome
+        : undefined;
     root.replaceChildren();
+    if (tab === "reviewed" && (counts.size || reviewedOutcomes.size)) {
+      const filters = document.createElement("div");
+      filters.className = "filter-row";
+      filters.setAttribute("role", "group");
+      filters.setAttribute("aria-label", "Outcome");
+      for (const [outcome, { label, icon: path }] of Object.entries(
+        outcomes,
+      ) as [Outcome, { label: string; icon: string }][]) {
+        const count = counts.get(outcome) ?? 0;
+        if (!count && !reviewedOutcomes.has(outcome)) continue;
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "filter-chip";
+        chip.dataset.reviewedOutcome = outcome;
+        chip.setAttribute(
+          "aria-pressed",
+          String(reviewedOutcomes.has(outcome)),
+        );
+        chip.setAttribute("aria-label", `${label} ${count}`);
+        chip.title = label;
+        chip.innerHTML = `${icon(path)}<span aria-hidden="true">${count}</span>`;
+        chip.onclick = () => {
+          if (!reviewedOutcomes.delete(outcome)) reviewedOutcomes.add(outcome);
+          reviewedLimit = REVIEWED_PAGE;
+          drawLists(true);
+        };
+        filters.append(chip);
+      }
+      root.append(filters);
+      filters
+        .querySelector<HTMLElement>(
+          `[data-reviewed-outcome="${activeOutcome}"]`,
+        )
+        ?.focus({ preventScroll: true });
+    }
     const list = document.createElement("ol");
     list.className = "work-list";
     list.setAttribute(
@@ -737,8 +799,6 @@ export async function mountPanel(app: HTMLElement) {
       tab === "running" ? "Agent work queue" : "Reviewed work",
     );
     if (rows.length) root.append(list);
-    const terminal = (row: Row) =>
-      row.kind === "item" && ["closed", "merged"].includes(row.state);
     const clean = async (itemId?: string) => {
       try {
         await invoke("clean_reviewed", { itemId: itemId ?? null });
@@ -747,7 +807,6 @@ export async function mountPanel(app: HTMLElement) {
       }
       void monitor.refresh();
     };
-    const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
     const shown = rows.slice(0, limit);
     const hidden = rows.length - shown.length;
     if (hidden > 0) {
@@ -817,7 +876,9 @@ export async function mountPanel(app: HTMLElement) {
           (tab === "reviewed"
             ? row.kind === "item"
               ? row.state[0].toUpperCase() + row.state.slice(1)
-              : "Reviewed"
+              : row.outcome
+                ? outcomes[row.outcome].label
+                : "Reviewed"
             : row.state === "active"
               ? "Running"
               : row.state === "stopping"
@@ -848,7 +909,9 @@ export async function mountPanel(app: HTMLElement) {
         if (row.state !== "active" || tab === "reviewed")
           marker.innerHTML = icon(
             tab === "reviewed"
-              ? destinations.reviewed.icon
+              ? row.outcome
+                ? outcomes[row.outcome].icon
+                : destinations.reviewed.icon
               : waitingStates[row.state]
                 ? stateIcons.Waiting
                 : (stateIcons[displayState] ?? destinations.running.icon),
@@ -1118,11 +1181,10 @@ export async function mountPanel(app: HTMLElement) {
             ? 1
             : 0),
     );
-    draw(
-      "reviewed",
-      ranked.map(({ row }) => row),
-      now,
-    );
+    const rows = ranked.map(({ row }) => row);
+    for (const row of rows)
+      row.outcome = snapshot.outcomes?.[`${row.kind}:${row.id}`];
+    draw("reviewed", rows, now);
   }
   async function apply(state: PanelSnapshot) {
     if (state.revision < revision) return;
@@ -1236,6 +1298,22 @@ export async function mountPanel(app: HTMLElement) {
     if (visible === "settings" && !settingsController) {
       await ensureSettings();
       if (state.revision !== revision) return;
+    }
+    const repository = route.repository;
+    // Once per navigation, while shown: a reveal or blur keeps the route.
+    if (
+      visible === "settings" &&
+      repository &&
+      state.visible &&
+      openedRepository !== state.navigation
+    ) {
+      openedRepository = state.navigation;
+      const controller = await ensureSettings();
+      if (state.revision !== revision) return;
+      controller.open(
+        { repository },
+        { back: () => void navigate({ tab: "settings" }) },
+      );
     }
     if (visible === "monitor") monitor.detail(route.detail, state.missing);
     if (restore && focusAtStart === focusRevision) {

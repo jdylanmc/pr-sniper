@@ -16,6 +16,7 @@ use crate::{
 };
 use serde_json::json;
 
+mod outcomes;
 mod remediation;
 
 const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

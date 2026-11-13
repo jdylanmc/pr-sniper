@@ -896,3 +896,93 @@ test("new rows stay disabled until valid Save and an explicit off choice survive
     false,
   );
 });
+
+test("a repository outage notice opens that repository's editor and its row shows Connection lost", async ({
+  page,
+  store,
+}) => {
+  const initial = await seed(store);
+  initial.repositories[0].enabled = true;
+  await store("seed_settings", initial);
+  await providerFixture(page, store);
+  await store("seed_queue_state", {
+    jobs: [],
+    reviews: [],
+    publications: [],
+    follow_ups: [],
+    monitoring: {
+      health: {
+        [repoId]: {
+          repository_id: repoId,
+          name: "fixture/one",
+          schedule_key: "fixture",
+          provider_account_id: "22",
+          enabled: true,
+          last_attempt: 1_800_000_000,
+          last_success: null,
+          next_run: 1_800_000_100,
+          schedule_available: true,
+          last_failure: "ProviderFailure",
+          in_flight: false,
+          outage_since: 1_800_000_000,
+          outage_confirmed: true,
+        },
+      },
+    },
+  });
+  expect((await store("snapshot")).repository_outages).toEqual([repoId]);
+  await store("fixture_show_panel");
+  await store("panel_navigate", {
+    route: { tab: "settings", repository: repoId },
+  });
+  await page.goto("/");
+  const modal = editor(page);
+  await expect(modal).toBeVisible();
+  await expect(
+    modal.locator("[data-repository-monitoring-detail]"),
+  ).toContainText("Connection lost");
+  await backFromEditor(page, modal);
+  await expect(page.locator(`[data-repository="${repoId}"]`)).toContainText(
+    "Connection lost",
+  );
+  await expect(
+    page.locator(`[data-repository="${neighborId}"]`),
+  ).not.toContainText("Connection lost");
+});
+
+test("an outage notice opens the repository editor once: hide and reveal never reopen it", async ({
+  page,
+  store,
+}) => {
+  const initial = await seed(store);
+  initial.repositories[0].enabled = true;
+  await store("seed_settings", initial);
+  await providerFixture(page, store);
+  await store("fixture_show_panel");
+  await store("panel_navigate", {
+    route: { tab: "settings", repository: repoId },
+  });
+  await page.goto("/");
+  const modal = editor(page);
+  await expect(modal).toBeVisible();
+  const native = (command) =>
+    page.evaluate(
+      (name) => window.__TAURI_INTERNALS__.invoke(name, {}),
+      command,
+    );
+  const blink = async () => {
+    await native("hide_panel");
+    await native("fixture_show_panel");
+    await page.evaluate(() => window.__settingsIdle());
+  };
+  // Open editor: a reveal is no new navigation, so no second open.
+  await blink();
+  await expect(modal).toBeVisible();
+  await expect(page.getByText("Editor open")).toHaveCount(0);
+  // Closed without Back: the route still names the repository.
+  await modal.evaluate((dialog) => dialog.close());
+  await expect(modal).toBeHidden();
+  await blink();
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("Editor open")).toHaveCount(0);
+});

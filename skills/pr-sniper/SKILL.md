@@ -60,6 +60,8 @@ Use tool input schemas and current resource values; never invent identities.
 5. Save the repository with selected assignments and explicit scope:
    `admission.mode = "explicit"` for only individually requested PRs;
    `"all"` / `"filtered"` only when whole-repository watching is requested.
+   Repository `paths` gate the rules (`paths_mode` absent or `"and"`); set
+   `paths_mode:"or"` only when the human wants people **or** a path followed.
    Ask before enabling disabled scope. Missing accounts require human login
    in the app, not this skill.
 6. `watch_pull_request` the exact URL. Report returned `state`, `paused`, and item identity.

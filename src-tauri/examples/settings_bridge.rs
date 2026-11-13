@@ -748,7 +748,8 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
                 "isolated": true,
                 "error": error,
                 "version": env!("CARGO_PKG_VERSION")
-                ,"settings_persisted": store.has_saved_settings()
+                ,"settings_persisted": store.has_saved_settings(),
+                "repository_outages": store.load_monitoring_state()?.outages()
             }))
         }
         "seed_queue_state" => {

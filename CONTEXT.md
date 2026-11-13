@@ -145,10 +145,13 @@ Per-repository decision of which open PRs become tracked **Iterations**. Modes: 
 _Avoid_: Reviewer requests, People you watch, watch filter
 
 **Listing scope**:
-The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit or its search cannot serve the query), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
+The open PRs a poll lists: a superset of what the **Admission rule** can admit (Include users authors, the account as reviewer, or every PR; every PR when GitHub's mention scan can admit, its search cannot serve the query, or **Paths mode** is OR), read in resumable batches; tracked PRs are read by ID. Repository size is never a failure. See [ADR 0028](docs/adr/0028-scale-is-never-a-failure.md).
 
 **Path gate**:
 Repository `paths`: include globs and `!` excludes, last match wins. ANDed with admission and explicit intake, per revision. Empty: no gate. See [ADR 0027](docs/adr/0027-path-globs.md).
+
+**Paths mode**:
+How repository `paths` combine with the **Admission rule**: `and` (default, the **Path gate**) or `or` (rules admit, or a changed file matches; paths never block). Exclude users beats a path match. No effect in Explicit or with empty `paths`. OR widens the **Listing scope** to every open PR. See [ADR 0029](docs/adr/0029-paths-or-admission.md).
 
 **Secondary trigger**:
 A teammate's `paths`: it reviews a revision only when a file changed since its own last completed review matches; otherwise its entry is retired as **Skipped: no matching files**. The primary has none.
@@ -286,7 +289,7 @@ Recorded count of changed files the agent read in full ("N of M files read"). In
 _Avoid_: Coverage gate
 
 **Retry budget**:
-Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
+Persisted per operation: attempt count, retry deadline, state. Survives restart and resume without reset. Transient failures auto-retry with backoff; 3 failed attempts then **Park**. A repository poll's transient failures never park: capped backoff, no attempt limit, schedule kept (ADR 0028); its failure is the repository's, never a PR item's. The AI review window starts when the worker starts, not at enqueue. Credentials, permission and permanent failures park at once. Parked retry starts a new operation, keeping history. Cooldown cycles (30m, 1h, 2h, 4h, 8h; `resume_cycle`, `resume_at`) grant each resumable failure a fresh budget, up to five.
 _Avoid_: Retry count, unlimited retry
 
 **Failure class**:

@@ -1065,6 +1065,26 @@ test("the Paths gate ANDs with admission, last match wins", () => {
   assert.equal(M.pathsMatch([], []), true);
 });
 
+test("Paths OR admits the team or the path; Exclude users still wins", () => {
+  const repo = filtered((a) => {
+    rule(a, "include_users").users = ["Casey Lee"];
+    rule(a, "exclude_users").users = ["Robin Park"];
+    rule(a, "include_users").enabled = rule(a, "exclude_users").enabled =
+      true;
+  });
+  repo.paths = ["src/"];
+  repo.pathsMode = "or";
+  const files = (...paths) => paths.map((path) => ({ path }));
+  const by = (author, ...paths) => pr({ author, files: files(...paths) });
+  assert.equal(M.admits(repo, by("Casey Lee", "docs/a.md")), true);
+  assert.equal(M.admits(repo, by("Sam Ortiz", "src/a.ts")), true);
+  assert.equal(M.admits(repo, by("Sam Ortiz", "docs/a.md")), false);
+  assert.equal(M.admits(repo, by("Robin Park", "src/a.ts")), false);
+  // Explicit: OR has no effect.
+  repo.admission.mode = "explicit";
+  assert.equal(M.admits(repo, by("Sam Ortiz", "src/a.ts")), false);
+});
+
 test("old path rules migrate into the Paths gate", () => {
   const state = M.seed();
   const legacy = plain(state.repos[0]);

@@ -211,6 +211,8 @@ pub struct Snapshot {
     #[serde(skip)]
     pub(crate) path_facts: BTreeMap<String, BTreeMap<String, crate::paths::PathFacts>>,
     pub items: Vec<Item>,
+    /// Reviewed rows' typed outcomes, keyed `<kind>:<id>`.
+    pub outcomes: BTreeMap<String, review::outcome::Outcome>,
 }
 
 pub fn item_id(job: &QueueJob) -> String {
@@ -237,6 +239,7 @@ pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, 
     rest::project(store, &mut snapshot)?;
     dismissal::project(store, &mut snapshot)?;
     retry_all::project(store, &mut snapshot)?;
+    review::outcome::project(store, &mut snapshot)?;
     Ok(snapshot)
 }
 
@@ -301,6 +304,7 @@ fn project_saved(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot,
         publications: publication::host::candidates(store)?,
         follow_ups: follow_up::host::candidates(store)?,
         items: vec![],
+        outcomes: BTreeMap::new(),
     };
     result.items = project(&settings, &result);
     Ok(result)
@@ -346,7 +350,7 @@ fn publication_failed(publication: &publication::Publication) -> bool {
     failed(&publication.operation) || (!publication.uncertain && publication.error.is_some())
 }
 
-fn failed(operation: &monitoring::JobOperation) -> bool {
+pub(crate) fn failed(operation: &monitoring::JobOperation) -> bool {
     matches!(
         operation.state,
         OperationState::Failed | OperationState::ManualRetry
@@ -1044,21 +1048,15 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
                         failure.as_str(),
                         "account_disconnected" | "account_binding_required"
                     );
-                    // A check that is still backing off retries on its own.
-                    if !credentials && health.operation.as_ref().is_some_and(|op| !op.parked()) {
+                    // A repository poll failure is the repository's, never this
+                    // item's: the repository notice and its Settings row carry it
+                    // (#381). Only a lost account binding stops the item's work.
+                    if !credentials {
                         continue;
                     }
                     states.push(State::Failed);
                     check_failed = true;
-                    failures.push(if credentials {
-                        monitoring::FailureClass::Credentials
-                    } else {
-                        health
-                            .operation
-                            .as_ref()
-                            .and_then(|op| op.failure.as_ref())
-                            .map_or(monitoring::FailureClass::Other, |f| f.class())
-                    });
+                    failures.push(monitoring::FailureClass::Credentials);
                     warnings.insert(format!("Monitoring failure: {failure}. Check schedule health before relying on this saved revision."));
                 }
             }

@@ -121,6 +121,8 @@ interface Snapshot {
   error: string | null;
   /** Occurrence id when `error` is a background host error. */
   error_id?: number | null;
+  /** Repositories whose polls are failing now. */
+  repository_outages?: string[];
 }
 // Host error occurrences already shown in this webview; redraws never re-show them.
 const shownHostErrors = new Set<number>();
@@ -147,7 +149,9 @@ export type SetupTarget =
   | "repositories"
   | "preferences"
   // One Agent's editor with its model picker focused.
-  | { agent: string };
+  | { agent: string }
+  // One repository's editor: its outage notice.
+  | { repository: string };
 export interface GuidedReturn {
   back: () => void;
 }
@@ -555,6 +559,7 @@ export async function mountSettings(
   const pendingSetup = new Set<string>();
   const setupMonitoringOff = new Set<string>();
   let repositoryAutomation: AutomationSnapshot | undefined;
+  let repositoryOutages = new Set<string>();
   let repositoryAutomationRead = 0;
   const pendingPullRequests = new Map<string, ExplicitPullRequestIntent>();
   let refreshRepositoryScan: (() => void) | undefined;
@@ -857,6 +862,7 @@ export async function mountSettings(
         ? "Reconnect account"
         : "Disabled / Reconnect account";
     if (!repository.enabled) return "Disabled";
+    if (repositoryOutages.has(repository.id)) return "Connection lost";
     if (!repository.assignments?.length) return "Needs setup";
     if (!repositoryAutomation) return "Unavailable";
     if (repositoryAutomation.paused) return "Paused";
@@ -868,9 +874,13 @@ export async function mountSettings(
   async function refreshRepositoryAutomation(update: () => void) {
     const read = ++repositoryAutomationRead;
     try {
-      const state = await invoke<AutomationSnapshot>("automation_snapshot");
+      const [state, fresh] = await Promise.all([
+        invoke<AutomationSnapshot>("automation_snapshot"),
+        invoke<Snapshot>("snapshot").catch(() => undefined),
+      ]);
       if (read !== repositoryAutomationRead) return;
       repositoryAutomation = state;
+      repositoryOutages = new Set(fresh?.repository_outages ?? []);
     } catch {
       if (read !== repositoryAutomationRead) return;
       repositoryAutomation = undefined;
@@ -4394,9 +4404,10 @@ export async function mountSettings(
         const on = a.rules.filter((r) => r.enabled).length;
         modal.querySelector("[data-filter-summary]")!.textContent =
           a.mode === "filtered" ? `${on} on` : "";
-        modal.querySelector("[data-paths-summary]")!.textContent = pathSummary(
-          repository.paths ?? [],
-        );
+        const or = repository.paths_mode === "or" && a.mode !== "explicit";
+        const summary = pathSummary(repository.paths ?? []);
+        modal.querySelector("[data-paths-summary]")!.textContent =
+          or && summary ? `Or \u00b7 ${summary}` : summary;
       };
       explicitInput.onchange = () => {
         editAdmission().mode = explicitInput.checked ? "explicit" : "filtered";
@@ -4553,6 +4564,34 @@ export async function mountSettings(
 
       function renderPaths() {
         view.replaceChildren();
+        // And: paths gate the rules. Or: paths also admit (ADR 0029).
+        // Explicit admits only explicit intake, so the gate applies.
+        const join = document.createElement("section");
+        join.className = "repository-group paths-mode";
+        const explicit = admission().mode === "explicit";
+        const value = repository.paths_mode === "or" ? "or" : "and";
+        join.innerHTML = `<div class="paths-mode-line"><span>Rules</span><div class="paths-mode-choices" role="radiogroup" aria-label="Rules with paths" data-value="${value}">${(
+          [
+            ["and", "And", "Rules and paths"],
+            ["or", "Or", "Rules or paths"],
+          ] as const
+        )
+          .map(
+            ([mode, label, name]) =>
+              `<label class="segment"><input type="radio" name="paths-mode" value="${mode}" aria-label="${name}" ${mode === value ? "checked" : ""} ${explicit ? "disabled" : ""} /><span>${label}</span></label>`,
+          )
+          .join("")}</div></div>`;
+        const choices = join.querySelector<HTMLElement>(".paths-mode-choices")!;
+        for (const input of join.querySelectorAll<HTMLInputElement>(
+          "input[name=paths-mode]",
+        ))
+          input.onchange = () => {
+            if (input.value === "or") repository.paths_mode = "or";
+            else delete repository.paths_mode;
+            choices.dataset.value = input.value;
+            changed();
+          };
+        view.append(join);
         const group = document.createElement("section");
         group.className = "repository-group";
         group.dataset.repositoryPaths = "";
@@ -5542,6 +5581,7 @@ export async function mountSettings(
   // Callers have checked that no draft, editor or save would be overwritten.
   function applySnapshot(state: Snapshot) {
     snapshot = state;
+    repositoryOutages = new Set(state.repository_outages ?? []);
     if (!state.settings) {
       showError(state.error ?? "Unavailable");
       return;
@@ -5628,6 +5668,28 @@ export async function mountSettings(
       }
       guidance = origin;
       returnGenie.hidden = false;
+      if (typeof target === "object" && "repository" in target) {
+        if (options.embedded) homeOpener = "repositories";
+        if (section !== "repositories") navigate("repositories");
+        settingsBack.hidden = true;
+        const repository = repositories().find(
+          (entry) => entry.id === target.repository,
+        );
+        const row = content.querySelector<HTMLButtonElement>(
+          `[data-repository="${CSS.escape(target.repository)}"]`,
+        );
+        if (!repository || !row) {
+          (
+            content.querySelector<HTMLElement>(".repository-library") ??
+            returnGenie
+          ).focus({ preventScroll: true });
+          return true;
+        }
+        row.scrollIntoView({ block: "nearest" });
+        row.focus({ preventScroll: true });
+        repositoryDialog(repository, row);
+        return true;
+      }
       if (typeof target === "object") {
         if (options.embedded) homeOpener = "agents";
         if (section !== "agents") navigate("agents");

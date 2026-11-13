@@ -1309,12 +1309,19 @@ button:disabled {
   margin: 14px 0;
 }
 .filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   padding: 7px 10px;
   color: var(--text-slate-5a6e80);
   background: var(--bg-neutral-ffffff);
   border: 1px solid var(--line-slate-dce3e9);
   border-radius: 20px;
+}
+.filter-chip .icon {
+  width: 13px;
+  height: 13px;
 }
 .filter-chip[aria-pressed="true"] {
   background: var(--navy);
@@ -4002,4 +4009,42 @@ input.switch:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+}
+
+/* Repository Paths: Rules And | Or pill. */
+.paths-mode-choices {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-slate-d6dfe6);
+}
+.paths-mode-choices .segment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  color: var(--text-slate-526274);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.paths-mode-choices input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.paths-mode-choices .segment:has(input:focus-visible) {
+  outline: 2px solid var(--control-teal-327e84);
+  outline-offset: 1px;
+}
+.paths-mode-choices .segment:has(input:disabled) {
+  opacity: 0.4;
+}
+.paths-mode-choices[data-value="and"] .segment:nth-child(1),
+.paths-mode-choices[data-value="or"] .segment:nth-child(2) {
+  background: var(--control-teal-327e84);
+  color: var(--text-neutral-ffffff);
 }

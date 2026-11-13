@@ -7,15 +7,35 @@ Reference for the native `result_page` / `result_detail` commands, summary index
 Request (cursors start `null`):
 
 ```ts
-{ request: { limit: 25, cursor: null, unavailable_cursor: null } }
+{ request: { limit: 25, cursor: null, unavailable_cursor: null, outcomes: null } }
 ```
 
 - `limit`: integer `1..200` (`src-tauri/src/retention/paging.rs`). No total result cap.
-- Returns `results`, `next_cursor`, `unavailable`, `unavailable_count`, `next_unavailable_cursor`. Each array has at most `limit` entries.
-- Result row: exact iteration, job, activity sequence, completed normal-pass count, review-attempt count, conversation count. Retries are separate attempts, not normal passes.
+- `outcomes`: optional list of [outcomes](#outcomes). Only rows with one of them; absent or empty = every row. Applied before the cursor and `limit`, so a filtered traversal has no gaps or repeats.
+- Returns `results`, `next_cursor`, `outcome_counts`, `unavailable`, `unavailable_count`, `next_unavailable_cursor`. Each array has at most `limit` entries.
+- Result row: exact iteration, job, activity sequence, completed normal-pass count, review-attempt count, conversation count, `outcome`. Retries are separate attempts, not normal passes.
+- `outcome_counts`: rows per outcome over the whole index, before the filter.
 - Continue each stream with its own cursor. A `null` next cursor ends only that stream; sending `null` restarts it. Do not append a restarted stream after a finished one. Streams do not share a page budget.
 - Healthy older results stay reachable when other entries are ambiguous.
 - `unavailable_count` = current total, repeated on every page. Resolved entries drop without invalidating cursors. New ones appear on a new traversal.
+
+## Outcomes
+
+Typed, from the completed exit and its confirmed effect (`review::outcome`). Never from text. The Reviewed tab shows the same value per row and filters by it.
+
+| Outcome               | From                                                                                                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approved_and_merged` | `approve_and_merge` / `lgtm` merge: merge effect confirmed                                                                                                                                                          |
+| `approved`            | `approve_pull_request` / `lgtm` approve: Approve vote confirmed, or settled done (approval already on the head)                                                                                                     |
+| `commented`           | `leave_comments`: batch published or exit writes done; reply published                                                                                                                                              |
+| `ready_for_human`     | `ready_for_human`; `lgtm` without approve authority (final settled `no_authority`); reply needing input; human merged first; legacy final                                                                           |
+| `waiting`             | `wait`                                                                                                                                                                                                              |
+| `report`              | teammate `submit_report`; local-only findings with no replies or resolutions planned; quiet reply; reply kept local (no Reply grant)                                                                                |
+| `pending`             | exit completed, effect or publication not confirmed yet; reply publication stopped with a retry ahead                                                                                                               |
+| `failed`              | effect refused, stale, dequeued or cancelled; final settled moved, revoked or refused; approve run no longer adoptable; sign-off writes failed (`lgtm` ready too); publication parked, stale, stopped or unresolved |
+
+- A result row takes its iteration's latest completed run; a teammate `submit_report` only when nothing else completed. A confirmed Approve or merge on the PR wins. A `primary_final` row reads like the run that created it.
+- A panic never completes a run: it stays in Queue > Needs attention, not Reviewed.
 
 ## `result_detail`
 
@@ -29,6 +49,7 @@ Request (cursors start `null`):
 - Order: newest activity first, ties by item ID ascending. Unchanged polling adds no activity. Execution progress is new activity.
 - Pages read the index (`state/result-index.json`), not review bodies. Cursors are versioned keysets, not offsets or snapshots.
 - Legacy results index deterministically; no invented completion timestamps. An interrupted index rebuilds from durable evidence (`result-index-pending.json`).
+- Index format 4 adds `outcome`. An older index is rebuilt from saved reviews, publications, exit writes and actions on the next read. Saving settings or monitoring activations marks the index pending, so outcomes that read them refresh on the next page.
 - Open PR jobs, passes, earlier iterations and owned feedback stay durable across scans and restarts.
 
 ## Mention intent and unavailable entries

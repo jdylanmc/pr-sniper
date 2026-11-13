@@ -63,6 +63,7 @@
 | Watch completed unchanged PR | Reports completed, no new pass                                           |
 | Review again                 | New pass only after current work completes; no Wait bypass               |
 | PR-only setup                | Explicit PR admission, never repository-wide review                      |
+| People or a path             | `paths` + `paths_mode:"or"`; absent/`"and"` gates the rules              |
 | New repository               | Choose accounts/model; optional SOLID + Security → Maintainer preset     |
 | Disabled repository          | Explicit failure; choose scope and enable deliberately                   |
 | Scan now (`check_now`)       | Queues admitted PRs now; all enabled repos or one `repository_id`        |

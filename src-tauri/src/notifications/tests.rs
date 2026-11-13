@@ -423,6 +423,7 @@ fn merged_snapshot(count: usize) -> queue::Snapshot {
         follow_ups: vec![],
         exit_writes: vec![],
         pr_states: Default::default(),
+        outcomes: Default::default(),
         items: (0..count)
             .map(|iteration| {
                 let mut job = job();
@@ -1042,6 +1043,7 @@ fn only_operator_attention_maps_to_alerts_and_routine_author_waits_do_not() {
             follow_ups: vec![],
             exit_writes: vec![],
             pr_states: Default::default(),
+            outcomes: Default::default(),
             items: vec![queue::Item {
                 rest: None,
                 decision_behind_stale: false,
@@ -1114,6 +1116,7 @@ fn authentication_or_schedule_failure_without_a_pr_opens_settings() {
         follow_ups: vec![],
         exit_writes: vec![],
         pr_states: Default::default(),
+        outcomes: Default::default(),
         items: vec![],
     };
     let frames = frames(&snapshot);
@@ -1449,6 +1452,7 @@ fn subject(title: &str, failure_cause: Option<&'static str>) -> Subject {
         number: 219,
         title: title.into(),
         failure_cause: failure_cause.map(Into::into),
+        others: 0,
     }
 }
 
@@ -1684,8 +1688,13 @@ fn history_bodies(store: &Store, live: &queue::Snapshot) -> Vec<String> {
 #[test]
 fn history_keeps_each_failure_notice_to_its_own_reason() {
     let (_root, store) = store();
-    send_all(&store, &failed_snapshot(queue::CAUSE_PANIC, "first"));
-    let live = failed_snapshot("publication_failed", "second");
+    // A new account loss is a new failure of the item; a poll failure never
+    // is (#381).
+    send_all(
+        &store,
+        &failed_snapshot(queue::CAUSE_PANIC, "account_binding_required"),
+    );
+    let live = failed_snapshot("publication_failed", "account_disconnected");
     send_all(&store, &live);
     assert_eq!(
         history_bodies(&store, &live),
