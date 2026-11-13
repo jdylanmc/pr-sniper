@@ -12,7 +12,7 @@ use pr_sniper_lib::{
     monitoring::{
         next_run, AccountAvailability, ActivationApplication, ActivationBaseline, ActivationMode,
         Monitor, MonitoringActivation, MonitoringError, MonitoringState, OperationFailure,
-        OperationState, PollResult, CONFIGURATION_SAVE_REQUIRED, WAITING_AI_CAPACITY,
+        OperationState, PollResult, Scan, CONFIGURATION_SAVE_REQUIRED, WAITING_AI_CAPACITY,
         WAITING_BINDING_CHANGED, WAITING_REPOSITORY_DISABLED, WAITING_REPOSITORY_REMOVED,
         WAITING_SUPERSEDED,
     },
@@ -2668,12 +2668,14 @@ fn check_now_preserves_an_existing_retry_budget() {
         .finish(
             &store,
             tickets.remove(0),
-            Err(ConnectionError::Network),
+            Err(ConnectionError::ProviderFailureAfter(60)),
             1_800_000_001,
         )
         .unwrap_err();
     let queued = monitor.snapshot()[0].operation.clone().unwrap();
     let due = queued.next_attempt_at.unwrap();
+    // Check Now cuts a retry's own backoff short, never a provider-stated wait.
+    assert_eq!(due, 1_800_000_061);
 
     assert!(monitor
         .prepare_checks(&store, due - 1, true)
@@ -4261,7 +4263,25 @@ fn two_schedules() -> (tempfile::TempDir, Store, Monitor) {
 }
 
 fn polled_names(monitor: &mut Monitor, store: &Store, at: i64, check_now: bool) -> Vec<String> {
-    let tickets = monitor.prepare_checks(store, at, check_now).unwrap();
+    let scan = if check_now {
+        Scan::All
+    } else {
+        Scan::Scheduled
+    };
+    scanned_names(monitor, store, at, scan)
+}
+
+fn scanned_names(monitor: &mut Monitor, store: &Store, at: i64, scan: Scan<'_>) -> Vec<String> {
+    let tickets = monitor.prepare_scan(store, at, scan).unwrap();
+    finish_names(monitor, store, at, tickets)
+}
+
+fn finish_names(
+    monitor: &mut Monitor,
+    store: &Store,
+    at: i64,
+    tickets: Vec<pr_sniper_lib::monitoring::PollTicket>,
+) -> Vec<String> {
     let mut names: Vec<_> = tickets.iter().map(|t| t.name.clone()).collect();
     for ticket in tickets {
         let result = if ticket.name == REPOSITORY_NAME {
@@ -4319,6 +4339,97 @@ fn check_now_polls_every_enabled_repository_and_keeps_each_schedule() {
 }
 
 #[test]
+fn scanning_one_repository_polls_only_it_and_keeps_every_schedule() {
+    let (_root, store, mut monitor) = two_schedules();
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 10,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME]
+    );
+    let health = &store.load_monitoring_state().unwrap().health;
+    assert_eq!(health[REPOSITORY_KEY].scheduled_run, HOUR + 900);
+    assert_eq!(health[SECOND_KEY].scheduled_run, HOUR + 3_600);
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 900, false),
+        vec![REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn scanning_a_disabled_or_unknown_repository_is_refused_and_enables_nothing() {
+    let (_root, store, mut monitor) = two_schedules();
+    let mut settings = store.load_settings().unwrap();
+    settings.repositories[1].enabled = false;
+    set_settings(&store, &settings);
+    for id in [SECOND_KEY, "00000000-0000-4000-8000-00000000ffff"] {
+        assert!(monitor
+            .prepare_scan(&store, HOUR + 10, Scan::Repository(id))
+            .is_err());
+    }
+    assert!(!store.load_settings().unwrap().repositories[1].enabled);
+    assert!(!store.load_monitoring_state().unwrap().health[SECOND_KEY].scan_pending);
+}
+
+#[test]
+fn a_repository_scan_waits_for_pause_and_backpressure() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: true })
+        .unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 10, scan)
+        .unwrap()
+        .is_empty());
+    store
+        .save_automation(&pr_sniper_lib::capacity::Automation { paused: false })
+        .unwrap();
+    let mut gates = pr_sniper_lib::backpressure::Backpressure::default();
+    let until = gates.signal(
+        pr_sniper_lib::backpressure::Scope::github(ACCOUNT_ID),
+        Some(60),
+        "scan",
+        HOUR + 20,
+    );
+    store.save_backpressure(&gates).unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 20, scan)
+        .unwrap()
+        .is_empty());
+    assert!(store.load_monitoring_state().unwrap().health[SECOND_KEY].scan_pending);
+    // The requested scan runs once the account wait ends, still only for it.
+    assert_eq!(
+        polled_names(&mut monitor, &store, until, false),
+        vec![SECOND_NAME]
+    );
+}
+
+#[test]
+fn a_repository_scan_coalesces_with_its_poll_in_flight() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    let running = monitor.prepare_scan(&store, HOUR + 10, scan).unwrap();
+    assert_eq!(running.len(), 1);
+    for at in [HOUR + 11, HOUR + 12] {
+        assert!(monitor.prepare_scan(&store, at, scan).unwrap().is_empty());
+    }
+    assert_eq!(
+        finish_names(&mut monitor, &store, HOUR + 13, running),
+        vec![SECOND_NAME]
+    );
+    // Repeated requests during the poll collapse into one follow-up.
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 14, false),
+        vec![SECOND_NAME]
+    );
+    assert!(polled_names(&mut monitor, &store, HOUR + 15, false).is_empty());
+}
+
+#[test]
 fn pause_stops_every_repository_schedule_until_resumed() {
     let (_root, store, mut monitor) = two_schedules();
     store
@@ -4370,6 +4481,100 @@ fn a_parked_poll_retries_once_per_occurrence_of_its_own_repository() {
     let tickets = monitor.prepare_checks(&store, HOUR + 3_600, false).unwrap();
     assert_eq!(tickets.len(), 2);
     assert_ne!(operation_for(&monitor, SECOND_NAME).id, parked_second);
+}
+
+#[test]
+fn scanning_one_repository_keeps_a_due_retry_for_another_parked_repository() {
+    let (_root, store, mut monitor) = two_schedules();
+    let rejected = || Err(ConnectionError::ProviderRejectedStatus(422));
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let _ = monitor.finish(&store, ticket, rejected(), HOUR + 11);
+    }
+    assert!(operation_for(&monitor, REPOSITORY_NAME).parked());
+    let parked = operation_for(&monitor, REPOSITORY_NAME).id;
+    // The 15-minute repository is due exactly when the other one is scanned.
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 900,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+    assert_ne!(operation_for(&monitor, REPOSITORY_NAME).id, parked);
+}
+
+#[test]
+fn a_scan_polls_a_transient_retry_now_and_leaves_other_retries_waiting() {
+    let (_root, store, mut monitor) = two_schedules();
+    for ticket in monitor.prepare_checks(&store, HOUR + 10, true).unwrap() {
+        let _ = monitor.finish(
+            &store,
+            ticket,
+            Err(ConnectionError::ProviderFailure),
+            HOUR + 11,
+        );
+    }
+    for name in [REPOSITORY_NAME, SECOND_NAME] {
+        let operation = operation_for(&monitor, name);
+        assert!(!operation.parked());
+        // The backoff floor is one second past the failure.
+        assert!(operation.next_attempt_at.unwrap() > HOUR + 11);
+    }
+    let retrying = operation_for(&monitor, SECOND_NAME).id;
+    assert_eq!(
+        scanned_names(
+            &mut monitor,
+            &store,
+            HOUR + 11,
+            Scan::Repository(SECOND_KEY)
+        ),
+        vec![SECOND_NAME]
+    );
+    let polled = operation_for(&monitor, SECOND_NAME);
+    assert_eq!(polled.id, retrying, "the same poll, its backoff cut short");
+    assert_eq!(polled.state, OperationState::Completed);
+    assert!(operation_for(&monitor, REPOSITORY_NAME)
+        .next_attempt_at
+        .is_some_and(|next| next > HOUR + 11));
+    // Check Now cuts the other repository's backoff short too.
+    assert_eq!(
+        polled_names(&mut monitor, &store, HOUR + 11, true),
+        vec![SECOND_NAME, REPOSITORY_NAME]
+    );
+}
+
+#[test]
+fn a_scan_keeps_a_transient_retry_behind_account_backpressure() {
+    let (_root, store, mut monitor) = two_schedules();
+    let scan = Scan::Repository(SECOND_KEY);
+    let ticket = monitor
+        .prepare_scan(&store, HOUR + 10, scan)
+        .unwrap()
+        .remove(0);
+    let _ = monitor.finish(
+        &store,
+        ticket,
+        Err(ConnectionError::ProviderFailure),
+        HOUR + 11,
+    );
+    let mut gates = pr_sniper_lib::backpressure::Backpressure::default();
+    let until = gates.signal(
+        pr_sniper_lib::backpressure::Scope::github(ACCOUNT_ID),
+        Some(600),
+        "scan",
+        HOUR + 12,
+    );
+    store.save_backpressure(&gates).unwrap();
+    assert!(monitor
+        .prepare_scan(&store, HOUR + 12, scan)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        scanned_names(&mut monitor, &store, until, scan),
+        vec![SECOND_NAME]
+    );
 }
 
 #[test]

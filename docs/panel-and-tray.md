@@ -51,6 +51,7 @@ Reference for the tray icon, the retained panel, navigation rules and the Runnin
 - Disabled-repository and superseded entries stay out of Running and waiting counts; saved evidence stays. A live worker remains visible until teardown releases its slot.
 - Active rows first, then waiting in arrival order with reason. Only active rows animate; static under reduced motion.
 - Row opens the exact job. No second PR drill-in.
+- **Scan** pill (bottom band): Check Now for every enabled repository; only queues admitted work ([polling.md](polling.md#schedule)). Disabled while paused, with no schedulable repo, or while any scan is pending/in flight (spinning icon); keeps focus.
 - Job inspector: purpose (normal, primary-final, reply, mention); immutable execution config vs current planned config; canonical iteration; per-Agent work ordinals; retry attempts. Missing legacy evidence shows "unavailable"; never rebuilt from Settings.
 - Job detail shows its own capacity/execution state above facts. Never a sibling's or PR-wide state. Never-started failures keep planned config, no execution claim.
 - Full config and IDs sit in collapsed evidence.

@@ -4004,6 +4004,13 @@ input.switch:focus-visible {
   text-overflow: ellipsis;
 }
 
+/* Repository Scan shares the Monitor row. */
+.kv-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 /* Repository Paths: Rules And | Or pill. */
 .paths-mode-choices {
   display: inline-flex;

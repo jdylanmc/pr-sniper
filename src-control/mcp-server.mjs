@@ -333,8 +333,8 @@ export function createServer() {
     [
       "check_now",
       "check_now",
-      {},
-      "Request checks of enabled repositories through normal schedule/pause/backpressure gates.",
+      { repository_id: s.id.optional() },
+      "Queue work now: scan every enabled repository, or only repository_id (a monitored repository's configuration id), with saved admission. Pause, account, Wait and backpressure gates apply; an in-flight scan coalesces. Never enables a repository or starts reviews.",
     ],
     [
       "retry_poll",

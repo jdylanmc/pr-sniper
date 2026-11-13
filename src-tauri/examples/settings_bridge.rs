@@ -702,6 +702,20 @@ fn dispatch(store: &Store, request: Request) -> Result<Value, String> {
             let after = monitor.auto_resume(store, &accounts(true), 1_800_000_001)?;
             Ok(json!({ "before": before, "after": after }))
         }
+        // The real scan request; polls are prepared but never sent anywhere.
+        "check_now" | "scan_repository" => {
+            use pr_sniper_lib::monitoring::{Monitor, Scan};
+            let scan = match request.args["repositoryId"].as_str() {
+                Some(id) if request.command == "scan_repository" => Scan::Repository(id),
+                None if request.command == "check_now" => Scan::All,
+                _ => return Err("Repository identity required.".into()),
+            };
+            Monitor::restore(store)?.prepare_scan(store, 1_800_000_000, scan)?;
+            Ok(Value::Null)
+        }
+        "repository_scans" => Ok(json!(
+            pr_sniper_lib::monitoring::Monitor::restore(store)?.scanning()
+        )),
         "set_automation_paused" => {
             store.save_automation(&pr_sniper_lib::capacity::Automation {
                 paused: request.args["paused"]

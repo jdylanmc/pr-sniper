@@ -85,7 +85,11 @@ pub(super) enum Command {
     Pause {
         paused: bool,
     },
-    CheckNow,
+    CheckNow {
+        /// One monitored repository; absent scans every enabled repository.
+        #[serde(default)]
+        repository_id: Option<String>,
+    },
     Retry {
         operation_id: String,
     },
@@ -755,8 +759,12 @@ async fn execute_ready_command(app: &tauri::AppHandle, command: Command) -> Resu
             crate::capacity::set_automation_paused(app.clone(), paused).map_err(operation)?;
             Ok(json!({"state":"saved","paused":paused}))
         }
-        Command::CheckNow => {
-            crate::check_now(app.clone()).await.map_err(operation)?;
+        Command::CheckNow { repository_id } => {
+            match repository_id {
+                Some(id) => crate::scan_repository(app.clone(), id).await,
+                None => crate::check_now(app.clone()).await,
+            }
+            .map_err(operation)?;
             Ok(json!({"state":"requested"}))
         }
         Command::RetryState { item_id } => {
