@@ -192,7 +192,8 @@ _Avoid_: Global schedule, global scan, polling interval, assignment timer, per-A
 The single saved IANA zone (Preferences) that every **Repository Schedule** runs in.
 
 **Check Now**:
-Polls every enabled repository now and retries any parked poll. Coalesces with a running poll per repository. Never bypasses **Backpressure** or an existing **Retry budget**; keeps each **Repository Schedule**.
+Polls every enabled repository now and retries any parked poll. Coalesces with a running poll per repository. Never bypasses **Backpressure** or an existing **Retry budget**; keeps each **Repository Schedule**. Scoped to one `repository_id`, it scans only that enabled repository. Only queues admitted work; never starts reviews, enables a repository or widens scope. UI: Running and repository editor **Scan**.
+_Avoid_: Force review, rescan from zero
 
 **Pause Automation**:
 Persisted global gate, separate from repository enablement and grants. Blocks new polling, AI admission and provider writes. Active workers are signalled and keep their slot, **stopping**, until teardown ends. Partial AI output is discarded. An already-sent remote request is not undone; intents and receipts are kept.

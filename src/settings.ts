@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { whenReleased } from "./stable-dom";
-import { onCommitted, SETTINGS_CHANGED } from "./changes";
+import { onCommitted, SETTINGS_CHANGED, STATE_CHANGED } from "./changes";
 import {
   describeReadFailureDetails,
   readFailureMissingScope,
@@ -562,6 +562,7 @@ export async function mountSettings(
   let repositoryOutages = new Set<string>();
   let repositoryAutomationRead = 0;
   const pendingPullRequests = new Map<string, ExplicitPullRequestIntent>();
+  let refreshRepositoryScan: (() => void) | undefined;
   let updateRepositoryIntake:
     | ((
         id: string,
@@ -722,6 +723,7 @@ export async function mountSettings(
           : "All changes saved";
     save.disabled = !preferencesDirty() || busy;
     reset.disabled = !dirty() || busy;
+    refreshRepositoryScan?.();
     reload.hidden = !conflict;
     reload.disabled = busy;
     catalogNotice.hidden = !catalogConflict;
@@ -830,15 +832,32 @@ export async function mountSettings(
     value: clone(value),
   });
 
-  function repositoryMonitoringDetail(repository: Repository): string {
-    if (
-      repositoryAccountsState !== "ready" ||
-      !githubAccounts.some(
+  function repositoryAccountConnected(repository: Repository) {
+    if (repository.provider === "azure_devops")
+      return !!repositoryAccountLogin(repository as ConfiguredRepository);
+    return (
+      repositoryAccountsState === "ready" &&
+      githubAccounts.some(
         (a) =>
           a.account_id === repository.provider_account_id &&
           a.state === "connected",
       )
-    )
+    );
+  }
+
+  /** Saved, enabled, assigned, connected and not paused: a Scan can queue work. */
+  function repositoryScannable(repository: Repository) {
+    return (
+      repository.enabled &&
+      !!repository.assignments?.length &&
+      repositoryAccountConnected(repository) &&
+      !!repositoryAutomation &&
+      !repositoryAutomation.paused
+    );
+  }
+
+  function repositoryMonitoringDetail(repository: Repository): string {
+    if (!repositoryAccountConnected(repository))
       return repository.enabled
         ? "Reconnect account"
         : "Disabled / Reconnect account";
@@ -3894,7 +3913,7 @@ export async function mountSettings(
     const modal = dialog(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(`${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${repositoryAccountLogin(repository) ?? (repository.provider_account_id ? "Unavailable" : "No account")}`)}</p></section>
-        <section class="repository-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
+        <section class="repository-group"><div class="repository-scan"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><button type="button" data-scan-repository aria-label="Scan ${escape(repository.name)}" title="Scan ${escape(repository.name)}" aria-disabled="true" data-scanning="false">${icon("refresh")}<span>Scan</span></button></div><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
         <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><button type="button" class="doctrine-row" data-open-paths aria-label="Paths"><span>Paths</span><span class="doctrine-summary" data-paths-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
@@ -3985,6 +4004,7 @@ export async function mountSettings(
           ? "Starts on Save"
           : "Disabled"
         : repositoryMonitoringDetail(committed);
+      refreshRepositoryScan?.();
     };
     const refreshSavedMonitoring = () => {
       updateMonitoring();
@@ -3992,6 +4012,65 @@ export async function mountSettings(
     };
     updateMonitoring();
     void refreshRepositoryAutomation(updateMonitoring);
+    // Scan uses only the saved, monitored repository: a draft never scans.
+    const scan = modal.querySelector<HTMLButtonElement>(
+      "[data-scan-repository]",
+    )!;
+    let scanning = false;
+    let scanSending = false;
+    const drawScan = () => {
+      if (!modal.isConnected) return;
+      const committed = saved.repositories?.find((r) => r.id === repository.id);
+      const ready =
+        !!committed &&
+        sameResource(repository, committed) &&
+        repositoryScannable(committed);
+      const busy = scanSending || scanning;
+      // aria-disabled, not disabled: an in-flight press keeps its focus.
+      scan.setAttribute("aria-disabled", String(busy || !ready));
+      scan.dataset.scanning = String(busy);
+    };
+    let scanRead = 0;
+    const readScans = async () => {
+      const read = ++scanRead;
+      try {
+        const ids = await invoke<string[]>("repository_scans");
+        if (read === scanRead) scanning = ids.includes(repository.id);
+      } catch {
+        if (read === scanRead) scanning = false;
+      }
+      drawScan();
+    };
+    scan.onclick = async () => {
+      if (scan.getAttribute("aria-disabled") === "true") return;
+      const alert = modal.querySelector<HTMLElement>("[data-resource-error]")!;
+      scanSending = true;
+      drawScan();
+      try {
+        await invoke("scan_repository", { repositoryId: repository.id });
+        alert.hidden = true;
+      } catch (cause) {
+        alert.textContent = reason(cause);
+        alert.hidden = false;
+      }
+      await readScans();
+      scanSending = false;
+      drawScan();
+    };
+    refreshRepositoryScan = drawScan;
+    modal.addEventListener(
+      "pr-sniper:dialog-closed",
+      () => {
+        if (refreshRepositoryScan === drawScan)
+          refreshRepositoryScan = undefined;
+      },
+      { once: true },
+    );
+    void onCommitted(modal, [STATE_CHANGED], () => {
+      void readScans();
+      void refreshRepositoryAutomation(updateMonitoring);
+    });
+    void readScans();
     modal.querySelector<HTMLInputElement>("[data-review-drafts]")!.onchange = (
       event,
     ) => {

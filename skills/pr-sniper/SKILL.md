@@ -87,6 +87,9 @@ Use tool input schemas and current resource values; never invent identities.
   from `list_queue`/`read_evidence`, not the poll retry or packet-state retry operations.
   Completed work returns `review_again_required`; do not retry it implicitly.
   Only explicit human review-again intent may use `watch_pull_request.review_again:true`.
+- "Scan now" / "look for more work" uses `check_now`; pass `repository_id` to scan
+  one monitored repository. It only queues admitted PRs with saved configuration;
+  it never enables a repository, widens scope, starts reviews or bypasses pause.
 - Failed repository polls use `list_health` to find the exact retryable `operation_id`,
   then `retry_poll`. Never substitute a PR/AI operation ID or retry every repository.
 - A timeout or `outcome_unknown` is not failure or success. Reuse the exact

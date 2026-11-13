@@ -4475,3 +4475,50 @@
   background: var(--panel-mist);
   color: var(--panel-ink);
 }
+/* Repository editor Scan: saved, monitored repository only; busy while in flight.
+   It shares the Monitor row so the editor keeps its height. */
+.repository-editor .repository-scan {
+  display: flex;
+  align-items: center;
+}
+.panel-shell .repository-editor .repository-group > .repository-scan {
+  padding: 0 14px 0 0;
+}
+.repository-editor .repository-scan > .repository-check {
+  flex: 1;
+  min-width: 0;
+}
+.panel-shell .repository-editor .repository-scan button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--panel-accent);
+  color: var(--text-on-accent-navy);
+  font-size: 12px;
+  font-weight: 700;
+}
+.repository-editor .repository-scan svg {
+  width: 14px;
+  height: 14px;
+}
+.repository-editor .repository-scan button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+.repository-editor .repository-scan button[data-scanning="true"] svg {
+  animation: repository-scan-turn 1s linear infinite;
+}
+@keyframes repository-scan-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .repository-editor .repository-scan button[data-scanning="true"] svg {
+    animation: none;
+  }
+}
