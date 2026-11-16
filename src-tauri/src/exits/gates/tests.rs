@@ -828,14 +828,9 @@ fn a_lone_cancelled_required_check_holds_sign_off_as_pending_never_red() {
         "{denials:?}"
     );
 
-    // Not required while the required checks are known: ignored.
+    // Not required: still a rerun, as the poll snapshot judges it (no ruleset data there).
     o.check_contexts = vec![run("build", "SUCCESS"), run("lint", "CANCELLED")];
-    assert!(pending_checks(&o).is_empty());
-    // A ruleset can require it beyond the classic rule; unread rulesets excuse nothing.
-    o.merge_rules = Some(vec![json!({"type": "required_status_checks",
-        "parameters": {"required_status_checks": [{"context": "lint"}]}})]);
-    assert_eq!(pending_checks(&o), ["lint: cancelled, needs a rerun"]);
-    o.merge_rules = None;
+    assert_eq!(Facts::from_observation(&o).ci, Ci::Pending);
     assert_eq!(pending_checks(&o), ["lint: cancelled, needs a rerun"]);
 
     // A real failure stays red.

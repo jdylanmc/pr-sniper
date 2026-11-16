@@ -20,6 +20,7 @@ fn snapshot(draft: bool, conclusion: &str) -> PrSnapshot {
         draft,
         mergeable: "MERGEABLE".into(),
         checks: vec![SnapshotCheck {
+            app: None,
             name: "CI".into(),
             status: if conclusion.is_empty() {
                 "IN_PROGRESS"
@@ -169,6 +170,7 @@ fn wait_yields_persists_and_scheduled_ci_completion_wakes_exactly_once() {
         poll(&store, &state, NOW + 15);
         state.checks[0].status = "IN_PROGRESS".into();
         state.checks.push(SnapshotCheck {
+            app: None,
             name: "lint".into(),
             status: "COMPLETED".into(),
             conclusion: "SUCCESS".into(),
@@ -1741,6 +1743,7 @@ fn review_fix_ci_progress_survives_the_production_final_read_and_an_intervening_
         progressed.checks[0].status = "COMPLETED".into();
         progressed.checks[0].conclusion = "SUCCESS".into();
         progressed.checks.push(SnapshotCheck {
+            app: None,
             name: "integration".into(),
             status: "IN_PROGRESS".into(),
             conclusion: "".into(),
@@ -1860,6 +1863,7 @@ fn review_fix_missing_required_ci_waits_without_reported_pending_checks() {
             .is_empty());
         let mut reported = state;
         reported.checks.push(SnapshotCheck {
+            app: None,
             name: "required-build".into(),
             status: "IN_PROGRESS".into(),
             conclusion: "".into(),

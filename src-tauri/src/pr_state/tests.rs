@@ -34,6 +34,7 @@ fn snapshot() -> PrSnapshot {
             head: Some("h".into()),
         }],
         checks: vec![SnapshotCheck {
+            app: None,
             name: "ci".into(),
             status: "COMPLETED".into(),
             conclusion: "SUCCESS".into(),

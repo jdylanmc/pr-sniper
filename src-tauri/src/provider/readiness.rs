@@ -209,6 +209,10 @@ pub struct SnapshotCheck {
     pub name: String,
     pub status: String,
     pub conclusion: String,
+    /// The app that reported a check run (`""` when unknown); `None` for a legacy
+    /// status. Only [`PrSnapshot::normalize`] reads it, to drop superseded runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,10 +423,30 @@ impl PrSnapshot {
             .collect();
         approvals.sort();
         approvals.dedup();
+        // A cancelled run superseded by a passed same-app run is a duplicate, not CI.
+        let signals: Vec<_> = self
+            .checks
+            .iter()
+            .map(|c| super::ci::CheckSignal {
+                name: &c.name,
+                app: c.app.as_deref(),
+                outcome: if c.status == "COMPLETED" && c.conclusion == "CANCELLED" {
+                    super::ci::CheckOutcome::Cancelled
+                } else if c.status == "COMPLETED"
+                    && matches!(c.conclusion.as_str(), "SUCCESS" | "NEUTRAL" | "SKIPPED")
+                {
+                    super::ci::CheckOutcome::Passed
+                } else {
+                    super::ci::CheckOutcome::Pending
+                },
+            })
+            .collect();
         let mut checks: Vec<_> = self
             .checks
             .iter()
-            .map(|c| {
+            .zip(&signals)
+            .filter(|(_, signal)| !super::ci::superseded(signal, &signals))
+            .map(|(c, _)| {
                 (
                     c.name.clone(),
                     check_status(&c.status).to_string(),
@@ -487,27 +511,29 @@ fn check_status(status: &str) -> &'static str {
 }
 
 impl NormalizedSnapshot {
-    /// The head's CI verdict ([`super::ci`]); a check is named once per app it ran in,
-    /// and the snapshot keeps no app, so any same-name pass supersedes a cancel.
+    /// The head's CI verdict ([`super::ci`]). [`PrSnapshot::normalize`] already
+    /// dropped superseded runs, so every cancelled check left waits for a rerun.
     fn ci_verdict(&self) -> super::ci::CiVerdict {
-        use super::ci::{CheckOutcome, CheckSignal};
-        let signals: Vec<_> =
-            self.checks
-                .iter()
-                .map(|(name, status, conclusion)| CheckSignal {
-                    name,
-                    app: None,
-                    outcome: match conclusion.as_str() {
-                        _ if status == "pending" => CheckOutcome::Pending,
-                        "cancelled" => CheckOutcome::Cancelled,
-                        "failure" | "error" | "timed_out" | "action_required"
-                        | "startup_failure" => CheckOutcome::Failed,
-                        _ => CheckOutcome::Passed,
-                    },
-                })
-                .collect();
-        // No ruleset data here: a cancelled check is never optional (`None`).
-        super::ci::verdict(&signals, None)
+        use super::ci::CiVerdict;
+        let failed = |c: &str| {
+            matches!(
+                c,
+                "failure" | "error" | "timed_out" | "action_required" | "startup_failure"
+            )
+        };
+        if self.checks.is_empty() {
+            CiVerdict::None
+        } else if self.checks.iter().any(|(_, _, c)| failed(c)) {
+            CiVerdict::Red
+        } else if self
+            .checks
+            .iter()
+            .any(|(_, status, c)| status == "pending" || c == "cancelled")
+        {
+            CiVerdict::Pending
+        } else {
+            CiVerdict::Green
+        }
     }
 
     pub fn ci_pending(&self) -> bool {
@@ -531,7 +557,7 @@ impl NormalizedSnapshot {
     }
 
     /// CI failed on the head: a check concluded as a failure. A cancelled check is
-    /// never a failure: superseded or optional it is ignored, else it awaits a rerun.
+    /// never a failure: superseded it is ignored, else it awaits a rerun.
     pub fn ci_failed(&self) -> bool {
         self.ci_verdict() == super::ci::CiVerdict::Red
     }

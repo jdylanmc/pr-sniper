@@ -24,7 +24,7 @@ const FRAGMENT: &str = r#"fragment S on PullRequest {
   comments(last:100) { totalCount nodes { fullDatabaseId body } }
   commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) {
     totalCount nodes { __typename
-      ... on CheckRun { name status conclusion }
+      ... on CheckRun { name status conclusion checkSuite { app { slug } } }
       ... on StatusContext { context state }
     }
   }}}}}
@@ -103,11 +103,18 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
                     name: string(&context["name"])?,
                     status: string(&context["status"])?,
                     conclusion: context["conclusion"].as_str().unwrap_or("").to_string(),
+                    app: Some(
+                        context["checkSuite"]["app"]["slug"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
                 },
                 Some("StatusContext") => SnapshotCheck {
                     name: string(&context["context"])?,
                     status: string(&context["state"])?,
                     conclusion: string(&context["state"])?,
+                    app: None,
                 },
                 _ => return Err(ConnectionError::InvalidResponse),
             });
@@ -305,11 +312,13 @@ mod tests {
             ],
             checks: vec![
                 SnapshotCheck {
+                    app: None,
                     name: "b".into(),
                     status: "COMPLETED".into(),
                     conclusion: "SUCCESS".into(),
                 },
                 SnapshotCheck {
+                    app: None,
                     name: "a".into(),
                     status: "IN_PROGRESS".into(),
                     conclusion: "".into(),

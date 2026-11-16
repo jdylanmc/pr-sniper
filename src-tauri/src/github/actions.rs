@@ -207,7 +207,6 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
         } else if check_contexts.is_empty() {
             None
         } else {
-            let required = crate::provider::ci::required_checks(protection, merge_rules.as_deref());
             let signals: Vec<_> = check_contexts
                 .iter()
                 .map(crate::provider::ci::context_signal)
@@ -216,7 +215,7 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
                 if check_contexts
                     .iter()
                     .all(|c| matches!(c["__typename"].as_str(), Some("CheckRun" | "StatusContext")))
-                    && crate::provider::ci::verdict(&signals, required.as_deref())
+                    && crate::provider::ci::verdict(&signals)
                         == crate::provider::ci::CiVerdict::Green
                 {
                     "SUCCESS".into()

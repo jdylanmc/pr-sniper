@@ -228,41 +228,30 @@ pub fn pending_checks(o: &Observation) -> Vec<String> {
         })
         .map(str::to_owned)
         .collect();
-    let (signals, required) = ci_signals(o);
+    let signals = ci_signals(o);
     pending.extend(
-        crate::provider::ci::needs_rerun(&signals, required.as_deref())
+        crate::provider::ci::needs_rerun(&signals)
             .into_iter()
             .map(|name| format!("{name}: cancelled, needs a rerun")),
     );
     pending
 }
 
-fn ci_signals(
-    o: &Observation,
-) -> (
-    Vec<crate::provider::ci::CheckSignal<'_>>,
-    Option<Vec<String>>,
-) {
-    (
-        o.check_contexts
-            .iter()
-            .map(crate::provider::ci::context_signal)
-            .collect(),
-        crate::provider::ci::required_checks(&o.protection, o.merge_rules.as_deref()),
-    )
+fn ci_signals(o: &Observation) -> Vec<crate::provider::ci::CheckSignal<'_>> {
+    o.check_contexts
+        .iter()
+        .map(crate::provider::ci::context_signal)
+        .collect()
 }
 
-/// A cancelled check is never red: superseded or optional it is ignored, else CI
-/// waits for its rerun ([`crate::provider::ci`]).
+/// A cancelled check is never red: superseded it is ignored, else CI waits for its
+/// rerun ([`crate::provider::ci`]).
 fn ci(o: &Observation) -> Ci {
     match o.checks.as_deref() {
         Some("SUCCESS") => Ci::Green,
         Some("FAILURE" | "ERROR") => Ci::Red,
         Some(_) => {
-            let (signals, required) = ci_signals(o);
-            if crate::provider::ci::verdict(&signals, required.as_deref())
-                == crate::provider::ci::CiVerdict::Red
-            {
+            if crate::provider::ci::verdict(&ci_signals(o)) == crate::provider::ci::CiVerdict::Red {
                 Ci::Red
             } else {
                 Ci::Pending
