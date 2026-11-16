@@ -71,6 +71,8 @@ macOS. Windows: [windows-notifications.md](windows-notifications.md). Needs the 
 
 - Opt in: Settings > Preferences > Notifications. Saves immediately, separate from the draft. Adding an account or enabling reviews never opts in. Opt-in is from now forward: states that exist at opt-in, or arose while off, never notify. Turning on sends one confirmation (opens Settings).
 - Notifies: confirmation, human input, ready for final review, failures, approved, merged, final review cleared. Not: routine queued/reviewing, author waits.
+- Settled outcomes only. While an authorized approve or merge is pending, in flight, in a merge queue or reconciling, and while a provider read is being retried, nothing notifies; then one notice names the result (Merged, Approved, Ready or Failed). Approved waits for the merge unless the merge waits on the author.
+- Ready, Cleared and Approved notify at most once per Iteration; a same-head re-review with the same outcome is silent.
 - Approved is once per revision (queue item): a later review pass or observation of the same vote does not re-notify.
 - Types: while on, each type has its own switch (default on, including older profiles). A type turned back on never replays what happened while it was off.
 - Click opens the exact saved queue item, the repository's editor for a poll outage, or Settings for a scheduling/account failure with no PR.

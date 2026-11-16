@@ -115,6 +115,15 @@ impl Effect {
         self.state == EffectState::Uncertain
             || self.state == EffectState::Confirmed && self.error.is_some()
     }
+    /// Still owned by the shared retry, reconciliation or merge-queue policy: no
+    /// human is needed yet, so its outcome is not settled.
+    pub fn automatic(&self, now: i64) -> bool {
+        self.state == EffectState::Prepared && now < self.operation.retry_deadline
+            || self.needs_reconciliation()
+                && (self.reconcile_requested
+                    || self.reconcile_attempts < 3 && now < self.operation.retry_deadline)
+            || self.in_merge_queue()
+    }
     /// Azure DevOps refused the vote (a branch policy, e.g. one forbidding the
     /// requester's own approval, or missing permission). Final: the review is
     /// not re-queued; it parks for a human.
@@ -202,6 +211,9 @@ pub struct Status {
     pub final_review: Option<FinalReview>,
     pub effects: Vec<Effect>,
     pub blockers: Vec<String>,
+    /// An effect or provider read for this PR is still pending, in flight or being
+    /// retried automatically. Notifications wait for the settled outcome.
+    pub settling: bool,
 }
 
 fn context(observation: &Observation, effects: &[Effect]) -> serde_json::Value {
@@ -863,9 +875,25 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
     let ledger = store.load_actions()?;
     let paused = store.load_automation()?.paused;
     let now = crate::now_seconds()?;
+    // An effect is still automatic only while the coordinator can re-read its
+    // own iteration: that item is listed and its read has not parked.
+    let listed: std::collections::HashSet<String> =
+        snapshot.items.iter().map(|i| i.id.clone()).collect();
+    let parked = |item_id: &str| {
+        ledger
+            .observations
+            .iter()
+            .find(|o| o.item_id == item_id)
+            .is_some_and(|o| o.error.is_some() && o.retry_at.is_none())
+    };
     for item in &mut snapshot.items {
         let observation_retry_blocker =
             observation_retry_blocker(item, &settings, &ledger, paused, now);
+        let reobserved = observation_pending(item, &settings, &ledger, now);
+        // Only this projection assigns ProviderAction, so a Failed item here
+        // failed for another reason (review, publication, mention, files). That
+        // is news on its own, even if the projection below re-labels it.
+        let independent_failure = item.state == State::Failed;
         let Some(repository) = settings
             .repositories
             .iter()
@@ -1150,6 +1178,19 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                         .as_ref()
                         .is_some_and(|r| r.head == item.job.head_sha)
             });
+        // A parked read (no retry scheduled) is never re-run: nothing automatic
+        // happens until a human retries or reconciles, so its failure is settled.
+        // A saved backoff counts only while the coordinator would still run it.
+        let settling = !matches!(item.state, State::Merged | State::Closed)
+            && !independent_failure
+            && !parked(&item.id)
+            && (ledger.effects.iter().any(|e| {
+                same_scope(e, &item.job)
+                    && e.automatic(now)
+                    && listed.contains(&e.item_id)
+                    && !parked(&e.item_id)
+            }) || reobserved
+                && observed.is_some_and(|o| o.error.is_some() && o.retry_at.is_some()));
         item.action_status = Some(Status {
             item_id: item.id.clone(),
             final_valid,
@@ -1172,6 +1213,7 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
             final_review,
             effects,
             blockers,
+            settling,
         });
         if approved {
             item.state = State::Approved;
@@ -1262,14 +1304,11 @@ fn observation_pending(
     ledger: &Ledger,
     now: i64,
 ) -> bool {
-    ledger.effects.iter().any(|e| {
-        e.item_id == item.id
-            && (e.state == EffectState::Prepared && now < e.operation.retry_deadline
-                || e.needs_reconciliation()
-                    && (e.reconcile_requested
-                        || e.reconcile_attempts < 3 && now < e.operation.retry_deadline)
-                || e.in_merge_queue())
-    }) || packet::open(ledger, &item.id)
+    ledger
+        .effects
+        .iter()
+        .any(|e| e.item_id == item.id && e.automatic(now))
+        || packet::open(ledger, &item.id)
         || item.state == State::MachineSignedOff
             && settings
                 .repositories

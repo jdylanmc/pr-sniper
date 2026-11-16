@@ -637,10 +637,9 @@ test("approval receipt leaves the Queue for Reviewed yet keeps personal review r
   await expect(kv(queue, "Approve receipt")).toHaveText("401");
   await expect(kv(queue, "Approve actor")).toHaveText("22");
   await expect(kv(queue, "Personal review")).toHaveText("Required");
+  // The authorized merge is still running: Approved is not the settled outcome.
   const ledger = await store("observe_notifications");
-  expect(ledger.notices.some((n) => n.event.category === "approved")).toBe(
-    true,
-  );
+  expect(ledger.notices.map((n) => n.event.category)).not.toContain("approved");
   const approvedItem = (await store("monitoring_snapshot")).items[0];
   expect(approvedItem.state).toBe("approved");
   await page.goto("/");
@@ -683,6 +682,12 @@ test("approval receipt leaves the Queue for Reviewed yet keeps personal review r
   await expect(page.locator("#handoff-queue")).not.toContainText(
     "Ready for your final review",
   );
+  const settled = await store("observe_notifications");
+  expect(
+    settled.notices
+      .map((n) => n.event.category)
+      .filter((category) => category !== "test"),
+  ).toEqual(["merged"]);
 });
 
 test("unknown effects expose original reconciliation rather than another approve or merge request", async ({

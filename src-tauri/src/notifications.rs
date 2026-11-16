@@ -39,6 +39,15 @@ impl Category {
         Self::FinalReviewCleared,
     ];
 
+    /// Outcomes announced at most once per Iteration: a same-head re-review that
+    /// lands on the same outcome is not news.
+    fn once_per_iteration(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::FinalReviewCleared | Self::Approved
+        )
+    }
+
     fn priority(self) -> u8 {
         match self {
             Self::Test => 0,
@@ -200,6 +209,18 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             })
         {
             category = Some(Category::Failure);
+        }
+        // An authorized approve or merge still pending, in flight or retried
+        // automatically has no settled outcome yet: hold, then notify once.
+        if (matches!(
+            item.progress,
+            Some(queue::Progress::Approving | queue::Progress::Merging)
+        ) || item.action_status.as_ref().is_some_and(|s| s.settling))
+            && item
+                .failed_operation
+                .is_none_or(|op| op == queue::FailedOperation::ProviderAction)
+        {
+            category = None;
         }
         let mut causes = BTreeSet::new();
         if let Some(status) = &item.action_status {
@@ -625,13 +646,13 @@ impl Ledger {
                     .ok_or("Notification episode limit reached.")?;
                 // Re-entering an event (flicker, A→B→A) is status chatter: never
                 // resend one that had a send attempt; re-arm one still queued.
-                // A queue item is one head, approved at most once, whatever
-                // digest an older version stored.
+                // A queue item is one head: Ready, Cleared and Approved announce
+                // it at most once, whatever pass or older digest led there.
                 if self.notices.iter().any(|n| {
                     n.source == frame.source
                         && (Some(&n.fingerprint) == fingerprint.as_ref()
-                            || event.category == Category::Approved
-                                && n.event.category == Category::Approved)
+                            || event.category.once_per_iteration()
+                                && n.event.category == event.category)
                         && !matches!(n.phase, Phase::Queued | Phase::NotSent)
                 }) {
                     continue;
