@@ -809,6 +809,38 @@ fn provider_observations_normalize_into_facts() {
 }
 
 #[test]
+fn a_lone_cancelled_required_check_holds_sign_off_as_pending_never_red() {
+    let run = |name: &str, conclusion: &str| json!({"__typename":"CheckRun","name":name,"status":"COMPLETED","conclusion":conclusion});
+    let mut o = observation();
+    o.checks = Some("NONPASSING".into());
+    o.protection = json!({"requiresApprovingReviews": false, "requiresStatusChecks": true,
+        "requiredStatusCheckContexts": ["build", "verify"]});
+    o.check_contexts = vec![run("build", "SUCCESS"), run("verify", "CANCELLED")];
+    let mut input = base();
+    input.facts = Facts::from_observation(&o);
+    assert_eq!(input.facts.ci, Ci::Pending);
+    assert_eq!(pending_checks(&o), ["verify: cancelled, needs a rerun"]);
+    let denials = [lgtm_denial(&input).unwrap(), merge_denial(&input).unwrap()];
+    assert!(
+        denials
+            .iter()
+            .all(|d| d.contains("pending") && !d.contains("red")),
+        "{denials:?}"
+    );
+
+    // Not required while the required checks are known: ignored.
+    o.check_contexts = vec![run("build", "SUCCESS"), run("lint", "CANCELLED")];
+    assert!(pending_checks(&o).is_empty());
+
+    // A real failure stays red.
+    o.checks = Some("NONPASSING".into());
+    o.check_contexts = vec![run("build", "SUCCESS"), run("verify", "FAILURE")];
+    input.facts = Facts::from_observation(&o);
+    assert_eq!(input.facts.ci, Ci::Red);
+    assert!(lgtm_denial(&input).unwrap().contains("CI is red"));
+}
+
+#[test]
 fn approve_ignores_discussion_that_only_blocks_merge() {
     let mut o = observation();
     o.threads = vec![HumanThread {

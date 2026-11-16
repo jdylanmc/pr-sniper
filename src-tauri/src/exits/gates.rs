@@ -209,10 +209,12 @@ pub fn ci_not_run(o: &Observation) -> bool {
     o.checks.is_none() && o.check_contexts.is_empty()
 }
 
-/// The checks CI waits for: unfinished check runs and pending statuses. A status
-/// marked `ci: false` (an Azure DevOps status, not a build) never holds the vote.
+/// The checks CI waits for: unfinished check runs, pending statuses, and cancelled
+/// checks that need a rerun ([`crate::provider::ci`]). A status marked `ci: false`
+/// (an Azure DevOps status, not a build) never holds the vote.
 pub fn pending_checks(o: &Observation) -> Vec<String> {
-    o.check_contexts
+    let mut pending: Vec<String> = o
+        .check_contexts
         .iter()
         .filter(|c| c["ci"] != false)
         .filter_map(|c| match c["__typename"].as_str() {
@@ -225,23 +227,42 @@ pub fn pending_checks(o: &Observation) -> Vec<String> {
             _ => None,
         })
         .map(str::to_owned)
-        .collect()
+        .collect();
+    let (signals, required) = ci_signals(o);
+    pending.extend(
+        crate::provider::ci::needs_rerun(&signals, &required)
+            .into_iter()
+            .map(|name| format!("{name}: cancelled, needs a rerun")),
+    );
+    pending
 }
 
+fn ci_signals(o: &Observation) -> (Vec<crate::provider::ci::CheckSignal<'_>>, Vec<String>) {
+    (
+        o.check_contexts
+            .iter()
+            .map(crate::provider::ci::context_signal)
+            .collect(),
+        crate::provider::ci::protection_required(&o.protection),
+    )
+}
+
+/// A cancelled check is never red: superseded or optional it is ignored, else CI
+/// waits for its rerun ([`crate::provider::ci`]).
 fn ci(o: &Observation) -> Ci {
-    let failed = |c: &serde_json::Value| match c["__typename"].as_str() {
-        Some("CheckRun") => matches!(
-            c["conclusion"].as_str(),
-            Some("FAILURE" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE")
-        ),
-        Some("StatusContext") => matches!(c["state"].as_str(), Some("FAILURE" | "ERROR")),
-        _ => false,
-    };
     match o.checks.as_deref() {
         Some("SUCCESS") => Ci::Green,
         Some("FAILURE" | "ERROR") => Ci::Red,
-        Some(_) if o.check_contexts.iter().any(failed) => Ci::Red,
-        Some(_) => Ci::Pending,
+        Some(_) => {
+            let (signals, required) = ci_signals(o);
+            if crate::provider::ci::verdict(&signals, &required)
+                == crate::provider::ci::CiVerdict::Red
+            {
+                Ci::Red
+            } else {
+                Ci::Pending
+            }
+        }
         None => Ci::Unknown,
     }
 }

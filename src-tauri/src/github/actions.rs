@@ -113,25 +113,30 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
             None
         } else {
             let contexts = complete(&rollup["contexts"])?;
-            let valid = contexts.iter().all(|c| match c["__typename"].as_str() {
-                Some("CheckRun") => {
-                    c["status"] == "COMPLETED"
-                        && matches!(
-                            c["conclusion"].as_str(),
-                            Some("SUCCESS" | "NEUTRAL" | "SKIPPED")
-                        )
-                }
-                Some("StatusContext") => c["state"] == "SUCCESS",
-                _ => false,
-            });
             if contexts.is_empty() {
                 None
             } else {
-                Some(if valid {
-                    text(&rollup["state"])?
-                } else {
-                    "NONPASSING".into()
-                })
+                // The shared CI rule judges the contexts alone, never the rollup
+                // state: a superseded cancelled run is excused, and an empty legacy
+                // combined status (`pending`, no statuses) holds nothing (#389).
+                let required = crate::provider::ci::protection_required(
+                    &pull["baseRef"]["branchProtectionRule"],
+                );
+                let signals: Vec<_> = contexts
+                    .iter()
+                    .map(crate::provider::ci::context_signal)
+                    .collect();
+                Some(
+                    if contexts.iter().all(|c| {
+                        matches!(c["__typename"].as_str(), Some("CheckRun" | "StatusContext"))
+                    }) && crate::provider::ci::verdict(&signals, &required)
+                        == crate::provider::ci::CiVerdict::Green
+                    {
+                        "SUCCESS".into()
+                    } else {
+                        "NONPASSING".into()
+                    },
+                )
             }
         };
         let protection = pull

@@ -487,9 +487,31 @@ fn check_status(status: &str) -> &'static str {
 }
 
 impl NormalizedSnapshot {
+    /// The head's CI verdict ([`super::ci`]); a check is named once per app it ran in,
+    /// and the snapshot keeps no app, so any same-name pass supersedes a cancel.
+    fn ci_verdict(&self) -> super::ci::CiVerdict {
+        use super::ci::{CheckOutcome, CheckSignal};
+        let signals: Vec<_> =
+            self.checks
+                .iter()
+                .map(|(name, status, conclusion)| CheckSignal {
+                    name,
+                    app: None,
+                    outcome: match conclusion.as_str() {
+                        _ if status == "pending" => CheckOutcome::Pending,
+                        "cancelled" => CheckOutcome::Cancelled,
+                        "failure" | "error" | "timed_out" | "action_required"
+                        | "startup_failure" => CheckOutcome::Failed,
+                        _ => CheckOutcome::Passed,
+                    },
+                })
+                .collect();
+        super::ci::verdict(&signals, &self.required_checks)
+    }
+
     pub fn ci_pending(&self) -> bool {
         !self.ci_failed()
-            && (self.checks.iter().any(|(_, status, _)| status == "pending")
+            && (self.ci_verdict() == super::ci::CiVerdict::Pending
                 || self
                     .required_checks
                     .iter()
@@ -507,19 +529,10 @@ impl NormalizedSnapshot {
         !self.checks.is_empty() && !self.ci_failed() && !self.ci_pending()
     }
 
-    /// CI failed on the head: any check concluded as a failure.
+    /// CI failed on the head: a check concluded as a failure. A cancelled check is
+    /// never a failure: superseded or optional it is ignored, else it awaits a rerun.
     pub fn ci_failed(&self) -> bool {
-        self.checks.iter().any(|(_, _, conclusion)| {
-            matches!(
-                conclusion.as_str(),
-                "failure"
-                    | "error"
-                    | "cancelled"
-                    | "timed_out"
-                    | "action_required"
-                    | "startup_failure"
-            )
-        })
+        self.ci_verdict() == super::ci::CiVerdict::Red
     }
 
     /// The review revision: what a review reads. CI progress and results,

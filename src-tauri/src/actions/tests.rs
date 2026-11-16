@@ -929,8 +929,14 @@ impl QueryTransport for Wire {
             .as_ref()
             .map(|id| json!({"databaseId":id.parse::<u64>().unwrap()})));
         pull["baseRefName"] = json!(o.base_name);
+        // The one context carries the fixture's rollup: CI is judged from contexts.
+        let (status, conclusion) = match o.checks.as_deref() {
+            Some("SUCCESS") | None => ("COMPLETED", json!("SUCCESS")),
+            Some("PENDING") => ("IN_PROGRESS", Value::Null),
+            Some(_) => ("COMPLETED", json!("FAILURE")),
+        };
         pull["commits"] = json!({"nodes":[{"commit":{"oid":o.head,"statusCheckRollup":{"state":o.checks,"contexts":{
-                    "totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"CheckRun","name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]});
+                    "totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"CheckRun","name":"CI","status":status,"conclusion":conclusion}]}}}}]});
         if o.checks.is_none() {
             pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = Value::Null;
         }
@@ -1533,6 +1539,38 @@ impl QueryTransport for ShapeWire {
                 pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = Value::Null;
             }
             "errors" => value["errors"] = json!([{"message":"unsupported provider capability"}]),
+            "superseded_cancel" | "lone_cancel" | "real_failure" | "empty_combined_status" => {
+                let run = |name: &str, conclusion: &str| {
+                    json!({"__typename":"CheckRun","name":name,"status":"COMPLETED","conclusion":conclusion,
+                        "databaseId":1,"checkSuite":{"app":{"slug":"github-actions"}}})
+                };
+                let (state, nodes) = match self.case {
+                    "superseded_cancel" => (
+                        "FAILURE",
+                        vec![
+                            run("CI", "SUCCESS"),
+                            run("verify", "CANCELLED"),
+                            run("verify", "SUCCESS"),
+                        ],
+                    ),
+                    "lone_cancel" => (
+                        "FAILURE",
+                        vec![run("CI", "SUCCESS"), run("verify", "CANCELLED")],
+                    ),
+                    "real_failure" => (
+                        "FAILURE",
+                        vec![
+                            run("CI", "SUCCESS"),
+                            run("verify", "SUCCESS"),
+                            run("verify", "FAILURE"),
+                        ],
+                    ),
+                    // A legacy combined status with no statuses reads `pending`.
+                    _ => ("PENDING", vec![run("CI", "SUCCESS")]),
+                };
+                pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = json!({"state":state,
+                    "contexts":{"totalCount":nodes.len(),"pageInfo":{"hasNextPage":false},"nodes":nodes}});
+            }
             "queue_rule" | "rules_unavailable" => {}
             _ => panic!("Unknown fixture"),
         }
@@ -1582,6 +1620,53 @@ fn provider_gate_reads_fail_closed_on_partial_policy_and_ci_evidence() {
             assert!(observation.blocker(Action::Approve).is_none());
         } else {
             assert!(result.is_err(), "{case}");
+        }
+    }
+    assert!(wire.0.lock().unwrap().writes.is_empty());
+}
+
+#[test]
+fn github_ci_read_excuses_superseded_cancels_and_never_calls_a_cancel_red() {
+    let (_root, store, _) = fixture(1, true, true);
+    let wire = env(&store).wire;
+    for (case, ci, merge_blocked) in [
+        ("superseded_cancel", crate::exits::gates::Ci::Green, false),
+        (
+            "empty_combined_status",
+            crate::exits::gates::Ci::Green,
+            false,
+        ),
+        ("lone_cancel", crate::exits::gates::Ci::Pending, true),
+        ("real_failure", crate::exits::gates::Ci::Red, true),
+    ] {
+        let mut observation = GithubClient::new(ShapeWire {
+            wire: wire.clone(),
+            case,
+        })
+        .action_observation(
+            &RemoteRepository {
+                id: "100".into(),
+                name: "example/repo".into(),
+            },
+            1,
+        )
+        .unwrap();
+        observation.write_capability = true;
+        assert_eq!(
+            crate::exits::gates::Facts::from_observation(&observation).ci,
+            ci,
+            "{case}"
+        );
+        assert_eq!(
+            observation.blocker(Action::Merge).is_some(),
+            merge_blocked,
+            "{case}"
+        );
+        if case == "lone_cancel" {
+            assert_eq!(
+                crate::exits::gates::pending_checks(&observation),
+                ["verify: cancelled, needs a rerun"]
+            );
         }
     }
     assert!(wire.0.lock().unwrap().writes.is_empty());
