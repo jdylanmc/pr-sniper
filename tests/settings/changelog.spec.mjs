@@ -68,7 +68,12 @@ for (const width of [408, 320]) {
     await expect(
       view.locator("code", { hasText: "read_check_log" }).first(),
     ).toBeVisible();
-    const text = await view.textContent();
+    // Inline code may legitimately contain Markdown markers (e.g. `!**/*.md`).
+    const text = await view.evaluate((element) => {
+      const prose = element.cloneNode(true);
+      for (const code of prose.querySelectorAll("code")) code.remove();
+      return prose.textContent;
+    });
     expect(text).not.toContain("**");
     expect(text).not.toContain("`");
     const scroll = await page
@@ -78,12 +83,38 @@ for (const width of [408, 320]) {
   });
 }
 
+const markdownSource = async () =>
+  stripTypeScriptTypes(
+    await readFile(new URL("../../src/markdown.ts", import.meta.url), "utf8"),
+  ).replace("export function", "function");
+
+test("inline code keeps Markdown markers as literal code text", async ({
+  page,
+}) => {
+  const source = await markdownSource();
+  await page.goto("about:blank");
+  const rendered = await page.evaluate((source) => {
+    const inlineMarkdown = new Function(`${source}; return inlineMarkdown;`)();
+    const root = document.createElement("li");
+    inlineMarkdown(
+      root,
+      "**Paths** scope review (`!**/*.md` reviews everything except Markdown).",
+    );
+    return [...root.querySelectorAll("*")].map((node) => [
+      node.tagName,
+      node.textContent,
+    ]);
+  }, source);
+  expect(rendered).toEqual([
+    ["STRONG", "Paths"],
+    ["CODE", "!**/*.md"],
+  ]);
+});
+
 test("inline Markdown never parses changelog text as HTML", async ({
   page,
 }) => {
-  const source = stripTypeScriptTypes(
-    await readFile(new URL("../../src/markdown.ts", import.meta.url), "utf8"),
-  ).replace("export function", "function");
+  const source = await markdownSource();
   await page.goto("about:blank");
   const rendered = await page.evaluate((source) => {
     const inlineMarkdown = new Function(`${source}; return inlineMarkdown;`)();
