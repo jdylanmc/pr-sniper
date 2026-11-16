@@ -506,7 +506,8 @@ impl NormalizedSnapshot {
                     },
                 })
                 .collect();
-        super::ci::verdict(&signals, &self.required_checks)
+        // No ruleset data here: a cancelled check is never optional (`None`).
+        super::ci::verdict(&signals, None)
     }
 
     pub fn ci_pending(&self) -> bool {

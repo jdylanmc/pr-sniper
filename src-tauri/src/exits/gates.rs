@@ -230,20 +230,25 @@ pub fn pending_checks(o: &Observation) -> Vec<String> {
         .collect();
     let (signals, required) = ci_signals(o);
     pending.extend(
-        crate::provider::ci::needs_rerun(&signals, &required)
+        crate::provider::ci::needs_rerun(&signals, required.as_deref())
             .into_iter()
             .map(|name| format!("{name}: cancelled, needs a rerun")),
     );
     pending
 }
 
-fn ci_signals(o: &Observation) -> (Vec<crate::provider::ci::CheckSignal<'_>>, Vec<String>) {
+fn ci_signals(
+    o: &Observation,
+) -> (
+    Vec<crate::provider::ci::CheckSignal<'_>>,
+    Option<Vec<String>>,
+) {
     (
         o.check_contexts
             .iter()
             .map(crate::provider::ci::context_signal)
             .collect(),
-        crate::provider::ci::protection_required(&o.protection),
+        crate::provider::ci::required_checks(&o.protection, o.merge_rules.as_deref()),
     )
 }
 
@@ -255,7 +260,7 @@ fn ci(o: &Observation) -> Ci {
         Some("FAILURE" | "ERROR") => Ci::Red,
         Some(_) => {
             let (signals, required) = ci_signals(o);
-            if crate::provider::ci::verdict(&signals, &required)
+            if crate::provider::ci::verdict(&signals, required.as_deref())
                 == crate::provider::ci::CiVerdict::Red
             {
                 Ci::Red

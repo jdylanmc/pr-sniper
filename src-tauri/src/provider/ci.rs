@@ -1,10 +1,12 @@
 //! The head's CI verdict from its checks, one rule for every gate (#389).
 //!
 //! - Any failed check is red.
-//! - A cancelled check run is **excused** when a check of the same name (and same
-//!   app, when known) passed on the same head: a superseded duplicate run, such
-//!   as one cancelled by a concurrency group. It is also excused when branch
-//!   protection names its required checks and this one is not among them.
+//! - A cancelled check run is **excused** when a check of the same name from the
+//!   same app passed on the same head: a superseded duplicate run, such as one
+//!   cancelled by a concurrency group. A legacy status (no app) never excuses a
+//!   check run. It is also excused when every source of required checks was
+//!   read (branch protection and active rulesets), they name some, and this one
+//!   is not among them.
 //! - An unexcused cancelled check is not green and not red: it is pending a
 //!   rerun. PR Sniper is read-only and never reruns it; a human (or the author's
 //!   automation) does, and the next green read acts.
@@ -43,18 +45,20 @@ pub struct CheckSignal<'a> {
     pub outcome: CheckOutcome,
 }
 
-/// A cancelled check that does not bear on CI: superseded by a passed sibling, or
-/// not required while the required checks are known (`required` non-empty).
-pub fn excused(signal: &CheckSignal, all: &[CheckSignal], required: &[String]) -> bool {
+/// A cancelled check that does not bear on CI: superseded by a passed sibling from
+/// the same app, or not required while the required checks are fully known
+/// (`required` is `Some` and non-empty; `None` when any source was unread).
+pub fn excused(signal: &CheckSignal, all: &[CheckSignal], required: Option<&[String]>) -> bool {
     signal.outcome == CheckOutcome::Cancelled
         && (all.iter().any(|other| {
             other.outcome == CheckOutcome::Passed
                 && other.name == signal.name
-                && (other.app.is_none() || signal.app.is_none() || other.app == signal.app)
-        }) || (!required.is_empty() && !required.iter().any(|r| r == signal.name)))
+                && other.app == signal.app
+        }) || required
+            .is_some_and(|r| !r.is_empty() && !r.iter().any(|name| name == signal.name)))
 }
 
-pub fn verdict(all: &[CheckSignal], required: &[String]) -> CiVerdict {
+pub fn verdict(all: &[CheckSignal], required: Option<&[String]>) -> CiVerdict {
     if all.is_empty() {
         CiVerdict::None
     } else if all.iter().any(|s| s.outcome == CheckOutcome::Failed) {
@@ -70,7 +74,7 @@ pub fn verdict(all: &[CheckSignal], required: &[String]) -> CiVerdict {
 }
 
 /// Unexcused cancelled checks: CI waits on their rerun.
-pub fn needs_rerun<'a>(all: &[CheckSignal<'a>], required: &[String]) -> Vec<&'a str> {
+pub fn needs_rerun<'a>(all: &[CheckSignal<'a>], required: Option<&[String]>) -> Vec<&'a str> {
     all.iter()
         .filter(|s| s.outcome == CheckOutcome::Cancelled && !excused(s, all, required))
         .map(|s| s.name)
@@ -108,19 +112,30 @@ pub fn context_signal(context: &Value) -> CheckSignal<'_> {
     }
 }
 
-/// Required check names from a GitHub branch protection rule (empty when unknown).
-pub fn protection_required(protection: &Value) -> Vec<String> {
-    if protection["requiresStatusChecks"] != true {
-        return Vec::new();
-    }
-    protection["requiredStatusCheckContexts"]
-        .as_array()
-        .map_or_else(Vec::new, |names| {
-            names
+/// Every required check name on the base: the classic branch protection rule's
+/// contexts plus each active ruleset's `required_status_checks`. `None` unless the
+/// rulesets were read: a partial list never makes a check optional.
+pub fn required_checks(protection: &Value, rules: Option<&[Value]>) -> Option<Vec<String>> {
+    let rules = rules?;
+    let mut required = Vec::new();
+    if protection["requiresStatusChecks"] == true {
+        required.extend(
+            protection["requiredStatusCheckContexts"]
+                .as_array()?
                 .iter()
-                .filter_map(|n| n.as_str().map(str::to_owned))
-                .collect()
-        })
+                .map(|n| n.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()?,
+        );
+    }
+    for rule in rules
+        .iter()
+        .filter(|r| r["type"] == "required_status_checks")
+    {
+        for check in rule["parameters"]["required_status_checks"].as_array()? {
+            required.push(check["context"].as_str()?.to_owned());
+        }
+    }
+    Some(required)
 }
 
 #[cfg(test)]
@@ -143,8 +158,8 @@ mod tests {
             s("verify", Cancelled),
             s("tag", Passed),
         ];
-        assert_eq!(verdict(&all, &[]), CiVerdict::Green);
-        assert!(needs_rerun(&all, &[]).is_empty());
+        assert_eq!(verdict(&all, None), CiVerdict::Green);
+        assert!(needs_rerun(&all, None).is_empty());
     }
 
     #[test]
@@ -152,21 +167,47 @@ mod tests {
         let mut other = s("verify", Passed);
         other.app = Some("another-ci");
         let all = [other, s("verify", Cancelled)];
-        assert_eq!(verdict(&all, &[]), CiVerdict::Pending);
+        assert_eq!(verdict(&all, None), CiVerdict::Pending);
+        // A legacy status (no app) never excuses a check run.
+        let status = CheckSignal {
+            name: "verify",
+            app: None,
+            outcome: Passed,
+        };
+        let all = [status, s("verify", Cancelled)];
+        let required = ["verify".to_string()];
+        assert_eq!(verdict(&all, Some(&required)), CiVerdict::Pending);
+        assert_eq!(needs_rerun(&all, Some(&required)), ["verify"]);
     }
 
     #[test]
     fn a_lone_cancelled_check_waits_for_a_rerun_and_is_never_red() {
         let all = [s("build", Passed), s("verify", Cancelled)];
-        assert_eq!(verdict(&all, &["verify".into()]), CiVerdict::Pending);
-        assert_eq!(verdict(&all, &[]), CiVerdict::Pending);
-        assert_eq!(needs_rerun(&all, &[]), ["verify"]);
+        assert_eq!(verdict(&all, Some(&["verify".into()])), CiVerdict::Pending);
+        assert_eq!(verdict(&all, None), CiVerdict::Pending);
+        assert_eq!(needs_rerun(&all, None), ["verify"]);
     }
 
     #[test]
     fn a_cancelled_check_not_required_is_excused_when_required_checks_are_known() {
         let all = [s("build", Passed), s("verify", Cancelled)];
-        assert_eq!(verdict(&all, &["build".into()]), CiVerdict::Green);
+        assert_eq!(verdict(&all, Some(&["build".into()])), CiVerdict::Green);
+        // Unknown (rulesets unread) or empty: never optional.
+        assert_eq!(verdict(&all, None), CiVerdict::Pending);
+        assert_eq!(verdict(&all, Some(&[])), CiVerdict::Pending);
+    }
+
+    #[test]
+    fn required_checks_join_classic_protection_and_rulesets_or_stay_unknown() {
+        let protection = serde_json::json!({"requiresStatusChecks": true,
+            "requiredStatusCheckContexts": ["build"]});
+        let rules = [serde_json::json!({"type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": "verify"}]}})];
+        let required = required_checks(&protection, Some(&rules)).unwrap();
+        assert_eq!(required, ["build", "verify"]);
+        let all = [s("build", Passed), s("verify", Cancelled)];
+        assert_eq!(verdict(&all, Some(&required)), CiVerdict::Pending);
+        assert_eq!(required_checks(&protection, None), None);
     }
 
     #[test]
@@ -192,6 +233,6 @@ mod tests {
     #[test]
     fn a_real_failure_stays_red_beside_a_passed_sibling() {
         let all = [s("verify", Passed), s("verify", Failed)];
-        assert_eq!(verdict(&all, &[]), CiVerdict::Red);
+        assert_eq!(verdict(&all, None), CiVerdict::Red);
     }
 }

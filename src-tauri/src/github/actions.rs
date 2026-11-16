@@ -109,36 +109,6 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
             return Err(ConnectionError::RevisionChanged);
         }
         let rollup = &commits[0]["commit"]["statusCheckRollup"];
-        let mut checks = if rollup.is_null() {
-            None
-        } else {
-            let contexts = complete(&rollup["contexts"])?;
-            if contexts.is_empty() {
-                None
-            } else {
-                // The shared CI rule judges the contexts alone, never the rollup
-                // state: a superseded cancelled run is excused, and an empty legacy
-                // combined status (`pending`, no statuses) holds nothing (#389).
-                let required = crate::provider::ci::protection_required(
-                    &pull["baseRef"]["branchProtectionRule"],
-                );
-                let signals: Vec<_> = contexts
-                    .iter()
-                    .map(crate::provider::ci::context_signal)
-                    .collect();
-                Some(
-                    if contexts.iter().all(|c| {
-                        matches!(c["__typename"].as_str(), Some("CheckRun" | "StatusContext"))
-                    }) && crate::provider::ci::verdict(&signals, &required)
-                        == crate::provider::ci::CiVerdict::Green
-                    {
-                        "SUCCESS".into()
-                    } else {
-                        "NONPASSING".into()
-                    },
-                )
-            }
-        };
         let protection = pull
             .get("baseRef")
             .and_then(|r| r.get("branchProtectionRule"))
@@ -148,6 +118,7 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
         } else {
             complete(&rollup["contexts"])?.clone()
         };
+        let mut missing_required = false;
         if !protection.is_null() {
             for field in [
                 "requiresApprovingReviews",
@@ -169,7 +140,7 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
                         })
                     })
             {
-                checks = Some("MISSING_REQUIRED".into());
+                missing_required = true;
             }
             let review_count_complete = match protection.get("requiredApprovingReviewCount") {
                 Some(Value::Null) => protection["requiresApprovingReviews"] == false,
@@ -227,6 +198,32 @@ impl<T: QueryTransport> ReadinessReader for GithubClient<T> {
             Err(error @ (ConnectionError::RateLimited|ConnectionError::RateLimitedAfter(_)|ConnectionError::RateLimitedWithContext { .. }|ConnectionError::Network
                 |ConnectionError::Timeout|ConnectionError::ProviderFailure|ConnectionError::ProviderFailureAfter(_)))=>return Err(error),
             Err(error)=>(None,Some(format!("Active repository merge rules are unavailable ({error:?}); approval eligibility remains separate."))),
+        };
+        // The shared CI rule judges the contexts alone, never the rollup state: a
+        // superseded cancelled run is excused, and an empty legacy combined status
+        // (`pending`, no statuses) holds nothing (#389).
+        let checks = if missing_required {
+            Some("MISSING_REQUIRED".into())
+        } else if check_contexts.is_empty() {
+            None
+        } else {
+            let required = crate::provider::ci::required_checks(protection, merge_rules.as_deref());
+            let signals: Vec<_> = check_contexts
+                .iter()
+                .map(crate::provider::ci::context_signal)
+                .collect();
+            Some(
+                if check_contexts
+                    .iter()
+                    .all(|c| matches!(c["__typename"].as_str(), Some("CheckRun" | "StatusContext")))
+                    && crate::provider::ci::verdict(&signals, required.as_deref())
+                        == crate::provider::ci::CiVerdict::Green
+                {
+                    "SUCCESS".into()
+                } else {
+                    "NONPASSING".into()
+                },
+            )
         };
         // Either source alone means a direct merge would be refused.
         let merge_queue = boolean(&pull["isMergeQueueEnabled"])?
