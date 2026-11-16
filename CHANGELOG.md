@@ -5,6 +5,37 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## [0.7.0] - 2026-11-16
+
+### Added
+
+- Repository Paths **And / Or**: follow a set of people or a path, or both together (#373).
+- Reviewed rows show what each review did (approved & merged, approved, commented, ready for human, waiting, report, pending or failed), with outcome chips to filter the list (#374).
+- **Scan** on the Running tab and in each repository's editor queues admitted work now with saved configuration; MCP `check_now` takes an optional `repository_id` (#367).
+- A secondary assignment's Paths now scope its review as well as trigger it: it reads, searches and comments only on matching changed files (`!**/*.md` reviews everything except Markdown). Each Paths row has an include/exclude toggle, and the summary shows the effective list (`All −1` for exclude-only) (#365).
+
+### Fixed
+
+- Deliver Azure DevOps queue notifications and open, select or link files of Azure DevOps pull requests instead of reporting an unsupported destination (#342).
+- Azure DevOps inline finding threads now end with the visible PR Sniper automated review signature (#378).
+- Poll Azure DevOps repositories whose pull requests delete files, and hold out one unreadable pull request instead of failing the repository (#368).
+- Azure DevOps repositories with thousands of active pull requests poll and review without failing: filters list only their people's pull requests and the rest is read in resumable batches (#358).
+- Stop same-head re-reviews caused by an own Azure DevOps approval or by bot threads that arrive already resolved, and label remaining same-head re-reviews as PR state changes instead of added assignments (#344).
+- Announce each approved revision once; re-reviewing an approved head no longer repeats the Approved notification (#341).
+- GitHub repositories with thousands of open pull requests poll and review without failing: filters search only their people's pull requests and the rest is read in resumable batches (#361).
+- A path-scoped secondary that already reviewed a revision keeps its report on the queue item when the PR state later moves on the same head, instead of showing as skipped with no matching files (#339).
+- Keep a GitHub or Copilot account connected when GitHub refuses a renewable token or a network drop interrupts a refresh; only a refresh GitHub rejects asks you to reconnect (#363).
+- Clicking a notification opens its exact item even when the click also reopens the app; a replaced or failed notification open no longer shows a lasting error banner in Settings, and reopening the panel no longer hides Ready rows behind an emptied Needs attention card (#347).
+- Notify only settled outcomes: no Ready or Failed while an authorized approve or merge is still running or retrying, and one Ready per revision (#384).
+- Own-PR approval denials now say Include self merges the PR without a vote, or that Include self is off, instead of implying PR Sniper cannot act on its own PRs (#382).
+- Repository, Paths and assignment drill-ins overlap the title band like other pages instead of opening sliced under it (#350).
+- List Reviewed newest completion first, newest pass first; re-enabling a repository no longer lifts old reviews to the top (#369).
+- Saving a repository no longer reports "Changed elsewhere" from its own commit or a background re-read that crosses it, and banners over drill-ins render whole above the first card (#357).
+- Stale reviews rest until their PR changes instead of filling Needs attention (#372).
+- A dismissed background error stays dismissed in Settings until it happens again, Settings saves and refreshes no longer bring back unrelated errors, and a background error clears once its cause recovers (#354).
+- A transient provider error retries a repository poll on its own instead of parking it, never fails its pull requests, and sends one "Connection lost" notice per outage that opens the repository (#381).
+- Repositories: the + URL button no longer covers row toggles or account magnifiers while the list scrolls (#348).
+
 ## [0.6.1] - 2026-11-06
 
 ### Added
