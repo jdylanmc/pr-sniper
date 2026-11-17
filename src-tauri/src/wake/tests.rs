@@ -310,6 +310,7 @@ impl<'a> Sim<'a> {
             Coordinator::ExitWrites => "exit_writes",
             Coordinator::FollowUps => "follow_ups",
             Coordinator::Actions => "actions",
+            Coordinator::SignOffs => "sign_offs",
             Coordinator::Notifications => "notifications",
         };
         // Legacy scans run on the locked live store instead of the view.
@@ -379,6 +380,13 @@ impl<'a> Sim<'a> {
                 assert!(scan!(|store| crate::actions::host::next_target(store, now))
                     .unwrap()
                     .is_none());
+            }
+            Coordinator::SignOffs => {
+                assert!(scan!(|store| store.load_feedback())
+                    .unwrap()
+                    .sign_offs
+                    .iter()
+                    .all(|r| !r.due(now)));
             }
             Coordinator::Notifications => {
                 let (snapshot_view, health) = self.locked(|store, monitor| {

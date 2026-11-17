@@ -711,6 +711,9 @@ pub struct Repository {
     /// Include draft pull requests in review.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub review_drafts: bool,
+    /// Post a host sign-off comment once per clean revision (primary needs Publish Comment).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sign_off_comments: bool,
     /// Repository globs (`crate::paths`). Empty = no path involvement.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
@@ -1355,6 +1358,17 @@ impl Repository {
         } else {
             self.primary_assignment_id.as_deref()
         }
+    }
+
+    /// Revision sign-off comments take effect: switch on and the primary may publish comments.
+    pub fn sign_off_comments_active(&self) -> bool {
+        self.sign_off_comments
+            && self.primary_assignment_id().is_some_and(|id| {
+                self.assignments
+                    .iter()
+                    .find(|a| a.id == id)
+                    .is_some_and(|a| self.assignment_authority(a).comment)
+            })
     }
 
     /// Configuration permission, not a provider capability or execution grant.
@@ -2702,6 +2716,7 @@ impl Store {
         }
         settings.repositories.push(Repository {
             review_drafts: false,
+            sign_off_comments: false,
             paths: Vec::new(),
             paths_mode: Default::default(),
             id: uuid::Uuid::new_v4().to_string(),
