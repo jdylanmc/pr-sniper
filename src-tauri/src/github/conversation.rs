@@ -146,6 +146,67 @@ impl<T: MutationTransport> CommentWriter for GithubClient<T> {
             uncertain: true,
         })
     }
+
+    /// Edits the conversation comment in place: one comment, its latest text.
+    fn update_pr_comment(
+        &self,
+        repo: &RemoteRepository,
+        number: u64,
+        account: &str,
+        id: &str,
+        body: &str,
+    ) -> Result<(), WriteFailure> {
+        let invalid = |message: &str| WriteFailure {
+            failure: Failure::permanent(message),
+            uncertain: false,
+        };
+        let name = crate::storage::canonical_repository(&repo.name).map_err(|e| invalid(&e))?;
+        if number == 0
+            || body.chars().count() > 65_536
+            || id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(invalid("Invalid comment edit."));
+        }
+        let response = self
+            .transport
+            .send_mutation(
+                &format!("/repos/{name}/issues/comments/{id}"),
+                Request::Patch(json!({"body":body})),
+            )
+            .map_err(WriteFailure::from)?;
+        if response.status != 200 {
+            let uncertain = !(400..500).contains(&response.status) || response.status == 408;
+            return Err(WriteFailure {
+                failure: parse_response(response)
+                    .err()
+                    .map(Failure::from)
+                    .unwrap_or_else(|| Failure::permanent("GitHub did not confirm the edit.")),
+                uncertain,
+            });
+        }
+        let parsed = (|| {
+            let value: Value = serde_json::from_slice(&response.body)
+                .map_err(|_| ConnectionError::InvalidResponse)?;
+            let comment = parse(&value)?;
+            if comment.id != id
+                || comment.author_id.as_deref() != Some(account)
+                || comment.body != body
+                || !value["issue_url"].as_str().is_some_and(|url| {
+                    url.eq_ignore_ascii_case(&format!(
+                        "https://api.github.com/repos/{name}/issues/{number}"
+                    ))
+                })
+            {
+                return Err(ConnectionError::InvalidResponse);
+            }
+            Ok(())
+        })();
+        parsed.map_err(|e: ConnectionError| WriteFailure {
+            failure: e.into(),
+            uncertain: true,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -237,5 +298,75 @@ mod tests {
                 assert_eq!(error, expected, "{case}");
             }
         }
+    }
+
+    struct Edits {
+        status: u16,
+        sent: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+    impl Transport for Edits {
+        fn get(&self, _path: &str) -> Result<super::super::provider::Response, ConnectionError> {
+            unreachable!("an edit reads nothing")
+        }
+    }
+    impl MutationTransport for Edits {
+        fn mutate(
+            &self,
+            path: &str,
+            request: Request,
+        ) -> Result<super::super::provider::Response, ConnectionError> {
+            let Request::Patch(body) = request else {
+                panic!("an edit is a PATCH");
+            };
+            self.sent.lock().unwrap().push((path.into(), body.clone()));
+            let mut comment = value(77);
+            comment["user"] = json!({"id":22,"login":"operator"});
+            comment["body"] = body["body"].clone();
+            Ok(super::super::provider::Response {
+                status: self.status,
+                headers: BTreeMap::new(),
+                body: serde_json::to_vec(&comment).unwrap(),
+            })
+        }
+    }
+    #[test]
+    fn a_pr_comment_update_edits_the_same_comment_in_place() {
+        let repo = RemoteRepository {
+            id: "100".into(),
+            name: "example/repo".into(),
+        };
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let client = GithubClient::new(Edits {
+            status: 200,
+            sent: sent.clone(),
+        });
+        assert!(client
+            .update_pr_comment(&repo, 1, "22", "77", "New text.")
+            .is_ok());
+        assert_eq!(
+            *sent.lock().unwrap(),
+            [(
+                "/repos/example/repo/issues/comments/77".to_string(),
+                json!({"body":"New text."})
+            )]
+        );
+        // Another author's comment echoed back is no confirmation.
+        assert!(
+            client
+                .update_pr_comment(&repo, 1, "11", "77", "New text.")
+                .unwrap_err()
+                .uncertain
+        );
+        // A deleted comment: refused, nothing can have changed.
+        let gone = GithubClient::new(Edits {
+            status: 404,
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+        assert!(
+            !gone
+                .update_pr_comment(&repo, 1, "22", "77", "New text.")
+                .unwrap_err()
+                .uncertain
+        );
     }
 }

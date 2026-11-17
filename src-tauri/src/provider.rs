@@ -16,7 +16,7 @@ pub use readiness::{
     OutcomeReceipt, OwnWrites, PrSnapshot, ProviderReview, QuietThread, SnapshotCheck,
     SnapshotComment, SnapshotReview, SnapshotThread, StateMarks, BEHIND_BASE,
 };
-pub use threads::{Comment, Ownership, Provenance, Thread, TopComment};
+pub use threads::{Comment, Ownership, PrLevelThread, Provenance, Thread, TopComment};
 pub use types::*;
 
 use crate::{
@@ -234,13 +234,22 @@ pub trait CommentReader {
         repository: &RemoteRepository,
         number: u64,
     ) -> Result<Vec<TopComment>, ConnectionError>;
-    /// PR-level comments, including Azure DevOps general (non-file) thread roots.
-    fn pr_level_comments(
+    /// PR-level conversations: GitHub conversation comments (one comment each),
+    /// Azure DevOps general (non-file) threads with their replies.
+    fn pr_level_threads(
         &self,
         repository: &RemoteRepository,
         number: u64,
-    ) -> Result<Vec<TopComment>, ConnectionError> {
-        self.top_comments(repository, number)
+    ) -> Result<Vec<PrLevelThread>, ConnectionError> {
+        Ok(self
+            .top_comments(repository, number)?
+            .into_iter()
+            .map(|comment| PrLevelThread {
+                id: comment.id.clone(),
+                comments: vec![comment],
+                open: false,
+            })
+            .collect())
     }
 }
 
@@ -263,6 +272,32 @@ pub trait CommentWriter {
         body: &str,
     ) -> Result<String, WriteFailure> {
         self.reply_to_mention(repository, number, account, body)
+    }
+    /// Updates the PR-level comment `id` that `account` wrote (Azure DevOps:
+    /// its thread root) to say `body`: GitHub edits it in place, Azure DevOps
+    /// replies in its thread and leaves the thread closed.
+    fn update_pr_comment(
+        &self,
+        _repository: &RemoteRepository,
+        _number: u64,
+        _account: &str,
+        _id: &str,
+        _body: &str,
+    ) -> Result<(), WriteFailure> {
+        Err(WriteFailure {
+            failure: Failure::permanent(crate::exits::gates::UNSUPPORTED),
+            uncertain: false,
+        })
+    }
+    /// Closes the thread of PR-level comment `id` (Azure DevOps); GitHub
+    /// conversation comments have no status.
+    fn close_pr_comment(
+        &self,
+        _repository: &RemoteRepository,
+        _number: u64,
+        _id: &str,
+    ) -> Result<(), WriteFailure> {
+        Ok(())
     }
 }
 

@@ -15,8 +15,8 @@ use crate::monitoring::OperationFailure;
 use crate::provider::{
     AccountReader, Action, ChangedFile, CheckLogReader, CommentCapability, CommentReader,
     CommentWriter, Connection, ConnectionError, Guardable, JobLog, Observation, OutcomeReceipt,
-    Ownership, Person, PrSnapshot, Provenance, ProviderReads, ProviderReview, ProviderSession,
-    PublicationDiagnostics, PublicationReader, PullRequest, PullRequestReader,
+    Ownership, Person, PrLevelThread, PrSnapshot, Provenance, ProviderReads, ProviderReview,
+    ProviderSession, PublicationDiagnostics, PublicationReader, PullRequest, PullRequestReader,
     PullRequestStateReader, ReadGuard, ReadinessReader, RemoteRepository, RepositoryBrowser,
     RepositoryReader, ResolvedTarget, ReviewContext, ReviewPublisher, ReviewerOutcome,
     SessionControl, Thread, ThreadReader, ThreadWriter, TopComment, TreeEntry,
@@ -557,12 +557,12 @@ impl CommentReader for Session {
         Ok(Vec::new())
     }
 
-    /// Roots of general threads (no file context).
-    fn pr_level_comments(
+    /// General threads (no file context), root first.
+    fn pr_level_threads(
         &self,
         repository: &RemoteRepository,
         number: u64,
-    ) -> Result<Vec<TopComment>, ConnectionError> {
+    ) -> Result<Vec<PrLevelThread>, ConnectionError> {
         let key = self.key(&repository.id)?;
         let threads = self
             .0
@@ -573,16 +573,54 @@ impl CommentReader for Session {
             .filter(|thread| thread.path.is_none())
             .filter_map(|thread| {
                 let root = thread.root()?;
-                Some(TopComment {
+                Some(PrLevelThread {
                     id: thread.reference.comment_id(root.id),
-                    body: root.content.clone(),
-                    author_id: root.author_id.clone(),
-                    author_login: root.author_login.clone(),
-                    created_at: root.published.clone(),
-                    updated_at: root.updated.clone(),
+                    comments: thread
+                        .comments
+                        .iter()
+                        .map(|c| TopComment {
+                            id: thread.reference.comment_id(c.id),
+                            body: c.content.clone(),
+                            author_id: c.author_id.clone(),
+                            author_login: c.author_login.clone(),
+                            created_at: c.published.clone(),
+                            updated_at: c.updated.clone(),
+                        })
+                        .collect(),
+                    open: !thread.resolved,
                 })
             })
             .collect())
+    }
+}
+
+impl Session {
+    /// The general thread of PR-level comment `id` on this pull request.
+    fn general_thread(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+        id: &str,
+    ) -> Result<(ThreadRef, u64), WriteFailure> {
+        let key = self.key(&repository.id).map_err(write_failure)?;
+        ThreadRef::parse_comment(id)
+            .filter(|(thread, _)| thread.key == key && thread.number == number)
+            .ok_or_else(|| refused("Unknown Azure DevOps thread."))
+    }
+
+    /// Re-reads the thread and closes it unless it is already resolved.
+    fn keep_closed(&self, thread: &ThreadRef) -> Result<(), WriteFailure> {
+        let client = &self.0.client;
+        self.0.runtime.block_on(async {
+            let current = client.thread(thread).await.map_err(write_failure)?;
+            if current.is_some_and(|t| t.resolved) {
+                return Ok(());
+            }
+            client
+                .set_thread_status(thread, "closed")
+                .await
+                .map_err(write_failure)
+        })
     }
 }
 
@@ -619,7 +657,51 @@ impl CommentWriter for Session {
             .root()
             .filter(|root| root.content == body && thread.path.is_none())
             .ok_or_else(|| write_failure(ConnectionError::InvalidResponse))?;
-        Ok(thread.reference.comment_id(root.id))
+        let id = thread.reference.comment_id(root.id);
+        if !thread.resolved {
+            // Landed but open: uncertain, so the next pass reads back and closes it.
+            self.keep_closed(&thread.reference)
+                .map_err(|failure| WriteFailure {
+                    uncertain: true,
+                    ..failure
+                })?;
+        }
+        Ok(id)
+    }
+
+    /// Replies in the general thread rooted at `id`, then keeps the thread
+    /// closed: an edit of the root would hide the earlier revision's line.
+    fn update_pr_comment(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+        account: &str,
+        id: &str,
+        body: &str,
+    ) -> Result<(), WriteFailure> {
+        if self.identity().id != account {
+            return Err(write_failure(ConnectionError::WrongIdentity));
+        }
+        let (thread, root) = self.general_thread(repository, number, id)?;
+        self.0
+            .runtime
+            .block_on(self.0.client.reply(&thread, root, body))
+            .map_err(write_failure)?;
+        // The reply landed; a failed close leaves it uncertain for read-back.
+        self.keep_closed(&thread).map_err(|failure| WriteFailure {
+            uncertain: true,
+            ..failure
+        })
+    }
+
+    fn close_pr_comment(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+        id: &str,
+    ) -> Result<(), WriteFailure> {
+        let (thread, _) = self.general_thread(repository, number, id)?;
+        self.keep_closed(&thread)
     }
 }
 

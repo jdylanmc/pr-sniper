@@ -117,6 +117,13 @@ impl Native {
             .map(|(_, client)| client))
     }
 
+    fn write_session(&self, record: &SignOff) -> Result<Session, WriteFailure> {
+        self.session(record).map_err(|failure| WriteFailure {
+            failure,
+            uncertain: false,
+        })
+    }
+
     fn session(&self, record: &SignOff) -> Result<Session, Failure> {
         self.client(record)?.ok_or_else(|| Failure {
             kind: crate::monitoring::OperationFailure::Network,
@@ -142,6 +149,18 @@ impl Environment for Native {
             None => ledger.sign_offs.push(record.clone()),
         }
         store.save_feedback(&ledger).map_err(storage)
+    }
+
+    fn tracked(&mut self, record: &SignOff) -> Result<Option<String>, Failure> {
+        let host = self.app.state::<Host>();
+        let store = host
+            .store
+            .lock()
+            .map_err(|_| storage("Sign-off storage unavailable."))?;
+        Ok(tracked(
+            &store.load_feedback().map_err(storage)?.sign_offs,
+            record,
+        ))
     }
 
     fn gate(&mut self, record: &SignOff) -> Result<Gate, Failure> {
@@ -182,21 +201,34 @@ impl Environment for Native {
         Ok(client.pull_request(&Self::repository(record), record.job.number)?)
     }
 
-    fn comments(&mut self, record: &SignOff) -> Result<Vec<TopComment>, Failure> {
+    fn threads(&mut self, record: &SignOff) -> Result<Vec<PrLevelThread>, Failure> {
         let client = self.session(record)?;
-        Ok(client.pr_level_comments(&Self::repository(record), record.job.number)?)
+        Ok(client.pr_level_threads(&Self::repository(record), record.job.number)?)
     }
 
     fn post(&mut self, record: &SignOff, body: &str) -> Result<String, WriteFailure> {
-        let client = self.session(record).map_err(|failure| WriteFailure {
-            failure,
-            uncertain: false,
-        })?;
+        let client = self.write_session(record)?;
         client.post_pr_comment(
             &Self::repository(record),
             record.job.number,
             &record.job.account_id,
             body,
         )
+    }
+
+    fn update(&mut self, record: &SignOff, id: &str, body: &str) -> Result<(), WriteFailure> {
+        let client = self.write_session(record)?;
+        client.update_pr_comment(
+            &Self::repository(record),
+            record.job.number,
+            &record.job.account_id,
+            id,
+            body,
+        )
+    }
+
+    fn close(&mut self, record: &SignOff, id: &str) -> Result<(), WriteFailure> {
+        let client = self.write_session(record)?;
+        client.close_pr_comment(&Self::repository(record), record.job.number, id)
     }
 }

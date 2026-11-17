@@ -169,6 +169,18 @@ pub struct TopComment {
     pub updated_at: String,
 }
 
+/// One PR-level conversation: a GitHub conversation comment, or an Azure
+/// DevOps general thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrLevelThread {
+    /// Root comment ID.
+    pub id: String,
+    /// Root first, then replies.
+    pub comments: Vec<TopComment>,
+    /// Blocks a comment-resolution policy (Azure DevOps `active`/`pending`).
+    pub open: bool,
+}
+
 impl TopComment {
     pub fn eligible_other_user(&self, account: &str) -> bool {
         self.author_id.as_deref().is_some_and(|id| id != account)

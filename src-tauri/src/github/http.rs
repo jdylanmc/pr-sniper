@@ -259,6 +259,13 @@ impl super::publication::MutationTransport for HttpTransport {
                     uncertain: false,
                 })?),
             ),
+            super::publication::Request::Patch(body) => (
+                reqwest::Method::PATCH,
+                Some(serde_json::to_vec(&body).map_err(|_| SendFailure {
+                    error: ConnectionError::InvalidResponse,
+                    uncertain: false,
+                })?),
+            ),
             super::publication::Request::Delete => (reqwest::Method::DELETE, None),
         };
         // A 401 means GitHub did not apply the mutation, so a resend is safe.

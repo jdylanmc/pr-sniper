@@ -117,8 +117,8 @@ enabled add fails). Azure DevOps repositories: `provider:"azure_devops"`,
 `provider_repository_id` `{organization}/{project ID}/{repository ID}`, people
 by identity GUID plus display name; their pull requests are polled, admitted, reviewed and published like GitHub ones; Approve is the reviewer vote (own PRs only with `actions.include_self`; a policy refusal parks, never retried); approve-and-merge is refused (`unsupported_provider_action`). Then enable the human-requested
 scope in a later save. Repository schedules are five-field cron in the saved IANA time zone.
-`sign_off_comments: true` posts one fixed host comment per clean revision
-(primary's Publish Comment required; enabling needs `allow_grants`).
+`sign_off_comments: true` keeps one fixed host comment per PR, updated per clean
+revision (primary's Publish Comment required; enabling needs `allow_grants`).
 Path globs (ADR 0027): repository
 `paths` gate admission (AND); `paths_mode:"or"` makes them admit too (rules or a
 matching file; Exclude users still rejects; no effect in Explicit; ADR 0029); a secondary assignment's `paths` decide whether

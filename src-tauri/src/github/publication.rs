@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub enum Request {
     Post(Value),
+    Patch(Value),
     Delete,
 }
 

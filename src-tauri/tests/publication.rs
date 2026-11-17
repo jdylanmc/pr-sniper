@@ -206,6 +206,7 @@ fn mutation_of(path: &str, request: &Request) -> Mutation {
     match request {
         Request::Post(_) if path.ends_with("/events") => Mutation::Submit,
         Request::Post(_) => Mutation::Create,
+        Request::Patch(_) => unreachable!("publication never edits"),
         Request::Delete => Mutation::Discard,
     }
 }
@@ -218,7 +219,7 @@ impl MutationTransport for Wire {
             if matches!(server.fault, Some((target, Fault::Refused)) if target == mutation) {
                 server.fault = None;
                 let body = match &request {
-                    Request::Post(body) => body.clone(),
+                    Request::Post(body) | Request::Patch(body) => body.clone(),
                     Request::Delete => Value::Null,
                 };
                 server.writes.push(("POST".into(), path.into(), body));
@@ -246,6 +247,7 @@ impl MutationTransport for Wire {
                     Mutation::Create
                 },
             ),
+            Request::Patch(_) => unreachable!("publication never edits"),
             Request::Delete => ("DELETE", Value::Null, Mutation::Discard),
         };
         let fault = if server.fault.is_some_and(|(target, _)| target == mutation) {
