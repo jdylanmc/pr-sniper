@@ -81,6 +81,9 @@
 - Desktop UI and MCP call the same native service handlers. The app remains
   the only configuration writer, permission enforcer and review scheduler.
 - [Tool mapping and diagnostic protocol](../skills/pr-sniper/references/control.md).
+- `save_repository` / `validate_repository` carry `sign_off_comments` (default
+  off; turning it on needs `allow_grants`; inert without the primary's Publish
+  Comment). See [revision sign-off comments](provider-writes.md#revision-sign-off-comments).
 - `save_repository` / `validate_repository` carry a secondary's `paths`: trigger
   and review scope ([ADR 0027](adr/0027-path-globs.md)). Exclude-only lists
   start from every file.

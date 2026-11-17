@@ -33,6 +33,7 @@ pub mod retry;
 pub mod review;
 pub mod schedule;
 mod seeds;
+pub mod signoff;
 pub mod startup;
 pub mod storage;
 mod storage_state;
@@ -2371,6 +2372,7 @@ fn scheduled_pass(coordinator: wake::Coordinator) -> Option<host_errors::Source>
         wake::Coordinator::ExitWrites => Pass::ExitWrites,
         wake::Coordinator::FollowUps => Pass::FollowUps,
         wake::Coordinator::Actions => Pass::Actions,
+        wake::Coordinator::SignOffs => Pass::SignOffs,
         wake::Coordinator::Notifications => return None,
     }))
 }
@@ -5438,6 +5440,9 @@ pub fn run() {
                             wake::Coordinator::Actions => {
                                 actions::host::Coordinator::pump(&scheduler_app, &view)
                             }
+                            wake::Coordinator::SignOffs => {
+                                signoff::host::pump(&scheduler_app, &view)
+                            }
                             wake::Coordinator::Notifications => {
                                 // A run already in flight may predate this
                                 // change: stay due rather than settle.
@@ -5886,6 +5891,7 @@ mod github_auth_tests {
         let mut settings = Settings::default();
         settings.repositories.push(Repository {
             review_drafts: false,
+            sign_off_comments: false,
             paths: Vec::new(),
             paths_mode: Default::default(),
             id: "00000000-0000-4000-8000-000000000001".into(),

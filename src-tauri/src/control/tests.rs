@@ -383,6 +383,26 @@ fn new_readonly_assignment_tools_need_no_effect_grant_and_native_catalog_filters
 }
 
 #[test]
+fn turning_on_revision_sign_off_comments_needs_explicit_grant_intent() {
+    let (_root, store) = capacity::tests::fixture(1, 1, true);
+    let before = store.load_settings().unwrap();
+    let expected = before.repositories[0].clone();
+    let mut changed = expected.clone();
+    changed.sign_off_comments = true;
+    let edit = ResourceEdit::Repository {
+        id: expected.id.clone(),
+        expected: Some(Box::new(expected)),
+        value: Some(Box::new(changed)),
+    };
+    let error =
+        operations::save_checked(&store, &revision(&before), edit.clone(), false).unwrap_err();
+    assert_eq!(error.code, "explicit_grant_required");
+    assert_eq!(store.load_settings().unwrap(), before);
+    let saved = operations::save_checked(&store, &revision(&before), edit, true).unwrap();
+    assert!(saved.repositories[0].sign_off_comments);
+}
+
+#[test]
 fn new_assignment_effect_flags_still_require_explicit_grant_changes() {
     for flag in ["comment", "reply", "approve", "merge", "include_self"] {
         let (_root, store, settings, mut repository) = readonly_assignment_fixture();

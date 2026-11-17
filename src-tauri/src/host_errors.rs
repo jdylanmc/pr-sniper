@@ -42,6 +42,8 @@ pub enum Source {
     FollowUps,
     /// Provider action worker infrastructure.
     Actions,
+    /// Revision sign-off comment worker infrastructure.
+    SignOffs,
     /// Notification delivery and its saved ledger.
     Notifications,
     /// Native notification registration at startup.
@@ -60,6 +62,7 @@ pub enum Pass {
     ExitWrites,
     FollowUps,
     Actions,
+    SignOffs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -856,3 +856,53 @@ fn a_held_out_pull_request_drops_its_owned_feedback_observations() {
     scan.hold_back(&[("7".into(), 7)]);
     assert!(scan.feedback.is_empty());
 }
+
+#[test]
+fn sign_off_is_a_closed_general_thread_found_again_by_its_marker() {
+    use crate::provider::{CommentReader, CommentWriter, RemoteRepository};
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+    let body = crate::signoff::body(&sha(2));
+    let general = |id: u64, content: &str| {
+        json!({"id": id, "status": "closed",
+            "comments": [{"id": 1, "parentCommentId": 0, "author": author(AVERY), "content": content,
+                "publishedDate": "2026-10-27T10:00:00Z", "commentType": "text"}]})
+    };
+    wire.json(&threads_url(), general(50, &body));
+
+    let id = session
+        .post_pr_comment(&repository, 7, AVERY, &body)
+        .unwrap_or_else(|e| panic!("{}", e.failure.message));
+
+    assert_eq!(
+        id,
+        format!("{}/pullRequests/7/threads/50/comments/1", key().id())
+    );
+    let writes = posts(&wire);
+    assert_eq!(writes.len(), 1);
+    let sent = writes[0].body.as_ref().unwrap();
+    // Closed: a comment-resolution policy never waits on it. No file context.
+    assert_eq!(sent["status"], "closed");
+    assert_eq!(sent["comments"][0]["content"], body);
+    assert!(sent.get("threadContext").is_none());
+    assert!(body.ends_with(crate::exit_writes::SIGNATURE));
+    assert!(body.starts_with(&format!("Revision `{}` looks good.", &sha(2)[..7])));
+
+    // Read-back: general thread roots only, never inline finding threads.
+    wire.json(
+        &threads_url(),
+        json!({"value": [
+            general(50, &body),
+            thread(41, "src/main.rs", "RIGHT", 2, AVERY, "Inline finding"),
+        ]}),
+    );
+    let found = session.pr_level_comments(&repository, 7).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].body, body);
+    assert_eq!(found[0].id, id);
+}

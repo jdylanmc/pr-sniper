@@ -556,6 +556,34 @@ impl CommentReader for Session {
     ) -> Result<Vec<TopComment>, ConnectionError> {
         Ok(Vec::new())
     }
+
+    /// Roots of general threads (no file context).
+    fn pr_level_comments(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+    ) -> Result<Vec<TopComment>, ConnectionError> {
+        let key = self.key(&repository.id)?;
+        let threads = self
+            .0
+            .runtime
+            .block_on(self.0.client.threads(&key, number))?;
+        Ok(threads
+            .iter()
+            .filter(|thread| thread.path.is_none())
+            .filter_map(|thread| {
+                let root = thread.root()?;
+                Some(TopComment {
+                    id: thread.reference.comment_id(root.id),
+                    body: root.content.clone(),
+                    author_id: root.author_id.clone(),
+                    author_login: root.author_login.clone(),
+                    created_at: root.published.clone(),
+                    updated_at: root.updated.clone(),
+                })
+            })
+            .collect())
+    }
 }
 
 impl CommentWriter for Session {
@@ -567,6 +595,31 @@ impl CommentWriter for Session {
         _body: &str,
     ) -> Result<String, WriteFailure> {
         Err(refused(crate::exits::gates::UNSUPPORTED))
+    }
+
+    /// A general thread created `closed`: it never holds a comment-resolution policy.
+    fn post_pr_comment(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+        _account: &str,
+        body: &str,
+    ) -> Result<String, WriteFailure> {
+        let key = self.key(&repository.id).map_err(write_failure)?;
+        let payload = json!({
+            "comments": [{"parentCommentId": 0, "content": body, "commentType": 1}],
+            "status": "closed",
+        });
+        let thread = self
+            .0
+            .runtime
+            .block_on(self.0.client.create_thread(&key, number, payload))
+            .map_err(write_failure)?;
+        let root = thread
+            .root()
+            .filter(|root| root.content == body && thread.path.is_none())
+            .ok_or_else(|| write_failure(ConnectionError::InvalidResponse))?;
+        Ok(thread.reference.comment_id(root.id))
     }
 }
 

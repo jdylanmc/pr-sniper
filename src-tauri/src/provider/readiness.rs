@@ -400,6 +400,22 @@ impl PrSnapshot {
     /// Stable view: sorted, deduplicated, no timestamps. A re-read of an
     /// unchanged PR yields an identical value whatever order the provider used.
     pub fn normalize(&self) -> NormalizedSnapshot {
+        // PR Sniper's own sign-off comments are no PR change: never a re-review.
+        let own = |c: &SnapshotComment| crate::signoff::is_sign_off(&c.body);
+        let top: Vec<&SnapshotComment> = self.comments.iter().filter(|c| !own(c)).collect();
+        let threads: Vec<&SnapshotThread> = self
+            .threads
+            .iter()
+            .filter(|t| t.comments.is_empty() || !t.comments.iter().all(own))
+            .collect();
+        let hidden_threads = (self.threads.len() - threads.len()) as u64;
+        let hidden_comments = (self.comments.len() - top.len()) as u64
+            + self
+                .threads
+                .iter()
+                .filter(|t| !t.comments.is_empty() && t.comments.iter().all(own))
+                .map(|t| t.comment_total)
+                .sum::<u64>();
         let lifecycle = match self.state.as_str() {
             "MERGED" => "merged",
             "CLOSED" => "closed",
@@ -459,8 +475,7 @@ impl PrSnapshot {
         let mut required_checks = self.required_checks.clone();
         required_checks.sort();
         required_checks.dedup();
-        let mut comments: Vec<_> = self
-            .comments
+        let mut comments: Vec<_> = top
             .iter()
             .map(|c| NormalizedComment {
                 id: c.id.clone(),
@@ -470,7 +485,7 @@ impl PrSnapshot {
                 commit: c.commit.clone(),
             })
             .collect();
-        for thread in &self.threads {
+        for thread in &threads {
             for c in &thread.comments {
                 comments.push(NormalizedComment {
                     id: c.id.clone(),
@@ -496,9 +511,10 @@ impl PrSnapshot {
             required_checks,
             check_total: self.check_total,
             comments,
-            thread_total: self.thread_total,
-            comment_total: self.comment_total
-                + self.threads.iter().map(|t| t.comment_total).sum::<u64>(),
+            thread_total: self.thread_total.saturating_sub(hidden_threads),
+            comment_total: (self.comment_total
+                + self.threads.iter().map(|t| t.comment_total).sum::<u64>())
+            .saturating_sub(hidden_comments),
         }
     }
 }
