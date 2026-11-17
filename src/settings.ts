@@ -4414,6 +4414,9 @@ export async function mountSettings(
         modal.querySelector<HTMLButtonElement>("[data-open-paths]")!;
       const view = modal.querySelector<HTMLElement>("[data-admission-view]")!;
       const route: string[] = [];
+      // Drill-ins open at the top; Back restores the editor's scroll.
+      const scroller = modal.querySelector<HTMLElement>(".dialog-body");
+      let returnScroll = 0;
       const sync = () => {
         const a = admission();
         allInput.checked = a.mode === "all";
@@ -4450,6 +4453,7 @@ export async function mountSettings(
           view.replaceChildren();
           delete modal.dataset.view;
           sync();
+          if (scroller) scroller.scrollTop = returnScroll;
           (closed === "paths" ? openPaths : openFilters).focus({
             preventScroll: true,
           });
@@ -4467,10 +4471,12 @@ export async function mountSettings(
         }
       };
       const push = (title: string, name: string, render: () => void) => {
+        if (!route.length) returnScroll = scroller?.scrollTop ?? 0;
         route.push(name);
         view.hidden = false;
         modal.dataset.view = "admission";
         render();
+        if (scroller) scroller.scrollTop = 0;
         if (!options.embedded) {
           const back = document.createElement("button");
           back.type = "button";
