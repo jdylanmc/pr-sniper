@@ -112,7 +112,8 @@ fn green() -> PrSnapshot {
 
 #[test]
 fn a_ready_pr_that_stops_being_mergeable_waits_quietly_and_returns_on_the_same_head() {
-    let cases: [(fn(&mut PrSnapshot), Hold); 3] = [
+    type Case = (fn(&mut PrSnapshot), Hold);
+    let cases: [Case; 3] = [
         (|s| s.mergeable = "CONFLICTING".into(), Hold::Conflicts),
         (|s| *s = snapshot('a', &RED, &[]), Hold::CiFailed),
         (|s| s.behind = true, Hold::BehindBase),

@@ -834,7 +834,8 @@ fn the_heartbeat_reads_what_keeps_a_signed_off_pr_from_merging() {
         name: "contoso/Web/app".into(),
     };
     let none = || json!({"value": []});
-    let cases: [(fn(&mut Value), Option<Hold>); 4] = [
+    type Case = (fn(&mut Value), Option<Hold>);
+    let cases: [Case; 4] = [
         (|_| {}, None),
         (
             |p| p["mergeStatus"] = json!("conflicts"),

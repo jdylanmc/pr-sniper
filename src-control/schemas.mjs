@@ -314,6 +314,13 @@ export const progress = z.enum([
   "publishing",
 ]);
 export const mergeBlock = z.enum(["behind_base", "conflicts"]);
+export const hold = z.enum([
+  "draft",
+  "conflicts",
+  "changes_requested",
+  "ci_failed",
+  "behind_base",
+]);
 export const disposition = z.enum([
   "still_applies",
   "fixed",
@@ -394,15 +401,7 @@ export const queueItem = z
       ])
       .nullable(),
     // Why a signed-off PR waits for its author instead of Ready; null otherwise.
-    hold: z
-      .enum([
-        "draft",
-        "conflicts",
-        "changes_requested",
-        "ci_failed",
-        "behind_base",
-      ])
-      .nullable(),
+    hold: nullableOptional(hold),
     resume_at: z.number().nullable(),
     exit: exitName.nullable(),
     progress: progress.nullable(),
