@@ -288,7 +288,7 @@ export async function mountPanel(app: HTMLElement) {
           reviewedLimit = REVIEWED_PAGE;
           drawLists(true);
         }
-        drawPicker();
+        drawNow(drawPicker);
       },
     );
   }
@@ -297,7 +297,7 @@ export async function mountPanel(app: HTMLElement) {
     picker = list;
     if (lastState) await apply(lastState);
     if (picker !== list) return;
-    drawPicker();
+    drawNow(drawPicker);
     views.repositories
       .querySelector<HTMLElement>(
         '[aria-pressed="true"]:is([data-repository-filter],[data-repository-filter-all])',
@@ -474,7 +474,8 @@ export async function mountPanel(app: HTMLElement) {
       }
       drawSummary();
       drawLists();
-      drawPicker();
+      // After the deferred Reviewed drawer, so its choices are current.
+      whenReleased(drawPicker);
     },
     onAutomation: (value) => {
       automation = value;

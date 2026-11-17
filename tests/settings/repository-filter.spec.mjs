@@ -320,3 +320,29 @@ for (const width of [408, 320]) {
     });
   });
 }
+
+test("A repository toggle keeps its click across a background refresh", async ({
+  page,
+  store,
+}) => {
+  // The page clock is paused, so the 5 s poller fires exactly at each tick.
+  const start = new Date("2026-10-14T12:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start);
+  await seed(store);
+  await page.goto("/");
+  await expect.poll(() => queueRows(page)).toHaveLength(7);
+  await open(page, "queue");
+  const target = option(page, "api 1");
+  const box = await target.boundingBox();
+  await page.clock.fastForward(4900);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.clock.fastForward(200);
+  await page.evaluate(() => window.__settingsIdle());
+  await page.mouse.up();
+  await page.evaluate(() => window.__settingsIdle());
+  await expect(target).toHaveAttribute("aria-pressed", "true");
+  await back(page, "queue");
+  await expect(chip(page, "queue")).toHaveAccessibleName("Repositories: api");
+});
