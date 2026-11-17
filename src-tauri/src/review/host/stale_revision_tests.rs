@@ -15,12 +15,12 @@ use crate::storage::{Settings, Store};
 use serde_json::json;
 use std::collections::BTreeMap;
 
-const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const PRIMARY: &str = "cccccccc-cccc-4ccc-8ccc-000000000001";
-const TEAMMATE: &str = "cccccccc-cccc-4ccc-8ccc-000000000002";
-const NOW: i64 = 1_800_000_000;
+pub(super) const REPO: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+pub(super) const PRIMARY: &str = "cccccccc-cccc-4ccc-8ccc-000000000001";
+pub(super) const TEAMMATE: &str = "cccccccc-cccc-4ccc-8ccc-000000000002";
+pub(super) const NOW: i64 = 1_800_000_000;
 
-fn configured(review_drafts: bool) -> (tempfile::TempDir, Store, Monitor) {
+pub(super) fn configured(review_drafts: bool) -> (tempfile::TempDir, Store, Monitor) {
     let root = tempfile::tempdir().unwrap();
     let store = Store::new(root.path().into());
     let agent = |index: u8, name: &str| {
@@ -73,7 +73,7 @@ fn configured(review_drafts: bool) -> (tempfile::TempDir, Store, Monitor) {
     (root, store, monitor)
 }
 
-fn pull(head: char) -> PullRequest {
+pub(super) fn pull(head: char) -> PullRequest {
     PullRequest {
         mentioned: false,
         id: "9".into(),
@@ -103,7 +103,7 @@ fn scan(monitor: &mut Monitor, store: &Store, pulls: Vec<PullRequest>, at: i64) 
         .unwrap();
 }
 
-fn poll_result(pulls: Vec<PullRequest>) -> PollResult {
+pub(super) fn poll_result(pulls: Vec<PullRequest>) -> PollResult {
     PollResult {
         facts: Default::default(),
         listing: None,
@@ -1053,7 +1053,7 @@ fn superseded_and_merged_entries_leave_running_but_keep_their_history() {
     assert!(work.is_empty());
 }
 
-fn snapshot(
+pub(super) fn snapshot(
     head: char,
     checks: &[(&str, &str, &str)],
     comments: &[&str],
@@ -1103,7 +1103,7 @@ fn scan_state(
     monitor.finish(store, ticket, Ok(result), at + 1).unwrap();
 }
 
-fn finished(output: serde_json::Value) -> crate::review::ReviewResult {
+pub(super) fn finished(output: serde_json::Value) -> crate::review::ReviewResult {
     serde_json::from_value(json!({
         "reviewed_base_sha":"f".repeat(40),"output":output,
         "session_id":"fixture","model":"fixture-model","runtime_version":"fixture",
@@ -1112,7 +1112,7 @@ fn finished(output: serde_json::Value) -> crate::review::ReviewResult {
     .unwrap()
 }
 
-fn teammate_report() -> crate::review::ReviewResult {
+pub(super) fn teammate_report() -> crate::review::ReviewResult {
     let mut result = finished(json!({}));
     result.output = crate::review::ReviewOutput::from_exit(
         crate::exits::ExitOutcome::SubmitReport,
@@ -1121,7 +1121,7 @@ fn teammate_report() -> crate::review::ReviewResult {
     result
 }
 
-fn teammate_entries(store: &Store) -> usize {
+pub(super) fn teammate_entries(store: &Store) -> usize {
     store
         .load_queue()
         .unwrap()
@@ -1130,7 +1130,7 @@ fn teammate_entries(store: &Store) -> usize {
         .count()
 }
 
-fn seq(store: &Store, run: &ReviewRun) -> u64 {
+pub(super) fn seq(store: &Store, run: &ReviewRun) -> u64 {
     store
         .load_pr_states()
         .unwrap()
@@ -1145,7 +1145,7 @@ const ONE_DONE: [(&str, &str, &str); 2] = [
     ("macos-native", "COMPLETED", "SUCCESS"),
     ("browser (3/4)", "IN_PROGRESS", ""),
 ];
-const GREEN: [(&str, &str, &str); 2] = [
+pub(super) const GREEN: [(&str, &str, &str); 2] = [
     ("macos-native", "COMPLETED", "SUCCESS"),
     ("browser (3/4)", "COMPLETED", "SUCCESS"),
 ];

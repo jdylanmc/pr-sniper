@@ -10,7 +10,7 @@ import {
   type FailedOperation,
   type QueueItem,
 } from "./queue";
-import { progressPresentation } from "./exits";
+import { holdLabels, progressPresentation } from "./exits";
 
 export type FixTarget = "ai" | "repository-account" | { agent: string };
 
@@ -421,12 +421,14 @@ export function renderQueueStatus(
   const progress =
     !failed && item.progress ? progressPresentation[item.progress] : null;
   if (progress) label.dataset.progress = item.progress!;
+  if (item.hold) label.dataset.hold = item.hold;
   label.innerHTML = icon(failed ? paths.fail : (progress?.[1] ?? paths.ok));
   label.append(
     Object.assign(document.createElement("strong"), {
       textContent: failed
         ? failureLabel(cause, item)
-        : (progress?.[0] ?? stateLabels[item.state]),
+        : (progress?.[0] ??
+          (item.hold ? holdLabels[item.hold] : stateLabels[item.state])),
     }),
   );
   const actions = document.createElement("div");

@@ -41,10 +41,24 @@ export const waitLabels = {
   draft: "Waiting on draft",
   required_reviews: "Waiting on reviews",
 };
+// Why a signed-off PR is out of Ready (`Item.hold`): not mergeable right now.
+export type Hold =
+  "draft" | "conflicts" | "changes_requested" | "ci_failed" | "behind_base";
+export const holdLabels: Record<Hold, string> = {
+  draft: "Waiting for author \u00b7 draft",
+  conflicts: "Waiting for author \u00b7 conflicts",
+  changes_requested: "Waiting for author \u00b7 changes requested",
+  ci_failed: "Waiting for author \u00b7 CI failed",
+  behind_base: "Waiting for author \u00b7 behind base",
+};
+// Running row states: external waits, and held PRs as `held_<hold>`.
 export const waitingStates: Record<string, string> = {
   waiting_on_ci: waitLabels.ci,
   waiting_on_draft: waitLabels.draft,
   waiting_on_reviews: waitLabels.required_reviews,
+  ...Object.fromEntries(
+    Object.entries(holdLabels).map(([hold, label]) => [`held_${hold}`, label]),
+  ),
 };
 
 export const progressPresentation: Record<Progress, [string, string]> = {

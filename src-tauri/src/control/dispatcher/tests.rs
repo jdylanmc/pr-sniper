@@ -1627,6 +1627,23 @@ fn native_enum_ids_match_the_mcp_contract() {
             MergeBlock::BehindBase | MergeBlock::Conflicts => {}
         }
     }
+    use crate::queue::hold::Hold;
+    let holds = [
+        Hold::Draft,
+        Hold::Conflicts,
+        Hold::ChangesRequested,
+        Hold::CiFailed,
+        Hold::BehindBase,
+    ];
+    for h in holds {
+        match h {
+            Hold::Draft
+            | Hold::Conflicts
+            | Hold::ChangesRequested
+            | Hold::CiFailed
+            | Hold::BehindBase => {}
+        }
+    }
     use crate::{monitoring::FailureClass, review::ModelRefusal};
     let refusals = [
         ModelRefusal::Rejected,
@@ -1694,6 +1711,7 @@ fn native_enum_ids_match_the_mcp_contract() {
             "exit": exits,
             "progress": progress,
             "merge_block": blocks,
+            "hold": holds,
             "disposition": dispositions.iter().map(|d| d.id()).chain(["carried_forward"])
                 .collect::<Vec<_>>(),
             "merge_pending": MergePending { reason: MergeBlock::Conflicts, ci_not_run: true },

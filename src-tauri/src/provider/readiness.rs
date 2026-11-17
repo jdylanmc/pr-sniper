@@ -255,6 +255,10 @@ pub struct PrSnapshot {
     pub state: String,
     pub draft: bool,
     pub mergeable: String,
+    /// The base requires an up-to-date branch and the head is behind it (GitHub
+    /// `BEHIND` outside a merge queue). Azure DevOps has no such state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub behind: bool,
     pub review_decision: Option<String>,
     pub reviews: Vec<SnapshotReview>,
     pub checks: Vec<SnapshotCheck>,
@@ -425,6 +429,8 @@ impl PrSnapshot {
         // UNKNOWN is a transient provider computation, not a PR change.
         let mergeable = if self.mergeable == "CONFLICTING" {
             "conflicting"
+        } else if self.behind {
+            "behind"
         } else {
             "ok"
         };

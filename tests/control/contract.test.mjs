@@ -16,6 +16,7 @@ test("schema enums are exactly the native ids", () => {
   assert.deepEqual(s.exitName.options, enums.exit);
   assert.deepEqual(s.progress.options, enums.progress);
   assert.deepEqual(s.mergeBlock.options, enums.merge_block);
+  assert.deepEqual(s.hold.options, enums.hold);
   assert.deepEqual(s.disposition.options, enums.disposition);
   assert.deepEqual(s.modelRefusal.options, enums.model_refusal);
   assert.deepEqual(s.failureClass.options, enums.failure_class);

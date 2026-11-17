@@ -35,6 +35,13 @@
     "network",
     "other"
   ],
+  "hold": [
+    "draft",
+    "conflicts",
+    "changes_requested",
+    "ci_failed",
+    "behind_base"
+  ],
   "merge_block": [
     "behind_base",
     "conflicts"

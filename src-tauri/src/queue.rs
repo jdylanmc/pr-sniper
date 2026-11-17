@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod dismissal;
+pub mod hold;
 pub mod rest;
 pub mod retry_all;
 
@@ -144,6 +145,9 @@ pub struct SkippedReview {
 pub struct Item {
     /// Set on settled stale items: they rest outside Needs attention.
     pub rest: Option<rest::Rest>,
+    /// Why a signed-off PR waits for its author instead of being Ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<hold::Hold>,
     /// A human decision (failure, question, confirmation) hidden behind a
     /// stale state; such an item never rests.
     #[serde(skip)]
@@ -236,6 +240,7 @@ pub fn item_id(job: &QueueJob) -> String {
 pub fn snapshot(store: &Store, health: Vec<ScheduleHealth>) -> Result<Snapshot, String> {
     let mut snapshot = normal_snapshot(store, health)?;
     crate::actions::project(store, &mut snapshot)?;
+    hold::project(&mut snapshot);
     rest::project(store, &mut snapshot)?;
     dismissal::project(store, &mut snapshot)?;
     retry_all::project(store, &mut snapshot)?;
@@ -1266,6 +1271,7 @@ fn project(settings: &Settings, snapshot: &Snapshot) -> Vec<Item> {
         };
         items.push(Item {
             rest: None,
+            hold: None,
             decision_behind_stale,
             dismiss_token: None,
             dismissed: false,

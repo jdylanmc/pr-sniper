@@ -10,6 +10,7 @@
       "failed_operation": null,
       "failure_cause": null,
       "failure_class": null,
+      "hold": null,
       "id": "item-1",
       "incomplete_files": null,
       "merge_pending": null,

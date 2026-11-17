@@ -590,6 +590,7 @@ impl Readiness {
             state: self.lifecycle().into(),
             draft: self.pull.draft,
             mergeable: mergeable.into(),
+            behind: false,
             review_decision: self.review_decision(),
             reviews: self
                 .reviews()
