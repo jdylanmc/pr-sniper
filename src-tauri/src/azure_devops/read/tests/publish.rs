@@ -952,8 +952,100 @@ fn sign_off_is_a_closed_general_thread_found_again_by_its_marker() {
             thread(41, "src/main.rs", "RIGHT", 2, AVERY, "Inline finding"),
         ]}),
     );
-    let found = session.pr_level_comments(&repository, 7).unwrap();
+    let found = session.pr_level_threads(&repository, 7).unwrap();
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0].body, body);
+    assert_eq!(found[0].comments[0].body, body);
     assert_eq!(found[0].id, id);
+    assert!(!found[0].open);
+}
+
+#[test]
+fn a_sign_off_update_replies_in_its_thread_and_never_leaves_it_active() {
+    use crate::provider::{CommentReader, CommentWriter, RemoteRepository};
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+    let root = format!("{}/pullRequests/7/threads/50/comments/1", key().id());
+    let clean = crate::signoff::body(&sha(2));
+    let findings = crate::signoff::findings_body(&sha(3));
+    let general = |status: &str, replies: &[(u64, &str)]| {
+        let mut comments = vec![
+            json!({"id": 1, "parentCommentId": 0, "author": author(AVERY),
+            "content": clean, "publishedDate": "2026-10-27T10:00:00Z", "commentType": "text"}),
+        ];
+        for (id, content) in replies {
+            comments.push(json!({"id": id, "parentCommentId": 1, "author": author(AVERY),
+                "content": content, "publishedDate": "2026-10-28T10:00:00Z", "commentType": "text"}));
+        }
+        json!({"id": 50, "status": status, "comments": comments})
+    };
+
+    // Still closed after the reply: no status write.
+    wire.json(
+        &git("pullRequests/7/threads/50/comments?"),
+        json!({"id": 2}),
+    );
+    wire.json(
+        &git("pullRequests/7/threads/50?"),
+        general("closed", &[(2, &findings)]),
+    );
+    session
+        .update_pr_comment(&repository, 7, AVERY, &root, &findings)
+        .unwrap_or_else(|e| panic!("{}", e.failure.message));
+    let writes = posts(&wire);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].method, Method::Post);
+    assert!(writes[0]
+        .url
+        .starts_with(&git("pullRequests/7/threads/50/comments?")));
+    assert_eq!(
+        writes[0].body,
+        Some(json!({"parentCommentId": 1, "content": findings, "commentType": 1}))
+    );
+
+    // A reply that reopened the thread: closed again at once, never left active.
+    wire.json(
+        &git("pullRequests/7/threads/50/comments?"),
+        json!({"id": 3}),
+    );
+    wire.json(
+        &git("pullRequests/7/threads/50?"),
+        general("active", &[(2, &findings), (3, &clean)]),
+    );
+    wire.json(&git("pullRequests/7/threads/50?"), json!({"id": 50}));
+    session
+        .update_pr_comment(&repository, 7, AVERY, &root, &clean)
+        .unwrap_or_else(|e| panic!("{}", e.failure.message));
+    let writes = posts(&wire);
+    assert_eq!(writes.len(), 3);
+    assert_eq!(writes[2].method, Method::Patch);
+    assert!(writes[2]
+        .url
+        .starts_with(&git("pullRequests/7/threads/50?")));
+    assert_eq!(writes[2].body, Some(json!({"status": "closed"})));
+
+    // Another identity, or a thread of another pull request, is refused unsent.
+    assert!(session
+        .update_pr_comment(&repository, 7, BLAKE, &root, &clean)
+        .is_err());
+    assert!(session
+        .update_pr_comment(&repository, 8, AVERY, &root, &clean)
+        .is_err());
+    assert_eq!(posts(&wire).len(), 3);
+
+    // Read: the whole thread, root first; closed holds no comment-resolution policy.
+    let thread = general("closed", &[(2, &findings), (3, &clean)]);
+    wire.json(&threads_url(), json!({"value": [thread.clone()]}));
+    let found = session.pr_level_threads(&repository, 7).unwrap();
+    assert_eq!(found[0].id, root);
+    assert_eq!(found[0].comments.len(), 3);
+    assert!(!found[0].open);
+    readiness_threads(&wire, json!({"value": [thread]}));
+    let observation = session.action_observation(&repository, 7).unwrap();
+    assert!(observation.threads.iter().all(|t| t.resolved));
+    assert_eq!(observation.threads.len(), 1);
 }

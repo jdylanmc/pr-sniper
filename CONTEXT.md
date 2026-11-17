@@ -128,7 +128,7 @@ _Avoid_: Secondary agent, peer
 Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
 **Revision sign-off comments** (repository):
-Repository switch, default off. On, with the primary's Publish Comment: once per Iteration, after the primary's `lgtm`, clean `ready_for_human`, or confirmed approve or merge, the host posts one fixed PR-level comment naming the short head SHA and its hidden `<!-- pr-sniper:signoff:{head} -->` marker plus the signature. Host text, never agent text. Not **Status chatter**: one per revision, never for findings. See [provider writes](docs/provider-writes.md#revision-sign-off-comments).
+Repository switch, default off. On, with the primary's Publish Comment: one fixed PR-level comment per PR and acting account, kept up to date. After the primary's `lgtm`, clean `ready_for_human`, or confirmed approve or merge on an Iteration, it names that short head SHA (hidden `<!-- pr-sniper:signoff:{head} -->` marker) plus the signature; a later Iteration whose findings were published adds a fixed "has new findings" line. GitHub edits the comment; Azure DevOps replies in its thread, kept closed. Host text, never agent text. Not **Status chatter**: once per revision. See [provider writes](docs/provider-writes.md#revision-sign-off-comments).
 _Avoid_: Summary comment, approval comment
 
 **Include self** (Approve & Merge; Azure DevOps: Approve):
@@ -368,7 +368,7 @@ Host-owned posting of frozen validated findings. Findings map only to verified d
 _Avoid_: Posting, sync
 
 **Status chatter**:
-Never restate open findings, report CI progress, summarize counts, or re-announce unchanged state. A revision gets exactly one of: new inline findings, a sign-off (optionally one **Revision sign-off comment**), or nothing. Open own threads are the record; unfixed findings stay silent, fixed ones resolve silently. Replies only answer.
+Never restate open findings, report CI progress, summarize counts, or re-announce unchanged state. A revision gets exactly one of: new inline findings (optionally a findings line on the **Revision sign-off comment**), a sign-off (optionally updating that comment), or nothing. Open own threads are the record; unfixed findings stay silent, fixed ones resolve silently. Replies only answer.
 _Avoid_: Summary review, still-unfixed reply, CI status comment
 
 **Native Mutation Owner**:

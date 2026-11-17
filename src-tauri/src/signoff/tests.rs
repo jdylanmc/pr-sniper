@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::TopComment;
 use crate::{
     exits::{ExitOutcome, LgtmAction, NewComment},
     monitoring::JobOperation,
@@ -281,9 +282,15 @@ struct Fake {
     pull_head: String,
     draft: bool,
     lifecycle: Option<Lifecycle>,
-    comments: Vec<TopComment>,
+    threads: Vec<PrLevelThread>,
+    tracked: Option<String>,
     posts: Vec<String>,
     post_fails: Option<bool>,
+    updates: Vec<(String, String)>,
+    update_fails: Option<bool>,
+    /// The reply lands but leaves the thread open (an Azure DevOps reopen).
+    reopens: bool,
+    closes: Vec<String>,
     saved: Vec<SignOff>,
 }
 
@@ -294,6 +301,9 @@ impl Environment for Fake {
     fn save(&mut self, record: &SignOff) -> Result<(), Failure> {
         self.saved.push(record.clone());
         Ok(())
+    }
+    fn tracked(&mut self, _record: &SignOff) -> Result<Option<String>, Failure> {
+        Ok(self.tracked.clone())
     }
     fn gate(&mut self, _record: &SignOff) -> Result<Gate, Failure> {
         Ok(match self.gate {
@@ -320,14 +330,14 @@ impl Environment for Fake {
             files: vec![],
         })
     }
-    fn comments(&mut self, _record: &SignOff) -> Result<Vec<TopComment>, Failure> {
-        Ok(self.comments.clone())
+    fn threads(&mut self, _record: &SignOff) -> Result<Vec<PrLevelThread>, Failure> {
+        Ok(self.threads.clone())
     }
     fn post(&mut self, _record: &SignOff, body: &str) -> Result<String, WriteFailure> {
         self.posts.push(body.into());
         match self.post_fails {
             None => {
-                self.comments.push(comment("900", body));
+                self.threads.push(thread("900", body));
                 Ok("900".into())
             }
             Some(uncertain) => Err(WriteFailure {
@@ -335,6 +345,38 @@ impl Environment for Fake {
                 uncertain,
             }),
         }
+    }
+    fn update(&mut self, record: &SignOff, id: &str, body: &str) -> Result<(), WriteFailure> {
+        self.updates.push((id.into(), body.into()));
+        if let Some(uncertain) = self.update_fails {
+            return Err(WriteFailure {
+                failure: Failure::permanent("refused"),
+                uncertain,
+            });
+        }
+        let reopens = self.reopens;
+        let found = self.threads.iter_mut().find(|t| t.id == id).unwrap();
+        match update_style(&record.job.provider) {
+            Update::Edit => found.comments[0].body = body.into(),
+            Update::Reply => {
+                found.comments.push(comment("reply", body));
+                found.open = reopens;
+            }
+        }
+        if reopens {
+            return Err(WriteFailure {
+                failure: Failure::permanent("close failed"),
+                uncertain: true,
+            });
+        }
+        Ok(())
+    }
+    fn close(&mut self, _record: &SignOff, id: &str) -> Result<(), WriteFailure> {
+        self.closes.push(id.into());
+        for t in self.threads.iter_mut().filter(|t| t.id == id) {
+            t.open = false;
+        }
+        Ok(())
     }
 }
 
@@ -346,6 +388,14 @@ fn comment(id: &str, body: &str) -> TopComment {
         author_login: Some("operator".into()),
         created_at: String::new(),
         updated_at: String::new(),
+    }
+}
+
+fn thread(id: &str, body: &str) -> PrLevelThread {
+    PrLevelThread {
+        id: id.into(),
+        comments: vec![comment(id, body)],
+        open: false,
     }
 }
 
@@ -388,7 +438,7 @@ fn posts_one_fixed_host_comment_naming_the_short_revision() {
 fn restart_finds_the_marker_and_never_posts_twice() {
     // State lost after a landed post: the remote marker is the receipt.
     let mut env = open();
-    env.comments = vec![comment("77", &body(&head()))];
+    env.threads = vec![thread("77", &body(&head()))];
     let mut record = fresh();
     run(&mut env, &mut record).unwrap();
     assert_eq!(record.phase, Phase::Done);
@@ -410,17 +460,13 @@ fn restart_finds_the_marker_and_never_posts_twice() {
 #[test]
 fn only_our_accounts_exact_sign_off_counts_as_already_posted() {
     let foreign = || {
-        let mut pasted = comment("80", &body(&head()));
-        pasted.author_id = Some("11".into());
-        vec![
-            pasted,
-            comment("81", &format!("Quoting: {}", body(&head()))),
-            comment("82", &body(&"d".repeat(40))),
-        ]
+        let mut pasted = thread("80", &body(&head()));
+        pasted.comments[0].author_id = Some("11".into());
+        vec![pasted, thread("81", &format!("Quoting: {}", body(&head())))]
     };
     // First pass: none of these is our sign-off for this head, so it posts.
     let mut env = open();
-    env.comments = foreign();
+    env.threads = foreign();
     let mut record = fresh();
     run(&mut env, &mut record).unwrap();
     assert_eq!(record.phase, Phase::Done);
@@ -428,7 +474,7 @@ fn only_our_accounts_exact_sign_off_counts_as_already_posted() {
     assert_eq!(env.posts.len(), 1);
     // Read-back of an uncertain post: a foreign marker is no proof it landed.
     let mut env = open();
-    env.comments = foreign();
+    env.threads = foreign();
     let mut record = fresh();
     record.phase = Phase::Attempted;
     run(&mut env, &mut record).unwrap();
@@ -525,4 +571,364 @@ fn own_sign_offs_never_change_the_pr_state_hash() {
     human.comment_total += 1;
     assert_ne!(human.normalize().hash(), base.normalize().hash());
     assert!(is_sign_off(&body(&head()).replace('\n', "\r\n")));
+}
+
+fn later() -> String {
+    "def5678".to_string() + &"e".repeat(33)
+}
+
+fn again() -> String {
+    "0c0ffee".to_string() + &"c".repeat(33)
+}
+
+/// A record for `head` on the fixture PR, as `plan` would make it.
+fn revision(head: &str, kind: Kind, provider: &str) -> SignOff {
+    let mut record = fresh();
+    record.id = uuid::Uuid::new_v4().to_string();
+    record.head = head.into();
+    record.job.head_sha = head.into();
+    record.job.provider = provider.into();
+    record.kind = kind;
+    record
+}
+
+fn at(head: &str) -> Fake {
+    Fake {
+        pull_head: head.into(),
+        ..open()
+    }
+}
+
+#[test]
+fn a_later_clean_revision_edits_the_tracked_github_comment_even_after_a_restart() {
+    let mut env = open();
+    let mut first = revision(&head(), Kind::Clean, "github");
+    run(&mut env, &mut first).unwrap();
+    assert_eq!(first.receipt.as_deref(), Some("900"));
+
+    let mut next = revision(&later(), Kind::Clean, "github");
+    env.pull_head = later();
+    env.tracked = tracked(&[first.clone(), next.clone()], &next);
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Done);
+    assert_eq!(next.receipt.as_deref(), Some("900"));
+    assert_eq!(env.posts.len(), 1, "no second comment");
+    assert_eq!(env.updates, [("900".to_string(), body(&later()))]);
+    assert_eq!(env.threads.len(), 1);
+    assert_eq!(env.threads[0].comments[0].body, body(&later()));
+    // Intent, naming the tracked comment, was saved before the edit.
+    let intent = env.saved.iter().rev().nth(1).unwrap();
+    assert_eq!(intent.phase, Phase::Attempted);
+    assert_eq!(intent.receipt.as_deref(), Some("900"));
+
+    // Restart: the ledger reloaded from disk still names the comment.
+    let ledger: Vec<SignOff> =
+        serde_json::from_value(serde_json::to_value([&first]).unwrap()).unwrap();
+    let mut env = at(&later());
+    env.threads = vec![thread("900", &body(&head()))];
+    let mut next = revision(&later(), Kind::Clean, "github");
+    env.tracked = tracked(&ledger, &next);
+    run(&mut env, &mut next).unwrap();
+    assert!(env.posts.is_empty());
+    assert_eq!(env.updates, [("900".to_string(), body(&later()))]);
+}
+
+fn ado_thread() -> PrLevelThread {
+    thread("t/1", &body(&head()))
+}
+
+#[test]
+fn a_later_clean_revision_replies_in_the_closed_azure_devops_thread() {
+    let mut env = at(&later());
+    env.threads = vec![ado_thread()];
+    env.tracked = Some("t/1".into());
+    let mut next = revision(&later(), Kind::Clean, "azure_devops");
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Done);
+    assert!(env.posts.is_empty());
+    assert_eq!(env.updates, [("t/1".to_string(), body(&later()))]);
+    assert_eq!(env.threads[0].comments.len(), 2, "a reply, not an edit");
+    assert_eq!(env.threads[0].comments[0].body, body(&head()));
+    assert!(!env.threads[0].open);
+}
+
+#[test]
+fn a_reply_that_reopened_the_thread_is_read_back_and_closed_never_resent() {
+    let mut env = at(&later());
+    env.threads = vec![ado_thread()];
+    env.tracked = Some("t/1".into());
+    env.reopens = true;
+    let mut next = revision(&later(), Kind::Findings, "azure_devops");
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Attempted);
+    assert!(env.threads[0].open);
+    env.reopens = false;
+    next.next_at = NOW;
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Done);
+    assert_eq!(env.updates.len(), 1, "read back, never replied again");
+    assert_eq!(env.closes, ["t/1"]);
+    assert!(!env.threads[0].open);
+    // Any later pass that finds its own text in an open thread closes it too.
+    let mut env = at(&later());
+    let mut reopened = ado_thread();
+    reopened.comments.push(comment("2", &body(&later())));
+    reopened.open = true;
+    env.threads = vec![reopened];
+    let mut lost = revision(&later(), Kind::Clean, "azure_devops");
+    run(&mut env, &mut lost).unwrap();
+    assert_eq!(lost.phase, Phase::Done);
+    assert_eq!(env.closes, ["t/1"]);
+    assert!(env.updates.is_empty() && env.posts.is_empty());
+}
+
+#[test]
+fn a_deleted_tracked_comment_gets_exactly_one_new_post() {
+    let mut env = at(&later());
+    env.tracked = Some("77".into());
+    // Findings never start a sign-off of their own.
+    let mut findings = revision(&later(), Kind::Findings, "github");
+    run(&mut env, &mut findings).unwrap();
+    assert_eq!(findings.phase, Phase::Skipped);
+    assert!(env.posts.is_empty() && env.updates.is_empty());
+
+    env.post_fails = Some(true);
+    let mut next = revision(&later(), Kind::Clean, "github");
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Attempted);
+    // The uncertain post landed: read back under any id, never posted again.
+    env.threads = vec![thread("901", &body(&later()))];
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Done);
+    assert_eq!(next.receipt.as_deref(), Some("901"));
+    assert_eq!(env.posts, [body(&later())]);
+    assert!(env.updates.is_empty());
+}
+
+#[test]
+fn the_newest_pre_existing_own_sign_off_is_adopted_and_the_others_left() {
+    let mut env = at(&later());
+    let dated = |id: &str, head: &str, author: &str, day: &str| {
+        let mut t = thread(id, &body(head));
+        t.comments[0].author_id = Some(author.into());
+        t.comments[0].created_at = format!("2026-01-0{day}T00:00:00Z");
+        t
+    };
+    env.threads = vec![
+        dated("10", &head(), "22", "1"),
+        dated("11", &"d".repeat(40), "22", "2"),
+        // Newer, but another author's copy: never adopted.
+        dated("12", &again(), "11", "3"),
+    ];
+    let mut next = revision(&later(), Kind::Clean, "github");
+    run(&mut env, &mut next).unwrap();
+    assert_eq!(next.phase, Phase::Done);
+    assert_eq!(next.receipt.as_deref(), Some("11"));
+    assert!(env.posts.is_empty());
+    assert_eq!(env.updates, [("11".to_string(), body(&later()))]);
+    assert_eq!(env.threads[0].comments[0].body, body(&head()));
+    assert_eq!(env.threads[2].comments[0].body, body(&again()));
+}
+
+#[test]
+fn findings_then_clean_again_update_the_same_sign_off_once_each() {
+    for provider in ["github", "azure_devops"] {
+        let anchor = if provider == "github" { "900" } else { "t/1" };
+        let mut env = at(&later());
+        env.threads = vec![thread(anchor, &body(&head()))];
+        env.tracked = Some(anchor.into());
+        let mut findings = revision(&later(), Kind::Findings, provider);
+        run(&mut env, &mut findings).unwrap();
+        assert_eq!(findings.phase, Phase::Done, "{provider}");
+        let expected = if provider == "github" {
+            clean_then_findings(&head(), &later())
+        } else {
+            findings_body(&later())
+        };
+        assert_eq!(env.updates, [(anchor.to_string(), expected.clone())]);
+        assert!(expected.contains("Revision `def5678` has new findings."));
+        assert!(!env.threads[0].open);
+
+        // A re-review of the same head, or a lost ledger: read back, no second write.
+        let mut repeat = revision(&later(), Kind::Findings, provider);
+        run(&mut env, &mut repeat).unwrap();
+        assert_eq!(repeat.phase, Phase::Done);
+        assert_eq!(env.updates.len(), 1);
+
+        env.pull_head = again();
+        let mut clean = revision(&again(), Kind::Clean, provider);
+        run(&mut env, &mut clean).unwrap();
+        assert_eq!(clean.phase, Phase::Done);
+        assert_eq!(env.updates[1], (anchor.to_string(), body(&again())));
+        assert!(env.posts.is_empty() && env.closes.is_empty());
+        assert_eq!(env.threads.len(), 1, "{provider}: one sign-off");
+        if provider == "github" {
+            assert_eq!(env.threads[0].comments[0].body, body(&again()));
+        } else {
+            assert_eq!(env.threads[0].comments.len(), 3);
+        }
+    }
+}
+
+fn findings_exit() -> ExitOutcome {
+    ExitOutcome::Comments {
+        new_comments: vec![NewComment {
+            path: "a.rs".into(),
+            line: 1,
+            side: None,
+            body: "Fix.".into(),
+        }],
+        body: None,
+        reply_comments: vec![],
+        resolve_own_threads: vec![],
+    }
+}
+
+/// A projection of a findings revision, its findings published or not.
+fn findings_snapshot(settings: &Settings, published: bool) -> (tempfile::TempDir, Snapshot) {
+    let run = run_with(findings_exit(), &later(), settings);
+    let (root, mut snapshot) = project(settings, std::slice::from_ref(&run));
+    if published {
+        snapshot.items[0].state = ItemState::WaitingForAuthor;
+        let mut publication =
+            crate::publication::Publication::new(run.clone(), true, false, NOW).unwrap();
+        publication.phase = crate::publication::Phase::Published;
+        publication.operation.state = OperationState::Completed;
+        publication.operation.completed_at = Some(NOW);
+        publication.receipts = vec![crate::publication::Receipt {
+            review_id: "review".into(),
+            state: crate::publication::RemoteState::Commented,
+            comment_ids: vec!["comment".into()],
+        }];
+        snapshot
+            .publications
+            .push(crate::publication::host::Candidate {
+                local_only: false,
+                review_operation_id: run.operation.id.clone(),
+                automatic: true,
+                blocked: None,
+                publication: Some(publication),
+            });
+    }
+    (root, snapshot)
+}
+
+#[test]
+fn only_published_findings_after_a_sign_off_plan_a_findings_line() {
+    let settings = settings(true, true);
+    let mut signed = fresh();
+    signed.phase = Phase::Done;
+    signed.receipt = Some("900".into());
+    let existing = vec![signed];
+
+    let (_root, snapshot) = findings_snapshot(&settings, true);
+    // No sign-off yet: findings start nothing.
+    assert!(plan(&settings, &snapshot, &[], NOW).is_empty());
+    let planned = plan(&settings, &snapshot, &existing, NOW);
+    assert_eq!(planned.len(), 1);
+    assert_eq!(planned[0].kind, Kind::Findings);
+    assert_eq!(planned[0].head, later());
+    // Re-review of the same head: no second record.
+    let all: Vec<SignOff> = existing.iter().chain(&planned).cloned().collect();
+    assert!(plan(&settings, &snapshot, &all, NOW).is_empty());
+
+    // Findings that stayed local, or a publication not yet confirmed: nothing.
+    let (_root, local) = findings_snapshot(&settings, false);
+    assert!(plan(&settings, &local, &existing, NOW).is_empty());
+    let (_root, mut pending) = findings_snapshot(&settings, true);
+    pending.items[0].state = ItemState::AwaitingPublication;
+    assert!(plan(&settings, &pending, &existing, NOW).is_empty());
+    let (_root, mut unconfirmed) = findings_snapshot(&settings, true);
+    for candidate in &mut unconfirmed.publications {
+        if let Some(p) = candidate.publication.as_mut() {
+            p.phase = crate::publication::Phase::Pending;
+        }
+    }
+    assert!(plan(&settings, &unconfirmed, &existing, NOW).is_empty());
+}
+
+#[test]
+fn every_sign_off_text_is_its_own_and_never_a_pr_change() {
+    use crate::provider::{PrSnapshot, SnapshotComment, SnapshotThread};
+    for text in [
+        body(&head()),
+        findings_body(&later()),
+        clean_then_findings(&head(), &later()),
+    ] {
+        assert!(is_sign_off(&text), "{text}");
+        assert!(!is_sign_off(&format!("> {text}")));
+    }
+    assert_eq!(
+        parse(&clean_then_findings(&head(), &later())),
+        Some(Said {
+            clean: Some(head()),
+            findings: Some(later())
+        })
+    );
+    let base = PrSnapshot {
+        head: later(),
+        ..PrSnapshot::default()
+    };
+    let comment = |id: &str, body: String| SnapshotComment {
+        id: id.into(),
+        body,
+        commit: None,
+    };
+    let mut github = base.clone();
+    github
+        .comments
+        .push(comment("1", clean_then_findings(&head(), &later())));
+    github.comment_total = 1;
+    assert_eq!(github.normalize().hash(), base.normalize().hash());
+    let mut ado = base.clone();
+    ado.threads.push(SnapshotThread {
+        id: "t".into(),
+        resolved: true,
+        outdated: false,
+        comments: vec![
+            comment("1", body(&head())),
+            comment("2", findings_body(&later())),
+        ],
+        comment_total: 2,
+    });
+    ado.thread_total = 1;
+    assert_eq!(ado.normalize().hash(), base.normalize().hash());
+}
+
+#[test]
+fn a_sign_off_reply_beside_a_human_reply_is_no_pr_change() {
+    use crate::provider::{PrSnapshot, SnapshotComment, SnapshotThread};
+    let comment = |id: &str, body: String| SnapshotComment {
+        id: id.into(),
+        body,
+        commit: None,
+    };
+    let thread = |comments: Vec<SnapshotComment>| SnapshotThread {
+        id: "t".into(),
+        resolved: true,
+        outdated: false,
+        comment_total: comments.len() as u64,
+        comments,
+    };
+    // A closed sign-off thread a human already answered.
+    let known = vec![comment("1", body(&head())), comment("2", "Thanks!".into())];
+    let base = PrSnapshot {
+        head: later(),
+        threads: vec![thread(known.clone())],
+        thread_total: 1,
+        ..PrSnapshot::default()
+    };
+    for reply in [findings_body(&later()), body(&later())] {
+        let mut next = base.clone();
+        let mut comments = known.clone();
+        comments.push(comment("3", reply));
+        next.threads = vec![thread(comments)];
+        assert_eq!(next.normalize().hash(), base.normalize().hash());
+    }
+    // Another human reply still is.
+    let mut human = base.clone();
+    let mut comments = known.clone();
+    comments.push(comment("3", "One more thing.".into()));
+    human.threads = vec![thread(comments)];
+    assert_ne!(human.normalize().hash(), base.normalize().hash());
 }

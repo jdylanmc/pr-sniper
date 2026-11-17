@@ -338,6 +338,20 @@ impl Client {
             .ok_or(ConnectionError::MalformedResponse(ProviderResponse::Thread))
     }
 
+    /// One thread; `None` once it has no live comment.
+    pub(super) async fn thread(
+        &self,
+        thread: &ThreadRef,
+    ) -> Result<Option<AdoThread>, ConnectionError> {
+        self.owns(&thread.key)?;
+        let url = self.threads_url(&thread.key, thread.number, &[&thread.thread.to_string()]);
+        let (raw, _): (RawThread, _) = self.get(ProviderResponse::Thread, url).await?;
+        if raw.id != thread.thread {
+            return Err(ConnectionError::InvalidResponse);
+        }
+        Ok(raw.into_thread(&thread.key, thread.number))
+    }
+
     /// Replies under `parent`; returns the new comment's number.
     pub(super) async fn reply(
         &self,
