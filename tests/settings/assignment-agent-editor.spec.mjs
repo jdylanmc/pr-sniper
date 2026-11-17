@@ -947,6 +947,60 @@ test("Review drafts switch persists only when on", async ({ page, store }) => {
   ).toBeUndefined();
 });
 
+test("Revision sign-off comments needs the primary's Publish Comment and persists", async ({
+  page,
+  store,
+}) => {
+  await seed(page, store);
+  const repository = await repositorySettings(page, "fixture/assignment");
+  const signOff = () =>
+    repository.getByRole("switch", {
+      name: "Revision sign-off comments",
+      exact: true,
+    });
+  await expect(signOff()).not.toBeChecked();
+  await expect(signOff()).toBeDisabled();
+  await button(
+    repository.locator(".assignment-row").first(),
+    "Edit assignment",
+  ).click();
+  const assignment = dialog(page, "Edit assignment");
+  await primarySwitch(assignment).check();
+  await withPermissions(page, assignment, async () => {
+    await permissionSwitch(assignment, "Publish Comment").check();
+  });
+  await button(assignment, "Save assignment").click();
+  await expect(assignment).toHaveCount(0);
+  await expect(signOff()).toBeEnabled();
+  await signOff().check();
+  await button(repository, "Save repository").click();
+  await page.evaluate(() => window.__settingsIdle());
+  expect(
+    (await store("snapshot")).settings.repositories[0].sign_off_comments,
+  ).toBe(true);
+  await panelBack(page).click();
+  const again = await repositorySettings(page, "fixture/assignment");
+  const reloaded = again.getByRole("switch", {
+    name: "Revision sign-off comments",
+    exact: true,
+  });
+  await expect(reloaded).toBeChecked();
+  await expect(reloaded).toBeEnabled();
+  // Publish Comment off: the switch keeps its value but is inert.
+  await button(
+    again.locator(".assignment-row").first(),
+    "Edit assignment",
+  ).click();
+  const edit = dialog(page, "Edit assignment");
+  await withPermissions(page, edit, async () => {
+    await permissionSwitch(edit, "Publish Comment").uncheck();
+  });
+  await button(edit, "Save assignment").click();
+  await expect(edit).toHaveCount(0);
+  await expect(reloaded).toBeDisabled();
+  await expect(reloaded).toBeChecked();
+});
+
 const pathRows = (scope) => scope.locator("[data-path-list] [data-path]");
 const addPathPattern = async (scope, pattern) => {
   await scope.getByLabel("Path pattern", { exact: true }).fill(pattern);

@@ -127,6 +127,10 @@ _Avoid_: Secondary agent, peer
 **Review drafts** (repository):
 Repository switch, default off. On: draft pull requests are reviewed too, and a draft never supersedes a run.
 
+**Revision sign-off comments** (repository):
+Repository switch, default off. On, with the primary's Publish Comment: once per Iteration, after the primary's `lgtm`, clean `ready_for_human`, or confirmed approve or merge, the host posts one fixed PR-level comment naming the short head SHA and its hidden `<!-- pr-sniper:signoff:{head} -->` marker plus the signature. Host text, never agent text. Not **Status chatter**: one per revision, never for findings. See [provider writes](docs/provider-writes.md#revision-sign-off-comments).
+_Avoid_: Summary comment, approval comment
+
 **Include self** (Approve & Merge; Azure DevOps: Approve):
 Repository-assignment option, default off: the acting account's own PRs may merge (GitHub) or get the Approve vote (Azure DevOps, which permits self-approval; still never merges). The packet carries this choice explicitly. After a clear review, use an offered merge or approve exit; on GitHub the host merges an own PR without an approval vote. Other gates still apply. A denied approval exit does not deny an offered merge exit. A branch policy refusing the requester's vote parks the item (`exit_failed`, Permission), with no re-review.
 
@@ -360,7 +364,7 @@ Host-owned posting of frozen validated findings. Findings map only to verified d
 _Avoid_: Posting, sync
 
 **Status chatter**:
-Never restate open findings, report CI progress, summarize counts, or re-announce unchanged state. A revision gets exactly one of: new inline findings, a sign-off, or nothing. Open own threads are the record; unfixed findings stay silent, fixed ones resolve silently. Replies only answer.
+Never restate open findings, report CI progress, summarize counts, or re-announce unchanged state. A revision gets exactly one of: new inline findings, a sign-off (optionally one **Revision sign-off comment**), or nothing. Open own threads are the record; unfixed findings stay silent, fixed ones resolve silently. Replies only answer.
 _Avoid_: Summary review, still-unfixed reply, CI status comment
 
 **Native Mutation Owner**:

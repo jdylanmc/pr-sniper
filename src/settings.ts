@@ -3913,7 +3913,7 @@ export async function mountSettings(
     const modal = dialog(
       repository.name,
       `<section class="repository-identity"><h3>${escape(repository.name)}</h3><p>${escape(`${repository.provider === "github" ? "GitHub" : "Azure DevOps"} / ${repositoryAccountLogin(repository) ?? (repository.provider_account_id ? "Unavailable" : "No account")}`)}</p></section>
-        <section class="repository-group"><div class="repository-scan"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><button type="button" data-scan-repository aria-label="Scan ${escape(repository.name)}" title="Scan ${escape(repository.name)}" aria-disabled="true" data-scanning="false">${icon("refresh")}<span>Scan</span></button></div><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label></section>
+        <section class="repository-group"><div class="repository-scan"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Monitor ${escape(repository.name)}" data-repository-enabled ${repository.enabled || (pendingSetup.has(repository.id) && !setupMonitoringOff.has(repository.id)) ? "checked" : ""} /><span>Monitor this repository</span></label><button type="button" data-scan-repository aria-label="Scan ${escape(repository.name)}" title="Scan ${escape(repository.name)}" aria-disabled="true" data-scanning="false">${icon("refresh")}<span>Scan</span></button></div><p data-repository-monitoring-state role="status"></p><p data-repository-monitoring-detail></p><label class="repository-check"><input type="checkbox" role="switch" aria-label="Review drafts" data-review-drafts ${repository.review_drafts ? "checked" : ""} /><span>Review drafts</span></label><label class="repository-check"><input type="checkbox" role="switch" aria-label="Revision sign-off comments" data-sign-off-comments ${repository.sign_off_comments ? "checked" : ""} /><span>Revision sign-off comments</span></label></section>
         <section class="repository-group admission-group"><label class="repository-check"><input type="checkbox" role="switch" aria-label="Explicit PRs only" data-admission-explicit /><span>Explicit PRs only</span></label><label class="repository-check" data-admission-all><input type="checkbox" role="switch" aria-label="All pull requests" data-admission-all-input /><span>All pull requests</span></label><button type="button" class="doctrine-row" data-open-filters><span>Filtered pull requests</span><span class="doctrine-summary" data-filter-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button><button type="button" class="doctrine-row" data-open-paths aria-label="Paths"><span>Paths</span><span class="doctrine-summary" data-paths-summary></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></section>
         <div class="admission-view" data-admission-view hidden></div>
         <section class="repository-group"><div class="section-actions"><h2>Agents on this repository</h2><button class="primary" data-assign-agent>Assign agent</button></div>
@@ -4077,6 +4077,14 @@ export async function mountSettings(
       if ((event.target as HTMLInputElement).checked)
         repository.review_drafts = true;
       else delete repository.review_drafts;
+      changed();
+    };
+    modal.querySelector<HTMLInputElement>(
+      "[data-sign-off-comments]",
+    )!.onchange = (event) => {
+      if ((event.target as HTMLInputElement).checked)
+        repository.sign_off_comments = true;
+      else delete repository.sign_off_comments;
       changed();
     };
     monitoring.onchange = async () => {
@@ -4299,7 +4307,18 @@ export async function mountSettings(
       };
     };
 
+    // Inert without the primary's Publish Comment grant.
+    function updateSignOff() {
+      const primary = (repository.assignments ?? []).find(
+        (a) => a.id === primaryAssignmentId(repository),
+      );
+      modal.querySelector<HTMLInputElement>(
+        "[data-sign-off-comments]",
+      )!.disabled = !primary?.comment;
+    }
+
     function renderAssignments(opener = document.activeElement) {
+      updateSignOff();
       const list = modal.querySelector<HTMLElement>(".assignment-list")!;
       const restoreFocus = rememberControl(
         list,
