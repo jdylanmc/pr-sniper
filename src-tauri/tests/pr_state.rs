@@ -107,6 +107,7 @@ fn snapshot(body: &str) -> PrSnapshot {
         review_decision: None,
         reviews: vec![],
         checks: vec![SnapshotCheck {
+            app: None,
             name: "ci".into(),
             status: "COMPLETED".into(),
             conclusion: "SUCCESS".into(),

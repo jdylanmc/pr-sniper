@@ -1071,6 +1071,7 @@ fn snapshot(
         checks: checks
             .iter()
             .map(|(name, status, conclusion)| SnapshotCheck {
+                app: None,
                 name: (*name).into(),
                 status: (*status).into(),
                 conclusion: (*conclusion).into(),

@@ -604,6 +604,7 @@ impl Readiness {
                 .checks
                 .iter()
                 .map(|c| SnapshotCheck {
+                    app: None,
                     name: c.name.clone(),
                     status: if c.holds() {
                         "IN_PROGRESS"
