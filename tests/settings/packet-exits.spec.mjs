@@ -342,8 +342,8 @@ test("a signed-off PR that stops being mergeable leaves Ready for a held Running
   await seed("ok");
   expect((await store("monitoring_snapshot")).items[0]).toMatchObject({
     state: "machine_signed_off",
-    hold: null,
   });
+  expect((await store("monitoring_snapshot")).items[0].hold).toBeUndefined();
 });
 
 test("packet exits map to typed queue states", async ({ store }) => {

@@ -146,6 +146,7 @@ pub struct Item {
     /// Set on settled stale items: they rest outside Needs attention.
     pub rest: Option<rest::Rest>,
     /// Why a signed-off PR waits for its author instead of being Ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hold: Option<hold::Hold>,
     /// A human decision (failure, question, confirmation) hidden behind a
     /// stale state; such an item never rests.
