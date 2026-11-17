@@ -334,6 +334,7 @@ export function renderMonitoring(
     onSnapshot?: (snapshot: MonitoringSnapshot | undefined) => void;
     onAutomation?: (snapshot: AutomationSnapshot | undefined) => void;
     fix?: (target: FixTarget) => void;
+    repositories?: () => ReadonlySet<string>;
   } = {},
 ) {
   root.innerHTML = `<div data-monitor-overview><section id="automation-controls"></section>
@@ -960,6 +961,7 @@ export function renderMonitoring(
       queue(options.panel ? humanQueue(snapshot.items) : snapshot.items, {
         paused: !!automation?.paused,
         all: snapshot.items,
+        repositories: options.repositories?.(),
       });
   }
 
@@ -1013,6 +1015,7 @@ export function renderMonitoring(
   onCommitted(root, [SETTINGS_CHANGED, STATE_CHANGED], () => void refresh());
   return {
     refresh,
+    requeue: pushQueue,
     detail: (
       target: PanelDetail | undefined,
       missing: string | null = null,

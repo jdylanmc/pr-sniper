@@ -1965,3 +1965,129 @@ body:has(.panel-shell) {
     animation: none;
   }
 }
+/* Repository filter: a chip under the Queue cards (first chip on Reviewed)
+   drills into a pressed-toggle checklist grouped by provider account. */
+.panel-shell .filter-group {
+  display: contents;
+}
+.panel-shell .queue-repository-filter {
+  margin: 10px 0 0;
+}
+.panel-shell .repository-filter-chip {
+  min-width: 0;
+  max-width: 100%;
+}
+.panel-shell .repository-filter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-shell .repository-filter-chip .panel-icon:last-child {
+  width: 12px;
+  height: 12px;
+}
+.panel-shell .repository-filter-group {
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line-slate-e5e9ee);
+  border-radius: 14px;
+  background: var(--panel-paper);
+}
+.panel-shell .repository-filter-group > h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.panel-shell .repository-filter-group > h2 > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-shell .repository-filter .provider-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.panel-shell .repository-filter .provider-mark[data-brand="github"] {
+  background: var(--text-slate-243247);
+  color: var(--panel-paper);
+}
+.panel-shell .repository-filter .provider-mark[data-brand="azure-devops"] {
+  background: var(--bg-teal-e7f3f1);
+  color: var(--text-teal-327c84);
+}
+.panel-shell .repository-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-top: 1px solid var(--line-slate-edf0f4);
+  border-radius: 0;
+  background: transparent;
+  color: var(--panel-ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.panel-shell .repository-filter-all {
+  border-top: 0;
+}
+.panel-shell .repository-filter-row > strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+.panel-shell .repository-filter-count {
+  flex: none;
+  color: var(--panel-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.panel-shell .repository-filter-check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-slate-e3e7ec);
+  border-radius: 50%;
+}
+.panel-shell .repository-filter-check .panel-icon {
+  width: 14px;
+  height: 14px;
+  visibility: hidden;
+}
+.panel-shell
+  .repository-filter-row[aria-pressed="true"]
+  .repository-filter-check {
+  border-color: var(--panel-accent);
+  background: var(--panel-accent);
+  color: var(--text-on-accent-ink);
+}
+.panel-shell
+  .repository-filter-row[aria-pressed="true"]
+  .repository-filter-check
+  .panel-icon {
+  visibility: visible;
+}
+.panel-shell .repository-filter-row:focus-visible {
+  outline: 2px solid var(--panel-ink);
+  outline-offset: -3px;
+}

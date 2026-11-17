@@ -24,6 +24,15 @@ import { drawNow, setText, whenReleased } from "./stable-dom";
 import { applyTheme } from "./theme";
 import { waitingStates } from "./exits";
 import { outcomes, type Outcome } from "./outcomes";
+import {
+  filterChip,
+  prune,
+  renderPicker,
+  repositoryEntries,
+  shows,
+  syncChip,
+  type RepositoryEntry,
+} from "./repository-filter";
 
 export type PanelTab = "queue" | "running" | "reviewed" | "settings";
 export type WorkKind = "normal" | "reply" | "mention" | "primary_final";
@@ -65,6 +74,7 @@ interface Row {
   subject?: string;
   reference?: string;
   outcome?: Outcome;
+  repository?: QueueItem["job"];
 }
 
 const stateIcons: Record<string, string> = {
@@ -116,6 +126,7 @@ export async function mountPanel(app: HTMLElement) {
         <button type="button" class="queue-metric" data-queue-ready-card data-queue-filter="ready" aria-pressed="false"><span class="queue-metric-label">Ready for you${icon(destinations.queue.icon)}</span><span class="queue-metric-value"><strong data-queue-ready>?</strong></span></button>
         <button type="button" class="queue-metric" data-queue-attention-card data-queue-filter="attention" aria-pressed="false"><span class="queue-metric-label">Needs attention${icon("M12 8v5m0 3h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18")}</span><span class="queue-metric-value"><strong data-queue-attention>?</strong></span></button>
       </div>
+      <div class="filter-row queue-repository-filter" data-queue-repositories hidden></div>
       <button type="button" class="queue-work-link" data-queue-work hidden aria-label="View Agent work in Running"><span class="queue-capacity" data-queue-capacity aria-hidden="true">?</span><span><strong>Agent work in Running</strong><span data-queue-work-status>Work state unavailable</span></span>${icon("m9 5 7 7-7 7")}</button>
       <div class="queue-list-heading"><h2 data-queue-heading hidden>Over to you</h2><span data-summary-detail></span></div>
     </div>
@@ -124,6 +135,7 @@ export async function mountPanel(app: HTMLElement) {
       <div data-panel-view="monitor"></div>
       <section data-panel-view="running" hidden><div data-running-list></div><div class="scan-band"><button type="button" class="scan-pill" data-scan-all aria-label="Scan all repositories" title="Scan all repositories" aria-disabled="true" data-scanning="false">${icon(scanIcon)}<span>Scan</span></button></div></section>
       <section data-panel-view="reviewed" hidden></section>
+      <section data-panel-view="repositories" class="repository-filter" aria-label="Repositories" hidden></section>
       <div data-panel-view="settings" hidden></div>
       <div data-panel-view="genie" hidden></div>
       <section data-panel-view="changelog" class="changelog" hidden></section>
@@ -214,6 +226,9 @@ export async function mountPanel(app: HTMLElement) {
     settings: app.querySelector<HTMLElement>('[data-panel-view="settings"]')!,
     genie: app.querySelector<HTMLElement>('[data-panel-view="genie"]')!,
     changelog: app.querySelector<HTMLElement>('[data-panel-view="changelog"]')!,
+    repositories: app.querySelector<HTMLElement>(
+      '[data-panel-view="repositories"]',
+    )!,
   };
   const scanAll = app.querySelector<HTMLButtonElement>("[data-scan-all]")!;
   let changelogOpen = false;
@@ -254,8 +269,53 @@ export async function mountPanel(app: HTMLElement) {
   }
   function setChangelog(open: boolean) {
     changelogOpen = open;
+    if (open) picker = undefined;
     if (open) renderChangelog();
     if (lastState) void apply(lastState);
+  }
+  function drawPicker() {
+    if (!picker || !pickerOpen()) return;
+    const list = picker;
+    renderPicker(
+      views.repositories,
+      repositoryFilters[list],
+      repositoryChoices[list],
+      () => {
+        if (list === "queue") {
+          drawSummary();
+          monitor.requeue();
+        } else {
+          reviewedLimit = REVIEWED_PAGE;
+          drawLists(true);
+        }
+        drawNow(drawPicker);
+      },
+    );
+  }
+  async function openPicker(list: "queue" | "reviewed", opener: HTMLElement) {
+    remember(opener);
+    picker = list;
+    if (lastState) await apply(lastState);
+    if (picker !== list) return;
+    drawNow(drawPicker);
+    views.repositories
+      .querySelector<HTMLElement>(
+        '[aria-pressed="true"]:is([data-repository-filter],[data-repository-filter-all])',
+      )
+      ?.focus({ preventScroll: true });
+  }
+  async function closePicker() {
+    const list = picker;
+    picker = undefined;
+    if (lastState) await apply(lastState);
+    if (!list || route.tab !== list || route.detail) return;
+    if (list === "queue") monitor.requeue();
+    else drawLists(true);
+    (
+      app.querySelector<HTMLElement>(
+        `[data-repository-filter-open="${list}"]`,
+      ) ?? heading
+    ).focus({ preventScroll: true });
   }
   version.onclick = () => {
     if (!versionKnown) readVersion();
@@ -285,6 +345,20 @@ export async function mountPanel(app: HTMLElement) {
   let reviewedLimit = REVIEWED_PAGE;
   // Reviewed outcome filter; empty shows every row. Kept for the session.
   const reviewedOutcomes = new Set<Outcome>();
+  // Repository filters, per list; empty shows every repository. Kept for the
+  // session; a repository without rows drops out silently.
+  const repositoryFilters = {
+    queue: new Set<string>(),
+    reviewed: new Set<string>(),
+  };
+  const repositoryChoices: Record<"queue" | "reviewed", RepositoryEntry[]> = {
+    queue: [],
+    reviewed: [],
+  };
+  // The list whose repository drill-in is open.
+  let picker: "queue" | "reviewed" | undefined;
+  const pickerOpen = () =>
+    !changelogOpen && !!picker && picker === route.tab && !route.detail;
   // Tab of the latest navigation request; the route updates only after it resolves.
   let tabIntent: PanelTab = "queue";
   const listSignatures = new Map<PanelTab, string>();
@@ -378,6 +452,7 @@ export async function mountPanel(app: HTMLElement) {
         },
         opener,
       ),
+    repositories: () => repositoryFilters.queue,
     fix: (target) => {
       const origin = route;
       const task = navigate({ tab: "settings" });
@@ -399,6 +474,8 @@ export async function mountPanel(app: HTMLElement) {
       }
       drawSummary();
       drawLists();
+      // After the deferred Reviewed drawer, so its choices are current.
+      whenReleased(drawPicker);
     },
     onAutomation: (value) => {
       automation = value;
@@ -577,7 +654,9 @@ export async function mountPanel(app: HTMLElement) {
   // after the reopen always holds.
   let reopened = false;
   function dropEmptyChoice(all: QueueItem[]) {
-    const items = humanQueue(all);
+    const items = humanQueue(all).filter((item) =>
+      shows(repositoryFilters.queue, item.job),
+    );
     const ready = items.filter(
       (item) => item.state === "machine_signed_off",
     ).length;
@@ -633,6 +712,7 @@ export async function mountPanel(app: HTMLElement) {
       : "";
     summary.hidden =
       changelogOpen ||
+      pickerOpen() ||
       setupVisible() ||
       !!route.detail ||
       ["settings", "reviewed", "running"].includes(route.tab);
@@ -652,8 +732,25 @@ export async function mountPanel(app: HTMLElement) {
           : "Occupancy unknown",
       );
     } else {
-      const items = humanQueue(snapshot?.items ?? []);
       const known = Array.isArray(snapshot?.items);
+      const all = humanQueue(snapshot?.items ?? []);
+      const entries = repositoryEntries(all.map((item) => item.job));
+      if (known) {
+        prune(repositoryFilters.queue, entries);
+        repositoryChoices.queue = entries;
+      }
+      syncChip(
+        summary.querySelector<HTMLElement>("[data-queue-repositories]")!,
+        "queue",
+        repositoryFilters.queue,
+        entries,
+        (opener) => void openPicker("queue", opener),
+      );
+      // Cards count the filtered queue; Retry all, the Running badge and
+      // notifications stay global.
+      const items = all.filter((item) =>
+        shows(repositoryFilters.queue, item.job),
+      );
       const ready = items.filter(
         (item) => item.state === "machine_signed_off",
       ).length;
@@ -729,12 +826,35 @@ export async function mountPanel(app: HTMLElement) {
     const terminal = (row: Row) =>
       row.kind === "item" && ["closed", "merged"].includes(row.state);
     const limit = tab === "reviewed" ? reviewedLimit : rows.length;
-    const signature = JSON.stringify([rows, limit, [...reviewedOutcomes]]);
+    const repositories = repositoryFilters.reviewed;
+    const entries =
+      tab === "reviewed"
+        ? repositoryEntries(
+            rows.flatMap((row) => (row.repository ? [row.repository] : [])),
+          )
+        : [];
+    if (tab === "reviewed") {
+      prune(repositories, entries);
+      repositoryChoices.reviewed = entries;
+    }
+    const signature = JSON.stringify([
+      rows,
+      limit,
+      [...reviewedOutcomes],
+      [...repositories],
+    ]);
     if (listSignatures.get(tab) === signature) return;
     listSignatures.set(tab, signature);
     const counts = new Map<Outcome, number>();
+    // Clean all acts on every repository, so its count stays whole-list.
     const terminalCount = tab === "reviewed" ? rows.filter(terminal).length : 0;
     if (tab === "reviewed") {
+      // Outcome counts follow the repository filter (AND).
+      rows = rows.filter(
+        (row) =>
+          !repositories.size ||
+          (!!row.repository && shows(repositories, row.repository)),
+      );
       for (const row of rows)
         if (row.outcome)
           counts.set(row.outcome, (counts.get(row.outcome) ?? 0) + 1);
@@ -753,15 +873,29 @@ export async function mountPanel(app: HTMLElement) {
             .jobId
         : undefined;
     const activeOutcome =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement.dataset.reviewedOutcome
+      document.activeElement instanceof HTMLElement &&
+      root.contains(document.activeElement)
+        ? (document.activeElement.dataset.reviewedOutcome ??
+          document.activeElement.dataset.repositoryFilterOpen)
         : undefined;
     root.replaceChildren();
-    if (tab === "reviewed" && (counts.size || reviewedOutcomes.size)) {
+    const chooser = entries.length > 1 || repositories.size > 0;
+    if (
+      tab === "reviewed" &&
+      (counts.size || reviewedOutcomes.size || chooser)
+    ) {
+      const row = document.createElement("div");
+      row.className = "filter-row";
+      if (chooser) {
+        const chip = filterChip("reviewed", repositories, entries);
+        chip.onclick = () => void openPicker("reviewed", chip);
+        row.append(chip);
+      }
       const filters = document.createElement("div");
-      filters.className = "filter-row";
+      filters.className = "filter-group";
       filters.setAttribute("role", "group");
       filters.setAttribute("aria-label", "Outcome");
+      row.append(filters);
       for (const [outcome, { label, icon: path }] of Object.entries(
         outcomes,
       ) as [Outcome, { label: string; icon: string }][]) {
@@ -785,10 +919,12 @@ export async function mountPanel(app: HTMLElement) {
         };
         filters.append(chip);
       }
-      root.append(filters);
-      filters
+      root.append(row);
+      row
         .querySelector<HTMLElement>(
-          `[data-reviewed-outcome="${activeOutcome}"]`,
+          activeOutcome === "reviewed"
+            ? "[data-repository-filter-open]"
+            : `[data-reviewed-outcome="${activeOutcome}"]`,
         )
         ?.focus({ preventScroll: true });
     }
@@ -1147,6 +1283,7 @@ export async function mountPanel(app: HTMLElement) {
             kind: "primary_final",
             title: `${item.job.repository_name} #${item.job.number} / Primary final review`,
             state: final.execution.phase,
+            repository: item.job,
             work: workPresentation(snapshot, "primary_final", final.id),
           },
         });
@@ -1166,6 +1303,7 @@ export async function mountPanel(app: HTMLElement) {
             kind: "item",
             title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
             state: item.state,
+            repository: item.job,
           },
         });
       }
@@ -1182,8 +1320,10 @@ export async function mountPanel(app: HTMLElement) {
             : 0),
     );
     const rows = ranked.map(({ row }) => row);
-    for (const row of rows)
+    for (const row of rows) {
       row.outcome = snapshot.outcomes?.[`${row.kind}:${row.id}`];
+      row.repository ??= row.work?.job;
+    }
     draw("reviewed", rows, now);
   }
   async function apply(state: PanelSnapshot) {
@@ -1220,35 +1360,43 @@ export async function mountPanel(app: HTMLElement) {
     tabIntent = route.tab;
     revision = state.revision;
     lastState = state;
-    if (changed) changelogOpen = false;
+    if (changed) {
+      changelogOpen = false;
+      picker = undefined;
+    }
+    const choosing = pickerOpen();
     app.dataset.nativeVisible = String(state.visible);
     if (state.placement_warning) showError(state.placement_warning);
     const sub = subSection();
     back.hidden =
       !changelogOpen &&
+      !choosing &&
       !route.detail &&
       !sub &&
       (!setupVisible() || setupTitle === "Welcome");
     heading.textContent = changelogOpen
       ? "Changelog"
-      : setupVisible()
-        ? setupTitle
-        : sub
-          ? sub.title
-          : route.detail
-            ? route.detail.type === "job"
-              ? "Job details"
-              : "Saved evidence"
-            : destinations[route.tab].title;
+      : choosing
+        ? "Repositories"
+        : setupVisible()
+          ? setupTitle
+          : sub
+            ? sub.title
+            : route.detail
+              ? route.detail.type === "job"
+                ? "Job details"
+                : "Saved evidence"
+              : destinations[route.tab].title;
     app.dataset.tab = route.tab;
     app.dataset.changelog = String(changelogOpen);
+    app.dataset.repositoryFilter = String(choosing);
     app.dataset.settingsSub = String(!!sub);
     app.dataset.settingsEditor = String(!!settingsEditor && !!sub);
     app.dataset.detail = String(!!route.detail);
     app.dataset.evidence = route.detail?.type ?? "";
     app.dataset.setup = String(setupVisible());
     const scrollQueue =
-      route.tab === "queue" && !setupVisible() && !changelogOpen;
+      route.tab === "queue" && !setupVisible() && !changelogOpen && !choosing;
     app.dataset.scrollQueue = String(scrollQueue);
     if (scrollQueue) {
       content.tabIndex = 0;
@@ -1282,11 +1430,13 @@ export async function mountPanel(app: HTMLElement) {
     }
     const visible = changelogOpen
       ? "changelog"
-      : setupVisible()
-        ? "genie"
-        : route.detail || route.tab === "queue"
-          ? "monitor"
-          : route.tab;
+      : choosing
+        ? "repositories"
+        : setupVisible()
+          ? "genie"
+          : route.detail || route.tab === "queue"
+            ? "monitor"
+            : route.tab;
     for (const [name, view] of Object.entries(views))
       view.hidden = name !== visible;
     refreshBandClips();
@@ -1359,6 +1509,7 @@ export async function mountPanel(app: HTMLElement) {
   }
   back.onclick = () => {
     if (changelogOpen) setChangelog(false);
+    else if (pickerOpen()) void closePicker();
     else if (settingsEditor && subSection()) settingsEditor.back();
     else if (subSection())
       app.querySelector<HTMLElement>(".settings-home-back")!.click();
@@ -1370,6 +1521,7 @@ export async function mountPanel(app: HTMLElement) {
   ))
     button.onclick = () => {
       changelogOpen = false;
+      picker = undefined;
       if (setupVisible()) {
         remember();
         genie.leave();

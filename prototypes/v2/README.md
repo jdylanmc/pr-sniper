@@ -41,10 +41,14 @@ Reconciled with the shipped panel UI: icon-first, minimal prose.
   band and cards stay pinned while one grouped list scrolls. Rows show a state
   chip, title, `repo #number`, and a chevron. Needs attention heads failed
   rows with a **Retry all** pill (icon + count); while paused, re-armed work
-  shows clock + count. An empty group is a large grey inbox icon. The footer has only the version at right, which opens a
+  shows clock + count. With two or more repositories, a **repository chip**
+  under the cards (All repos / short name / N repos) drills into a
+  checklist grouped by account, each repository with its count; the cards
+  count the filtered rows. An empty group is a large grey inbox icon. The footer has only the version at right, which opens a
   Changelog page. Preferences has **Copy diagnostics**.
 - **Running and Reviewed:** `.work-list` rows with state icons. Running shows
-  active work first, then waiting work.
+  active work first, then waiting work. Reviewed has the same repository chip
+  before its outcome chips; outcome counts follow it.
 - **Settings:** a grouped overview with a small Genie icon beside the title.
   Accounts (Copilot, GitHub), Agents, Repositories, Doctrines, and Preferences
   are drill-ins. Connected accounts are rows with a subtle disconnect icon,

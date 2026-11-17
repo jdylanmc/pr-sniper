@@ -21,7 +21,7 @@ Request (cursors start `null`):
 
 ## Outcomes
 
-Typed, from the completed exit and its confirmed effect (`review::outcome`). Never from text. The Reviewed tab shows the same value per row and filters by it.
+Typed, from the completed exit and its confirmed effect (`review::outcome`). Never from text. The Reviewed tab shows the same value per row and filters by it. Its outcome counts follow the [repository filter](review-queue.md#repository-filter).
 
 | Outcome               | From                                                                                                                                                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
