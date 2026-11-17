@@ -223,10 +223,10 @@ feedback. See **PR state** detection ([polling.md](docs/polling.md#heartbeat-pr-
 _Avoid_: Re-review, manual re-run
 
 **PR state**:
-Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class, review decision, approvals, CI array, comments and threads, labels. Compared by the review-revision hash, which leaves out CI, mergeable class and labels: they never queue a review, supersede a run or re-run teammates. Persisted per PR in `pr-state.json`.
+Normalized, sorted, timestamp-free view of a PR: head/base, text, lifecycle, mergeable class (`ok`, `conflicting`, `behind`), review decision, approvals, CI array, comments and threads, labels. Compared by the review-revision hash, which leaves out CI, mergeable class and labels: they never queue a review, supersede a run or re-run teammates. Persisted per PR in `pr-state.json`.
 
 **Heartbeat**:
-The scheduled read of PR state for tracked open PRs. It only adds a PR to the queue (hash differs from baseline and pending) or removes it (merged/closed before its turn). One queue entry per PR, whatever the number of changes while queued.
+The scheduled read of PR state for tracked open PRs. It only adds a PR to the queue (hash differs from baseline and pending) or removes it (merged/closed before its turn). Its latest snapshot also decides a **Ready hold**. One queue entry per PR, whatever the number of changes while queued.
 
 **Baseline**:
 Hash of the last consumed PR state, including the host's own writes, so own comments never retrigger.
@@ -310,8 +310,12 @@ One Review Queue entry bound to account, repository, PR, revision and trigger po
 _Avoid_: Row, list position
 
 **Ready for you**:
-Queue group of PRs where the Agents reviewed the latest head, have nothing to add (no findings, held findings or open concerns) and did **not** approve, because they lack Approve permission: the human decides. A PR the acting account approved (confirmed receipt for the current head) is not Ready: it leaves the Queue and shows **Approved** in Reviewed (**Merged** once merged). A new head voids that approval. No Agent lane. Active and queued jobs belong in Running; external waits appear as PR rows without AI slots. Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base. Its notification waits until any authorized approve or merge settles, and is sent once per Iteration.
+Queue group of PRs where the Agents reviewed the latest head, have nothing to add (no findings, held findings or open concerns) and did **not** approve, because they lack Approve permission: the human decides. A PR the acting account approved (confirmed receipt for the current head) is not Ready: it leaves the Queue and shows **Approved** in Reviewed (**Merged** once merged). A new head voids that approval. No Agent lane. Active and queued jobs belong in Running; external waits appear as PR rows without AI slots. Completed reviews stay Ready despite config drift or a disabled repository; they go **Stale** only on a new head or base. Ready also needs the latest read of the same head to be mergeable, else a **Ready hold**. Its notification waits until any authorized approve or merge settles, and is sent once per Iteration.
 _Avoid_: Agent lane
+
+**Ready hold**:
+A signed-off PR (or approval with merge pending) whose latest heartbeat read of the same head is not mergeable: **Waiting for PR author** with typed `hold` (`draft`, `conflicts`, `changes_requested`, `ci_failed`, `behind_base`), never Ready. GitHub and Azure DevOps facts alike. Projection only: no review, comment, write or notification; never Needs attention. Merge state is not a finding. Cleared on the same head, it returns to Ready (no second Ready notice); leaving draft or new requested changes queue the normal pass; a new head is a new Iteration. See [ADR 0030](docs/adr/0030-ready-follows-merge-facts.md).
+_Avoid_: Stale, rest, finding
 
 **Handoff**:
 Queue entry asking a human to act. One current handoff per account/repository PR. Human comments and reviews stay on GitHub. Confirmed approval is not personal review; confirmed merged PRs are not actionable. Marker on every cleared unmerged PR, kept after confirmed auto-approval. Automation never asserts personal review done.

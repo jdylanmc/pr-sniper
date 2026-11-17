@@ -1062,12 +1062,13 @@ export async function mountPanel(app: HTMLElement) {
       );
       rows.splice(0, rows.length, ...running);
       for (const item of snapshot?.items ?? []) {
-        if (waitingStates[item.state])
+        const state = item.hold ? `held_${item.hold}` : item.state;
+        if (waitingStates[state])
           rows.push({
             id: item.id,
             kind: "item",
             title: `${item.job.repository_name} #${item.job.number}: ${item.job.title}`,
-            state: item.state,
+            state,
           });
       }
       draw("running", rows, now);

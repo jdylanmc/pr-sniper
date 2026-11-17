@@ -982,8 +982,9 @@ pub fn project(store: &Store, snapshot: &mut queue::Snapshot) -> Result<(), Stri
                     item.state = State::Stale;
                     item.summary="Provider head/base changed; this saved review does not establish current clearance.";
                 } else if observation.draft {
-                    item.state = State::Queued;
-                    item.summary = "The PR is draft; automatic approval and merge are blocked.";
+                    item.state = State::WaitingForAuthor;
+                    item.summary = queue::hold::SUMMARY;
+                    item.hold = Some(queue::hold::Hold::Draft);
                 } else if !packet_approve && observation.discussion_blocker().is_some() {
                     item.state = State::WaitingForHuman;
                     item.summary="Provider review or discussion concerns remain outstanding; no whole-cycle clearance is asserted.";

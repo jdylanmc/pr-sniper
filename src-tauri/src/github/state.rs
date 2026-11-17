@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 const BATCH: usize = 10;
 
 const FRAGMENT: &str = r#"fragment S on PullRequest {
-  fullDatabaseId number title body state isDraft mergeable reviewDecision baseRefOid headRefOid headRefName
+  fullDatabaseId number title body state isDraft mergeable mergeStateStatus isMergeQueueEnabled reviewDecision baseRefOid headRefOid headRefName
   baseRef { branchProtectionRule { requiresStatusChecks requiredStatusCheckContexts } }
   labels(first:100) { nodes { name } }
   latestOpinionatedReviews(first:100) { nodes { state author { login } commit { oid } } }
@@ -157,6 +157,9 @@ fn parse(pull: &Value) -> Result<PrSnapshot, ConnectionError> {
             .as_bool()
             .ok_or(ConnectionError::InvalidResponse)?,
         mergeable: string(&pull["mergeable"])?,
+        // A merge queue updates the branch itself: behind is not the author's.
+        behind: pull["mergeStateStatus"].as_str() == Some("BEHIND")
+            && pull["isMergeQueueEnabled"].as_bool() != Some(true),
         review_decision: pull["reviewDecision"].as_str().map(str::to_string),
         reviews: nodes(&pull["latestOpinionatedReviews"])?
             .iter()
@@ -297,6 +300,7 @@ mod tests {
             state: "OPEN".into(),
             draft: false,
             mergeable: "MERGEABLE".into(),
+            behind: false,
             review_decision: None,
             reviews: vec![
                 SnapshotReview {
@@ -396,7 +400,25 @@ mod tests {
         kept(|s| s.check_total += 1);
         kept(|s| s.required_checks.push("macos".into()));
         kept(|s| s.mergeable = "CONFLICTING".into());
+        kept(|s| s.behind = true);
         kept(|s| s.labels.push("c".into()));
+    }
+
+    #[test]
+    fn behind_counts_only_outside_a_merge_queue_and_conflicts_lead() {
+        let read = |state: &str, queue: bool, mergeable: &str| {
+            let pull = json!({"fullDatabaseId":"9","number":1,"title":"t","body":"","state":"OPEN",
+                "isDraft":false,"mergeable":mergeable,"mergeStateStatus":state,
+                "isMergeQueueEnabled":queue,"reviewDecision":null,"baseRefOid":"s","headRefOid":"h",
+                "baseRef":{"branchProtectionRule":null},"labels":{"nodes":[]},
+                "latestOpinionatedReviews":{"nodes":[]},"comments":{"totalCount":0,"nodes":[]},
+                "commits":{"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]}});
+            parse(&pull).unwrap().normalize().mergeable
+        };
+        assert_eq!(read("BEHIND", false, "MERGEABLE"), "behind");
+        assert_eq!(read("BEHIND", true, "MERGEABLE"), "ok");
+        assert_eq!(read("CLEAN", false, "MERGEABLE"), "ok");
+        assert_eq!(read("DIRTY", false, "CONFLICTING"), "conflicting");
     }
 
     struct Wire;

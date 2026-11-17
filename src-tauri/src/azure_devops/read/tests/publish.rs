@@ -509,6 +509,16 @@ fn readiness_threads(wire: &FakeWire, threads: Value) {
 }
 
 pub(super) fn readiness_full(wire: &FakeWire, evaluations: Value, statuses: Value, threads: Value) {
+    readiness_pull(wire, evaluations, statuses, threads, |_| {});
+}
+
+fn readiness_pull(
+    wire: &FakeWire,
+    evaluations: Value,
+    statuses: Value,
+    threads: Value,
+    edit: impl FnOnce(&mut Value),
+) {
     let mut pull = json!({
         "pullRequestId": 7, "status": "active", "title": "Change 7",
         "description": "Body", "createdBy": author(BLAKE),
@@ -521,6 +531,7 @@ pub(super) fn readiness_full(wire: &FakeWire, evaluations: Value, statuses: Valu
         "reviewers": [{"id": CASEY, "displayName": "Casey", "vote": 0}]
     });
     pull["labels"] = json!([]);
+    edit(&mut pull);
     wire.json(&git("pullrequests/7?"), pull);
     iterations(wire);
     wire.json(
@@ -810,6 +821,45 @@ fn a_red_status_blocks_while_a_pending_one_does_not() {
             .normalize()
             .ci_failed());
     }
+}
+
+#[test]
+fn the_heartbeat_reads_what_keeps_a_signed_off_pr_from_merging() {
+    use crate::queue::hold::{self, Hold};
+    let runtime = runtime();
+    let wire = Arc::new(FakeWire::default());
+    let session = session(&wire, &runtime);
+    let repository = RemoteRepository {
+        id: key().id(),
+        name: "contoso/Web/app".into(),
+    };
+    let none = || json!({"value": []});
+    let cases: [(fn(&mut Value), Option<Hold>); 4] = [
+        (|_| {}, None),
+        (
+            |p| p["mergeStatus"] = json!("conflicts"),
+            Some(Hold::Conflicts),
+        ),
+        (|p| p["isDraft"] = json!(true), Some(Hold::Draft)),
+        (
+            |p| p["reviewers"][0]["vote"] = json!(-10),
+            Some(Hold::ChangesRequested),
+        ),
+    ];
+    for (edit, expected) in cases {
+        readiness_pull(&wire, none(), none(), none(), edit);
+        let read = session.pr_snapshot(&repository, 7).unwrap().normalize();
+        assert_eq!(hold::of(&read), expected);
+    }
+    readiness_wire(
+        &wire,
+        none(),
+        json!({"value": [
+            {"id": 1, "state": "failed", "context": {"genre": "ci", "name": "build"}, "iterationId": 2},
+        ]}),
+    );
+    let read = session.pr_snapshot(&repository, 7).unwrap().normalize();
+    assert_eq!(hold::of(&read), Some(Hold::CiFailed));
 }
 
 #[test]

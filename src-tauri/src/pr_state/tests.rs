@@ -27,6 +27,7 @@ fn snapshot() -> PrSnapshot {
         state: "OPEN".into(),
         draft: false,
         mergeable: "MERGEABLE".into(),
+        behind: false,
         review_decision: None,
         reviews: vec![SnapshotReview {
             actor: "a".into(),

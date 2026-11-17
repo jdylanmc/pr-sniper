@@ -104,6 +104,7 @@ fn snapshot(body: &str) -> PrSnapshot {
         state: "OPEN".into(),
         draft: false,
         mergeable: "MERGEABLE".into(),
+        behind: false,
         review_decision: None,
         reviews: vec![],
         checks: vec![SnapshotCheck {

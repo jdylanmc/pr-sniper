@@ -275,6 +275,77 @@ test("external CI wait is visible without a human handoff or occupied AI slot", 
   await expect(activity(page, "exit")).toContainText("CI");
 });
 
+test("a signed-off PR that stops being mergeable leaves Ready for a held Running row", async ({
+  page,
+  store,
+}) => {
+  const fixture = await queueFixture(store);
+  const run = packetRun(fixture, 25, {
+    exit: "ready_for_human",
+    summary: "Small rename; behaviour unchanged.",
+  });
+  const seed = (mergeable) =>
+    store("seed_queue_state", {
+      jobs: [run.job],
+      reviews: [run],
+      publications: [],
+      follow_ups: [],
+      pr_states: {
+        records: [
+          {
+            binding: binding(run.job),
+            iteration_id: "held",
+            snapshot: {
+              head: run.job.head_sha,
+              base: run.job.observed_base_sha,
+              text_hash: "text",
+              lifecycle: "open",
+              mergeable,
+              review_decision: null,
+              approvals: [],
+              labels: [],
+              checks: [["CI", "done", "success"]],
+              check_total: 1,
+              comments: [],
+              thread_total: 0,
+              comment_total: 0,
+            },
+            state_seq: 1,
+          },
+        ],
+      },
+    });
+  await seed("conflicting");
+  expect((await store("monitoring_snapshot")).items[0]).toMatchObject({
+    state: "waiting_for_author",
+    hold: "conflicts",
+    exit: "ready_for_human",
+    rest: null,
+  });
+  await page.goto("/");
+  await expect(
+    page.locator('[data-panel-view="queue"] .queue-item'),
+  ).toHaveCount(0);
+  await tab(page, "Running").click();
+  const held = page.locator('[data-work-state="held_conflicts"]');
+  await expect(held).toContainText("Waiting for author \u00b7 conflicts");
+  await held.getByRole("button", { name: "Open PR evidence" }).click();
+  await expect(page.locator("[data-hold]")).toHaveAttribute(
+    "data-hold",
+    "conflicts",
+  );
+  await expect(page.locator("[data-queue-status]")).toContainText(
+    "Waiting for author \u00b7 conflicts",
+  );
+
+  // Mergeable again on the same head: back in Ready.
+  await seed("ok");
+  expect((await store("monitoring_snapshot")).items[0]).toMatchObject({
+    state: "machine_signed_off",
+    hold: null,
+  });
+});
+
 test("packet exits map to typed queue states", async ({ store }) => {
   const items = await seedPackets(store);
   expect(items[21]).toMatchObject({

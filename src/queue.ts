@@ -3,7 +3,7 @@ import { whenReleased } from "./stable-dom";
 import { renderActions, type ActionStatus } from "./actions";
 import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
-import { progressChip, type ExitName, type Progress } from "./exits";
+import { progressChip, type ExitName, type Hold, type Progress } from "./exits";
 
 export interface NormalWork {
   id: string;
@@ -128,6 +128,8 @@ export interface QueueItem {
   }[];
   // Retry all re-arms it; human decisions stay parked.
   retry_all?: boolean;
+  // Signed off but not mergeable now: waits for the author, out of Ready.
+  hold?: Hold | null;
   // The primary's exit and the host effect it still has in flight.
   exit?: ExitName | null;
   progress?: Progress | null;

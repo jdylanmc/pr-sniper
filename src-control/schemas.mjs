@@ -393,6 +393,16 @@ export const queueItem = z
         "not_admitted",
       ])
       .nullable(),
+    // Why a signed-off PR waits for its author instead of Ready; null otherwise.
+    hold: z
+      .enum([
+        "draft",
+        "conflicts",
+        "changes_requested",
+        "ci_failed",
+        "behind_base",
+      ])
+      .nullable(),
     resume_at: z.number().nullable(),
     exit: exitName.nullable(),
     progress: progress.nullable(),
