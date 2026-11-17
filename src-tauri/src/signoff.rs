@@ -295,8 +295,14 @@ pub fn run(env: &mut dyn Environment, record: &mut SignOff) -> Result<(), Failur
         Ok(comments) => comments,
         Err(_) => return retry(env, record, now),
     };
+    // Only our account's exact sign-off for this head; a quoted or pasted marker is not one.
     let marker = marker(&record.head);
-    if let Some(found) = comments.iter().find(|c| c.body.contains(&marker)) {
+    let own = |c: &&TopComment| {
+        c.author_id.as_deref() == Some(record.job.account_id.as_str())
+            && c.body.contains(&marker)
+            && is_sign_off(&c.body)
+    };
+    if let Some(found) = comments.iter().find(own) {
         record.receipt = Some(found.id.clone());
         return finish(env, record, Phase::Done);
     }

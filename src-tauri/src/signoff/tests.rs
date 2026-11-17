@@ -408,6 +408,35 @@ fn restart_finds_the_marker_and_never_posts_twice() {
 }
 
 #[test]
+fn only_our_accounts_exact_sign_off_counts_as_already_posted() {
+    let foreign = || {
+        let mut pasted = comment("80", &body(&head()));
+        pasted.author_id = Some("11".into());
+        vec![
+            pasted,
+            comment("81", &format!("Quoting: {}", body(&head()))),
+            comment("82", &body(&"d".repeat(40))),
+        ]
+    };
+    // First pass: none of these is our sign-off for this head, so it posts.
+    let mut env = open();
+    env.comments = foreign();
+    let mut record = fresh();
+    run(&mut env, &mut record).unwrap();
+    assert_eq!(record.phase, Phase::Done);
+    assert_eq!(record.receipt.as_deref(), Some("900"));
+    assert_eq!(env.posts.len(), 1);
+    // Read-back of an uncertain post: a foreign marker is no proof it landed.
+    let mut env = open();
+    env.comments = foreign();
+    let mut record = fresh();
+    record.phase = Phase::Attempted;
+    run(&mut env, &mut record).unwrap();
+    assert_eq!(record.phase, Phase::Attempted);
+    assert!(record.receipt.is_none() && env.posts.is_empty());
+}
+
+#[test]
 fn an_uncertain_post_is_read_back_never_reposted() {
     let mut env = open();
     env.post_fails = Some(true);
