@@ -234,6 +234,14 @@ pub trait CommentReader {
         repository: &RemoteRepository,
         number: u64,
     ) -> Result<Vec<TopComment>, ConnectionError>;
+    /// PR-level comments, including Azure DevOps general (non-file) thread roots.
+    fn pr_level_comments(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+    ) -> Result<Vec<TopComment>, ConnectionError> {
+        self.top_comments(repository, number)
+    }
 }
 
 pub trait CommentWriter {
@@ -245,6 +253,17 @@ pub trait CommentWriter {
         account: &str,
         body: &str,
     ) -> Result<String, WriteFailure>;
+    /// Posts a PR-level comment as `account` (Azure DevOps: a closed general
+    /// thread, so comment-resolution policies stay satisfied). Returns its ID.
+    fn post_pr_comment(
+        &self,
+        repository: &RemoteRepository,
+        number: u64,
+        account: &str,
+        body: &str,
+    ) -> Result<String, WriteFailure> {
+        self.reply_to_mention(repository, number, account, body)
+    }
 }
 
 /// Verification of one review publication against the provider.

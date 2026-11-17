@@ -139,6 +139,8 @@ export const repository = z.strictObject({
   assignments: z.array(assignment).optional(),
   primary_assignment_id: nullableOptional(id),
   review_drafts: z.boolean().optional(),
+  // Host sign-off comment per clean revision; needs the primary's Publish Comment.
+  sign_off_comments: z.boolean().optional(),
   // Repository paths: "and" gates admission (default), "or" also admits.
   paths: pathGlobs.optional(),
   paths_mode: z.enum(["and", "or"]).optional(),

@@ -147,6 +147,60 @@ pub(crate) fn observe_queue(
     Ok(ledger.next().cloned())
 }
 
+/// The settled event a queue item announces, if any: an authorized approve or
+/// merge still in flight has none yet. Merged items are announced separately.
+pub(crate) fn item_category(item: &queue::Item) -> Option<Category> {
+    let mut category = match item.state {
+        queue::State::ConfirmationRequired => Some(Category::Confirmation),
+        queue::State::WaitingForHuman => Some(Category::HumanInput),
+        queue::State::MachineSignedOff => Some(Category::Ready),
+        // A superseded revision is stale, not failed.
+        queue::State::Failed => Some(Category::Failure),
+        _ => None,
+    };
+    if item.state == queue::State::MachineSignedOff
+        && item.action_status.as_ref().is_some_and(|s| s.final_valid)
+    {
+        category = Some(Category::FinalReviewCleared);
+    }
+    if item.state == queue::State::Approved {
+        category = Some(Category::Approved);
+    }
+    if item.state != queue::State::Merged
+        && item.action_status.as_ref().is_some_and(|s| {
+            s.effects.iter().any(|e| {
+                e.error.is_some()
+                    || matches!(
+                        e.state,
+                        crate::actions::EffectState::Rejected
+                            | crate::actions::EffectState::Uncertain
+                    )
+            }) || s.final_review.as_ref().is_some_and(|f| {
+                matches!(
+                    f.execution.operation.state,
+                    crate::monitoring::OperationState::Failed
+                        | crate::monitoring::OperationState::ManualRetry
+                )
+            })
+        })
+    {
+        category = Some(Category::Failure);
+    }
+    // An authorized approve or merge still pending, in flight or retried
+    // automatically has no settled outcome yet: hold, then notify once.
+    if (matches!(
+        item.progress,
+        Some(queue::Progress::Approving | queue::Progress::Merging)
+    ) || item.action_status.as_ref().is_some_and(|s| s.settling))
+        && item
+            .failed_operation
+            .is_none_or(|op| op == queue::FailedOperation::ProviderAction)
+    {
+        category = None;
+    }
+    category
+}
+
 pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
     let mut frames = Vec::new();
     let mut merged = BTreeMap::<String, &queue::Item>::new();
@@ -174,54 +228,7 @@ pub fn frames(snapshot: &queue::Snapshot) -> Vec<Frame> {
             }
             continue;
         }
-        let mut category = match item.state {
-            queue::State::ConfirmationRequired => Some(Category::Confirmation),
-            queue::State::WaitingForHuman => Some(Category::HumanInput),
-            queue::State::MachineSignedOff => Some(Category::Ready),
-            // A superseded revision is stale, not failed.
-            queue::State::Failed => Some(Category::Failure),
-            _ => None,
-        };
-        if item.state == queue::State::MachineSignedOff
-            && item.action_status.as_ref().is_some_and(|s| s.final_valid)
-        {
-            category = Some(Category::FinalReviewCleared);
-        }
-        if item.state == queue::State::Approved {
-            category = Some(Category::Approved);
-        }
-        if item.state != queue::State::Merged
-            && item.action_status.as_ref().is_some_and(|s| {
-                s.effects.iter().any(|e| {
-                    e.error.is_some()
-                        || matches!(
-                            e.state,
-                            crate::actions::EffectState::Rejected
-                                | crate::actions::EffectState::Uncertain
-                        )
-                }) || s.final_review.as_ref().is_some_and(|f| {
-                    matches!(
-                        f.execution.operation.state,
-                        crate::monitoring::OperationState::Failed
-                            | crate::monitoring::OperationState::ManualRetry
-                    )
-                })
-            })
-        {
-            category = Some(Category::Failure);
-        }
-        // An authorized approve or merge still pending, in flight or retried
-        // automatically has no settled outcome yet: hold, then notify once.
-        if (matches!(
-            item.progress,
-            Some(queue::Progress::Approving | queue::Progress::Merging)
-        ) || item.action_status.as_ref().is_some_and(|s| s.settling))
-            && item
-                .failed_operation
-                .is_none_or(|op| op == queue::FailedOperation::ProviderAction)
-        {
-            category = None;
-        }
+        let category = item_category(item);
         let mut causes = BTreeSet::new();
         if let Some(status) = &item.action_status {
             if let Some(final_review) = &status.final_review {

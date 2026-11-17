@@ -1,6 +1,6 @@
 # Provider writes
 
-Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [its section](#azure-devops)): comment publication, exit replies and resolutions, Approve and Merge. Reviews are always on; each write is a per-assignment opt-in grant. Agents never write; the native host does ([ADR-0010](adr/0010-native-mutation-owner-intent-before-effect.md), [ADR-0016](adr/0016-revision-safe-publication.md), [ADR-0017](adr/0017-opt-in-provider-actions.md)).
+Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [its section](#azure-devops)): comment publication, exit replies and resolutions, revision sign-off comments, Approve and Merge. Reviews are always on; each write is a per-assignment opt-in grant. Agents never write; the native host does ([ADR-0010](adr/0010-native-mutation-owner-intent-before-effect.md), [ADR-0016](adr/0016-revision-safe-publication.md), [ADR-0017](adr/0017-opt-in-provider-actions.md)).
 
 ## Rules
 
@@ -24,6 +24,21 @@ Reference for every provider write PR Sniper can make (GitHub; Azure DevOps in [
 - Unusable batch (owned pending review whose inline comments differ from the frozen batch, changed lens, withdrawn): the exact owned pending review is deleted and the publication is **discarded**; no replacement batch, no Needs attention row. No automatic re-review; packet toss/re-queue handles a moved state. A submitted review with differing comments stays the receipt. Transient failures auto-resume on the review cooldowns; startup re-observes publications parked by older builds once.
 - Unobserved effect (in-flight write, or read-back not yet consistent) = pending verification while the retry budget is live: Awaiting publication, no Failed, no notice, no status chatter. Failed (`Publish unconfirmed`) only once the operation parks.
 - Retry: 3 retries within 15 min, shared. Operation and deadline survive restart. Rejection, config and permission failures need a fix. **Reconcile / retry publication** = fresh budget, same identity and uncertainty. After GitHub-confirmed submission with failed final eligibility, the receipt is kept and retry only reconciles.
+
+## Revision sign-off comments
+
+Repository switch **Revision sign-off comments** (`sign_off_comments`, default off). Effective only while the primary assignment has **Publish Comment**; otherwise inert.
+
+| Rule      | Behavior                                                                                                                                                                                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| When      | Primary's clean outcome settles on a revision: `lgtm`, `ready_for_human` (no `still_applies` finding), `approve_pull_request` or `approve_and_merge` once its vote or merge is confirmed. Outcomes settled over 24 h earlier: none.                                                                                |
+| Never     | `leave_comments`, `wait`, panic, rejected or failed approve/merge, stale or moved head, closed PR, someone else's merge, draft without Review drafts.                                                                                                                                                              |
+| Text      | Host-fixed: ``Revision `abc1234` looks good. No issues found.`` + `<!-- pr-sniper:signoff:{head} -->` + `🔫 PR Sniper automated review`. No agent text, doctrine or recap.                                                                                                                                         |
+| GitHub    | PR conversation comment (`POST /issues/{n}/comments`), also after an approval: the approve review body stays marker + signature only (exact-body reconcile).                                                                                                                                                       |
+| ADO       | PR-level thread (no file context) created `closed`: a comment-resolution policy never waits on it. The vote carries no text.                                                                                                                                                                                       |
+| Once      | One ledger record per PR + head (`sign_offs` in `state/feedback.json`); intent saved before the post; the acting account's exact sign-off for the head is read back before every post (a pasted or quoted marker never counts). Restart, same-head re-review, retry: no second comment. Uncertain post: read only. |
+| Retry     | 3 posts or read-backs, then dropped silently (no Needs attention). Pause or account change holds it.                                                                                                                                                                                                               |
+| Heartbeat | Own sign-off comments are excluded from the PR state hash: no re-review.                                                                                                                                                                                                                                           |
 
 ## Conversation follow-ups (legacy, retired)
 

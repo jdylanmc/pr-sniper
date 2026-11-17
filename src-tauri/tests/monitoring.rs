@@ -35,6 +35,7 @@ const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 fn repository(enabled: bool) -> Repository {
     Repository {
         review_drafts: false,
+        sign_off_comments: false,
         paths: Vec::new(),
         paths_mode: Default::default(),
         id: "00000000-0000-4000-8000-000000000001".into(),

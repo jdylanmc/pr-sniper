@@ -477,35 +477,43 @@ pub(crate) fn save_checked(
 
 fn expands_grants(old: &crate::storage::Settings, new: &crate::storage::Settings) -> bool {
     new.repositories.iter().any(|repo| {
-        repo.assignments.iter().any(|assignment| {
-            let before = old
+        // Revision sign-off comments post as the account: an opt-in write like the grants.
+        let sign_off = repo.sign_off_comments
+            && !old
                 .repositories
                 .iter()
-                .find(|r| r.id == repo.id)
-                .and_then(|r| {
-                    r.assignments
-                        .iter()
-                        .find(|a| a.id == assignment.id)
-                        .map(|a| (r, a))
-                });
-            let authority = repo.assignment_authority(assignment);
-            let previous = before.map(|(r, a)| r.assignment_authority(a));
-            let granted = |f: fn(&crate::storage::AssignmentAuthority) -> bool| {
-                f(&authority) && !previous.as_ref().is_some_and(f)
-            };
-            granted(|a| a.comment)
-                || granted(|a| a.reply)
-                || granted(|a| a.approve)
-                || granted(|a| a.merge)
-                || assignment.actions.as_ref().is_some_and(|a| a.include_self)
-                    && !before
-                        .is_some_and(|(_, a)| a.actions.as_ref().is_some_and(|a| a.include_self))
-                || before.is_some_and(|(r, a)| {
-                    repo.assignment_tools(assignment)
-                        .iter()
-                        .any(|t| !r.assignment_tools(a).contains(t))
-                })
-        })
+                .any(|r| r.id == repo.id && r.sign_off_comments);
+        sign_off
+            || repo.assignments.iter().any(|assignment| {
+                let before = old
+                    .repositories
+                    .iter()
+                    .find(|r| r.id == repo.id)
+                    .and_then(|r| {
+                        r.assignments
+                            .iter()
+                            .find(|a| a.id == assignment.id)
+                            .map(|a| (r, a))
+                    });
+                let authority = repo.assignment_authority(assignment);
+                let previous = before.map(|(r, a)| r.assignment_authority(a));
+                let granted = |f: fn(&crate::storage::AssignmentAuthority) -> bool| {
+                    f(&authority) && !previous.as_ref().is_some_and(f)
+                };
+                granted(|a| a.comment)
+                    || granted(|a| a.reply)
+                    || granted(|a| a.approve)
+                    || granted(|a| a.merge)
+                    || assignment.actions.as_ref().is_some_and(|a| a.include_self)
+                        && !before.is_some_and(|(_, a)| {
+                            a.actions.as_ref().is_some_and(|a| a.include_self)
+                        })
+                    || before.is_some_and(|(r, a)| {
+                        repo.assignment_tools(assignment)
+                            .iter()
+                            .any(|t| !r.assignment_tools(a).contains(t))
+                    })
+            })
     })
 }
 
