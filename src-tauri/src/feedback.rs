@@ -309,6 +309,9 @@ pub struct Ledger {
     /// Replies and own-thread resolutions executed for Packet-mode exits.
     #[serde(default)]
     pub exit_writes: Vec<crate::exit_writes::ExitWrite>,
+    /// Revision sign-off comments, one per pull request revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sign_offs: Vec<crate::signoff::SignOff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

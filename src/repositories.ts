@@ -33,6 +33,8 @@ export interface Repository {
   review_preset?: string;
   /** Include draft pull requests in review. Absent = off. */
   review_drafts?: boolean;
+  /** Host sign-off comment per clean revision; needs the primary's Publish Comment. Absent = off. */
+  sign_off_comments?: boolean;
   /** Path globs: include globs and `!` excludes. */
   paths?: string[];
   /** How `paths` combine with admission. Absent = `and` (gate). */

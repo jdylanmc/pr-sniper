@@ -24,13 +24,14 @@ pub(crate) enum Coordinator {
     ExitWrites,
     FollowUps,
     Actions,
+    SignOffs,
     Notifications,
 }
 
 const OPERATIONAL: &[&str] = &["settings.json", "retention.json", "automation.json"];
 
 impl Coordinator {
-    pub(crate) const ALL: [Coordinator; 8] = [
+    pub(crate) const ALL: [Coordinator; 9] = [
         Coordinator::Maintenance,
         Coordinator::Resume,
         Coordinator::Capacity,
@@ -38,6 +39,7 @@ impl Coordinator {
         Coordinator::ExitWrites,
         Coordinator::FollowUps,
         Coordinator::Actions,
+        Coordinator::SignOffs,
         Coordinator::Notifications,
     ];
 
@@ -99,7 +101,9 @@ impl Coordinator {
                 "connectivity.json",
                 "backpressure.json",
             ],
-            Coordinator::Actions | Coordinator::Notifications => return None,
+            Coordinator::Actions | Coordinator::SignOffs | Coordinator::Notifications => {
+                return None
+            }
         })
     }
 

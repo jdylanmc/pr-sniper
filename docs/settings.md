@@ -53,6 +53,7 @@ Reference for Settings navigation, accounts, repositories, assignments, Agents, 
 - Back keeps the repo draft for the session. Cancel discards only that repo's unsaved changes. Back/Cancel asks before discarding unsaved assignment or nested Agent fields.
 - Closing the repo editor cancels pending draft lookup. Owner, account or route changes fence async results. Failed reads/saves keep errors and retry; no unbound success fallback.
 - Unbinding: Save or Cancel repo changes first. Unrelated Preferences drafts do not block.
+- **Revision sign-off comments** (switch under Review drafts, default off): a host comment per clean revision ([provider-writes.md](provider-writes.md#revision-sign-off-comments)). Disabled, value kept, while the primary lacks **Publish Comment**. MCP: `sign_off_comments`; turning it on needs `allow_grants`.
 - **Scan** (Monitor row, orange pill): scans that saved repository now ([polling.md](polling.md#schedule)). Shown always; disabled, not hidden, for a disabled repo, an unsaved draft (Save or Cancel first), pause, a reconnect-needed account, **Needs setup** or a scan in flight (spinning icon). Keeps focus while busy.
 
 ## Assignments

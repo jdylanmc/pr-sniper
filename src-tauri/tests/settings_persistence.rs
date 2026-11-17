@@ -291,6 +291,7 @@ fn the_same_provider_repository_persists_as_distinct_account_bindings() {
     first.overrides.automatic_agent_start = Some(true);
     settings.repositories.push(Repository {
         review_drafts: false,
+        sign_off_comments: false,
         paths: Vec::new(),
         paths_mode: Default::default(),
         id: uuid::Uuid::new_v4().to_string(),
@@ -341,6 +342,7 @@ fn azure_devops_contract_persists_without_a_live_provider_implementation() {
     let mut settings = Settings::default();
     settings.repositories.push(Repository {
         review_drafts: false,
+        sign_off_comments: false,
         paths: Vec::new(),
         paths_mode: Default::default(),
         id: uuid::Uuid::new_v4().to_string(),
