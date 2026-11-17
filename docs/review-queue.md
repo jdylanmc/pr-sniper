@@ -42,6 +42,22 @@ Retry on Tossed / Write failed: `retry_packet_state` resets `error_count`, re-qu
 - Queue identity is derived from stored tracking, not position.
 - Reviewed order: newest completion first (`operation.completed_at`; older records use their first attempt time), then newest pass, then a stable row id. Never saved queue order, so re-enabling a repository, reactivation or cleanup moves no completed review. A merged, closed or approved PR row sits with its latest completed review.
 
+## Repository filter
+
+Queue and Reviewed each have a repository chip (folder icon + **All repos** / short name / **N repos**) once two or more repositories have rows. It drills into **Repositories**: **All repos** then one pressed toggle per repository with rows, grouped by provider account (GH / AZ + account), each with its row count. Panel-only; no native or MCP state.
+
+| Rule     | Value                                                                              |
+| -------- | ---------------------------------------------------------------------------------- |
+| Identity | provider + account ID + provider repository ID                                     |
+| Label    | last path segment; full name when two share it                                     |
+| Select   | multi; none = every repository; **All repos** clears                               |
+| Queue    | rows and Ready for you / Needs attention counts filtered (AND with the card)       |
+| Reviewed | rows and outcome chip counts filtered (AND with the outcome chips)                 |
+| Global   | Retry all and Clean all counts and actions, Running badge, tray, notifications     |
+| Kept     | per list, for the session: tab switches and panel reopen                           |
+| Dropped  | a selected repository with no rows leaves the selection silently                   |
+| Focus    | opening focuses the pressed choice; a toggle keeps focus; Back returns to the chip |
+
 ## Evidence and actions
 
 - Evidence: ordered changed-file guide, findings, conversations, acting account, receipts, mutation recovery. Human comments and reviews stay on GitHub.

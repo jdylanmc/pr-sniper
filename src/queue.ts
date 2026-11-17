@@ -4,6 +4,7 @@ import { renderActions, type ActionStatus } from "./actions";
 import type { FailureClass } from "./automation";
 import { renderFacts } from "./work-presentation";
 import { progressChip, type ExitName, type Hold, type Progress } from "./exits";
+import { shows } from "./repository-filter";
 
 export interface NormalWork {
   id: string;
@@ -373,6 +374,8 @@ export async function openDestination(
 export interface QueueContext {
   paused: boolean;
   all: QueueItem[];
+  // Repository filter: rows outside it are hidden; Retry all stays global.
+  repositories?: ReadonlySet<string>;
 }
 
 export function renderQueue(
@@ -401,6 +404,14 @@ export function renderQueue(
         ).length
       : 0;
   let signature = "";
+  const drawnSignature = () =>
+    JSON.stringify([
+      items,
+      selected,
+      retryingAll,
+      queuedCount(),
+      [...(context.repositories ?? [])],
+    ]);
   let loaded = false;
   let initialized = false;
   let selectionRevision = 0;
@@ -463,11 +474,14 @@ export function renderQueue(
     const focusedLabel =
       active instanceof HTMLButtonElement ? active.textContent : null;
     const allFocused = !!active?.matches("[data-retry-all]");
-    signature = JSON.stringify([items, selected, retryingAll, queuedCount()]);
+    signature = drawnSignature();
     const matches = (item: QueueItem) =>
       item.id === selected || !!item.aliases?.includes(selected ?? "");
+    const shown = items.filter((item) =>
+      shows(context.repositories ?? new Set(), item.job),
+    );
     root.replaceChildren();
-    if (!items.length) {
+    if (!shown.length) {
       const empty = document.createElement(options.compact ? "div" : "p");
       if (options.compact) {
         empty.className = "queue-empty";
@@ -475,7 +489,7 @@ export function renderQueue(
       } else empty.textContent = "No pull requests";
       root.append(empty);
     }
-    for (const item of items) {
+    for (const item of shown) {
       const row = document.createElement("article");
       row.className = "queue-item";
       row.dataset.itemId = item.id;
@@ -744,7 +758,7 @@ export function renderQueue(
       };
       attention.prepend(all);
     }
-    if (options.compact && items.length) {
+    if (options.compact && shown.length) {
       for (const kind of ["ready", "attention"]) {
         if (root.querySelector(`[data-queue-group="${kind}"]`)) continue;
         const empty = document.createElement("div");
@@ -797,11 +811,7 @@ export function renderQueue(
   });
   // Background updates redraw after a press ends so its click survives.
   const redraw = () => {
-    if (
-      JSON.stringify([items, selected, retryingAll, queuedCount()]) !==
-      signature
-    )
-      draw(false);
+    if (drawnSignature() !== signature) draw(false);
   };
   const update = (next: QueueItem[], nextContext?: QueueContext) => {
     items = next;
