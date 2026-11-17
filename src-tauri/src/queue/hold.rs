@@ -40,14 +40,24 @@ pub fn of(snapshot: &NormalizedSnapshot) -> Option<Hold> {
     }
 }
 
-/// Ready items (including an approval whose merge waits on the branch) whose
-/// latest read of the same head is not mergeable leave Ready. An approve or
-/// merge in flight keeps its progress until it settles.
+/// Ready items, and approvals whose merge waits on the branch, whose latest
+/// read of the same head is not mergeable wait for the author. An approve or
+/// merge in flight keeps its progress until it settles; a settled approval
+/// with nothing pending stays Approved.
 pub(super) fn project(snapshot: &mut Snapshot) {
     for item in &mut snapshot.items {
-        if item.state != State::MachineSignedOff
-            || matches!(item.progress, Some(Progress::Approving | Progress::Merging))
-        {
+        let merge_pending = matches!(
+            item.progress,
+            Some(Progress::MergePendingBehindBase | Progress::MergePendingConflicts)
+        );
+        let eligible = match item.state {
+            State::MachineSignedOff => {
+                !matches!(item.progress, Some(Progress::Approving | Progress::Merging))
+            }
+            State::Approved => merge_pending,
+            _ => false,
+        };
+        if !eligible {
             continue;
         }
         let Some(hold) = snapshot

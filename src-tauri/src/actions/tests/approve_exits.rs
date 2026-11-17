@@ -994,6 +994,70 @@ fn lgtm_approves_a_branch_only_the_author_can_fix_and_leaves_the_merge_pending()
 }
 
 #[test]
+fn an_approval_whose_merge_waits_on_conflicts_waits_for_the_author_until_mergeable() {
+    use crate::queue::{hold::Hold, Progress};
+    let (_root, store, id) = setup(
+        true,
+        true,
+        sign_off(&[], crate::exits::LgtmAction::Merge),
+        false,
+    );
+    let mut current = observed();
+    conflicted(&mut current);
+    adopted(&store, &id, current);
+    let approve = host::prepare_next_effect(&store, &id, NOW + 20)
+        .unwrap()
+        .unwrap();
+    let mut env = env(&store);
+    conflicted(&mut env.wire.0.lock().unwrap().observation);
+    host::execute_action(&mut env, &approve).unwrap();
+    let after = env.wire.0.lock().unwrap().observation.clone();
+    synchronize(&store, &id, Ok(after.clone()), NOW + 22).unwrap();
+    packet::settle(&store, &id, &after, NOW + 23).unwrap();
+    let approved = item(&store, &id);
+    assert_eq!(approved.state, State::Approved);
+    assert_eq!(approved.progress, Some(Progress::MergePendingConflicts));
+    let heartbeat = |mergeable: &str| {
+        let read = crate::github::state::PrSnapshot {
+            head: approved.job.head_sha.clone(),
+            base: after.base.clone(),
+            state: "OPEN".into(),
+            mergeable: mergeable.into(),
+            ..Default::default()
+        }
+        .normalize();
+        let mut states = store.load_pr_states().unwrap();
+        states
+            .records
+            .retain(|r| r.binding != Binding::job(&approved.job));
+        states.records.push(
+            serde_json::from_value(json!({
+                "binding": Binding::job(&approved.job),
+                "iteration_id": "approved",
+                "snapshot": read,
+                "state_seq": 1,
+            }))
+            .unwrap(),
+        );
+        store.save_pr_states(&states).unwrap();
+    };
+    heartbeat("CONFLICTING");
+    let held = item(&store, &id);
+    assert_eq!(held.state, State::WaitingForAuthor);
+    assert_eq!(held.hold, Some(Hold::Conflicts));
+    assert_eq!(held.progress, None);
+    // Still no merge: the gate needs a clean branch, whatever the Queue shows.
+    assert!(host::prepare_next_effect(&store, &id, NOW + 24)
+        .unwrap()
+        .is_none());
+    heartbeat("MERGEABLE");
+    let back = item(&store, &id);
+    assert_eq!(back.state, State::Approved);
+    assert_eq!(back.hold, None);
+    assert_eq!(back.progress, Some(Progress::MergePendingConflicts));
+}
+
+#[test]
 fn after_the_author_updates_the_branch_a_fresh_lgtm_approves_the_new_head_and_merges() {
     let (_root, store, id) = setup(
         true,
