@@ -413,12 +413,19 @@ impl PrSnapshot {
             .filter(|t| t.comments.is_empty() || !t.comments.iter().all(own))
             .collect();
         let hidden_threads = (self.threads.len() - threads.len()) as u64;
+        // A sign-off reply in a thread a human also wrote in is hidden on its own.
         let hidden_comments = (self.comments.len() - top.len()) as u64
             + self
                 .threads
                 .iter()
-                .filter(|t| !t.comments.is_empty() && t.comments.iter().all(own))
-                .map(|t| t.comment_total)
+                .filter(|t| !t.comments.is_empty())
+                .map(|t| {
+                    if t.comments.iter().all(own) {
+                        t.comment_total
+                    } else {
+                        t.comments.iter().filter(|c| own(c)).count() as u64
+                    }
+                })
                 .sum::<u64>();
         let lifecycle = match self.state.as_str() {
             "MERGED" => "merged",
@@ -492,7 +499,7 @@ impl PrSnapshot {
             })
             .collect();
         for thread in &threads {
-            for c in &thread.comments {
+            for c in thread.comments.iter().filter(|c| !own(c)) {
                 comments.push(NormalizedComment {
                     id: c.id.clone(),
                     body_hash: digest(&c.body),

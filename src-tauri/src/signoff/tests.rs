@@ -894,3 +894,41 @@ fn every_sign_off_text_is_its_own_and_never_a_pr_change() {
     ado.thread_total = 1;
     assert_eq!(ado.normalize().hash(), base.normalize().hash());
 }
+
+#[test]
+fn a_sign_off_reply_beside_a_human_reply_is_no_pr_change() {
+    use crate::provider::{PrSnapshot, SnapshotComment, SnapshotThread};
+    let comment = |id: &str, body: String| SnapshotComment {
+        id: id.into(),
+        body,
+        commit: None,
+    };
+    let thread = |comments: Vec<SnapshotComment>| SnapshotThread {
+        id: "t".into(),
+        resolved: true,
+        outdated: false,
+        comment_total: comments.len() as u64,
+        comments,
+    };
+    // A closed sign-off thread a human already answered.
+    let known = vec![comment("1", body(&head())), comment("2", "Thanks!".into())];
+    let base = PrSnapshot {
+        head: later(),
+        threads: vec![thread(known.clone())],
+        thread_total: 1,
+        ..PrSnapshot::default()
+    };
+    for reply in [findings_body(&later()), body(&later())] {
+        let mut next = base.clone();
+        let mut comments = known.clone();
+        comments.push(comment("3", reply));
+        next.threads = vec![thread(comments)];
+        assert_eq!(next.normalize().hash(), base.normalize().hash());
+    }
+    // Another human reply still is.
+    let mut human = base.clone();
+    let mut comments = known.clone();
+    comments.push(comment("3", "One more thing.".into()));
+    human.threads = vec![thread(comments)];
+    assert_ne!(human.normalize().hash(), base.normalize().hash());
+}
