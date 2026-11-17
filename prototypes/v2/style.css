@@ -4048,3 +4048,81 @@ input.switch:focus-visible {
   background: var(--control-teal-327e84);
   color: var(--text-neutral-ffffff);
 }
+/* Repository filter: chip under the Queue cards, drill-in checklist. */
+.filter-group {
+  display: contents;
+}
+.queue-repo-filter {
+  margin: 0 17px 10px;
+  flex: none;
+}
+.repo-filter-chip span {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-filter-group {
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line-slate-e3e7ec);
+  border-radius: 14px;
+  background: var(--paper);
+}
+.repo-filter-group h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px 8px;
+  font-size: 12px;
+}
+.repo-filter-group .provider-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--navy);
+  color: var(--text-neutral-ffffff);
+  font-size: 9px;
+}
+.repo-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  border-top: 1px solid var(--line-slate-e3e7ec);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.repo-filter-group > .repo-filter-row:first-child {
+  border-top: 0;
+}
+.repo-filter-row strong {
+  flex: 1;
+}
+.repo-filter-check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line-slate-e3e7ec);
+  border-radius: 50%;
+}
+.repo-filter-check .icon {
+  width: 13px;
+  height: 13px;
+  visibility: hidden;
+}
+.repo-filter-row[aria-pressed="true"] .repo-filter-check {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--on-orange);
+}
+.repo-filter-row[aria-pressed="true"] .repo-filter-check .icon {
+  visibility: visible;
+}

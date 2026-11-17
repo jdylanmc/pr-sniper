@@ -40,6 +40,8 @@ let tab = "queue";
 let queueFilter;
 // Reviewed outcome chips; empty shows every row.
 let historyFilter = new Set();
+// Repository filters per list; empty shows every repository.
+const repoFilter = { queue: new Set(), reviewed: new Set() };
 // Reviewed rows drawn; grows by 50 per Show more.
 let reviewedLimit = 50;
 let dirty = false;
@@ -367,6 +369,8 @@ function loadScenario(scenario) {
     tab = "queue";
     queueFilter = undefined;
     historyFilter = new Set();
+    repoFilter.queue.clear();
+    repoFilter.reviewed.clear();
     Object.keys(stacks).forEach((key) => {
       stacks[key] = [
         {
@@ -611,8 +615,91 @@ function empty(title, description, symbol = "queue") {
   return `<div class="empty-state">${icon(symbol)}<h2>${esc(title)}</h2><p>${esc(description)}</p></div>`;
 }
 
+// Repositories with rows, grouped by account; short names, counts.
+function repoEntries(reviews) {
+  const entries = new Map();
+  for (const review of reviews) {
+    const entry = entries.get(review.repoId);
+    if (entry) entry.count++;
+    else {
+      const account = state.accounts.find(
+        (item) => item.id === repoFor(review)?.accountId,
+      );
+      entries.set(review.repoId, {
+        key: review.repoId,
+        label: review.repoName.split("/").pop(),
+        kind: account?.kind ?? "github",
+        account: account?.name ?? "Unavailable",
+        count: 1,
+      });
+    }
+  }
+  return [...entries.values()].sort(
+    (a, b) =>
+      a.kind.localeCompare(b.kind) ||
+      a.account.localeCompare(b.account) ||
+      a.label.localeCompare(b.label),
+  );
+}
+
+function repoFiltered(list, reviews) {
+  const entries = repoEntries(reviews);
+  const keys = new Set(entries.map((entry) => entry.key));
+  for (const key of repoFilter[list])
+    if (!keys.has(key)) repoFilter[list].delete(key);
+  const selection = repoFilter[list];
+  const label = !selection.size
+    ? "All repos"
+    : selection.size === 1
+      ? entries.find((entry) => selection.has(entry.key)).label
+      : `${selection.size} repos`;
+  return {
+    entries,
+    rows: selection.size
+      ? reviews.filter((review) => selection.has(review.repoId))
+      : reviews,
+    chip:
+      entries.length > 1 || selection.size
+        ? `<button type="button" class="filter-chip repo-filter-chip" data-repo-filter-open="${list}" aria-pressed="${selection.size > 0}" aria-label="Repositories: ${esc(label)}" title="${esc(label)}">${icon("folder")}<span>${esc(label)}</span>${icon("chevron")}</button>`
+        : "",
+  };
+}
+
+function repoFilterPage(list) {
+  const { entries } = repoFiltered(
+    list,
+    list === "queue" ? human() : reviewed(),
+  );
+  const selection = repoFilter[list];
+  const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+  const row = (attributes, pressed, label, count) =>
+    `<button type="button" class="repo-filter-row" ${attributes} aria-pressed="${pressed}" aria-label="${esc(label)} ${count}"><span class="repo-filter-check">${icon("check")}</span><strong>${esc(label)}</strong><span>${count}</span></button>`;
+  const groups = [];
+  for (const entry of entries) {
+    const owner = `${entry.kind}:${entry.account}`;
+    if (groups.at(-1)?.owner !== owner) groups.push({ owner, entry, rows: [] });
+    groups
+      .at(-1)
+      .rows.push(
+        row(
+          `data-repo-filter="${esc(entry.key)}" data-list="${list}"`,
+          selection.has(entry.key),
+          entry.label,
+          entry.count,
+        ),
+      );
+  }
+  return `<div class="page-scroll" data-scroll="repo-filter"><div class="repo-filter-group">${row(`data-repo-filter-all="${list}"`, !selection.size, "All repos", total)}</div>${groups
+    .map(
+      ({ entry, rows }) =>
+        `<section class="repo-filter-group"><h2><span class="provider-mark">${entry.kind === "github" ? "GH" : "AZ"}</span>${esc(entry.account)}</h2>${rows.join("")}</section>`,
+    )
+    .join("")}</div>`;
+}
+
 function queuePage() {
-  const attention = human();
+  const filtered = repoFiltered("queue", human());
+  const attention = filtered.rows;
   const ready = attention.filter(
     (review) => review.state === "human" && !review.findings.length,
   );
@@ -644,7 +731,7 @@ function queuePage() {
           `<button type="button" class="queue-metric" data-queue-filter="${key}" aria-pressed="${view === key}"><span class="queue-metric-label">${label}${icon(symbol)}</span><span class="queue-metric-value"><strong id="${key}-count">${count}</strong><span>${caption}</span></span></button>`,
       )
       .join("")}
-  </div>
+  </div>${filtered.chip ? `<div class="filter-row queue-repo-filter">${filtered.chip}</div>` : ""}
   <div class="page-scroll queue-scroll" data-scroll="queue" id="human-panel">${retryAll}${
     items.length
       ? `<div class="queue-group" data-queue-group="${view}" id="human-list">${items
@@ -672,7 +759,8 @@ function runningPage() {
 }
 
 function reviewedPage() {
-  const all = reviewed();
+  const filtered = repoFiltered("reviewed", reviewed());
+  const all = filtered.rows;
   const counts = {};
   for (const review of all)
     counts[outcomeOf(review)] = (counts[outcomeOf(review)] ?? 0) + 1;
@@ -680,7 +768,7 @@ function reviewedPage() {
     ? all.filter((review) => historyFilter.has(outcomeOf(review)))
     : all;
   return `<div class="page-scroll" data-scroll="reviewed">
-    <div class="filter-row" role="group" aria-label="Outcome">${Object.entries(
+    <div class="filter-row">${filtered.chip}<div class="filter-group" role="group" aria-label="Outcome">${Object.entries(
       outcomes,
     )
       .filter(([key]) => counts[key] || historyFilter.has(key))
@@ -688,7 +776,7 @@ function reviewedPage() {
         ([key, [label, symbol]]) =>
           `<button class="filter-chip" data-filter="${key}" aria-pressed="${historyFilter.has(key)}" aria-label="${label} ${counts[key] ?? 0}" title="${label}">${icon(symbol)}<span aria-hidden="true">${counts[key] ?? 0}</span></button>`,
       )
-      .join("")}</div>
+      .join("")}</div></div>
     ${
       items.length
         ? `<ol class="work-list" aria-label="Reviewed work">${items
@@ -1852,6 +1940,7 @@ function render(direction = 0, focus = false) {
     agents: "Agents",
     agent: "Agent",
     repos: "Repositories",
+    "repo-filter": "Repositories",
     repo: "Repository",
     copilot: "GitHub Copilot",
     github: "GitHub",
@@ -1912,6 +2001,9 @@ function render(direction = 0, focus = false) {
       break;
     case "reviewed":
       html = reviewedPage();
+      break;
+    case "repo-filter":
+      html = repoFilterPage(current.id);
       break;
     case "settings":
       html = settingsPage();
@@ -2457,6 +2549,27 @@ popover.addEventListener("click", (event) => {
     render();
     stage
       .querySelector(`[data-queue-filter="${queueFilter}"]`)
+      ?.focus({ preventScroll: true });
+    return;
+  }
+  if (button.dataset.repoFilterOpen) {
+    navigate("repo-filter", button.dataset.repoFilterOpen);
+    return;
+  }
+  if (button.dataset.repoFilter || button.dataset.repoFilterAll) {
+    remember();
+    const list = button.dataset.list ?? button.dataset.repoFilterAll;
+    const key = button.dataset.repoFilter;
+    if (!key) repoFilter[list].clear();
+    else if (!repoFilter[list].delete(key)) repoFilter[list].add(key);
+    reviewedLimit = 50;
+    render();
+    stage
+      .querySelector(
+        key
+          ? `[data-repo-filter="${CSS.escape(key)}"]`
+          : "[data-repo-filter-all]",
+      )
       ?.focus({ preventScroll: true });
     return;
   }
