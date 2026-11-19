@@ -793,3 +793,45 @@ test("MCP refuses mutations when a replaced bundle cannot start", async () => {
     await f.close();
   }
 });
+
+test("MCP ends a replaced bundle still proving readiness when the host leaves", async () => {
+  const f = await fixture("modern", { server: replaceable });
+  const pidFile = path.join(f.root, "child.pid");
+  try {
+    await f.client.callTool({ name: "list_doctrines", arguments: {} });
+    // Never answers the readiness probe and ignores stdin closing.
+    await fs.writeFile(
+      path.join(f.root, "mcp-server.mjs"),
+      `import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`,
+    );
+    f.client
+      .callTool({ name: "list_doctrines", arguments: {} })
+      .catch(() => {});
+    let pid;
+    for (let i = 0; i < 100 && !pid; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      pid = Number(await fs.readFile(pidFile, "utf8").catch(() => 0));
+    }
+    assert(pid, "replacement bundle never started");
+    await f.client.close();
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 60 && alive(); i++)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    const running = alive();
+    if (running) process.kill(pid);
+    assert.equal(running, false, "candidate child outlived the host");
+  } finally {
+    await f.close();
+  }
+});

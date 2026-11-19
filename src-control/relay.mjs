@@ -65,7 +65,15 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
   let initialized = false;
   let envelope;
   let switching = null;
+  let closed = false;
+  // A child still proving readiness belongs to no backend yet.
+  let candidate = null;
   const buffered = [];
+  const teardown = () => {
+    closed = true;
+    candidate?.kill();
+    for (const backend of [active, ...retired]) backend.child?.end();
+  };
   const self = {
     onmessage: undefined,
     onclose: undefined,
@@ -74,7 +82,7 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
       wire.onmessage = (message, extra) => inbound(message, extra);
       wire.onerror = (error) => self.onerror?.(error);
       wire.onclose = () => {
-        for (const backend of [active, ...retired]) backend.child?.end();
+        teardown();
         self.onclose?.();
       };
       return wire.start();
@@ -82,7 +90,7 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
     send: (message, options) => wire.send(message, options),
     setProtocolVersion: (version) => wire.setProtocolVersion?.(version),
     async close() {
-      for (const backend of [active, ...retired]) backend.child?.end();
+      teardown();
       return wire.close();
     },
   };
@@ -90,6 +98,7 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
   const local = (message, extra) => self.onmessage?.(message, extra);
 
   function inbound(message, extra) {
+    if (closed) return;
     if (message?.method === "initialize" && isRequest(message))
       initialize = message;
     if (message?.method === "notifications/initialized") initialized = true;
@@ -133,6 +142,7 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
 
   async function upgrade(digest) {
     const child = await start(digest);
+    if (closed) return void child?.end();
     if (!child) return void failed.add(digest);
     const previous = active;
     active = { digest, child };
@@ -155,6 +165,7 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
     } catch {
       return Promise.resolve(null);
     }
+    candidate = proc;
     const pending = new Set();
     const asked = new Set();
     const hidden = new Map();
@@ -212,7 +223,11 @@ export function relayTransport(wire, { watch, command, onSwitch }) {
       else if (isRequest(message)) asked.add(message.id);
       wire.send(message).catch((error) => self.onerror?.(error));
     });
-    return new Promise((resolve) => {
+    return new Promise((settled) => {
+      const resolve = (value) => {
+        if (candidate === proc) candidate = null;
+        settled(value);
+      };
       const fail = () => {
         alive = false;
         proc.kill();
