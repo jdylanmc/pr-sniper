@@ -20,6 +20,10 @@ Every reply carries `protocol`; this skill supports protocol `2`. If `protocol`
 differs, a tool is missing, or the error is `unsupported_protocol`/unknown
 operation, stop and ask the human to update the PR Sniper app (or this skill
 with `npx skills update pr-sniper`). Never work around a mismatch.
+After an in-place app update the running server switches itself to the new
+bundle and refreshes its tools. If a tool still fails with `app_updated` or an
+output validation error, stop and ask the human to run `/mcp reload` (or
+restart Copilot CLI); Repair does not help. Do not retry the mutation before that.
 Do not substitute shell JSON, edit host/app files, install packages or run `gh`.
 Node 22+ is required; no runtime npm packages/downloads. The server launches
 the app if closed and preserves pause. Tool discovery alone does not launch it.

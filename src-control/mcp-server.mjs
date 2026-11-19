@@ -4,7 +4,9 @@ import {
   StdioServerTransport,
 } from "@modelcontextprotocol/server/stdio";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { invoke, protocol, useExecutable } from "./control-client.mjs";
+import { bundleWatch, relayTransport, RELAYED } from "./relay.mjs";
 import * as s from "./schemas.mjs";
 
 const { z } = s;
@@ -14,6 +16,8 @@ const simpleResult = z
   .object({ state: z.string(), replayed: z.boolean() })
   .passthrough();
 const mutation = (shape) => ({ ...s.identity.shape, ...shape });
+const self = fileURLToPath(import.meta.url);
+const bundle = bundleWatch(self);
 
 export function createServer() {
   const server = new McpServer(
@@ -60,7 +64,7 @@ export function createServer() {
       {
         description,
         inputSchema: z.strictObject(input),
-        outputSchema: s.envelope(output),
+        outputSchema: s.envelope(s.loose(output)),
         annotations: {
           readOnlyHint: !changes,
           destructiveHint: changes,
@@ -81,7 +85,17 @@ export function createServer() {
           };
         let reply;
         try {
-          reply = await invoke(command(args));
+          // A mutation shaped by this server's schemas must not reach a newer
+          // app: unknown fields could be dropped and then saved.
+          if (changes && bundle.stale())
+            throw Object.assign(new Error(), {
+              code: "app_updated",
+              detail: { reason: "bundle_replaced" },
+            });
+          reply = await invoke(
+            command(args),
+            changes && version !== "development" ? { appVersion: version } : {},
+          );
         } catch (error) {
           reply = {
             protocol,
@@ -483,11 +497,20 @@ export function createServer() {
 const app = process.argv.indexOf("--app");
 if (app !== -1) useExecutable(process.argv[app + 1]);
 
-serveStdio(createServer, {
+let latest;
+const wire = new StdioServerTransport(undefined, undefined, {
+  maxBufferSize: 2 * 1024 * 1024,
+});
+serveStdio((options) => (latest = createServer(options)), {
   legacy: "serve",
-  transport: new StdioServerTransport(undefined, undefined, {
-    maxBufferSize: 2 * 1024 * 1024,
-  }),
+  // A relayed child never relays again; the first process tracks updates.
+  transport: process.env[RELAYED]
+    ? wire
+    : relayTransport(wire, {
+        watch: bundle,
+        command: [self, ...process.argv.slice(2)],
+        onSwitch: () => latest?.sendToolListChanged(),
+      }),
   onerror: () =>
     process.stderr.write("[pr-sniper-mcp] protocol transport error\n"),
   maxSubscriptions: 1,

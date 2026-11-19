@@ -164,3 +164,39 @@
 - These checks do not establish live provider review, OS notification
   permission or Copilot conversational compliance. Each platform's runtime
   receipt must actually pass before claiming that platform's acceptance.
+
+## Amendment: surviving an in-place app update (#400)
+
+A host keeps one stdio server process per session. An in-place app update
+replaces the bundle and the native app, but the old process keeps its old
+schemas. Strict output schemas then reject newer native fields, so reads fail
+until the session restarts. Repair cannot help: the registration is correct.
+
+| Option                                 | Evidence / consequence                                                                                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Typed error only                       | Safe, but every update still needs a manual reload.                                                                                                                                |
+| Exit and let the host restart          | Copilot CLI 1.0.114 does not restart an exited stdio server; its tools disappear for the session.                                                                                  |
+| `tools/list_changed` alone             | Copilot CLI re-fetches `tools/list` on it, but output validation is server-side: the old process still rejects newer fields.                                                       |
+| Relay to the new bundle + list_changed | Verified with Copilot CLI 1.0.114: the next call is answered by the replaced bundle and its new tools are discovered. Selected, with leniency and the typed error as the fallback. |
+
+- Detection: the server hashes its own bundle at start. Before each
+  `tools/list`/`tools/call` it compares the file's stat identity and, only on a
+  change, re-hashes it. A different digest is a replaced bundle.
+- Self-heal: the process that owns the stdio wire starts the replaced bundle as
+  a child (`PR_SNIPER_MCP_RELAYED=1`, same arguments), replays the legacy
+  `initialize` when needed, and proves it with `tools/list` within 10 seconds.
+  Only then do requests move to the child; `subscriptions/listen` stays with
+  the owner, which sends `notifications/tools/list_changed`. A later update
+  replaces the child; the old child drains its pending requests first. If a child
+  exits with requests in flight, each gets a JSON-RPC error stating the
+  outcome is unknown; none is replayed elsewhere. Children never relay.
+- Reads: every tool output schema is a deep copy that accepts unknown keys, so
+  an older server passes newer fields through instead of failing. Enum values
+  stay exact. Inputs stay strict.
+- Saves and every other mutation are refused with `app_updated`, before any
+  native contact, when the bundle changed and the relay could not start, or
+  when the endpoint's `app_version` differs from the server's bundled version
+  (development builds skip the version check). A mutation shaped by older
+  schemas could otherwise drop newer fields and save the loss.
+- Remedy for `app_updated`: `/mcp reload` or restart Copilot CLI. Servers from
+  releases before this amendment cannot self-heal and need one reload.

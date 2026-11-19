@@ -518,6 +518,49 @@ export const readiness = z.object({
     }),
   ),
 });
+const wrappers = new Set([
+  "optional",
+  "nullable",
+  "default",
+  "prefault",
+  "nonoptional",
+  "readonly",
+  "catch",
+]);
+/**
+ * Output copy of `schema` that accepts unknown object keys at every depth, so
+ * an older server never rejects a newer app's additional fields. Inputs stay
+ * strict.
+ */
+export function loose(schema) {
+  const def = schema._zod.def;
+  let out = schema;
+  if (def.type === "object")
+    out = schema.clone({
+      ...def,
+      shape: Object.fromEntries(
+        Object.entries(def.shape).map(([key, value]) => [key, loose(value)]),
+      ),
+      catchall: z.unknown(),
+    });
+  else if (def.type === "array")
+    out = schema.clone({ ...def, element: loose(def.element) });
+  else if (wrappers.has(def.type))
+    out = schema.clone({ ...def, innerType: loose(def.innerType) });
+  else if (def.type === "union")
+    out = schema.clone({ ...def, options: def.options.map(loose) });
+  else if (def.type === "record")
+    out = schema.clone({ ...def, valueType: loose(def.valueType) });
+  else if (def.type === "tuple")
+    out = schema.clone({
+      ...def,
+      items: def.items.map(loose),
+      rest: def.rest ? loose(def.rest) : def.rest,
+    });
+  const meta = z.globalRegistry.get(schema);
+  if (out !== schema && meta) z.globalRegistry.add(out, meta);
+  return out;
+}
 export const envelope = (result) =>
   z.object({
     protocol: z.literal(protocol),

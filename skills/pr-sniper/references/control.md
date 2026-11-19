@@ -28,6 +28,13 @@ operations as the desktop UI; annotations never grant app permissions.
   identity within the receipt lifetime. Cancellation after dispatch does not
   undo native work. A replay is an old observation; read current state afterward.
 - No login, arbitrary shell, generic execute or second review engine.
+- App updated in place: on the next `tools/list`/`tools/call` the server
+  relays to a proven-ready child running the replaced bundle and sends
+  `notifications/tools/list_changed`. Read outputs accept unknown keys.
+  Mutations fail with `app_updated` (nothing dispatched) when the bundle
+  changed but could not start, or the app's version differs from the server's
+  (`detail`: `server_version`, `app_version`). Remedy: `/mcp reload` or restart
+  Copilot CLI, not Repair.
 - MCP registration is an explicit human Settings action; the server cannot
   register itself or edit another server. The skill is installed separately
   (`npx skills add jdylanmc/pr-sniper --skill pr-sniper -g -a github-copilot`).
