@@ -10,6 +10,7 @@
 | Discover     | `/skills reload`, then `/skills info pr-sniper`                                       |
 | Invoke       | `/pr-sniper start watching this PR https://github.com/owner/repo/pull/123`            |
 | Update       | App: update the app (registration follows). Skill: `npx skills update pr-sniper`      |
+| Stale MCP    | `app_updated` after an app update: `/mcp reload` or restart Copilot CLI (not Repair)  |
 | Repair       | MCP **Incomplete** → Repair (moved app or removed entry)                              |
 | Remove       | Trash button removes the owned MCP entry; `npx skills remove pr-sniper` removes skill |
 | Conflict     | Preserve/move a foreign or customized `pr-sniper` entry yourself; no force overwrite  |

@@ -300,7 +300,11 @@ async function launch() {
   child.unref();
 }
 
-export async function invoke(request) {
+/**
+ * `appVersion`, when set, refuses dispatch to an app of another version
+ * (`app_updated`): a mutation shaped by older schemas could drop newer fields.
+ */
+export async function invoke(request, { appVersion } = {}) {
   const root = dataRoot();
   request = {
     ...request,
@@ -313,7 +317,13 @@ export async function invoke(request) {
   };
   const send = async () => {
     try {
-      const response = await exchange(await endpoint(root), request);
+      const address = await endpoint(root);
+      if (appVersion !== undefined && address.app_version !== appVersion)
+        throw failure("app_updated", {
+          server_version: appVersion,
+          app_version: address.app_version ?? null,
+        });
+      const response = await exchange(address, request);
       return { ...response, request: receipt };
     } catch (error) {
       if (error.code === "outcome_unknown")

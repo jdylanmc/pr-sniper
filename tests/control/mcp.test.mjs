@@ -9,6 +9,7 @@ import { protocol } from "../../src-control/control-client.mjs";
 import { fakeApp } from "./fake-app.mjs";
 
 const source = path.resolve("src-tauri/resources/mcp/mcp-server.mjs");
+const { version } = JSON.parse(await fs.readFile("package.json", "utf8"));
 // The exact native queue shape, pinned by the app's dispatcher tests.
 const [queueItem] = JSON.parse(
   await fs.readFile(
@@ -63,7 +64,16 @@ const azureResolution = {
   account_generation: 0,
   pull_request: null,
 };
-async function fixture(mode, { queue = [queueItem] } = {}) {
+async function fixture(
+  mode,
+  {
+    queue = [queueItem],
+    appVersion = version,
+    values = [],
+    server = () => source,
+    onToolsChanged,
+  } = {},
+) {
   const base = path.resolve("src-tauri/target");
   await fs.mkdir(base, { recursive: true });
   const root = await fs.mkdtemp(path.join(base, "mcp-adapter-"));
@@ -76,8 +86,8 @@ async function fixture(mode, { queue = [queueItem] } = {}) {
     const result =
       request.operation === "resources"
         ? {
-            values: [],
-            total: 0,
+            values,
+            total: values.length,
             next_offset: null,
             revision: "a".repeat(64),
           }
@@ -124,14 +134,14 @@ async function fixture(mode, { queue = [queueItem] } = {}) {
       protocol,
       token,
       port: listener.port,
-      app_version: "fixture",
+      app_version: appVersion,
       pid: process.pid,
     }),
     { mode: 0o600 },
   );
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [source],
+    args: [await server(root)],
     env: { PR_SNIPER_DATA_DIR: root },
     stderr: "pipe",
   });
@@ -141,9 +151,14 @@ async function fixture(mode, { queue = [queueItem] } = {}) {
   });
   const client = new Client(
     { name: "pr-sniper-acceptance", version: "1" },
-    mode === "modern"
-      ? { versionNegotiation: { mode: { pin: "2026-07-28" } } }
-      : {},
+    {
+      ...(mode === "modern"
+        ? { versionNegotiation: { mode: { pin: "2026-07-28" } } }
+        : {}),
+      ...(onToolsChanged
+        ? { listChanged: { tools: { onChanged: onToolsChanged } } }
+        : {}),
+    },
   );
   try {
     await client.connect(transport, { timeout: 10000 });
@@ -156,6 +171,7 @@ async function fixture(mode, { queue = [queueItem] } = {}) {
   return {
     client,
     calls,
+    root,
     async close() {
       await client.close();
       await listener.close();
@@ -579,6 +595,200 @@ test("MCP round-trips repository and secondary path globs and shows skipped revi
     });
     assert.equal(queue.isError, false, JSON.stringify(queue));
     assert.deepEqual(queue.structuredContent.result.values, [skipped, parked]);
+  } finally {
+    await f.close();
+  }
+});
+
+const REPOSITORY = {
+  id: "00000000-0000-4000-8000-0000000000a1",
+  provider: "github",
+  name: "owner/app",
+  enabled: true,
+  assignments: [
+    {
+      id: "00000000-0000-4000-8000-0000000000a2",
+      agent_id: "00000000-0000-4000-8000-0000000000a3",
+      comment: true,
+    },
+  ],
+};
+// A newer app adds fields this server's schemas have never seen.
+const NEWER_REPOSITORY = {
+  ...REPOSITORY,
+  future_mode: "and",
+  assignments: [{ ...REPOSITORY.assignments[0], future_flag: true }],
+};
+
+async function save(f, name, value, expected = null) {
+  const request = (
+    await f.client.callTool({ name: "prepare_request", arguments: {} })
+  ).structuredContent;
+  return f.client.callTool({
+    name,
+    arguments: {
+      ...request,
+      revision: "a".repeat(64),
+      id: value.id,
+      expected,
+      value,
+    },
+  });
+}
+
+/** Runs the packaged server from a private copy the test can replace. */
+const replaceable = async (root) => {
+  const file = path.join(root, "mcp-server.mjs");
+  await fs.copyFile(source, file);
+  return file;
+};
+
+for (const mode of ["modern", "legacy"]) {
+  test(`MCP reads tolerate unknown fields from a newer app (${mode})`, async () => {
+    const reviews = [{ ...queueItem.reviews[0], future_review: 1 }];
+    const newerItem = { ...queueItem, future_item: { nested: true }, reviews };
+    const f = await fixture(mode, {
+      values: [NEWER_REPOSITORY],
+      queue: [newerItem],
+    });
+    try {
+      const repositories = await f.client.callTool({
+        name: "list_repositories",
+        arguments: {},
+      });
+      assert.equal(repositories.isError, false, JSON.stringify(repositories));
+      assert.deepEqual(repositories.structuredContent.result.values, [
+        NEWER_REPOSITORY,
+      ]);
+      const queue = await f.client.callTool({
+        name: "list_queue",
+        arguments: {},
+      });
+      assert.equal(queue.isError, false, JSON.stringify(queue));
+      assert.deepEqual(queue.structuredContent.result.values, [newerItem]);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("MCP refuses mutations against an app of another version, unsent", async () => {
+  const f = await fixture("modern", {
+    appVersion: "999.0.0",
+    values: [NEWER_REPOSITORY],
+  });
+  try {
+    const read = await f.client.callTool({
+      name: "list_repositories",
+      arguments: {},
+    });
+    assert.equal(read.isError, false, JSON.stringify(read));
+    const before = f.calls.length;
+    // The agent dropped the fields it cannot express; saving would erase them.
+    const saved = await save(f, "save_repository", REPOSITORY, REPOSITORY);
+    assert.equal(saved.isError, true);
+    assert.equal(saved.structuredContent.error.code, "app_updated");
+    assert.deepEqual(saved.structuredContent.error.detail, {
+      server_version: version,
+      app_version: "999.0.0",
+    });
+    const paused = await f.client.callTool({
+      name: "set_pause",
+      arguments: {
+        ...(await f.client.callTool({ name: "prepare_request", arguments: {} }))
+          .structuredContent,
+        paused: true,
+      },
+    });
+    assert.equal(paused.structuredContent.error.code, "app_updated");
+    assert.equal(f.calls.length, before);
+  } finally {
+    await f.close();
+  }
+});
+
+// The next bundle: the same tool name with a distinguishable reply, plus a new tool.
+const NEXT_BUNDLE = `
+import { McpServer } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { z } from "zod";
+serveStdio(() => {
+  const server = new McpServer({ name: "pr-sniper", version: "next" });
+  server.registerTool("list_doctrines", { inputSchema: z.object({}).passthrough() }, async () => {
+    const reply = { protocol: ${protocol}, ok: true, result: { values: [], total: 0, next_offset: null, revision: "${"b".repeat(64)}" } };
+    return { content: [{ type: "text", text: JSON.stringify(reply) }], structuredContent: reply };
+  });
+  server.registerTool("upgraded_probe", { inputSchema: z.object({}) }, async () => ({
+    content: [{ type: "text", text: "next" }],
+  }));
+  return server;
+}, { legacy: "serve" });
+`;
+
+for (const mode of ["modern", "legacy"]) {
+  test(`MCP relays to a replaced bundle and announces new tools (${mode})`, async () => {
+    let changed;
+    const announced = new Promise((resolve) => (changed = resolve));
+    const f = await fixture(mode, {
+      server: replaceable,
+      onToolsChanged: (error, tools) => !error && changed(tools),
+    });
+    try {
+      const before = await f.client.callTool({
+        name: "list_doctrines",
+        arguments: {},
+      });
+      assert.equal(before.structuredContent.result.revision, "a".repeat(64));
+      assert.equal(f.calls.length, 1);
+      await fs.writeFile(path.join(f.root, "mcp-server.mjs"), NEXT_BUNDLE);
+      const after = await f.client.callTool({
+        name: "list_doctrines",
+        arguments: {},
+      });
+      assert.equal(after.isError, undefined, JSON.stringify(after));
+      assert.equal(after.structuredContent.result.revision, "b".repeat(64));
+      assert.equal(f.calls.length, 1);
+      const tools = await Promise.race([
+        announced,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("no tools/list_changed")), 10000),
+        ),
+      ]);
+      assert(tools.some((tool) => tool.name === "upgraded_probe"));
+      const probe = await f.client.callTool({
+        name: "upgraded_probe",
+        arguments: {},
+      });
+      assert.equal(probe.content[0].text, "next");
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("MCP refuses mutations when a replaced bundle cannot start", async () => {
+  const f = await fixture("modern", { server: replaceable });
+  try {
+    // Prove the original bundle is running before replacing it.
+    await f.client.callTool({ name: "list_doctrines", arguments: {} });
+    await fs.writeFile(
+      path.join(f.root, "mcp-server.mjs"),
+      "process.exit(1);\n",
+    );
+    const saved = await save(f, "save_doctrine", {
+      id: randomUUID(),
+      title: "Example",
+      body: "Body",
+    });
+    assert.equal(saved.isError, true);
+    assert.equal(saved.structuredContent.error.code, "app_updated");
+    assert.equal(f.calls.length, 1);
+    const read = await f.client.callTool({
+      name: "list_doctrines",
+      arguments: {},
+    });
+    assert.equal(read.isError, false, JSON.stringify(read));
+    assert.equal(f.calls.length, 2);
   } finally {
     await f.close();
   }
