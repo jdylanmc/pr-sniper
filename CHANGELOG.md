@@ -5,6 +5,22 @@ Stable release tags use Semantic Versioning; see [release operations](docs/relea
 
 ## Unreleased
 
+## [0.7.1] - 2026-11-19
+
+### Added
+
+- Filter Queue and Reviewed by repository: a chip drills into a per-account checklist with counts, and the Queue cards and outcome chips count the filtered rows (#391).
+- Repository switch **Revision sign-off comments**: one short host comment per revision the primary signs off clean (GitHub conversation comment, Azure DevOps closed general thread) (#394).
+
+### Changed
+
+- Revision sign-off comments keep one comment per pull request: later clean revisions update it (GitHub edits it; Azure DevOps replies in its thread, kept closed), and a later revision with published findings adds a "has new findings" line (#397).
+
+### Fixed
+
+- Ready for you no longer holds a PR that is not ready to merge: a signed-off PR that turns conflicting, behind a required update, red on CI, changes-requested or draft waits for its author (typed reason, no notification or re-review) and returns to Ready on its own once mergeable again (#393).
+- Treat a cancelled check run superseded by a passed run of the same check as green, and a lone cancelled check as awaiting a rerun instead of red CI (#389).
+
 ## [0.7.0] - 2026-11-16
 
 ### Added
